@@ -1,4 +1,8 @@
 //! Application layer: use cases over the schema domain objects.
 //!
-//! Populated by T03, which drives the generators and owns the port trait each
-//! generator needs to read a vendored specification.
+//! Each module here owns its own narrow port trait rather than sharing a `ports`
+//! module, following the workspace-wide layout.
+
+pub mod verify_vendored_specs;
+
+pub use verify_vendored_specs::{VerifyError, verify_vendored_specs};

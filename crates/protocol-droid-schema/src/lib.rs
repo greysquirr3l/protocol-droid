@@ -27,3 +27,6 @@
 pub mod adapters;
 pub mod application;
 pub mod domain;
+
+pub use application::{VerifyError, verify_vendored_specs};
+pub use domain::manifest::{Manifest, ManifestError, RevisionSpec};
