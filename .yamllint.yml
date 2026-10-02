@@ -1,0 +1,31 @@
+---
+# yamllint configuration for the GitHub Actions workflows and dependabot config.
+#
+# Run with: yamllint .github/workflows/*.yml .github/dependabot.yml
+extends: default
+
+rules:
+  # `on:` is not a YAML 1.1 boolean to GitHub's parser, and quoting it changes
+  # the meaning. The rule's value-checking is still worth having; only the
+  # key-checking has to go.
+  truthy:
+    check-keys: false
+
+  # The longest lines here are shell `run:` blocks, which read worse when
+  # wrapped. 160 is the widest anything in this directory actually needs.
+  line-length:
+    max: 160
+
+  # A `---` marker in a standalone config file is noise.
+  document-start: disable
+
+  comments:
+    min-spaces-from-content: 1
+
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

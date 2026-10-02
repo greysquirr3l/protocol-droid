@@ -1,0 +1,42 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, off the hour, so the run does not pile onto the top-of-hour rush
+    # that every other scheduled workflow shares.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+# The CodeQL analysis needs to write its results; nothing else in this workflow
+# needs any write access.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (rust)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          queries: security-and-quality
+      # For Rust, CodeQL builds the project to capture the source. The pinned
+      # toolchain in rust-toolchain.toml is what gets used.
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:rust"

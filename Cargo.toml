@@ -1,0 +1,120 @@
+[workspace]
+# Virtual manifest, so the resolver has to be stated explicitly: the `edition`
+# in [workspace.package] does not switch the resolver for a virtual root.
+# Resolver 3 turns on MSRV-aware dependency resolution, but ONLY when
+# `rust-version` is actually set below and inherited by every member. Without
+# that inheritance the floor is silently ignored and CI drifts onto crates that
+# need a newer compiler than we claim to support.
+resolver = "3"
+members = [
+    # Generated per-revision MCP wire types. Depends on nothing internal.
+    "crates/protocol-droid-schema",
+    # The library: canonical IR, codecs, session engine, transports.
+    "crates/protocol-droid",
+    # Procedural macros. Kept separate because a proc-macro crate cannot be
+    # consumed by the crates it would otherwise be useful to.
+    "crates/protocol-droid-macros",
+    # The `protocol-droid` binary. Consumes the library, never the reverse.
+    "crates/protocol-droid-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
+# develop and test on; this is the oldest compiler a consumer may build against.
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+# Matches the `origin` remote. `cargo deny` requires a non-placeholder
+# repository field, so it cannot be omitted; crates.io shows it on the crate
+# page and every `cargo add` inherits it.
+repository = "https://github.com/greysquirr3l/protocol-droid"
+homepage = "https://github.com/greysquirr3l/protocol-droid"
+documentation = "https://docs.rs/protocol-droid"
+readme = "README.md"
+keywords = ["mcp", "jsonrpc", "model-context-protocol", "protocol"]
+categories = [
+    "network-programming",
+    "parser-implementations",
+    "web-programming::http",
+]
+
+[workspace.dependencies]
+# Crate versions are collected here so a member only names the dependencies it
+# actually uses. The `version` fields on the internal path dependencies must be
+# bumped in lockstep with `version` above: Cargo does not interpolate
+# `version.workspace = true` inside [workspace.dependencies].
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.1.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.1.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.1.0" }
+
+# MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
+# version the API stabilised in. See PROGRESS.md Accumulated Learnings.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+# Colour and wrapping are disabled: a CLI piped into another process should not
+# emit escape sequences, and the narrower build keeps the binary honest.
+clap = { version = "4.6.7", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
+
+# The lint profile. Mirrored in `.cargo/config.toml` under `[alias] l` so that
+# `cargo l` works from a bare checkout, and here so that a bare `cargo clippy`
+# enforces exactly the same set. The two must be kept in step.
+#
+# Cargo applies lint levels in priority order, so the groups carry
+# `priority = -1`: without it a group default would outrank the per-lint
+# decisions made below it and `deny` would silently lose to `warn`.
+[workspace.lints.rust]
+warnings = "deny"
+missing_docs = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+# 1.96 onward this is deny-by-default; named here so the floor is explicit.
+uninhabited_static = "deny"
+# A denial in a port trait is inherited by every impl of that trait (changed in
+# 1.94), so a missing doc comment surfaces at the adapter, not at the trait.
+ambiguous_glob_imported_traits = "deny"
+# Only meaningful for binary crates, harmless elsewhere.
+dead_code_pub_in_binary = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
+# Deliberately fatal. These are the project standards, not preferences.
+#
+# `suspicious` is itself a lint *group*, so it sits with the other groups at
+# priority -1 rather than at the implicit 0. Cargo rejects a group that shares a
+# priority with a plain lint, and the specific lints above it have to outrank
+# the broad groups for their `deny` to take effect.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+cast_ptr_alignment = "deny"
+suspicious = { level = "deny", priority = -1 }
+
+# Deliberately tolerated across the workspace.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+struct_excessive_bools = "allow"
+multiple_crate_versions = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

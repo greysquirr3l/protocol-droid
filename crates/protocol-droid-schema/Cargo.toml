@@ -1,0 +1,27 @@
+[package]
+name = "protocol-droid-schema"
+description = "Per-revision Model Context Protocol wire types generated from the official schema.json for every published revision."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["codegen"]
+# Schema-to-Rust generation. Populated by T03; declared now so that the CI matrix
+# exercises a non-empty feature axis from the first commit.
+codegen = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

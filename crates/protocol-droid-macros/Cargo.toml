@@ -1,0 +1,24 @@
+[package]
+name = "protocol-droid-macros"
+description = "Procedural macros for the protocol-droid Model Context Protocol toolkit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+# A proc-macro crate is built for the host and cannot be used by the crates that
+# would consume it, which is why this is a separate crate rather than a module.
+proc-macro = true
+
+# No dependencies and no macros yet. The attribute macros on the server and
+# client APIs land with T12.
+
+[lints]
+workspace = true

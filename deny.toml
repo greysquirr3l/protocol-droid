@@ -1,0 +1,80 @@
+# Supply-chain policy for protocol-droid. Enforced in CI and in the preflight
+# command via `cargo deny --all-features check`.
+#
+# Two rules govern this file.
+#
+# 1. `cargo deny` reads a CACHED advisory database locally, so a green run on
+#    your machine can be missing an advisory that CI — which always fetches
+#    fresh — will fail on. Never remove or narrow an entry here because a local
+#    run was green. Re-run with network access and confirm the advisory is
+#    genuinely gone from the dependency graph.
+#
+# 2. An `ignore` entry is a waiver, not a fix. Every waiver must name the
+#    RUSTSEC identifier, say why the advisory is not reachable from this code,
+#    and state the condition that would retire it. A silent waiver is worse
+#    than no waiver, because it looks like a pass.
+#
+# The list is currently empty and that is a fact about the graph, not an
+# omission: the workspace's third-party dependencies are serde, thiserror,
+# anyhow and clap, none of which carry an advisory.
+
+[graph]
+# Resolve with every feature on, so the graph covers the widest surface CI
+# builds. The `--no-default-features` extreme is a subset of this.
+all-features = true
+
+[advisories]
+version = 2
+# A yanked release in the lockfile is a supply-chain risk in its own right.
+yanked = "deny"
+# Crates with no repository and no releases are how the `left-pad` incidents
+# happen. The workspace itself is exempt via `unmaintained = "workspace"`.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# The project's own licence is MIT OR Apache-2.0.
+#
+# This list is deliberately EXACT rather than "everything permissive". cargo-deny
+# reports an allow-list entry it never encountered as a `license-not-encountered`
+# warning, and this workspace denies warnings, so padding the list with licences
+# that no dependency currently uses would fail CI. The upside of the tight list
+# is the point: adding a dependency under a new licence is a deliberate, visible
+# change to this file, reviewed in the same commit as the dependency, rather than
+# something a pre-loaded allow-list waves through.
+#
+# Currently matched by the graph as `(MIT OR Apache-2.0) AND Unicode-3.0`,
+# `MIT`, `MIT OR Apache-2.0`, and `Unlicense OR MIT`.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+# A licence we cannot confidently identify is not automatically acceptable.
+confidence-threshold = 0.93
+# Per-licence exceptions, for a crate that needs a licence outside the list
+# above. Each entry names the crate and carries a reason. None today.
+exceptions = []
+
+[bans]
+# Two versions of one crate in the graph is a real cost: it doubles the
+# compiled surface and it is how duplicate-CVE stories start. Deny it, and add
+# a documented `skip` if a real conflict appears.
+multiple-versions = "deny"
+# A wildcard dependency is a version that changes without a commit.
+wildcards = "deny"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Fail closed on anything that is not crates.io. A dependency pulled from a
+# git URL or an unknown registry bypasses the advisory database entirely.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# A git source is allowed only with a stated reason. None today; add the URL
+# and the justification together, never the URL alone.
+allow-git = []

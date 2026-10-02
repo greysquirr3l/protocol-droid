@@ -1,0 +1,25 @@
+[package]
+name = "protocol-droid"
+description = "A Model Context Protocol toolkit that speaks every published spec revision, with one canonical IR behind many per-revision codecs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# No `[features]` table yet. The feature gates for each transport, the legacy
+# SSE path, and OAuth are introduced by the tasks that implement them (T13-T16),
+# not declared empty in advance.
+
+[dependencies]
+protocol-droid-schema = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

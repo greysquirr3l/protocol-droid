@@ -1,0 +1,19 @@
+# Wiggum artifacts are kept local only, and should not be checked into version control.
+AGENTS.md
+BUDGET.md
+CLAUDE.md
+features.json
+IMPLEMENTATION_PLAN.md
+plan.toml
+PROGRESS.md
+RUN_LOG.md
+.claude/
+tasks/
+capabilities/
+
+# IDE
+.vscode/
+
+# Rust build artifacts
+/target/
+**/*.rs.bk

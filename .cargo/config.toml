@@ -1,0 +1,25 @@
+# Workspace-wide cargo configuration.
+#
+# AGENTS.md: any warning fails the build. `build.warnings = "deny"` is the
+# load-bearing Rust 1.97+ stable knob that escalates every lint warning on
+# local crates to a hard build error. Two important caveats from cargo's
+# docs that we accept:
+#   * Only lint-class warnings are escalated — non-lint warnings (e.g. an
+#     "unused config key" line) still print without failing the build. CI
+#     also runs `cargo clippy -- -D warnings` to catch those.
+#   * `build.warnings` is MSRV-gated; bumping rust-toolchain.toml below
+#     1.97 silently turns off this gate.
+[build]
+warnings = "deny"
+
+# Convenience alias matching AGENTS.md so that `cargo l` reproduces the exact
+# preflight profile documented in the task files. Keep this in sync with
+# the preflight command in CLAUDE.md.
+#
+# The same profile is ALSO declared under [workspace.lints] in the root
+# Cargo.toml, so a bare `cargo clippy` is equally strict. The duplication is
+# deliberate: `cargo l` has to work on its own in a fresh checkout, and
+# [workspace.lints] has to reach contributors who never use the alias. When a
+# lint is added or relaxed, change both.
+[alias]
+l = "clippy --workspace --all-targets --all-features -- -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo -W clippy::perf -A clippy::module_name_repetitions -A clippy::must_use_candidate -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::struct_excessive_bools -A clippy::multiple_crate_versions -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::indexing_slicing -D clippy::cast_ptr_alignment -D clippy::suspicious -D warnings"

@@ -1,0 +1,17 @@
+# The toolchain this repository develops and tests against. Every contributor and
+# every CI job resolves to this pin, so a build that is green locally is the same
+# build that is green in CI.
+#
+# `profile = "minimal"` keeps rust-docs and the source component out of every
+# install. Add a component only when the workspace actually calls for it.
+#
+# There is deliberately no `targets` key. Each CI runner already *is* its host
+# triple (ubuntu-latest is x86_64-unknown-linux-gnu, macos-latest is
+# aarch64-apple-darwin, windows-latest is x86_64-pc-windows-msvc), so listing
+# them here would make every contributor download three extra standard
+# libraries they can never link. A job that needs a foreign target installs it
+# for that job alone.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

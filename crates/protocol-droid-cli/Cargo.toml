@@ -1,0 +1,29 @@
+[package]
+name = "protocol-droid-cli"
+description = "Command-line Swiss-army knife for the protocol-droid Model Context Protocol toolkit: bridge, probe, inspect, record and replay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# No `[features]` table yet. The subcommand groups (bridge, probe and inspect,
+# record and replay, conformance) are added as optional features by T18-T21 so
+# that a `--no-default-features` build stays a lean core.
+
+[[bin]]
+name = "protocol-droid"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+protocol-droid = { workspace = true }
+
+[lints]
+workspace = true

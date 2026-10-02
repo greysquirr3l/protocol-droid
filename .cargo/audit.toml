@@ -1,0 +1,19 @@
+# cargo-audit configuration.
+#
+# `deny.toml` is the authoritative supply-chain policy for this repository, and
+# the one wired into both CI and the preflight command. `cargo audit` is part of
+# neither; this file exists only so that someone running it by hand is not
+# silently working against different rules.
+#
+# The ignore list below is intentionally EMPTY. It is deliberately not
+# "kept in sync" with `deny.toml`, because a second ignore list is a second
+# thing to forget to update, and a stale entry in it is indistinguishable from a
+# real, reviewed waiver.
+#
+# When an advisory genuinely must be suppressed, record it in `deny.toml` with
+# the RUSTSEC identifier, the reason it is unreachable from this code, and the
+# condition that would retire the waiver. Mirror it here in the same commit,
+# with the same reason.
+
+[advisories]
+ignore = []

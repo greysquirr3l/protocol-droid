@@ -1,0 +1,113 @@
+name: Release
+
+# Triggered by Auto Tag completing. `on: push: tags` would never fire here,
+# because the tag is pushed with GITHUB_TOKEN and GitHub deliberately suppresses
+# workflow triggers for pushes made with that token.
+on:
+  workflow_run:
+    workflows: ["Auto Tag"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  # The tag is not available as an input on `workflow_run` — there is no
+  # `github.ref` pointing at it. It is derived from the commit the triggering
+  # run reported, which works regardless of what caused the run, rather than
+  # assuming a push-to-tag event shape.
+  resolve-tag:
+    name: resolve tag
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Find tag
+        id: resolve
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          tag="$(git tag --points-at "${HEAD_SHA}" --sort=-creatordate | head -n 1)"
+          if [ -z "${tag}" ]; then
+            echo "::error::no tag points at ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "Resolved release tag: ${tag}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+  # Always runs, needs no secrets, and is the job that actually proves the
+  # release is publishable: every crate is packaged and dry-run in dependency
+  # order, so a broken manifest or a missing path dependency is caught before
+  # anything is uploaded.
+  verify:
+    name: verify packaging
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Dry-run publish
+        env:
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Dry-run publishing ${TAG}"
+          # Dependency order: a crate cannot be published before the crate it
+          # depends on exists on the registry. protocol-droid-macros is
+          # independent and is published last.
+          for crate in protocol-droid-schema protocol-droid protocol-droid-macros protocol-droid-cli; do
+            echo "::group::${crate}"
+            cargo publish --dry-run -p "${crate}"
+            echo "::endgroup::"
+          done
+
+  publish:
+    name: publish
+    needs: [resolve-tag, verify]
+    runs-on: ubuntu-latest
+    # Gate the upload on a reviewable environment rather than letting a green
+    # CI run push four crates to crates.io unattended.
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A fork, or a repository where the token has not been configured, has
+          # no secret. Skip with a warning rather than failing the chain, so
+          # the `verify` result above is still reported.
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::warning::CARGO_REGISTRY_TOKEN is not set; skipping publish of ${TAG}"
+            exit 0
+          fi
+          for crate in protocol-droid-schema protocol-droid protocol-droid-macros protocol-droid-cli; do
+            echo "::group::${crate}"
+            cargo publish -p "${crate}"
+            echo "::endgroup::"
+          done

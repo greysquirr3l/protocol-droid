@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege. Every job inherits this, and narrows it again where it needs
+# more than read access. Nothing here needs write access to the repository.
+permissions:
+  contents: read
+
+# A new push to a branch supersedes the run already in flight for that branch.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Must match `channel` in rust-toolchain.toml. Stated explicitly rather than
+  # left implicit so the workflow cannot silently follow a different toolchain
+  # than the file pins.
+  RUST_TOOLCHAIN: "1.98.1"
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  lint:
+    name: clippy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      # `cargo l` is the alias in .cargo/config.toml and carries the whole
+      # profile on its own. This fails if Cargo.lock is stale or absent, so the
+      # committed lockfile is actually pinned rather than merely present.
+      - name: Verify lockfile is current
+        run: cargo fetch --locked
+      - name: Lint
+        run: cargo l
+
+  test:
+    # The matrix key is `features`, not `feature-set`: a hyphen in a property
+    # name is parsed by the expression language as a subtraction.
+    name: test (${{ matrix.os }}, ${{ matrix.features.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report every failure, not just the first. A Windows-only failure should
+      # not be masked by an unrelated Linux one.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features:
+          - name: all-features
+            args: --all-features
+          - name: no-default-features
+            args: --no-default-features
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: ${{ matrix.features.name }}
+      - name: Test
+        run: cargo test --workspace ${{ matrix.features.args }}
+
+  deny:
+    name: supply chain
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # This action fetches a fresh advisory database, which is the whole point
+      # of running it in CI: a local `cargo deny` may answer from a stale cache
+      # and pass on an advisory that has since been published.
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
