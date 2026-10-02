@@ -76,12 +76,12 @@ T21), not declared empty in advance.
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request:
 
-| Job       | Runs on       | What it does                                     |
-| --------- | ------------- | ------------------------------------------------ |
-| `fmt`     | ubuntu        | `cargo fmt --all --check`                        |
-| `lint`    | ubuntu        | lockfile freshness, then `cargo l`               |
-| `test`    | 3 OS x 2 sets | `--all-features` and `--no-default-features`     |
-| `deny`    | ubuntu        | `cargo deny` advisories, licences, bans, sources |
+| Job    | Runs on       | What it does                                     |
+| ------ | ------------- | ------------------------------------------------ |
+| `fmt`  | ubuntu        | `cargo fmt --all --check`                        |
+| `lint` | ubuntu        | lockfile freshness, then `cargo l`               |
+| `test` | 3 OS x 2 sets | `--all-features` and `--no-default-features`     |
+| `deny` | ubuntu        | `cargo deny` advisories, licences, bans, sources |
 
 The `test` matrix is ubuntu-latest, macos-latest and windows-latest crossed with
 both feature extremes. CodeQL runs in its own workflow, and Dependabot tracks
