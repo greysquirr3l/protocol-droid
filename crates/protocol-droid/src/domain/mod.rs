@@ -76,7 +76,10 @@ mod tests {
                 transport_allowed(first, *transport),
                 "{transport} claims to start at {first} but is not allowed there"
             );
-            for earlier in ProtocolVersion::KNOWN.into_iter().take_while(|v| *v < first) {
+            for earlier in ProtocolVersion::KNOWN
+                .into_iter()
+                .take_while(|v| *v < first)
+            {
                 assert!(
                     !transport_allowed(earlier, *transport),
                     "{transport} is allowed on {earlier}, which predates {first}"
