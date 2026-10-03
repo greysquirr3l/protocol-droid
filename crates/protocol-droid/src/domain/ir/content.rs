@@ -68,6 +68,76 @@ impl Default for Content {
     }
 }
 
+impl TextContent {
+    /// What this block needs, over and above being text at all.
+    #[must_use]
+    pub const fn required_features(&self) -> FeatureSet {
+        FeatureSet::empty()
+    }
+}
+
+impl ImageContent {
+    /// What this block needs, over and above being an image at all.
+    #[must_use]
+    pub const fn required_features(&self) -> FeatureSet {
+        FeatureSet::empty()
+    }
+}
+
+impl AudioContent {
+    /// What this block needs, over and above being audio.
+    #[must_use]
+    pub fn required_features(&self) -> FeatureSet {
+        // "Added support for audio data", `2025-03-26`.
+        FeatureSet::empty().with(Feature::ToolAudioContent)
+    }
+}
+
+impl ResourceLinkContent {
+    /// What this block needs, over and above being a link.
+    #[must_use]
+    pub fn required_features(&self) -> FeatureSet {
+        let mut required = FeatureSet::empty().with(Feature::ToolResourceLinks);
+        if !self.icons.is_empty() {
+            required = required.with(Feature::ToolResourceLinkIcons);
+        }
+        required
+    }
+}
+
+impl EmbeddedResource {
+    /// What this block needs, over and above being an embedded resource.
+    #[must_use]
+    pub const fn required_features(&self) -> FeatureSet {
+        FeatureSet::empty()
+    }
+}
+
+impl Annotations {
+    /// What these annotations need.
+    ///
+    /// What these annotations need.
+    ///
+    /// Annotations as a *field* need nothing: `2024-11-05` carries an
+    /// untyped `annotations` on every content block, so a block with an
+    /// audience and a priority lowers onto it and the value survives as JSON.
+    /// That is why this is not `Feature::ToolAnnotations`, which gates the
+    /// typed form added in `2025-03-26`.
+    ///
+    /// `lastModified` is different in kind, not degree. It exists only in the
+    /// typed object, so an older revision cannot hold it at all — not as a
+    /// field, not even untyped — and dropping it would lose information the
+    /// sender put there. So it, and only it, requires `2025-06-18`.
+    #[must_use]
+    pub fn required_features(&self) -> FeatureSet {
+        if self.last_modified.is_some() {
+            FeatureSet::empty().with(Feature::ToolAnnotationsLastModified)
+        } else {
+            FeatureSet::empty()
+        }
+    }
+}
+
 impl Content {
     /// The features this block needs in order to be expressed.
     ///
@@ -77,15 +147,37 @@ impl Content {
     /// block to a `2024-11-05` peer is a downgrade.
     #[must_use]
     pub fn required_features(&self) -> FeatureSet {
+        let mut required = match self {
+            // Text, Image and EmbeddedResource are in `2024-11-05` — but a
+            // block of any kind carrying annotations is not, because
+            // annotations arrived in `2025-03-26`. The block's own kind and the
+            // fields on it are separate questions, and answering only the first
+            // one lets an annotated block lower onto a revision that would drop
+            // the annotations.
+            Self::Text(text) => text.required_features(),
+            Self::Image(image) => image.required_features(),
+            Self::Audio(audio) => audio.required_features(),
+            Self::ResourceLink(link) => link.required_features(),
+            Self::EmbeddedResource(resource) => resource.required_features(),
+            // Carried verbatim, so it needs nothing — the bytes are the wire.
+            Self::Unknown(_) => FeatureSet::empty(),
+        };
+        if let Some(annotations) = self.annotations() {
+            required = required.union(annotations.required_features());
+        }
+        required
+    }
+
+    /// The block's annotations, if it has any.
+    #[must_use]
+    pub const fn annotations(&self) -> Option<&Annotations> {
         match self {
-            // Text, Image and EmbeddedResource are in `2024-11-05`.
-            Self::Text(_) | Self::Image(_) | Self::EmbeddedResource(_) | Self::Unknown(_) => {
-                FeatureSet::empty()
-            }
-            // "Added support for audio data", `2025-03-26`.
-            Self::Audio(_) => FeatureSet::empty().with(Feature::ToolAudioContent),
-            // PR #603, `2025-06-18` major change 7.
-            Self::ResourceLink(_) => FeatureSet::empty().with(Feature::ToolResourceLinks),
+            Self::Text(block) => block.annotations.as_ref(),
+            Self::Image(block) => block.annotations.as_ref(),
+            Self::Audio(block) => block.annotations.as_ref(),
+            Self::ResourceLink(block) => block.annotations.as_ref(),
+            Self::EmbeddedResource(block) => block.annotations.as_ref(),
+            Self::Unknown(_) => None,
         }
     }
 
@@ -209,6 +301,10 @@ pub struct ResourceLinkContent {
     pub mime_type: Option<String>,
     /// The size in bytes, if known.
     pub size: Option<u64>,
+    /// Icons for the resource. `2025-11-25`, SEP-973.
+    ///
+    /// <https://github.com/modelcontextprotocol/modelcontextprotocol/issues/973>
+    pub icons: Vec<ResourceIcon>,
     /// A human-readable title for the resource. `2025-06-18`.
     ///
     /// Distinct from `name`: `name` is the identifier a client uses to ask for
@@ -232,8 +328,37 @@ impl ResourceLinkContent {
             description: None,
             mime_type: None,
             size: None,
+            icons: Vec::new(),
             title: None,
             annotations: None,
+            extensions: Extensions::empty(),
+        }
+    }
+}
+
+/// An icon for a resource link. `2025-11-25`, SEP-973.
+///
+/// <https://github.com/modelcontextprotocol/modelcontextprotocol/issues/973>
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceIcon {
+    /// The image itself, as a data URI.
+    pub src: String,
+    /// The media type, if the URI does not imply one.
+    pub mime_type: Option<String>,
+    /// The sizes this icon is usable at.
+    pub sizes: Vec<String>,
+    /// Unmodelled fields.
+    pub extensions: Extensions,
+}
+
+impl ResourceIcon {
+    /// An icon with only its source.
+    #[must_use]
+    pub fn new(src: impl Into<String>) -> Self {
+        Self {
+            src: src.into(),
+            mime_type: None,
+            sizes: Vec::new(),
             extensions: Extensions::empty(),
         }
     }
@@ -369,8 +494,8 @@ mod tests {
     )]
 
     use super::{
-        Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceLinkContent,
-        Role, TextContent, UnknownContent,
+        Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceIcon,
+        ResourceLinkContent, Role, TextContent, UnknownContent,
     };
     use crate::domain::Feature;
     use crate::domain::ir::extensions::{ExtensionValue, Extensions};
@@ -488,11 +613,18 @@ mod tests {
         assert_eq!(Content::default(), Content::Text(TextContent::new("")));
     }
 
-    /// Annotations do not change what a block requires. They were added in
-    /// `2025-03-26`, but a `2024-11-05` peer simply ignores them, so requiring a
-    /// feature for them would make ordinary text content unlowerable.
+    /// Annotations with only `audience` and `priority` do not raise a
+    /// requirement.
+    ///
+    /// This test previously asserted the same equality with a different
+    /// reason: that a `2024-11-05` peer "simply ignores" annotations. It does
+    /// not ignore them — `2024-11-05`'s `TextContent` has an
+    /// `annotations: Option<Value>`, untyped but present. So the value can be
+    /// carried, and requiring a feature for it would refuse something the
+    /// revision can express. The conclusion was right and the reasoning wrong,
+    /// which is worth replacing rather than leaving to mislead the next reader.
     #[test]
-    fn annotations_do_not_raise_the_requirement() {
+    fn plain_annotations_do_not_raise_the_requirement() {
         let plain = Content::Text(TextContent::new("x"));
         let annotated = Content::Text(TextContent {
             annotations: Some(Annotations {
@@ -503,6 +635,49 @@ mod tests {
             ..TextContent::new("x")
         });
         assert_eq!(plain.required_features(), annotated.required_features());
+    }
+
+    /// `lastModified` is the one annotation field an older revision cannot
+    /// hold at all — not even untyped — so it is the one that gates.
+    #[test]
+    fn last_modified_raises_the_requirement() {
+        let mut annotations = Annotations::empty();
+        annotations.audience = vec![Role::User];
+        assert!(annotations.required_features().is_empty());
+
+        annotations.last_modified = Some("2025-06-18T00:00:00Z".to_owned());
+        assert!(
+            annotations
+                .required_features()
+                .contains(Feature::ToolAnnotationsLastModified)
+        );
+    }
+
+    /// Icons are `2025-11-25`, so a link carrying them needs a newer revision
+    /// than a link without. Before this the IR had nowhere to put them.
+    #[test]
+    fn icons_raise_a_link_s_requirement() {
+        let bare = ResourceLinkContent::new("file:///a", "a");
+        assert!(
+            !bare
+                .required_features()
+                .contains(Feature::ToolResourceLinkIcons)
+        );
+
+        let with_icons = ResourceLinkContent {
+            icons: vec![ResourceIcon::new("data:image/png;base64,AAA=")],
+            ..ResourceLinkContent::new("file:///a", "a")
+        };
+        assert!(
+            with_icons
+                .required_features()
+                .contains(Feature::ToolResourceLinkIcons)
+        );
+        assert!(
+            with_icons
+                .required_features()
+                .contains(Feature::ToolResourceLinks)
+        );
     }
 
     #[test]

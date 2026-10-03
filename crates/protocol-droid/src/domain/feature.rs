@@ -76,6 +76,17 @@ pub enum Feature {
     ToolStructuredOutput,
     /// Resource links in a tool call result. `2025-06-18`.
     ToolResourceLinks,
+    /// `annotations.lastModified` on a content block. `2025-06-18`.
+    ///
+    /// Separate from `ToolAnnotations` because the two gate different
+    /// revisions: annotations as a field exist in `2024-11-05`, untyped, while
+    /// `lastModified` first appears in the typed form at `2025-06-18`. A value
+    /// carrying only `audience` or `priority` needs the older feature alone.
+    ToolAnnotationsLastModified,
+    /// `icons` on a resource link. `2025-11-25`, SEP-973.
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/issues/973`
+    ToolResourceLinkIcons,
     /// Audio content blocks. `2025-03-26`.
     ToolAudioContent,
     /// `resultType` on tool results. `2026-07-28`, required rather than
@@ -167,12 +178,14 @@ pub enum Feature {
 
 impl Feature {
     /// Every feature, in declaration order.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 39] = [
         Self::Tools,
         Self::ToolsListChanged,
         Self::ToolAnnotations,
         Self::ToolStructuredOutput,
         Self::ToolResourceLinks,
+        Self::ToolAnnotationsLastModified,
+        Self::ToolResourceLinkIcons,
         Self::ToolAudioContent,
         Self::ToolResultType,
         Self::Resources,
@@ -216,6 +229,8 @@ impl Feature {
             Self::ToolAnnotations => "tool.annotations",
             Self::ToolStructuredOutput => "tool.structuredOutput",
             Self::ToolResourceLinks => "tool.resourceLinks",
+            Self::ToolAnnotationsLastModified => "tool.annotations.lastModified",
+            Self::ToolResourceLinkIcons => "tool.resourceLinks.icons",
             Self::ToolAudioContent => "tool.audioContent",
             Self::ToolResultType => "tool.resultType",
             Self::Resources => "resources",
@@ -352,6 +367,31 @@ pub const FEATURES: &[FeatureSpec] = &[
         server_cap: Some(CapTools),
         transport: None,
         first: V2025_03_26,
+        last: None,
+    },
+    // `2025-06-18`: `lastModified` is the first annotation field that the
+    // typed `Annotations` object carries and `2025-03-26` does not. The
+    // annotation field itself is older than that and untyped at `2024-11-05`,
+    // so it is `ToolAnnotations` that gates the field rather than this.
+    FeatureSpec {
+        feature: Feature::ToolAnnotationsLastModified,
+        side: Side::Server,
+        client_cap: None,
+        server_cap: Some(CapTools),
+        transport: None,
+        first: V2025_06_18,
+        last: None,
+    },
+    // SEP-973, `2025-11-25` major change 2: "Allow servers to expose icons as
+    // additional metadata for tools, resources, resource templates, and
+    // prompts". `https://github.com/modelcontextprotocol/modelcontextprotocol/issues/973`
+    FeatureSpec {
+        feature: Feature::ToolResourceLinkIcons,
+        side: Side::Server,
+        client_cap: None,
+        server_cap: Some(CapTools),
+        transport: None,
+        first: V2025_11_25,
         last: None,
     },
     // PR #371, `2025-06-18` major change 2.

@@ -2,12 +2,14 @@
 source: crates/protocol-droid/tests/feature_matrix_golden.rs
 expression: snapshot_for(version)
 ---
-== 2026-07-28 / stdio / everything: 31 feature(s)
+== 2026-07-28 / stdio / everything: 33 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
+  + tool.resourceLinks.icons
   + tool.audioContent
   + tool.resultType
   + resources
@@ -55,6 +57,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -81,12 +85,14 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2026-07-28 / sse / everything: 31 feature(s)
+== 2026-07-28 / sse / everything: 33 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
+  + tool.resourceLinks.icons
   + tool.audioContent
   + tool.resultType
   + resources
@@ -134,6 +140,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -160,12 +168,14 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2026-07-28 / http / everything: 32 feature(s)
+== 2026-07-28 / http / everything: 34 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
+  + tool.resourceLinks.icons
   + tool.audioContent
   + tool.resultType
   + resources
@@ -214,6 +224,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -239,12 +251,14 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2026-07-28 / http-stateless / everything: 31 feature(s)
+== 2026-07-28 / http-stateless / everything: 33 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
+  + tool.resourceLinks.icons
   + tool.audioContent
   + tool.resultType
   + resources
@@ -292,6 +306,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -339,6 +355,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -358,12 +376,14 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2026-07-28 / stdio / server-only: 22 feature(s)
+== 2026-07-28 / stdio / server-only: 24 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
+  + tool.resourceLinks.icons
   + tool.audioContent
   + tool.resultType
   + resources

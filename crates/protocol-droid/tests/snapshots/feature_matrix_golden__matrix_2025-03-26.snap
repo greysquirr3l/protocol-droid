@@ -22,6 +22,8 @@ expression: snapshot_for(version)
   + experimental
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -49,6 +51,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -101,6 +105,8 @@ expression: snapshot_for(version)
   + experimental
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -128,6 +134,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -181,6 +189,8 @@ expression: snapshot_for(version)
   + experimental
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -208,6 +218,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -259,6 +271,8 @@ expression: snapshot_for(version)
   + experimental
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -286,6 +300,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -329,6 +345,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -374,6 +392,8 @@ expression: snapshot_for(version)
   + ping
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.resultType
   - roots
   - roots.listChanged

@@ -55,8 +55,8 @@ mod tool;
 
 pub use codec::Codec;
 pub use content::{
-    Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceLinkContent, Role,
-    TextContent, UnknownContent, UnknownRole,
+    Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceIcon,
+    ResourceLinkContent, Role, TextContent, UnknownContent, UnknownRole,
 };
 pub use extensions::{ExtensionValue, Extensions};
 pub use features::FeatureSet;

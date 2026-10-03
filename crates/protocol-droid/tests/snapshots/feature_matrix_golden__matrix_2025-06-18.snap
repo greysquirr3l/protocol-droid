@@ -2,12 +2,13 @@
 source: crates/protocol-droid/tests/feature_matrix_golden.rs
 expression: snapshot_for(version)
 ---
-== 2025-06-18 / stdio / everything: 21 feature(s)
+== 2025-06-18 / stdio / everything: 22 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
   + tool.audioContent
   + resources
   + resources.listChanged
@@ -24,6 +25,7 @@ expression: snapshot_for(version)
   + metaExtensions
   + ping
   + experimental
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -50,6 +52,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -81,12 +85,13 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2025-06-18 / sse / everything: 21 feature(s)
+== 2025-06-18 / sse / everything: 22 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
   + tool.audioContent
   + resources
   + resources.listChanged
@@ -103,6 +108,7 @@ expression: snapshot_for(version)
   + metaExtensions
   + ping
   + experimental
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -129,6 +135,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -160,12 +168,13 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2025-06-18 / http / everything: 22 feature(s)
+== 2025-06-18 / http / everything: 23 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
   + tool.audioContent
   + resources
   + resources.listChanged
@@ -183,6 +192,7 @@ expression: snapshot_for(version)
   + metaExtensions
   + ping
   + experimental
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -209,6 +219,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -239,12 +251,13 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2025-06-18 / http-stateless / everything: 21 feature(s)
+== 2025-06-18 / http-stateless / everything: 22 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
   + tool.audioContent
   + resources
   + resources.listChanged
@@ -261,6 +274,7 @@ expression: snapshot_for(version)
   + metaExtensions
   + ping
   + experimental
+  - tool.resourceLinks.icons
   - tool.resultType
   - sampling.context
   - sampling.tools
@@ -287,6 +301,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -331,6 +347,8 @@ expression: snapshot_for(version)
   - tool.annotations
   - tool.structuredOutput
   - tool.resourceLinks
+  - tool.annotations.lastModified
+  - tool.resourceLinks.icons
   - tool.audioContent
   - tool.resultType
   - resources
@@ -358,12 +376,13 @@ expression: snapshot_for(version)
   - experimental
 
 
-== 2025-06-18 / stdio / server-only: 16 feature(s)
+== 2025-06-18 / stdio / server-only: 17 feature(s)
   + tools
   + tools.listChanged
   + tool.annotations
   + tool.structuredOutput
   + tool.resourceLinks
+  + tool.annotations.lastModified
   + tool.audioContent
   + resources
   + resources.listChanged
@@ -375,6 +394,7 @@ expression: snapshot_for(version)
   + mcpProtocolVersionHeader
   + metaExtensions
   + ping
+  - tool.resourceLinks.icons
   - tool.resultType
   - roots
   - roots.listChanged
