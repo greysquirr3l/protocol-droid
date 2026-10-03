@@ -98,13 +98,13 @@ sets `build.warnings = "deny"`.
 
 ## Layout
 
-| Crate                          | What it is                                                                      |
-| ------------------------------ | ------------------------------------------------------------------------------- |
+| Crate                          | What it is                                                                       |
+| ------------------------------ | -------------------------------------------------------------------------------- |
 | `crates/protocol-droid-schema` | Vendored official schemas, the build-time generator, and the wire types it emits |
-| `crates/protocol-droid`        | The library: IR, codecs, session engine, transports                           |
-| `crates/protocol-droid-macros` | Derive macros. Proc-macro crates must be separate                             |
-| `crates/protocol-droid-cli`    | The `protocol-droid` binary                                                   |
-| `xtask`                        | Developer tooling. Not published                                              |
+| `crates/protocol-droid`        | The library: IR, codecs, session engine, transports                              |
+| `crates/protocol-droid-macros` | Derive macros. Proc-macro crates must be separate                                |
+| `crates/protocol-droid-cli`    | The `protocol-droid` binary                                                      |
+| `xtask`                        | Developer tooling. Not published                                                 |
 
 ## The vendored schemas
 
