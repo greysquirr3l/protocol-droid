@@ -31,24 +31,18 @@
 
 use protocol_droid_schema::wire::v2024_11_05 as wire;
 
+use super::{IMAGE_TYPE, META_KEY, RESOURCE_TYPE, TEXT_TYPE};
+
+use crate::domain::ir::Codec;
 use crate::domain::ir::lower::{LowerError, TranslationReport, lower_tool_result};
 use crate::domain::ir::{
     Annotations, Content, EmbeddedResource, ExtensionValue, Extensions, ImageContent, Role,
     TextContent, ToolResult,
 };
-use crate::domain::ir::Codec;
 use crate::domain::{
     CapabilitySet, DegradePolicy, FeatureProfile, Negotiation, ProtocolVersion, TransportKind,
     resolve,
 };
-
-/// The key a block's or result's `_meta` travels under.
-///
-/// The IR has no `meta` field, so it rides in the bag and comes back out on the
-/// way down. `MCP-1338` added `meta` to `CallToolResult`; carrying it in the
-/// extensions is what lets one IR serve the revisions that have it and the ones
-/// that do not.
-const META_KEY: &str = "_meta";
 
 /// The key untyped `annotations` travel under at this revision.
 ///
@@ -70,7 +64,8 @@ const RAW_ANNOTATIONS_KEY: &str = "annotations";
 fn lift_annotations(value: &serde_json::Value) -> Annotations {
     let Some(object) = value.as_object() else {
         return Annotations {
-            extensions: Extensions::empty().with(RAW_ANNOTATIONS_KEY, ExtensionValue::from(value.clone())),
+            extensions: Extensions::empty()
+                .with(RAW_ANNOTATIONS_KEY, ExtensionValue::from(value.clone())),
             ..Annotations::empty()
         };
     };
@@ -80,19 +75,26 @@ fn lift_annotations(value: &serde_json::Value) -> Annotations {
     if let Some(priority) = object.get("priority").and_then(serde_json::Value::as_f64) {
         annotations.priority = Some(priority);
     }
-    if let Some(last_modified) = object.get("lastModified").and_then(serde_json::Value::as_str) {
+    if let Some(last_modified) = object
+        .get("lastModified")
+        .and_then(serde_json::Value::as_str)
+    {
         annotations.last_modified = Some(last_modified.to_owned());
     }
     if let Some(roles) = object.get("audience").and_then(serde_json::Value::as_array) {
-        annotations.audience = roles.iter().filter_map(|role| role.as_str()).filter_map(|role| {
-            if role == Role::User.as_str() {
-                Some(Role::User)
-            } else if role == Role::Assistant.as_str() {
-                Some(Role::Assistant)
-            } else {
-                None
-            }
-        }).collect();
+        annotations.audience = roles
+            .iter()
+            .filter_map(|role| role.as_str())
+            .filter_map(|role| {
+                if role == Role::User.as_str() {
+                    Some(Role::User)
+                } else if role == Role::Assistant.as_str() {
+                    Some(Role::Assistant)
+                } else {
+                    None
+                }
+            })
+            .collect();
     }
 
     for (key, value) in object {
@@ -156,11 +158,6 @@ fn lower_annotations(annotations: Option<&Annotations>) -> Option<serde_json::Va
     Some(serde_json::Value::Object(object))
 }
 
-/// The `type` discriminant every block carries, per the schema.
-const TEXT_TYPE: &str = "text";
-const IMAGE_TYPE: &str = "image";
-const RESOURCE_TYPE: &str = "resource";
-
 /// The `2024-11-05` codec.
 #[derive(Debug, Clone, Copy)]
 pub struct V2024_11_05;
@@ -208,10 +205,7 @@ impl Codec for V2024_11_05 {
         report.absorb(&lowered);
 
         let extra = value.extensions.to_json_object();
-        let meta = value
-            .extensions
-            .get(META_KEY)
-            .map(serde_json::Value::from);
+        let meta = value.extensions.get(META_KEY).map(serde_json::Value::from);
 
         let content = value
             .content
@@ -293,9 +287,7 @@ fn lift_block(block: &wire::CallToolResultContentChoice) -> Content {
 /// it raises no feature requirement, because the IR cannot know which union
 /// member would hold it, so this is the one case that arrives here honestly and
 /// has to be refused on its own account.
-fn lower_block(
-    block: &Content,
-) -> Result<wire::CallToolResultContentChoice, LowerError> {
+fn lower_block(block: &Content) -> Result<wire::CallToolResultContentChoice, LowerError> {
     let lowered = match block {
         Content::Text(text) => wire::CallToolResultContentChoice::Member0(wire::TextContent {
             annotations: lower_annotations(text.annotations.as_ref()),
@@ -374,13 +366,13 @@ mod tests {
     )]
 
     use super::{V2024_11_05, lift_annotations, lower_annotations, wire};
+    use crate::domain::DegradePolicy;
+    use crate::domain::ir::Codec;
     use crate::domain::ir::lower::{TranslationReport, lower_tool_result};
     use crate::domain::ir::{
         Annotations, Content, EmbeddedResource, ExtensionValue, ImageContent, JsonObject, Role,
         TextContent, ToolResult, UnknownContent,
     };
-    use crate::domain::ir::Codec;
-    use crate::domain::DegradePolicy;
 
     /// Lifts, lowers, and returns the message as the peer would receive it.
     ///
@@ -419,7 +411,11 @@ mod tests {
             r#"{"content":[{"type":"resource","resource":{"uri":"file:///a","blob":"AAA"}}]}"#,
             r#"{"content":[],"isError":true}"#,
         ] {
-            assert_eq!(round_trip(json), parsed(json), "did not survive the crossing");
+            assert_eq!(
+                round_trip(json),
+                parsed(json),
+                "did not survive the crossing"
+            );
         }
     }
 
@@ -436,7 +432,10 @@ mod tests {
         let codec = V2024_11_05;
         let wire: wire::CallToolResult = serde_json::from_str(json).expect("parses");
         let ir = codec.lift(&wire);
-        assert!(ir.extensions.contains(crate::adapters::secondary::codec::result::META_KEY));
+        assert!(
+            ir.extensions
+                .contains(crate::adapters::secondary::codec::result::META_KEY)
+        );
 
         let mut report = TranslationReport::new(codec.version());
         let lowered = codec
@@ -534,9 +533,10 @@ mod tests {
     #[test]
     fn audio_is_refused_by_the_gate_before_the_codec_sees_it() {
         let codec = V2024_11_05;
-        let ir = ToolResult::new(vec![Content::Audio(
-            crate::domain::ir::AudioContent::new("AAA", "audio/wav"),
-        )]);
+        let ir = ToolResult::new(vec![Content::Audio(crate::domain::ir::AudioContent::new(
+            "AAA",
+            "audio/wav",
+        ))]);
 
         let mut report = TranslationReport::new(codec.version());
         let error = codec
@@ -544,9 +544,10 @@ mod tests {
             .expect_err("audio needs 2025-03-26");
 
         let gate = lower_tool_result(
-            ToolResult::new(vec![Content::Audio(
-                crate::domain::ir::AudioContent::new("AAA", "audio/wav"),
-            )]),
+            ToolResult::new(vec![Content::Audio(crate::domain::ir::AudioContent::new(
+                "AAA",
+                "audio/wav",
+            ))]),
             &codec.capabilities(),
             codec.version(),
             DegradePolicy::strict(),
