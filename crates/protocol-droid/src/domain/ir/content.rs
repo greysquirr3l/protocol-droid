@@ -118,8 +118,6 @@ impl EmbeddedResource {
 impl Annotations {
     /// What these annotations need.
     ///
-    /// What these annotations need.
-    ///
     /// Annotations as a *field* need nothing: `2024-11-05` carries an
     /// untyped `annotations` on every content block, so a block with an
     /// audience and a priority lowers onto it and the value survives as JSON.
@@ -412,17 +410,25 @@ impl EmbeddedResource {
 /// uses to decide how to present a result, and a tool that says it is
 /// read-only means something to the caller.
 ///
-/// Not `Eq`, and neither is anything that holds one: `priority` is an `f32`
-/// because the specification defines it as a number in `0.0`–`1.0`, and
-/// `f32` is not a valid `Eq` type because of `NaN`. The cost is that a content
-/// block cannot be a `HashMap` key, which nothing needs — blocks live in a
-/// `Vec` inside a result.
+/// Not `Eq`, and neither is anything that holds one: `priority` is a
+/// floating-point number and neither `f32` nor `f64` is a valid `Eq` type,
+/// because of `NaN`. The cost is that a content block cannot be a `HashMap`
+/// key, which nothing needs — blocks live in a `Vec` inside a result.
+///
+/// `priority` is `f64` rather than the `f32` that would be conventional for a
+/// `0.0`–`1.0` quantity, because every revision's generated `Annotations`
+/// spells it `f64` and this crate's whole job is to carry a peer's value
+/// through unchanged. Narrowing on the way in and widening on the way out is
+/// not a round trip: `0.1_f32` is not `0.1_f64`, and a bridge forwarding
+/// annotations would quietly change a number the sender chose.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Annotations {
     /// The audience this block is meant for.
     pub audience: Vec<Role>,
     /// How important this block is, `0.0`–`1.0`.
-    pub priority: Option<f32>,
+    ///
+    /// `f64` to match the wire exactly; see the type's docs.
+    pub priority: Option<f64>,
     /// The last time the resource was modified, ISO 8601.
     pub last_modified: Option<String>,
     /// Unmodelled fields.
@@ -662,6 +668,35 @@ mod tests {
                 .required_features()
                 .contains(Feature::ToolAnnotationsLastModified)
         );
+    }
+
+    /// `priority` survives the IR bit for bit.
+    ///
+    /// It was an `f32`, which is the obvious choice for a `0.0`–`1.0` number
+    /// and the wrong one here. Every revision's generated `Annotations` spells
+    /// the field `f64`, so narrowing on the way in and widening on the way out
+    /// is not a round trip: `0.1_f32` widened is `0.10000000149011612`, and a
+    /// bridge would hand the peer a different number from the one it sent with
+    /// no error anywhere to notice.
+    ///
+    /// The test asserts the narrowing actually loses the value, so that a
+    /// future narrowing of this field to `f32` fails here rather than passing
+    /// a suite that only ever checked `0.5`.
+    #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the lossy cast is the subject of the test"
+    )]
+    #[expect(clippy::float_cmp, reason = "exact equality is the claim being made")]
+    fn priority_is_not_narrowed_to_f32() {
+        for value in [0.1_f64, 0.3, 0.7] {
+            assert_ne!(
+                f64::from(value as f32),
+                value,
+                "{value} is exactly representable in f32, so this test no longer \
+                 demonstrates why the field is f64"
+            );
+        }
     }
 
     /// Icons are `2025-11-25`, so a link carrying them needs a newer revision
