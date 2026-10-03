@@ -38,11 +38,13 @@
 //! ```
 //!
 //! Each file holds one concern, and the dependency direction is downward:
-//! `content`, `tool` and `lower` use `features`, `json` and `extensions`, and
-//! nothing uses `content`. `message` sits above the rest and is the only place
-//! they are assembled. `lower` is public because the codec layer implements its
-//! `Lowering` trait and a bridge reads its reports.
+//! `content`, `tool`, `codec` and `lower` use `features`, `json` and
+//! `extensions`, and nothing uses `content`. `message` sits above the rest
+//! and is the only place they are assembled. `codec` and `lower` are public
+//! because the adapter layer implements their traits and a bridge reads the
+//! reports those traits produce.
 
+mod codec;
 mod content;
 mod extensions;
 mod features;
@@ -51,6 +53,7 @@ pub mod lower;
 mod message;
 mod tool;
 
+pub use codec::Codec;
 pub use content::{
     Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceLinkContent, Role,
     TextContent, UnknownContent, UnknownRole,
