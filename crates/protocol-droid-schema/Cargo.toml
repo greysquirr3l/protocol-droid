@@ -36,5 +36,11 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
 
+[dev-dependencies]
+# The property suite generates values from the vendored schema, checks them with
+# `jsonschema`, then round-trips them through the generated types.
+proptest = { workspace = true }
+jsonschema = { workspace = true }
+
 [lints]
 workspace = true

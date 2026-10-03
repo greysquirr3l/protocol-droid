@@ -55,6 +55,16 @@ protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.1.
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+# Property-based testing for the generated wire types. `fork` and `timeout` are
+# off: they exist to persist a failing case across runs via a temp directory,
+# which this suite does not want — a regression is caught in CI on every run,
+# and the extra `tempfile`/`rusty-fork` subtree is not worth carrying.
+proptest = { version = "1.11.0", default-features = false, features = ["std", "bit-set"] }
+# Validates generated values against the vendored schema.json. Default features
+# are off because they pull `reqwest` and a TLS stack for remote `$ref`
+# resolution; every reference in these schemas is local (`#/definitions/...`).
+jsonschema = { version = "0.58.5", default-features = false }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 # Provenance manifest parsing and content digests for the vendored spec files.

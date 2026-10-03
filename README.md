@@ -27,9 +27,58 @@ Three ideas set it apart:
 
 ## Status
 
-Phases 1–2 are in progress. The specification schemas for every revision are
-vendored and provenance-verified; the code generator, feature matrix, codecs,
-and transports follow.
+Phases 1–3 are in progress. The specification schemas for every revision are
+vendored and provenance-verified, and the per-revision wire types are generated
+from them at build time — `protocol_droid_schema::wire::v2024_11_05` through
+`wire::draft` all compile together, with no version selection at build time.
+The feature matrix, version codecs, and transports follow.
+
+## The generated wire types
+
+`protocol-droid-schema` turns each vendored `schema.json` into serde types
+during `build.rs`, and `src/wire.rs` re-exports the result as one module per
+revision:
+
+```rust
+use protocol_droid_schema::wire::{v2024_11_05, v2026_07_28};
+
+// The same name, two revisions, two different shapes — both live in one build.
+let old: v2024_11_05::CallToolResult =
+    serde_json::from_str(r#"{"content": [], "isError": true}"#)?;
+let new: v2026_07_28::CallToolResult =
+    serde_json::from_str(r#"{"content": [], "resultType": "complete"}"#)?;
+
+assert_eq!(old.is_error, Some(true));
+assert!(!old.extra.contains_key("resultType"));   // 2024-11-05 has no such member
+```
+
+`resultType` is required in `2026-07-28` and does not exist at all in
+`2024-11-05`, and `content` is a different Rust type in each. That is the whole
+point: the revisions coexist as distinct types, and deciding which one a message
+belongs to is a runtime question answered by negotiation, not a compile-time one
+answered by a cargo feature.
+
+Three properties of the generated code are load-bearing, and each has a test:
+
+- **Members the type does not name are preserved.** Every object type carries a
+  `#[serde(flatten)] extra: Map<String, Value>`, so a field the peer sent that
+  this revision does not define survives a decode/encode cycle — including a
+  `resultType` from a newer server arriving at a `2024-11-05` client. That is
+  what makes the version-translating bridge lossless rather than
+  lossy-but-tidy.
+- **Absence is absence, not `null`.** An optional member is
+  `Option<T>` with `skip_serializing_if = "Option::is_none"`, so a decode/encode
+  cycle does not invent members the peer never sent.
+- **A value that round-trips still satisfies the schema.** The property suite
+  generates arbitrary values that validate against the vendored `schema.json`,
+  decodes them into the generated type, and asserts the re-encoded value is
+  byte-identical to the original and validates again. Dropping either serde
+  attribute above makes it fail.
+
+The generator lives in `crates/protocol-droid-schema/src/generator/`. Nothing is
+checked in: `build.rs` verifies the vendored SHA-256 digests first and only then
+regenerates, so drift from the vendored bytes is a build failure rather than a
+diff someone has to notice.
 
 ## Toolchain
 
@@ -49,9 +98,9 @@ sets `build.warnings = "deny"`.
 
 ## Layout
 
-| Crate                          | What it is                                                                    |
-| ------------------------------ | ----------------------------------------------------------------------------- |
-| `crates/protocol-droid-schema` | Vendored official schemas, the provenance manifest, and the verification gate |
+| Crate                          | What it is                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| `crates/protocol-droid-schema` | Vendored official schemas, the build-time generator, and the wire types it emits |
 | `crates/protocol-droid`        | The library: IR, codecs, session engine, transports                           |
 | `crates/protocol-droid-macros` | Derive macros. Proc-macro crates must be separate                             |
 | `crates/protocol-droid-cli`    | The `protocol-droid` binary                                                   |
