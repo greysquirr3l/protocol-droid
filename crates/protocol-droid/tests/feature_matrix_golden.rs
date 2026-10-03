@@ -110,7 +110,9 @@ fn the_feature_matrix_matches_its_golden_snapshots() {
 /// the rendered text.
 #[test]
 fn the_rendering_reflects_the_profile() {
-    let profile = FeatureProfile::empty().with(Feature::Tools).with(Feature::Prompts);
+    let profile = FeatureProfile::empty()
+        .with(Feature::Tools)
+        .with(Feature::Prompts);
     let text = render("probe", profile);
     assert!(text.starts_with("probe: 2 feature(s)"), "{text}");
     assert!(text.contains("  + tools\n"), "{text}");
