@@ -21,5 +21,14 @@ protocol-droid-schema = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+# The golden feature profiles are snapshots a human reviews, so a matrix change
+# shows up as a diff to read rather than as a failure to debug.
+insta = { workspace = true }
+# The capability table is checked against the vendored `schema.json` files, so
+# the domain's model is verified against the bytes it describes rather than
+# against a second copy of the same assumptions.
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

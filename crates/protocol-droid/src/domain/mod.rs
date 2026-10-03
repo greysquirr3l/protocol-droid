@@ -7,11 +7,17 @@
 //! Populated by T04 (protocol version value objects) and T05-T08 (feature
 //! profile, negotiation, canonical IR, per-revision codecs).
 
+mod capability;
+mod feature;
 mod protocol_version;
 mod release_date;
 mod supported_versions;
 mod transport;
 
+pub use capability::{CAPABILITY_TABLE, Capability, CapabilitySet, Side, defined_in};
+pub use feature::{
+    DegradePolicy, FEATURES, Feature, FeatureProfile, FeatureSpec, Negotiation, resolve,
+};
 pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVersionError};
 pub use release_date::{ParseReleaseDateError, ReleaseDate};
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};

@@ -65,6 +65,11 @@ proptest = { version = "1.11.0", default-features = false, features = ["std", "b
 # are off because they pull `reqwest` and a TLS stack for remote `$ref`
 # resolution; every reference in these schemas is local (`#/definitions/...`).
 jsonschema = { version = "0.58.5", default-features = false }
+# Snapshot testing for the feature matrix. Default features are off: they pull
+# `pest`, `regex`, `ron`, `yaml` and `toml` for formats this suite does not
+# snapshot, and the dependency is only here to hold the golden feature profiles
+# for a human to review.
+insta = { version = "1.43.0", default-features = false }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 # Provenance manifest parsing and content digests for the vendored spec files.
