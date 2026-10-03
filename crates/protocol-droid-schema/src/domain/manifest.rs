@@ -34,17 +34,11 @@ pub fn hex_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(HEX_DIGITS[(byte >> 4) as usize]);
-        out.push(HEX_DIGITS[(byte & 0x0f) as usize]);
-    }
-    out
+    // `LowerHex` on a SHA-256 output already emits lowercase hex, one byte as
+    // two digits, which is exactly the manifest's format. Formatting the whole
+    // digest at once avoids a per-nibble lookup table indexed by a masked byte.
+    format!("{digest:x}")
 }
-
-const HEX_DIGITS: [char; 16] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-];
 
 /// A vendored MCP specification revision, as declared in `spec/MANIFEST.toml`.
 ///
@@ -55,13 +49,19 @@ const HEX_DIGITS: [char; 16] = [
 /// let spec = RevisionSpec {
 ///     tag: "2025-06-18".to_owned(),
 ///     commit: "f5ccad944fdf2b7d9cc70cf817f66ca5a8aa03a4".to_owned(),
+///     schema_prefix: "schema/2025-06-18".to_owned(),
 ///     changelog: Some("docs/specification/2025-06-18/changelog.mdx".to_owned()),
 ///     changelog_is_placeholder: false,
 ///     floating: false,
+///     branch: None,
 ///     files: BTreeMap::new(),
 /// };
 /// assert!(!spec.is_floating());
 /// assert!(!spec.changelog_is_authored());
+/// assert_eq!(
+///     spec.upstream_path("schema.json").expect("a schema always has a path"),
+///     "schema/2025-06-18/schema.json"
+/// );
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +71,13 @@ pub struct RevisionSpec {
     pub tag: String,
     /// Full commit SHA the files were fetched from. Never a branch name.
     pub commit: String,
+    /// Upstream directory holding `schema.json` and `schema.ts`, relative to
+    /// the repository root. Recorded rather than derived because upstream is
+    /// not consistent: 2024-11-05 keeps them at `schema/`, every later revision
+    /// at `schema/<version>/`, and draft at `schema/draft/`. Hardcoding that
+    /// in the refresh tool would put a per-revision special case in the one
+    /// place that cannot afford one.
+    pub schema_prefix: String,
     /// Upstream path of the changelog. `None` when the changelog is authored
     /// rather than vendored (see [`RevisionSpec::is_digest_locked`]).
     #[serde(default)]
@@ -84,6 +91,12 @@ pub struct RevisionSpec {
     /// True for a revision with no upstream tag, currently only `draft`.
     #[serde(default)]
     pub floating: bool,
+    /// Upstream branch a floating revision tracks. Meaningless for a tagged
+    /// revision, and required for a floating one: a refresh must resolve this
+    /// branch to a commit, because "whatever main points at right now" is not
+    /// a reproducible pin.
+    #[serde(default)]
+    pub branch: Option<String>,
     /// File name to SHA-256, lowercase hex. A file absent from this map is not
     /// digest-locked and is not verified.
     #[serde(default)]
@@ -91,9 +104,56 @@ pub struct RevisionSpec {
 }
 
 impl RevisionSpec {
+    /// The two files every revision vendors, in a stable order.
+    pub const SCHEMA_FILES: [&'static str; 2] = ["schema.json", "schema.ts"];
+
+    /// Upstream path of a file within this revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ManifestError::UnaccountedFile`] when `file` is neither one
+    /// of the two schema representations nor the changelog, because there is
+    /// then no upstream path to derive.
+    pub fn upstream_path(&self, file: &str) -> Result<String, ManifestError> {
+        if Self::SCHEMA_FILES.contains(&file) {
+            return Ok(format!("{}/{file}", self.schema_prefix));
+        }
+        match (&self.changelog, file) {
+            (Some(changelog), "CHANGELOG.md") => Ok(changelog.clone()),
+            _ => Err(ManifestError::UnaccountedFile {
+                revision: self.tag.clone(),
+                file: file.to_owned(),
+            }),
+        }
+    }
+
+    /// The branch a floating revision tracks, or `None` for a tagged one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestError::MalformedCommit`] when a floating revision
+    /// records no branch, since a refresh would then have nothing to resolve.
+    ///
+    /// Not a `const fn`: `Option::as_deref` and `ok_or_else` are not
+    /// const-stable on this toolchain, so `missing_const_for_fn` cannot be
+    /// satisfied here and must not be silenced.
+    pub fn floating_branch(&self) -> Result<&str, ManifestError> {
+        if !self.is_floating() {
+            return Ok("");
+        }
+        self.branch
+            .as_deref()
+            .ok_or_else(|| ManifestError::MalformedCommit {
+                revision: self.tag.clone(),
+                commit: "<no branch recorded>".to_owned(),
+            })
+    }
+}
+
+impl RevisionSpec {
     /// A revision is floating when upstream publishes no tag for it.
     #[must_use]
-    pub fn is_floating(&self) -> bool {
+    pub const fn is_floating(&self) -> bool {
         self.floating || self.tag.is_empty()
     }
 
@@ -103,7 +163,7 @@ impl RevisionSpec {
     /// digest for it. That is the only supported reason for a revision to carry
     /// a `CHANGELOG.md` with no entry in [`RevisionSpec::files`].
     #[must_use]
-    pub fn changelog_is_authored(&self) -> bool {
+    pub const fn changelog_is_authored(&self) -> bool {
         self.changelog.is_none()
     }
 }
@@ -131,7 +191,11 @@ pub struct ManifestMeta {
 pub struct Manifest {
     /// Provenance metadata common to every revision.
     pub meta: ManifestMeta,
-    /// Per-revision entries, keyed by revision name.
+    /// Per-revision entries, keyed by revision name. Defaults to empty so that
+    /// a manifest with no `[revisions]` table parses and is rejected by
+    /// [`Manifest::parse`] with [`ManifestError::NoRevisions`], which is a far
+    /// more useful diagnostic than a serde "missing field" error.
+    #[serde(default)]
     pub revisions: BTreeMap<String, RevisionSpec>,
 }
 
@@ -394,17 +458,54 @@ impl Manifest {
 
 #[cfg(test)]
 mod tests {
+    // Test code unwraps deliberately. The strict `unwrap_used`/`expect_used`
+    // profile exists to keep *production* paths fallible; a test that cannot
+    // unwrap cannot assert anything, and a failure message is strictly more
+    // useful than a propagated error. `expect` here still names the failing
+    // precondition, which is the part that matters when a test breaks.
+    #![expect(
+        clippy::expect_used,
+        reason = "tests assert on fallible calls; propagating errors would replace a clear failure message with noise"
+    )]
+
     use super::{Manifest, ManifestError, RevisionSpec, SUPPORTED_SCHEMA_VERSION, hex_digest};
 
-    /// A manifest with one tagged revision whose files digest to these values.
+    /// A manifest for one tagged, fully vendored revision (schema.json and a
+    /// changelog, both digest-locked). The `changelog` key is what distinguishes
+    /// a vendored changelog from an authored one; omitting it would make every
+    /// test below expect a digest-free `CHANGELOG.md` on disk instead.
     fn sample_manifest(files: &str) -> String {
         format!(
             "[meta]\nschema_version = {SUPPORTED_SCHEMA_VERSION}\n\
              repository = \"owner/name\"\nraw_base = \"https://example.invalid\"\n\
              \n[revisions.2025-06-18]\ntag = \"2025-06-18\"\n\
              commit = \"0000000000000000000000000000000000000000\"\n\
+             schema_prefix = \"schema/2025-06-18\"\n\
+             changelog = \"docs/specification/2025-06-18/changelog.mdx\"\n\
              {files}"
         )
+    }
+
+    /// A fully vendored revision whose `schema.json` and `CHANGELOG.md` both
+    /// digest-lock to the given bodies, plus the matching on-disk contents.
+    ///
+    /// The bodies are returned as `String` so a test can tamper with a copy
+    /// before verifying, which is how the mismatch case is produced.
+    fn vendored_pair(
+        schema_body: &str,
+        changelog_body: &str,
+    ) -> (String, Vec<(&'static str, String)>) {
+        let source = sample_manifest(&format!(
+            "\n[revisions.2025-06-18.files]\n\
+             \"schema.json\" = \"{}\"\n\"CHANGELOG.md\" = \"{}\"\n",
+            hex_digest(schema_body.as_bytes()),
+            hex_digest(changelog_body.as_bytes()),
+        ));
+        let content = vec![
+            ("2025-06-18/schema.json", schema_body.to_owned()),
+            ("2025-06-18/CHANGELOG.md", changelog_body.to_owned()),
+        ];
+        (source, content)
     }
 
     const ZERO: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -481,9 +582,8 @@ mod tests {
 
     #[test]
     fn a_digest_that_is_not_64_hex_characters_is_refused() {
-        let source = sample_manifest(&format!(
-            "\n[revisions.2025-06-18.files]\n\"schema.json\" = \"abc123\"\n"
-        ));
+        let source =
+            sample_manifest("\n[revisions.2025-06-18.files]\n\"schema.json\" = \"abc123\"\n");
         let error = Manifest::parse(&source).expect_err("short digest must be refused");
         assert!(matches!(error, ManifestError::MalformedDigest { .. }));
     }
@@ -504,22 +604,29 @@ mod tests {
     }
 
     /// Verify against in-memory content, so the pure check needs no filesystem.
-    fn verify_against(source: &str, content: &[(&str, &str)]) -> Result<(), ManifestError> {
+    ///
+    /// `N` and `B` are separate because the on-disk listing is a path while the
+    /// content is usually an owned `String` that a test wants to tamper with.
+    fn verify_against<N: AsRef<str>, B: AsRef<str>>(
+        source: &str,
+        content: &[(N, B)],
+    ) -> Result<(), ManifestError> {
         let manifest = Manifest::parse(source).expect("manifest must parse");
         manifest.verify(
             |revision, file| {
                 let key = format!("{revision}/{file}");
                 content
                     .iter()
-                    .find(|(name, _)| *name == key)
-                    .map(|(_, bytes)| hex_digest(bytes.as_bytes()))
+                    .find(|(name, _)| name.as_ref() == key)
+                    .map(|(_, bytes)| hex_digest(bytes.as_ref().as_bytes()))
                     .ok_or_else(|| format!("no such file {key}"))
             },
             |revision| {
+                let prefix = format!("{revision}/");
                 content
                     .iter()
-                    .filter(|(name, _)| name.starts_with(&format!("{revision}/")))
-                    .map(|(name, _)| name.split('/').nth(1).unwrap_or_default().to_owned())
+                    .filter(|(name, _)| name.as_ref().starts_with(&prefix))
+                    .filter_map(|(name, _)| name.as_ref().strip_prefix(&prefix).map(str::to_owned))
                     .collect()
             },
         )
@@ -527,26 +634,24 @@ mod tests {
 
     #[test]
     fn matching_digests_verify() {
-        let source = sample_manifest(&format!(
-            "\n[revisions.2025-06-18.files]\n\"schema.json\" = \"{}\"\n",
-            hex_digest(b"{}")
-        ));
-        let result = verify_against(&source, &[("2025-06-18/schema.json", "{}")]);
+        let (source, content) = vendored_pair("{}", "# changelog");
+        let result = verify_against(&source, &content);
         assert!(result.is_ok(), "expected ok, got {result:?}");
     }
 
     #[test]
     fn a_changed_file_is_a_digest_mismatch() {
-        let source = sample_manifest(&format!(
-            "\n[revisions.2025-06-18.files]\n\"schema.json\" = \"{}\"\n",
-            hex_digest(b"{}")
-        ));
-        let error = verify_against(
-            &source,
-            &[("2025-06-18/schema.json", r#"{"tampered":true}"#)],
-        )
-        .expect_err("tampering must be detected");
-        assert!(matches!(error, ManifestError::DigestMismatch { .. }));
+        let (source, mut content) = vendored_pair("{}", "# changelog");
+        // Tamper with the body after the manifest has locked its digest.
+        let (_, schema_body) = content
+            .get_mut(0)
+            .expect("vendored_pair always yields schema.json first");
+        *schema_body = r#"{"tampered":true}"#.to_owned();
+        let error = verify_against(&source, &content).expect_err("tampering must be detected");
+        assert!(
+            matches!(error, ManifestError::DigestMismatch { .. }),
+            "unexpected error: {error}"
+        );
         // The message must name the command that fixes it.
         let rendered = error.to_string();
         assert!(
@@ -557,42 +662,53 @@ mod tests {
 
     #[test]
     fn an_unreadable_file_is_reported_as_unreadable() {
-        let source = sample_manifest(&format!(
-            "\n[revisions.2025-06-18.files]\n\"schema.json\" = \"{ZERO}\"\n"
-        ));
-        let error = verify_against(&source, &[]).expect_err("a missing file must be reported");
-        assert!(matches!(error, ManifestError::Unreadable { .. }));
+        let (source, _content) = vendored_pair("{}", "# changelog");
+        // Nothing on disk at all, so the digest source cannot produce a digest.
+        let nothing: &[(&str, &str)] = &[];
+        let error = verify_against(&source, nothing).expect_err("a missing file must be reported");
+        assert!(
+            matches!(error, ManifestError::Unreadable { .. }),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn a_file_on_disk_that_nothing_accounts_for_is_refused() {
-        let source = sample_manifest(&format!(
-            "\n[revisions.2025-06-18.files]\n\"schema.json\" = \"{}\"\n",
-            hex_digest(b"{}")
-        ));
-        let error = verify_against(
-            &source,
-            &[
-                ("2025-06-18/schema.json", "{}"),
-                ("2025-06-18/schema-extra.json", "{}"),
-            ],
-        )
-        .expect_err("an unrecorded file must be refused");
-        assert!(matches!(error, ManifestError::UnaccountedFile { .. }));
+        let (source, mut content) = vendored_pair("{}", "# changelog");
+        // A file that is present, hashes fine, but nothing in the manifest
+        // records. It would otherwise be verified by nothing at all.
+        content.push(("2025-06-18/schema-extra.json", "{}".to_owned()));
+        let error = verify_against(&source, &content).expect_err("an unrecorded file must fail");
+        assert!(
+            matches!(error, ManifestError::UnaccountedFile { .. }),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn a_recorded_file_missing_from_disk_is_refused() {
-        let source = sample_manifest(&format!(
-            "\n[revisions.2025-06-18.files]\n\"schema.json\" = \"{}\"\n",
-            hex_digest(b"{}")
-        ));
-        // The digest closure would succeed, but the directory listing is empty.
+        let (source, content) = vendored_pair("{}", "# changelog");
+        // Digests all resolve correctly, but the directory listing is empty, so
+        // this exercises the other direction of the reconciliation: the manifest
+        // records files the tree does not contain.
         let manifest = Manifest::parse(&source).expect("manifest must parse");
         let error = manifest
-            .verify(|_, _| Ok(ZERO.to_owned()), |_| Vec::new())
+            .verify(
+                |revision, file| {
+                    let key = format!("{revision}/{file}");
+                    content
+                        .iter()
+                        .find(|(name, _)| *name == key)
+                        .map(|(_, bytes)| hex_digest(bytes.as_bytes()))
+                        .ok_or_else(|| format!("no such file {key}"))
+                },
+                |_| Vec::new(),
+            )
             .expect_err("a missing recorded file must be refused");
-        assert!(matches!(error, ManifestError::MissingFile { .. }));
+        assert!(
+            matches!(error, ManifestError::MissingFile { .. }),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -605,6 +721,7 @@ mod tests {
              repository = \"owner/name\"\nraw_base = \"https://example.invalid\"\n\
              \n[revisions.2024-11-05]\ntag = \"2024-11-05\"\n\
              commit = \"0000000000000000000000000000000000000000\"\n\
+             schema_prefix = \"schema\"\n\
              \n[revisions.2024-11-05.files]\n\"schema.json\" = \"{}\"\n",
             hex_digest(b"{}")
         );
@@ -627,6 +744,7 @@ mod tests {
              repository = \"owner/name\"\nraw_base = \"https://example.invalid\"\n\
              \n[revisions.2025-06-18]\ntag = \"2025-06-18\"\n\
              commit = \"0000000000000000000000000000000000000000\"\n\
+             schema_prefix = \"schema/2025-06-18\"\n\
              changelog = \"docs/specification/2025-06-18/changelog.mdx\"\n\
              \n[revisions.2025-06-18.files]\n\"schema.json\" = \"{}\"\n",
             hex_digest(b"{}")
@@ -650,13 +768,21 @@ mod tests {
             changelog: Some("docs/specification/draft/changelog.mdx".to_owned()),
             changelog_is_placeholder: true,
             floating: true,
+            branch: None,
+            schema_prefix: "schema/draft".to_owned(),
             files: std::collections::BTreeMap::new(),
         };
         assert!(draft.is_floating());
         assert!(!draft.changelog_is_authored());
 
+        // `..draft` alone is not enough: it would carry `floating: true` across
+        // and a tagged revision would still report as floating. The flag and the
+        // tag are independent inputs, which is why build.rs also asserts the two
+        // agree rather than trusting either one.
         let tagged = RevisionSpec {
             tag: "2026-07-28".to_owned(),
+            floating: false,
+            branch: None,
             ..draft
         };
         assert!(!tagged.is_floating());
@@ -670,9 +796,85 @@ mod tests {
             changelog: None,
             changelog_is_placeholder: false,
             floating: false,
+            branch: None,
+            schema_prefix: "schema".to_owned(),
             files: std::collections::BTreeMap::new(),
         };
         assert!(authored.changelog_is_authored());
+    }
+
+    /// 2024-11-05 predates the per-version schema layout, so its files sit
+    /// directly under `schema/`. Every later revision uses `schema/<version>/`.
+    /// Both must resolve, and neither may guess.
+    #[test]
+    fn upstream_paths_follow_the_recorded_schema_prefix() {
+        let first = RevisionSpec {
+            tag: "2024-11-05".to_owned(),
+            commit: "0".repeat(40),
+            changelog: None,
+            changelog_is_placeholder: false,
+            floating: false,
+            branch: None,
+            schema_prefix: "schema".to_owned(),
+            files: std::collections::BTreeMap::new(),
+        };
+        assert_eq!(
+            first.upstream_path("schema.json").expect("path"),
+            "schema/schema.json"
+        );
+        assert_eq!(
+            first.upstream_path("schema.ts").expect("path"),
+            "schema/schema.ts"
+        );
+
+        let later = RevisionSpec {
+            tag: "2025-06-18".to_owned(),
+            schema_prefix: "schema/2025-06-18".to_owned(),
+            changelog: Some("docs/specification/2025-06-18/changelog.mdx".to_owned()),
+            ..first
+        };
+        assert_eq!(
+            later.upstream_path("schema.json").expect("path"),
+            "schema/2025-06-18/schema.json"
+        );
+        // The changelog is fetched from its own recorded path, not from the
+        // schema prefix.
+        assert_eq!(
+            later.upstream_path("CHANGELOG.md").expect("path"),
+            "docs/specification/2025-06-18/changelog.mdx"
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_upstream_path_is_reported() {
+        let spec = RevisionSpec {
+            tag: "2024-11-05".to_owned(),
+            commit: "0".repeat(40),
+            changelog: None,
+            changelog_is_placeholder: false,
+            floating: false,
+            branch: None,
+            schema_prefix: "schema".to_owned(),
+            files: std::collections::BTreeMap::new(),
+        };
+        // An authored changelog has no upstream path, and a file that is not a
+        // schema representation has none either.
+        assert!(spec.upstream_path("CHANGELOG.md").is_err());
+        assert!(spec.upstream_path("schema-extra.json").is_err());
+    }
+
+    #[test]
+    fn the_shipped_manifest_derives_a_path_for_every_vendored_file() {
+        let source = include_str!("../../spec/MANIFEST.toml");
+        let manifest = Manifest::parse(source).expect("the shipped manifest must parse");
+        for (name, spec) in &manifest.revisions {
+            for file in spec.files.keys() {
+                assert!(
+                    spec.upstream_path(file).is_ok(),
+                    "{name}/{file} has no derivable upstream path"
+                );
+            }
+        }
     }
 
     #[test]
@@ -682,7 +884,9 @@ mod tests {
              repository = \"owner/name\"\nraw_base = \"https://example.invalid\"\n\
              \n[meta.excluded_tags]\n\"2024-10-07\" = \"Superseded.\"\n\
              \n[revisions.2025-06-18]\ntag = \"2025-06-18\"\n\
-             commit = \"0000000000000000000000000000000000000000\"\n"
+             commit = \"0000000000000000000000000000000000000000\"\n\
+             schema_prefix = \"schema/2025-06-18\"\n\
+             changelog = \"docs/specification/2025-06-18/changelog.mdx\"\n"
         );
         let manifest = Manifest::parse(&source).expect("manifest must parse");
         assert_eq!(

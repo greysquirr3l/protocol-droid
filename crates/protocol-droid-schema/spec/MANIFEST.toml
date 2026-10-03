@@ -29,6 +29,7 @@ raw_base = "https://raw.githubusercontent.com/modelcontextprotocol/specification
 [revisions.2024-11-05]
 tag = "2024-11-05"
 commit = "0d63bea927001bedf3be3e59be735c979ba0aacb"
+schema_prefix = "schema"
 # No `changelog` key. Upstream ships no changelog for this revision, so the
 # vendored CHANGELOG.md is hand-written. An absent key is what marks a changelog
 # as authored: the verifier then expects the file on disk but holds no digest
@@ -48,6 +49,7 @@ commit = "0d63bea927001bedf3be3e59be735c979ba0aacb"
 [revisions.2025-03-26]
 tag = "2025-03-26"
 commit = "9236eb1cbfa02c17ab45c83a7bdbe55c450070be"
+schema_prefix = "schema/2025-03-26"
 changelog = "docs/specification/2025-03-26/changelog.md"
 
 [revisions.2025-03-26.files]
@@ -60,6 +62,7 @@ changelog = "docs/specification/2025-03-26/changelog.md"
 [revisions.2025-06-18]
 tag = "2025-06-18"
 commit = "f5ccad944fdf2b7d9cc70cf817f66ca5a8aa03a4"
+schema_prefix = "schema/2025-06-18"
 changelog = "docs/specification/2025-06-18/changelog.mdx"
 
 [revisions.2025-06-18.files]
@@ -72,6 +75,7 @@ changelog = "docs/specification/2025-06-18/changelog.mdx"
 [revisions.2025-11-25]
 tag = "2025-11-25"
 commit = "38c84e9f93ad191d9eb26d92b945d17bd0efcaf3"
+schema_prefix = "schema/2025-11-25"
 changelog = "docs/specification/2025-11-25/changelog.mdx"
 
 [revisions.2025-11-25.files]
@@ -84,6 +88,7 @@ changelog = "docs/specification/2025-11-25/changelog.mdx"
 [revisions.2026-07-28]
 tag = "2026-07-28"
 commit = "5f5440bb26a62e2cf3440b92da5a667efa03b267"
+schema_prefix = "schema/2026-07-28"
 changelog = "docs/specification/2026-07-28/changelog.mdx"
 
 [revisions.2026-07-28.files]
@@ -99,6 +104,11 @@ changelog = "docs/specification/2026-07-28/changelog.mdx"
 [revisions.draft]
 tag = ""
 commit = "db788e34ffc0c7253f099f647a5e25e0396fadfe"
+schema_prefix = "schema/draft"
+# A floating revision has no tag, so a refresh resolves this branch to a commit
+# and pins the result. "Whatever main pointed at when we last looked" is not a
+# reproducible pin; a commit is.
+branch = "main"
 changelog = "docs/specification/draft/changelog.mdx"
 floating = true
 # Upstream's draft changelog is a placeholder ("Changes since the most recent

@@ -45,9 +45,28 @@ version = 2
 # something a pre-loaded allow-list waves through.
 #
 # Currently matched by the graph as `(MIT OR Apache-2.0) AND Unicode-3.0`,
-# `MIT`, `MIT OR Apache-2.0`, and `Unlicense OR MIT`.
+# `MIT`, `MIT OR Apache-2.0`, and `Unlicense OR MIT`, plus the TLS stack below.
+#
+# `ISC` and `BSD-3-Clause` come from the HTTPS client `cargo xtask refresh-spec`
+# needs, via rustls: `ring` is `Apache-2.0 AND ISC`, `rustls-webpki` is `ISC`,
+# and `subtle` is `BSD-3-Clause`. All three are permissive, OSI-approved, and
+# the licences the rustls ecosystem has standardised on. They are not on this
+# list for `ring`'s own sake: refusing them would mean not fetching spec
+# revisions over TLS at all, which is a worse trade than accepting two more
+# well-known permissive licences in a build-time-only dependency.
+# `CDLA-Permissive-2.0` is the one entry on this list that is not a software
+# licence, and it is here deliberately: it covers `webpki-roots`, a data package
+# that is a compiled bundle of public CA root certificates, reached only through
+# the build-time-only `xtask` binary. That binary is `publish = false` and is
+# never linked into the published `protocol-droid` library or CLI, and the
+# licence is a permissive data licence with no copyleft obligation we could
+# trigger. It exists to keep a published binary free of a weak-copyleft
+# dependency; if this tool ever shipped inside one, revisit this line.
 allow = [
     "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
     "MIT",
     "Unicode-3.0",
     "Unlicense",
@@ -66,7 +85,14 @@ multiple-versions = "deny"
 # A wildcard dependency is a version that changes without a commit.
 wildcards = "deny"
 deny = []
-skip = []
+# `toml` 0.9 depends on `winnow` 0.7 for one code path and on `toml_parser`,
+# which depends on `winnow` 1.0, for the other. Both majors are in the same
+# upstream crate and `toml` controls the pairing, so the conflict is not
+# resolvable from here. One duplicate of a parser library is a fair price for
+# a manifest format we parse at build time and in a developer tool.
+skip = [
+    { crate = "winnow", versions = ["0.7", "1.0"], reason = "`toml` 0.9 pairs winnow 0.7 and winnow 1.0 (via toml_parser) inside one upstream crate; not resolvable from here" },
+]
 skip-tree = []
 
 [sources]

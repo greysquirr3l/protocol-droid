@@ -16,6 +16,9 @@ members = [
     "crates/protocol-droid-macros",
     # The `protocol-droid` binary. Consumes the library, never the reverse.
     "crates/protocol-droid-cli",
+    # Developer tooling, not published. See xtask/Cargo.toml for the
+    # crate-count justification AGENTS.md requires.
+    "xtask",
 ]
 
 [workspace.package]
@@ -59,6 +62,9 @@ anyhow = "1.0.104"
 # domain module so downstream refresh tooling can read a manifest back.
 toml = "0.9.8"
 sha2 = "0.10.9"
+# HTTP client for `cargo xtask refresh-spec`. MSRV 1.85 via `cargo info`, below
+# this workspace's 1.98 floor. rustls by default: no OpenSSL, no system TLS.
+ureq = "3.4.2"
 # Colour and wrapping are disabled: a CLI piped into another process should not
 # emit escape sequences, and the narrower build keeps the binary honest.
 clap = { version = "4.6.7", default-features = false, features = [

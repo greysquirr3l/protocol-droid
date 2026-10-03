@@ -4,26 +4,71 @@
 //! compares it with the manifest. `build.rs` does the same check at compile
 //! time, but a build script's failure mode is a panic with a message — it never
 //! shows up as a named test that can be read, filtered, or run on its own.
+//!
+//! Scope: this file covers only what needs the real vendored tree or a real
+//! filesystem. Manifest parsing and the reconciliation rules are pure, so they
+//! are tested in `src/domain/manifest.rs` rather than duplicated here.
 
-use std::path::Path;
+// Test code unwraps deliberately: the strict profile exists to keep production
+// paths fallible, and a test that cannot unwrap cannot assert. The messages
+// here name the failing precondition, which is the useful part.
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests assert on fallible calls and panic with the failing precondition; propagating errors would replace a clear failure message with noise"
+)]
 
-use protocol_droid_schema::domain::manifest::{Manifest, hex_digest};
+use std::path::{Path, PathBuf};
+
+use protocol_droid_schema::domain::manifest::RevisionSpec;
+use protocol_droid_schema::domain::manifest::hex_digest;
 use protocol_droid_schema::verify_vendored_specs;
 
-/// Root of the vendored tree, relative to this crate.
-const SPEC_ROOT: &str = "spec";
+/// Every revision this project vendors, including the floating one.
+const EXPECTED_REVISIONS: [&str; 6] = [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+    "2026-07-28",
+    "draft",
+];
 
-fn spec_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(SPEC_ROOT)
+/// Root of the vendored tree, relative to this crate.
+fn spec_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("spec")
+}
+
+/// A copy of the vendored tree in a temporary directory, removed on drop, so a
+/// test can corrupt it without touching the real one.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn named(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("protocol-droid-t02-{name}"));
+        let _ = std::fs::remove_dir_all(&path);
+        copy_dir(&spec_root(), &path).expect("copy spec tree");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]
 fn every_vendored_file_matches_its_recorded_digest() {
-    let manifest =
-        verify_vendored_specs(&spec_root()).expect("vendored spec tree must match MANIFEST.toml");
+    let manifest = verify_vendored_specs(&spec_root())
+        .expect("the vendored spec tree must match MANIFEST.toml");
 
-    // Recompute independently of the verification path, so a bug in the
-    // verifier cannot make its own test pass.
+    // Recomputed independently of the verification path, so a bug in the
+    // verifier cannot make the test that exercises it pass.
     let mut checked = 0_usize;
     for (revision, spec) in &manifest.revisions {
         for (file, expected) in &spec.files {
@@ -44,29 +89,25 @@ fn every_vendored_file_matches_its_recorded_digest() {
 fn every_published_revision_is_vendored() {
     let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
 
-    let expected = [
-        "2024-11-05",
-        "2025-03-26",
-        "2025-06-18",
-        "2025-11-25",
-        "2026-07-28",
-        "draft",
-    ];
-    for revision in expected {
+    for revision in EXPECTED_REVISIONS {
         assert!(
             manifest.revisions.contains_key(revision),
             "revision {revision} is missing from the manifest"
         );
+        assert!(
+            spec_root().join(revision).is_dir(),
+            "revision {revision} has no directory on disk"
+        );
     }
     assert_eq!(
         manifest.revision_names().len(),
-        expected.len(),
-        "manifest has an unexpected number of revisions"
+        EXPECTED_REVISIONS.len(),
+        "the manifest should contain exactly the vendored revisions"
     );
 }
 
 #[test]
-fn every_tagged_revision_pins_a_commit_and_a_tag() {
+fn every_revision_pins_a_full_lowercase_commit_sha() {
     let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
 
     for (name, spec) in &manifest.revisions {
@@ -78,167 +119,184 @@ fn every_tagged_revision_pins_a_commit_and_a_tag() {
         assert!(
             spec.commit
                 .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
             "{name} commit must be lowercase hex"
         );
+    }
+}
+
+#[test]
+fn a_tagged_revision_records_its_own_tag_and_only_draft_is_floating() {
+    let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
+
+    for (name, spec) in &manifest.revisions {
         if name == "draft" {
             assert!(spec.is_floating(), "draft must be marked floating");
+            assert!(spec.tag.is_empty(), "draft must record no tag");
         } else {
-            assert_eq!(spec.tag, name, "{name} must record its own tag");
             assert!(!spec.is_floating(), "{name} must not be floating");
+            assert_eq!(spec.tag.as_str(), *name, "{name} must record its own tag");
         }
     }
 }
 
 #[test]
-fn only_draft_is_floating() {
-    let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
-
-    let floating: Vec<&str> = manifest
-        .revision_names()
-        .into_iter()
-        .filter(|name| manifest.revisions[*name].is_floating())
-        .collect();
-    assert_eq!(floating, vec!["draft"]);
-}
-
-#[test]
-fn each_revision_vendors_both_schema_representations() {
+fn every_revision_vendors_both_schema_representations() {
     let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
 
     for (name, spec) in &manifest.revisions {
+        for required in ["schema.json", "schema.ts"] {
+            assert!(
+                spec.files.contains_key(required),
+                "{name} is missing {required}"
+            );
+            assert!(
+                spec_root().join(name).join(required).is_file(),
+                "{name}/{required} is recorded but absent on disk"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_revision_ships_a_changelog_for_the_feature_matrix_to_cite() {
+    // T05 cites a changelog section per feature row, so a revision with no
+    // CHANGELOG.md would leave those rows uncitable.
+    let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
+
+    for name in &manifest.revision_names() {
         assert!(
-            spec.files.contains_key("schema.json"),
-            "{name} is missing schema.json"
-        );
-        assert!(
-            spec.files.contains_key("schema.ts"),
-            "{name} is missing schema.ts"
+            spec_root().join(name).join("CHANGELOG.md").is_file(),
+            "{name} has no CHANGELOG.md for the feature matrix to cite"
         );
     }
 }
 
 #[test]
-fn a_changed_file_is_reported_as_a_digest_mismatch() {
-    // The negative case. Copy the tree, corrupt one file, and confirm the
-    // verifier rejects it rather than silently passing.
-    let scratch = std::env::temp_dir().join("protocol-droid-t02-mismatch");
-    let _ = std::fs::remove_dir_all(&scratch);
-    copy_dir(&spec_root(), &scratch).expect("copy spec tree");
+fn a_vendored_changelog_is_digest_locked_and_an_authored_one_is_not() {
+    // 2024-11-05 is the only revision with an authored changelog, because it is
+    // the first published revision and so has no prior revision to describe
+    // changes from. It must stay editable without breaking verification; every
+    // other revision's changelog must not be.
+    let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
 
-    let target = scratch.join("2025-06-18").join("schema.json");
+    let authored: Vec<&str> = manifest
+        .revision_names()
+        .into_iter()
+        .filter(|name| {
+            manifest
+                .revisions
+                .get(*name)
+                .is_some_and(RevisionSpec::changelog_is_authored)
+        })
+        .collect();
+    assert_eq!(authored, vec!["2024-11-05"]);
+
+    for (name, spec) in &manifest.revisions {
+        let expected = if spec.changelog_is_authored() {
+            false
+        } else {
+            assert!(
+                spec.changelog.is_some(),
+                "{name} vendors a changelog but records no upstream path for it"
+            );
+            true
+        };
+        assert_eq!(
+            spec.files.contains_key("CHANGELOG.md"),
+            expected,
+            "{name} changelog digest-lock state is wrong"
+        );
+    }
+}
+
+#[test]
+fn a_changed_file_is_reported_as_a_digest_mismatch_naming_the_fix() {
+    let scratch = Scratch::named("mismatch");
+    let target = scratch.path().join("2025-06-18").join("schema.json");
     let mut bytes = std::fs::read(&target).expect("read schema");
     bytes.push(b'\n');
     std::fs::write(&target, &bytes).expect("write corrupted schema");
 
-    let error = verify_vendored_specs(&scratch).expect_err("corruption must be detected");
-    let rendered = error.to_string();
+    let rendered = verify_vendored_specs(scratch.path())
+        .expect_err("corruption must be detected")
+        .to_string();
     assert!(
         rendered.contains("digest mismatch"),
         "expected a digest mismatch, got: {rendered}"
     );
     assert!(
         rendered.contains("refresh-spec 2025-06-18"),
-        "error should name the refresh command, got: {rendered}"
+        "the error should name the command that fixes it, got: {rendered}"
     );
-
-    std::fs::remove_dir_all(&scratch).expect("clean up scratch tree");
 }
 
 #[test]
 fn an_unrecorded_file_is_rejected() {
     // A file vendored but never recorded would be verified by nothing, so the
     // verifier reconciles the other direction too.
-    let scratch = std::env::temp_dir().join("protocol-droid-t02-unaccounted");
-    let _ = std::fs::remove_dir_all(&scratch);
-    copy_dir(&spec_root(), &scratch).expect("copy spec tree");
+    let scratch = Scratch::named("unaccounted");
+    std::fs::write(
+        scratch.path().join("2025-06-18").join("schema-extra.json"),
+        b"{}",
+    )
+    .expect("write extra file");
 
-    let smuggled = scratch.join("2025-06-18").join("schema-extra.json");
-    std::fs::write(&smuggled, b"{}").expect("write extra file");
-
-    let error = verify_vendored_specs(&scratch).expect_err("unrecorded file must be detected");
-    let rendered = error.to_string();
+    let rendered = verify_vendored_specs(scratch.path())
+        .expect_err("an unrecorded file must be detected")
+        .to_string();
     assert!(
         rendered.contains("neither digest-locked nor declared"),
         "expected an unaccounted-file error, got: {rendered}"
     );
-
-    std::fs::remove_dir_all(&scratch).expect("clean up scratch tree");
 }
 
 #[test]
-fn a_manifest_with_a_future_schema_version_is_refused() {
-    let source = "\
-[meta]
-schema_version = 999
-repository = \"x/y\"
-raw_base = \"https://example.invalid\"
+fn a_deleted_vendored_file_is_rejected() {
+    let scratch = Scratch::named("deleted");
+    std::fs::remove_file(scratch.path().join("2025-11-25").join("schema.ts"))
+        .expect("delete vendored file");
 
-[revisions.x]
-tag = \"x\"
-commit = \"0000000000000000000000000000000000000000\"
-";
-    let error = Manifest::parse(source).expect_err("future schema version must be refused");
+    let rendered = verify_vendored_specs(scratch.path())
+        .expect_err("a missing vendored file must be detected")
+        .to_string();
+    // The digest check runs first, so a deleted file surfaces as unreadable
+    // rather than as `MissingFile`. Either way it is rejected, and the message
+    // has to name the file so the failure is actionable.
     assert!(
-        error.to_string().contains("newer than the supported"),
-        "unexpected error: {error}"
+        rendered.contains("could not read"),
+        "expected an unreadable-file error, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("schema.ts"),
+        "the error should name the missing file, got: {rendered}"
     );
 }
 
 #[test]
-fn a_short_commit_sha_is_refused() {
-    let source = "\
-[meta]
-schema_version = 1
-repository = \"x/y\"
-raw_base = \"https://example.invalid\"
+fn the_excluded_tags_are_recorded_with_reasons() {
+    // The tags this project chose not to vendor, so the choice is a recorded
+    // decision rather than a silent gap.
+    let manifest = verify_vendored_specs(&spec_root()).expect("manifest must verify");
+    let excluded = &manifest.meta.excluded_tags;
 
-[revisions.x]
-tag = \"x\"
-commit = \"abc1234\"
-";
-    let error = Manifest::parse(source).expect_err("short SHA must be refused");
-    assert!(
-        error.to_string().contains("40-character"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn a_non_hex_digest_is_refused() {
-    let source = "\
-[meta]
-schema_version = 1
-repository = \"x/y\"
-raw_base = \"https://example.invalid\"
-
-[revisions.x]
-tag = \"x\"
-commit = \"0000000000000000000000000000000000000000\"
-
-[revisions.x.files]
-\"schema.json\" = \"not-a-digest\"
-";
-    let error = Manifest::parse(source).expect_err("non-hex digest must be refused");
-    assert!(
-        error.to_string().contains("64-character"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn an_manifest_with_no_revisions_is_refused() {
-    let source = "\
-[meta]
-schema_version = 1
-repository = \"x/y\"
-raw_base = \"https://example.invalid\"
-";
-    let error = Manifest::parse(source).expect_err("empty manifest must be refused");
-    assert!(
-        error.to_string().contains("no revisions"),
-        "unexpected error: {error}"
-    );
+    for tag in [
+        "2024-10-07",
+        "2024-11-05-final",
+        "2025-11-25-RC",
+        "2026-07-28-RC",
+    ] {
+        let reason = excluded
+            .get(tag)
+            .unwrap_or_else(|| panic!("excluded tag {tag} is not recorded with a reason"));
+        assert!(!reason.is_empty(), "excluded tag {tag} has an empty reason");
+    }
+    for name in &manifest.revision_names() {
+        assert!(
+            !excluded.contains_key(*name),
+            "{name} is both vendored and recorded as excluded"
+        );
+    }
 }
 
 /// Recursively copy a directory tree. Test-only helper.

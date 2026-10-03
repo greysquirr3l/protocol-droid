@@ -49,6 +49,10 @@ fn main() {
     // A floating revision has no upstream tag, so it must be pinned by commit
     // alone; a tagged one must record the tag it claims. A mismatch means the
     // manifest was hand-edited into an inconsistent state.
+    //
+    // Also derive each vendored file's upstream path, so a typo in
+    // `schema_prefix` fails here rather than at the next refresh, long after it
+    // became wrong.
     for (name, spec) in &manifest.revisions {
         if spec.is_floating() && !spec.tag.is_empty() {
             fail(&format!(
@@ -62,6 +66,19 @@ fn main() {
                 "revision `{name}` records tag `{}`, which does not match its directory name",
                 spec.tag
             ));
+        }
+        for required in manifest::RevisionSpec::SCHEMA_FILES {
+            if !spec.files.contains_key(required) {
+                fail(&format!(
+                    "revision `{name}` does not record {required}; every revision must vendor both \
+                     schema representations"
+                ));
+            }
+        }
+        for file in spec.files.keys() {
+            if let Err(err) = spec.upstream_path(file) {
+                fail(&format!("revision `{name}`: {err}"));
+            }
         }
     }
 
@@ -96,10 +113,14 @@ fn main() {
 
 /// Abort the build with a diagnostic.
 ///
-/// `build.rs` has no error type to return, and `unwrap`/`expect` are denied
-/// project-wide precisely because they turn a recoverable failure into an
-/// unreadable one. A failed integrity check is a build-stopping condition, so
-/// this is the one place that panics on purpose.
+/// A build script has no error type to return, and this project denies `panic!`
+/// precisely so a failure never reads as a crash. A failed integrity check
+/// genuinely is build-stopping, so this reports the problem as a normal error
+/// and exits non-zero — which is what cargo surfaces to the user.
 fn fail(message: &str) -> ! {
-    panic!("{message}");
+    eprintln!("error: vendored spec tree is invalid: {message}");
+    eprintln!();
+    eprintln!("  Run `cargo xtask refresh-spec <revision>` to re-download the vendored");
+    eprintln!("  files and rewrite the manifest, then review `git diff`.");
+    std::process::exit(1);
 }

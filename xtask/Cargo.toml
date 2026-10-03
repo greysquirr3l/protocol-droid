@@ -1,0 +1,44 @@
+[package]
+name = "xtask"
+description = "Workspace maintenance tasks. Not published; this is developer tooling invoked through `cargo xtask`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+publish = false
+
+# Crate-count justification (AGENTS.md requires one for every new crate):
+#
+# The task list mandates `cargo xtask refresh-spec`, and cargo has a built-in
+# `xtask` convention that maps to a workspace member of exactly this name. It
+# cannot live in `protocol-droid-cli`, because a tool that rewrites the schemas
+# the library is generated from must not be reachable from the published
+# binary. Keeping it separate also keeps `ureq` (an HTTP client with a TLS
+# stack) out of the CLI's dependency graph, so the shipped binary carries no
+# networking code it has no use for.
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+# Blocking HTTP with rustls. MSRV 1.85, below this workspace's 1.98 floor.
+ureq = { workspace = true }
+
+# Needed only to compile the manifest model, which `spec_manifest.rs` includes by
+# `#[path]` rather than depending on `protocol-droid-schema` — see that module
+# for why. These are the same crates the schema crate uses for it.
+serde = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

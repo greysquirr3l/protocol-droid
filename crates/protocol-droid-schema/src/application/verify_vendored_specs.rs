@@ -55,3 +55,60 @@ pub enum VerifyError {
     #[error(transparent)]
     Manifest(#[from] ManifestError),
 }
+
+#[cfg(test)]
+mod tests {
+    // Test code unwraps deliberately: the strict profile exists to keep
+    // production paths fallible, and a test that cannot unwrap cannot assert.
+    #![expect(
+        clippy::expect_used,
+        reason = "tests assert on fallible calls; propagating errors would replace a clear failure message with noise"
+    )]
+
+    use super::{VerifyError, verify_vendored_specs};
+    use std::path::{Path, PathBuf};
+
+    /// The spec tree shipped with this crate.
+    fn shipped_spec_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("spec")
+    }
+
+    #[test]
+    fn the_shipped_tree_verifies() {
+        let manifest = verify_vendored_specs(&shipped_spec_root())
+            .expect("the vendored spec tree must match its manifest");
+        assert!(
+            manifest.revision_names().len() >= 6,
+            "expected all revisions to be vendored"
+        );
+    }
+
+    #[test]
+    fn a_spec_root_without_a_manifest_is_an_io_error() {
+        let scratch = std::env::temp_dir().join("protocol-droid-verify-no-manifest");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("create scratch");
+
+        let error = verify_vendored_specs(&scratch).expect_err("must fail");
+        assert!(
+            matches!(error, VerifyError::Io(_)),
+            "expected an Io error, got {error:?}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_malformed_manifest_is_a_manifest_error() {
+        let scratch = std::env::temp_dir().join("protocol-droid-verify-bad-manifest");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("create scratch");
+        std::fs::write(scratch.join("MANIFEST.toml"), "not toml at all").expect("write manifest");
+
+        let error = verify_vendored_specs(&scratch).expect_err("must fail");
+        assert!(
+            matches!(error, VerifyError::Manifest(_)),
+            "expected a Manifest error, got {error:?}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
