@@ -28,10 +28,11 @@ Three ideas set it apart:
 ## Status
 
 Phases 1–3 are in progress. The specification schemas for every revision are
-vendored and provenance-verified, and the per-revision wire types are generated
-from them at build time — `protocol_droid_schema::wire::v2024_11_05` through
-`wire::draft` all compile together, with no version selection at build time.
-The feature matrix, version codecs, and transports follow.
+vendored and provenance-verified, the per-revision wire types are generated from
+them at build time — `protocol_droid_schema::wire::v2024_11_05` through
+`wire::draft` all compile together, with no version selection at build time —
+and the domain layer carries the protocol-version value objects negotiation is
+built on. The feature matrix, version codecs, and transports follow.
 
 ## The generated wire types
 
@@ -57,6 +58,17 @@ assert!(!old.extra.contains_key("resultType"));   // 2024-11-05 has no such memb
 point: the revisions coexist as distinct types, and deciding which one a message
 belongs to is a runtime question answered by negotiation, not a compile-time one
 answered by a cargo feature.
+
+> **One upstream oddity worth knowing about.** The vendored
+> `2025-11-25/schema.ts` declares
+> `LATEST_PROTOCOL_VERSION = "DRAFT-2025-v3"` while its own tag is `2025-11-25`
+> and every other revision's `schema.ts` carries its own date. It looks like an
+> unreleased-build leftover in a tagged revision.
+> [`ProtocolVersion`](crates/protocol-droid/src/domain/protocol_version.rs)
+> accepts `2025-11-25` and rejects `DRAFT-2025-v3`: the tag is what the
+> specification documents and what peers negotiate on, and accepting a string
+> the specification does not define would mean announcing a version we cannot
+> speak. The finding is recorded in PROGRESS.md rather than papered over.
 
 Three properties of the generated code are load-bearing, and each has a test:
 

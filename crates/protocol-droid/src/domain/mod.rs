@@ -7,45 +7,81 @@
 //! Populated by T04 (protocol version value objects) and T05-T08 (feature
 //! profile, negotiation, canonical IR, per-revision codecs).
 
+mod protocol_version;
+mod release_date;
+mod supported_versions;
+mod transport;
+
+pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVersionError};
+pub use release_date::{ParseReleaseDateError, ReleaseDate};
+pub use supported_versions::{SupportedVersions, SupportedVersionsError};
+pub use transport::{TransportKind, transport_allowed};
+
 #[cfg(test)]
 mod tests {
-    use std::cmp::Ordering;
+    use crate::domain::{ProtocolVersion, ReleaseDate, TransportKind, transport_allowed};
 
-    /// Stand-in for the ordered enums this module gains from T04 onwards.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    enum RevisionOrder {
-        /// The oldest revision the project supports.
-        Earliest,
-        /// A revision published after it.
-        Latest,
-    }
-
-    /// Guards the 1.98 trap: `derive(PartialOrd)` has a fast path that assumes
-    /// a hand-written `PartialOrd` agrees with a derived `Ord`. A pair that
-    /// disagrees silently yields wrong comparisons instead of a compile error.
-    /// Every ordered type in this crate derives both traits from the same
-    /// variant order and copies this test when it is added.
+    /// The three ordered types have to agree with each other, not only with
+    /// themselves.
+    ///
+    /// Each of `ReleaseDate`, `ProtocolVersion` and `TransportKind` carries its
+    /// own `derived_ordering_agrees_in_both_directions`, which is the 1.98
+    /// derive trap — that one trait agrees with the other within a type. This
+    /// is the weaker claim that no test inside a single module can make: the
+    /// three orderings mean the same thing, so a revision's position in
+    /// `ProtocolVersion` matches its `ReleaseDate`, and a transport's position
+    /// matches the revision that introduced it.
+    ///
+    /// The disagreement this catches is not hypothetical. `TransportKind` is
+    /// ordered by introducing revision, and `StreamableHttp` predates
+    /// `StatelessHttp` by two revisions rather than one — a transport list
+    /// sorted by "how new is this" and one sorted by declaration order would
+    /// come out the same here, but only because the declarations were written
+    /// in that order deliberately.
     #[test]
-    fn derived_ordering_agrees_in_both_directions() {
-        assert_eq!(
-            RevisionOrder::Earliest.cmp(&RevisionOrder::Latest),
-            Ordering::Less,
-        );
-        assert_eq!(
-            RevisionOrder::Latest.cmp(&RevisionOrder::Earliest),
-            Ordering::Greater,
-        );
-        assert_eq!(
-            RevisionOrder::Earliest.cmp(&RevisionOrder::Earliest),
-            Ordering::Equal,
-        );
-    }
+    fn the_three_orderings_tell_the_same_story() {
+        // Every version sorts exactly where its date says it does.
+        for version in ProtocolVersion::KNOWN {
+            let date = version.date();
+            for other in ProtocolVersion::KNOWN {
+                assert_eq!(
+                    version < other,
+                    date < other.date(),
+                    "{version} and {other} order differently by version than by date"
+                );
+            }
+        }
 
-    #[test]
-    fn derived_partial_ordering_agrees_with_derived_ordering() {
-        assert!(RevisionOrder::Earliest < RevisionOrder::Latest);
-        assert!(RevisionOrder::Latest > RevisionOrder::Earliest);
-        assert!(RevisionOrder::Earliest <= RevisionOrder::Earliest);
-        assert!(RevisionOrder::Latest >= RevisionOrder::Latest);
+        // The known versions are in date order, so `KNOWN` being sorted is a
+        // fact about the calendar and not a habit.
+        assert!(ProtocolVersion::KNOWN.is_sorted());
+        assert!(ReleaseDate::V2024_11_05 < ReleaseDate::V2026_07_28);
+
+        // Every transport was introduced by some known revision, and no
+        // transport predates the first one — which is the fact that makes
+        // `TransportKind::ALL` ordered the same way as the revisions are.
+        let introduced_by = [
+            TransportKind::Stdio,
+            TransportKind::LegacySse,
+            TransportKind::StreamableHttp,
+            TransportKind::StatelessHttp,
+        ];
+        for (transport, first) in introduced_by.iter().zip([
+            ProtocolVersion::V2024_11_05,
+            ProtocolVersion::V2024_11_05,
+            ProtocolVersion::V2025_03_26,
+            ProtocolVersion::V2026_07_28,
+        ]) {
+            assert!(
+                transport_allowed(first, *transport),
+                "{transport} claims to start at {first} but is not allowed there"
+            );
+            for earlier in ProtocolVersion::KNOWN.into_iter().take_while(|v| *v < first) {
+                assert!(
+                    !transport_allowed(earlier, *transport),
+                    "{transport} is allowed on {earlier}, which predates {first}"
+                );
+            }
+        }
     }
 }
