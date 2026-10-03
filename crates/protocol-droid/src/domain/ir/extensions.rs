@@ -124,6 +124,22 @@ impl Extensions {
         }
     }
 
+    /// Merges a JSON object's members in, keeping existing keys.
+    pub fn absorb_json(&mut self, object: &serde_json::Map<String, serde_json::Value>) {
+        for (key, value) in object {
+            self.insert(key.clone(), ExtensionValue::from(value.clone()));
+        }
+    }
+
+    /// Removes a key and returns what was there.
+    pub fn take(&mut self, key: &str) -> Option<ExtensionValue> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(existing, _)| existing == key)?;
+        Some(self.entries.remove(index).1)
+    }
+
     /// Renders the bag back to a JSON object.
     #[must_use]
     pub fn to_json_object(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -428,6 +444,33 @@ mod json_tests {
         assert_eq!(back.get("zebra").and_then(Value::as_i64), Some(1));
         assert_eq!(back.get("apple").and_then(Value::as_i64), Some(2));
         assert_eq!(back.get("mango").and_then(Value::as_i64), Some(3));
+    }
+
+    /// `absorb_json` merges members in, and `take` removes one, so a codec can
+    /// pull `_meta` and the untyped `annotations` out of the bag on the way
+    /// down and put the rest into the wire's `extra` field.
+    #[test]
+    fn absorb_and_take_move_members_between_representations() {
+        let mut bag = Extensions::empty();
+        bag.absorb_json(
+            &serde_json::json!({"kept": 1, "took": "2"})
+                .as_object()
+                .expect("object")
+                .clone(),
+        );
+        assert_eq!(bag.len(), 2);
+        assert!(bag.contains("kept"));
+        assert!(bag.contains("took"));
+
+        let taken = bag.take("took");
+        assert_eq!(taken, Some(ExtensionValue::String("2".to_owned())));
+        assert_eq!(bag.len(), 1);
+        assert!(!bag.contains("took"));
+        assert!(bag.contains("kept"));
+
+        // A key that was never there is `None`, not a panic.
+        assert_eq!(bag.take("absent"), None);
+        assert_eq!(bag.to_json_object().len(), 1);
     }
 
     /// `Raw` exists so an unparseable value can be forwarded rather than
