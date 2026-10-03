@@ -39,6 +39,15 @@ pub struct ToolResult {
     pub structured_content: Option<JsonObject>,
     /// Whether the call failed. Every revision.
     pub is_error: bool,
+    /// The result's type, `2026-07-28` and later.
+    ///
+    /// Required rather than optional from `2026-07-28`, where the schema
+    /// types it `String` and not `Option<String>`. That asymmetry is why this
+    /// is `Option` here and still needs a value on the wire: the IR is a
+    /// superset, so it cannot make a field mandatory for a revision that
+    /// predates it — but a codec targeting `2026-07-28` does have to supply
+    /// one, and that is a lowering decision rather than a lift.
+    pub result_type: Option<String>,
     /// Unmodelled fields.
     pub extensions: Extensions,
 }
@@ -51,6 +60,7 @@ impl ToolResult {
             content,
             structured_content: None,
             is_error: false,
+            result_type: None,
             extensions: Extensions::empty(),
         }
     }
@@ -97,6 +107,9 @@ impl ToolResult {
         }
         if self.structured_content.is_some() {
             required = required.union(FeatureSet::empty().with(Feature::ToolStructuredOutput));
+        }
+        if self.result_type.is_some() {
+            required = required.union(FeatureSet::empty().with(Feature::ToolResultType));
         }
         required
     }
@@ -302,4 +315,28 @@ mod tests {
         assert!(ToolResult::text("x").with_structured("[]").is_err());
         assert!(ToolResult::text("x").with_structured("{oops").is_err());
     }
+}
+
+/// `resultType` is `2026-07-28`, so a result carrying one must not lower
+/// onto anything older. Before this the field was absent from the IR
+/// entirely and a result could not carry one at all.
+#[test]
+fn a_result_type_raises_the_requirement() {
+    let mut result = ToolResult::text("done");
+    assert!(!result.required_features().contains(Feature::ToolResultType));
+
+    result.result_type = Some("text".to_owned());
+    assert!(result.required_features().contains(Feature::ToolResultType));
+}
+
+/// The field is required on the `2026-07-28` wire, so the IR has to carry
+/// it as optional and the codec has to decide. This pins the asymmetry so
+/// nobody "fixes" it into a non-optional field and breaks every earlier
+/// revision in the process.
+#[test]
+fn result_type_is_optional_in_the_ir_though_required_on_2026_07_28() {
+    assert!(ToolResult::text("done").result_type.is_none());
+    let mut result = ToolResult::text("done");
+    result.result_type = Some("json".to_owned());
+    assert_eq!(result.result_type.as_deref(), Some("json"));
 }

@@ -33,6 +33,8 @@
 use crate::domain::Feature;
 use crate::domain::ir::extensions::Extensions;
 use crate::domain::ir::features::FeatureSet;
+use serde_json::Value as JsonValue;
+
 use crate::domain::ir::json::JsonObject;
 
 /// A content block.
@@ -347,6 +349,13 @@ pub struct ResourceIcon {
     pub mime_type: Option<String>,
     /// The sizes this icon is usable at.
     pub sizes: Vec<String>,
+    /// How the icon is meant to be themed, when the scheme supports it.
+    ///
+    /// Untyped in every revision that has it, so it is a `JsonValue` rather
+    /// than a modelled shape. It is still a named field, which means a codec
+    /// that left it out would lose it — `extra` would not catch it, because
+    /// the schema already claimed the name.
+    pub theme: Option<JsonValue>,
     /// Unmodelled fields.
     pub extensions: Extensions,
 }
@@ -359,6 +368,7 @@ impl ResourceIcon {
             src: src.into(),
             mime_type: None,
             sizes: Vec::new(),
+            theme: None,
             extensions: Extensions::empty(),
         }
     }
@@ -499,6 +509,7 @@ mod tests {
     };
     use crate::domain::Feature;
     use crate::domain::ir::extensions::{ExtensionValue, Extensions};
+
     use crate::domain::ir::json::JsonObject;
 
     /// One case per variant, because `required_features` is per-variant and
