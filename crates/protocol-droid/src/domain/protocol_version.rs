@@ -211,8 +211,7 @@ impl FromStr for ProtocolVersion {
         // Past this point `date` is strictly newer than every known revision, so
         // the derived ordering stays chronological. `unknown_after_known` is
         // the checked form of that claim and cannot fail here.
-        Self::unknown_after_known(date)
-            .map_err(ParseProtocolVersionError::UnknownVersion)
+        Self::unknown_after_known(date).map_err(ParseProtocolVersionError::UnknownVersion)
     }
 }
 
@@ -296,8 +295,14 @@ mod tests {
     fn unknown_dates_sort_after_every_known_revision() {
         let future = ProtocolVersion::Unknown("2027-01-01".parse().unwrap());
         for known in ProtocolVersion::KNOWN {
-            assert!(known < future, "{known} must sort below an unknown revision");
-            assert!(future > known, "{known} must sort below an unknown revision");
+            assert!(
+                known < future,
+                "{known} must sort below an unknown revision"
+            );
+            assert!(
+                future > known,
+                "{known} must sort below an unknown revision"
+            );
         }
     }
 
@@ -306,8 +311,14 @@ mod tests {
         let sorted: BTreeSet<ProtocolVersion> = ProtocolVersion::KNOWN.into_iter().collect();
         let ascending: Vec<ProtocolVersion> = sorted.into_iter().collect();
         assert_eq!(ascending, ProtocolVersion::KNOWN.to_vec());
-        assert_eq!(ProtocolVersion::earliest_known(), ProtocolVersion::V2024_11_05);
-        assert_eq!(ProtocolVersion::latest_known(), ProtocolVersion::V2026_07_28);
+        assert_eq!(
+            ProtocolVersion::earliest_known(),
+            ProtocolVersion::V2024_11_05
+        );
+        assert_eq!(
+            ProtocolVersion::latest_known(),
+            ProtocolVersion::V2026_07_28
+        );
     }
 
     #[test]
@@ -369,7 +380,12 @@ mod tests {
     fn constructing_an_unknown_requires_a_later_date() {
         let unknown = ProtocolVersion::unknown_after_known;
         let error = unknown(ReleaseDate::V2025_06_18).unwrap_err();
-        assert_eq!(error, UnknownVersionError::NotAfterKnown { date: ReleaseDate::V2025_06_18 });
+        assert_eq!(
+            error,
+            UnknownVersionError::NotAfterKnown {
+                date: ReleaseDate::V2025_06_18
+            }
+        );
         // Exactly the latest known revision is refused too, not just older ones.
         assert!(unknown(ReleaseDate::V2026_07_28).is_err());
         assert!(unknown("2026-07-29".parse().unwrap()).is_ok());
@@ -407,10 +423,25 @@ mod tests {
 
     #[test]
     fn dates_match_the_variants() {
-        assert_eq!(ProtocolVersion::V2024_11_05.date(), ReleaseDate::V2024_11_05);
-        assert_eq!(ProtocolVersion::V2025_03_26.date(), ReleaseDate::V2025_03_26);
-        assert_eq!(ProtocolVersion::V2025_06_18.date(), ReleaseDate::V2025_06_18);
-        assert_eq!(ProtocolVersion::V2025_11_25.date(), ReleaseDate::V2025_11_25);
-        assert_eq!(ProtocolVersion::V2026_07_28.date(), ReleaseDate::V2026_07_28);
+        assert_eq!(
+            ProtocolVersion::V2024_11_05.date(),
+            ReleaseDate::V2024_11_05
+        );
+        assert_eq!(
+            ProtocolVersion::V2025_03_26.date(),
+            ReleaseDate::V2025_03_26
+        );
+        assert_eq!(
+            ProtocolVersion::V2025_06_18.date(),
+            ReleaseDate::V2025_06_18
+        );
+        assert_eq!(
+            ProtocolVersion::V2025_11_25.date(),
+            ReleaseDate::V2025_11_25
+        );
+        assert_eq!(
+            ProtocolVersion::V2026_07_28.date(),
+            ReleaseDate::V2026_07_28
+        );
     }
 }

@@ -9,6 +9,7 @@
 
 mod capability;
 mod feature;
+mod negotiation;
 mod protocol_version;
 mod release_date;
 mod supported_versions;
@@ -17,6 +18,11 @@ mod transport;
 pub use capability::{CAPABILITY_TABLE, Capability, CapabilitySet, Side, defined_in};
 pub use feature::{
     DegradePolicy, FEATURES, Feature, FeatureProfile, FeatureSpec, Negotiation, resolve,
+};
+pub use negotiation::{
+    NegotiatedSession, NegotiationError, PeerInfo, ServerDecision, StatelessRequest,
+    assumed_version, assumed_version_without_signal, check_protocol_header, is_reserved_meta_key,
+    negotiate_client, negotiate_server, negotiate_stateless, stateless_meta_keys,
 };
 pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVersionError};
 pub use release_date::{ParseReleaseDateError, ReleaseDate};

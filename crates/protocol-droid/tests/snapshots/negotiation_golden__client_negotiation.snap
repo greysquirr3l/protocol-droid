@@ -1,0 +1,29 @@
+---
+source: crates/protocol-droid/tests/negotiation_golden.rs
+expression: table
+---
+the client accepts exactly when the server's answer is in its own set
+
+  client speaks [V2024_11_05]
+    server answers 2024-11-05 accept  2024-11-05
+    server answers 2025-03-26 reject  server answered with protocol version 2025-03-26, which this client does not support; it supports 2024-11-05
+    server answers 2025-06-18 reject  server answered with protocol version 2025-06-18, which this client does not support; it supports 2024-11-05
+    server answers 2025-11-25 reject  server answered with protocol version 2025-11-25, which this client does not support; it supports 2024-11-05
+    server answers 2026-07-28 reject  server answered with protocol version 2026-07-28, which this client does not support; it supports 2024-11-05
+    server answers 2099-01-01 reject  server answered with protocol version 2099-01-01, which this client does not support; it supports 2024-11-05
+
+  client speaks [V2025_06_18, V2025_11_25]
+    server answers 2024-11-05 reject  server answered with protocol version 2024-11-05, which this client does not support; it supports 2025-06-18, 2025-11-25
+    server answers 2025-03-26 reject  server answered with protocol version 2025-03-26, which this client does not support; it supports 2025-06-18, 2025-11-25
+    server answers 2025-06-18 accept  2025-06-18
+    server answers 2025-11-25 accept  2025-11-25
+    server answers 2026-07-28 reject  server answered with protocol version 2026-07-28, which this client does not support; it supports 2025-06-18, 2025-11-25
+    server answers 2099-01-01 reject  server answered with protocol version 2099-01-01, which this client does not support; it supports 2025-06-18, 2025-11-25
+
+  client speaks [V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25, V2026_07_28]
+    server answers 2024-11-05 accept  2024-11-05
+    server answers 2025-03-26 accept  2025-03-26
+    server answers 2025-06-18 accept  2025-06-18
+    server answers 2025-11-25 accept  2025-11-25
+    server answers 2026-07-28 accept  2026-07-28
+    server answers 2099-01-01 reject  server answered with protocol version 2099-01-01, which this client does not support; it supports 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28

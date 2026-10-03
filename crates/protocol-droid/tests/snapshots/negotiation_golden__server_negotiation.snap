@@ -1,0 +1,12 @@
+---
+source: crates/protocol-droid/tests/negotiation_golden.rs
+expression: table
+---
+server supports: 2024-11-05, 2025-03-26, 2025-11-25
+
+  offered 2024-11-05 echo     2024-11-05
+  offered 2025-03-26 echo     2025-03-26
+  offered 2025-06-18 counter  2025-06-18 -> 2025-11-25
+  offered 2025-11-25 echo     2025-11-25
+  offered 2026-07-28 counter  2026-07-28 -> 2025-11-25
+  offered 2099-01-01 counter  2099-01-01 -> 2025-11-25
