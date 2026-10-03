@@ -22,10 +22,12 @@ jobs:
     # is what tells a push to main apart from a pull request, and that clause is
     # the whole guard.
     #
-    # A `github.event.pull_requests[0] == null` clause used to sit here as a
-    # second guard. It never did anything: the `workflow_run` payload has no
-    # `pull_requests` key at all — that array only appears in `pull_request*`
-    # events — so the lookup was always null and the comparison always true.
+    # A second clause used to test whether the PR array was empty. It never did
+    # anything: this payload has no such key at all — that array only appears in
+    # `pull_request*` events — so the lookup was always null and the comparison
+    # always true. Described in prose rather than quoted verbatim, because the
+    # Actions extension lints expressions in comments too and would flag the
+    # very line documenting its removal.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
