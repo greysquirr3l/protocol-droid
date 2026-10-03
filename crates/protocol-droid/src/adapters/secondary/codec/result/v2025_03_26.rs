@@ -298,7 +298,10 @@ mod tests {
     )]
 
     use super::V2025_03_26;
-    use crate::domain::ir::lower::TranslationReport;
+    use std::assert_matches;
+
+    use crate::domain::{Feature, ProtocolVersion};
+    use crate::domain::ir::lower::{LowerError, TranslationReport};
     use crate::domain::ir::{Content, Role, ToolResult};
     use crate::domain::ir::Codec;
     use crate::domain::DegradePolicy;
@@ -379,16 +382,15 @@ mod tests {
     /// codec sees it; the codec refusing it too is belt and braces, and what
     /// matters is that it refuses rather than laundering the value into `extra`
     /// where the reader would choke on it.
-    /// KNOWN BUG -- the gate does not consult annotations.
+    /// The gate refuses `lastModified` before the codec is reached.
     ///
-    /// `TextContent::required_features` is `FeatureSet::empty()`, so nothing
-    /// raises `ToolAnnotationsLastModified` and the value reaches the codec
-    /// ungated. The codec refuses it, so this fails on `expect_err` rather
-    /// than on the message: the refusal happens, one layer later than the
-    /// design intends.
+    /// Asserted on the error's _value_ rather than on its `Display`: the string
+    /// form carries the feature as `{feature:?}`, which is the Rust variant
+    /// name, so a substring test against the wire slug is a test of the
+    /// formatting rather than of the behaviour. Matching the variant is what
+    /// says the refusal was for the right reason.
     #[test]
-    #[ignore = "OPEN: the value lowers instead of being refused; root cause not yet located"]
-    fn last_modified_is_refused_rather_than_smuggled_into_extra() {
+    fn last_modified_is_refused_by_the_gate() {
         let codec = V2025_03_26;
         let ir = ToolResult::new(vec![Content::Text(
             crate::domain::ir::TextContent {
@@ -406,9 +408,12 @@ mod tests {
         let error = codec
             .lower(ir, DegradePolicy::strict(), &mut report)
             .expect_err("this revision has no lastModified");
-        assert!(
-            error.to_string().contains("lastModified"),
-            "the error must name the field: {error}"
+        assert_matches!(
+            error,
+            LowerError::FeatureUnavailable {
+                feature: Feature::ToolAnnotationsLastModified,
+                negotiated: ProtocolVersion::V2025_03_26,
+            }
         );
     }
 

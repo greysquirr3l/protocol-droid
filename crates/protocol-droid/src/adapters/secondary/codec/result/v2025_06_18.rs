@@ -397,8 +397,11 @@ mod tests {
         reason = "tests assert on fallible calls and panic with the failing precondition; propagating errors would replace a clear failure message with noise"
     )]
 
+    use std::assert_matches;
+
     use super::V2025_06_18;
-    use crate::domain::ir::lower::TranslationReport;
+    use crate::domain::{Feature, ProtocolVersion};
+    use crate::domain::ir::lower::{LowerError, TranslationReport};
     use crate::domain::ir::{Content, ResourceLinkContent, ToolResult};
     use crate::domain::ir::Codec;
     use crate::domain::DegradePolicy;
@@ -503,15 +506,15 @@ mod tests {
 
     /// `icons` arrive at `2025-11-25`, so there is no field to write them into
     /// at this revision.
-    /// KNOWN BUG -- the gate reports the feature but the value still lowers.
+    /// The gate refuses `icons` before the codec is reached.
     ///
-    /// `ResourceLinkContent::required_features` does add
-    /// `ToolResourceLinkIcons`, so this should be refused before the codec is
-    /// reached. It is not, which means `Content::required_features` is not
-    /// carrying the link's own requirement up into the value the gate checks.
+    /// `ResourceLinkContent::required_features` raises the feature when the
+    /// list is non-empty, and the matrix puts it at `2025-11-25`, so a
+    /// `2025-06-18` peer has no field to put them in. Asserted on the error's
+    /// value rather than its `Display`, for the reason given in the
+    /// `2025-03-26` codec's equivalent test.
     #[test]
-    #[ignore = "the gate is not refusing ToolResourceLinkIcons; the codec is catching it instead"]
-    fn icons_are_refused_rather_than_dropped() {
+    fn icons_are_refused_by_the_gate_rather_than_dropped() {
         let codec = V2025_06_18;
         let link = ResourceLinkContent {
             icons: vec![crate::domain::ir::ResourceIcon::new("file:///i.png")],
@@ -526,6 +529,12 @@ mod tests {
                 &mut report,
             )
             .expect_err("icons arrive at 2025-11-25");
-        assert!(error.to_string().contains("icons"), "{error}");
+        assert_matches!(
+            error,
+            LowerError::FeatureUnavailable {
+                feature: Feature::ToolResourceLinkIcons,
+                negotiated: ProtocolVersion::V2025_06_18,
+            }
+        );
     }
 }
