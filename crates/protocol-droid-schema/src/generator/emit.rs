@@ -362,7 +362,7 @@ fn emit_union(
         let _ = writeln!(
             source,
             "            \"{tag}\" => serde_json::from_value(value)\n                \
-             .map(|inner| {ident}::Member{i}(inner))\n                \
+             .map({ident}::Member{i})\n                \
              .map_err(<D::Error as serde::de::Error>::custom),"
         );
     }

@@ -114,9 +114,7 @@ fn lift_annotations(value: &serde_json::Value) -> Annotations {
 /// the raw key is written last so a value that never modelled in the first
 /// place comes back out byte-for-byte.
 fn lower_annotations(annotations: Option<&Annotations>) -> Option<serde_json::Value> {
-    let Some(annotations) = annotations else {
-        return None;
-    };
+    let annotations = annotations?;
 
     let mut object = annotations.extensions.to_json_object();
 
@@ -359,11 +357,13 @@ fn lower_block(block: &Content) -> Result<wire::CallToolResultContentChoice, Low
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "tests assert on fallible calls and panic with the failing precondition; propagating errors would replace a clear failure message with noise"
-    )]
+
+    /// What a test fails with.
+    ///
+    /// One type for every error a test body can hit, so `?` carries a codec
+    /// error, a JSON error or a bare message alike and the harness prints it
+    /// rather than the test having to choose between three error types.
+    type TestError = Box<dyn std::error::Error>;
 
     use super::{V2024_11_05, lift_annotations, lower_annotations, wire};
     use crate::domain::DegradePolicy;
@@ -381,19 +381,17 @@ mod tests {
     /// its keys. A textual comparison would fail on `{"text":..,"type":..}`
     /// against `{"type":..,"text":..}` — the same message — and passing it would
     /// mean asserting an ordering the wire format does not define.
-    fn round_trip(json: &str) -> serde_json::Value {
+    fn round_trip(json: &str) -> Result<serde_json::Value, TestError> {
         let codec = V2024_11_05;
-        let wire: wire::CallToolResult = serde_json::from_str(json).expect("fixture parses");
+        let wire: wire::CallToolResult = serde_json::from_str(json)?;
         let mut report = TranslationReport::new(codec.version());
-        let lowered = codec
-            .lower(codec.lift(&wire), DegradePolicy::strict(), &mut report)
-            .expect("expressible at 2024-11-05");
-        serde_json::to_value(&lowered).expect("serialises")
+        let lowered = codec.lower(codec.lift(&wire), DegradePolicy::strict(), &mut report)?;
+        Ok(serde_json::to_value(&lowered)?)
     }
 
     /// The parsed form of a fixture, for the expected side.
-    fn parsed(json: &str) -> serde_json::Value {
-        serde_json::from_str(json).expect("fixture is valid JSON")
+    fn parsed(json: &str) -> Result<serde_json::Value, TestError> {
+        Ok(serde_json::from_str(json)?)
     }
 
     /// The contract: a message the peer sent comes back out the same.
@@ -402,7 +400,7 @@ mod tests {
     /// would pass on a value that had been through a lossy detour and arrived
     /// with the same fields filled in. JSON is what the peer actually sees.
     #[test]
-    fn a_result_round_trips_through_json() {
+    fn a_result_round_trips_through_json() -> Result<(), TestError> {
         for json in [
             r#"{"content":[{"type":"text","text":"hello"}]}"#,
             r#"{"content":[{"type":"text","text":"hi","annotations":{"audience":["user"],"priority":0.5}}]}"#,
@@ -412,25 +410,26 @@ mod tests {
             r#"{"content":[],"isError":true}"#,
         ] {
             assert_eq!(
-                round_trip(json),
-                parsed(json),
+                round_trip(json)?,
+                parsed(json)?,
                 "did not survive the crossing"
             );
         }
+        Ok(())
     }
 
     /// `meta` has no field in the IR, so it rides in the extensions. The test
     /// is that it comes back out as a *field* rather than as a bag member —
     /// the peer sent `meta`, and `meta` is what it must receive.
     #[test]
-    fn meta_survives_as_a_field_rather_than_a_bag_member() {
+    fn meta_survives_as_a_field_rather_than_a_bag_member() -> Result<(), TestError> {
         // The wire key is `_meta`; the generated field is `meta`, because
         // `_meta` is not an identifier. Writing `meta` in a fixture puts the
         // value in `extra` instead, which is the same mistake the key's
         // existence is meant to prevent.
         let json = r#"{"_meta":{"progress":0.5},"content":[]}"#;
         let codec = V2024_11_05;
-        let wire: wire::CallToolResult = serde_json::from_str(json).expect("parses");
+        let wire: wire::CallToolResult = serde_json::from_str(json)?;
         let ir = codec.lift(&wire);
         assert!(
             ir.extensions
@@ -438,11 +437,10 @@ mod tests {
         );
 
         let mut report = TranslationReport::new(codec.version());
-        let lowered = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect("expressible");
+        let lowered = codec.lower(ir, DegradePolicy::strict(), &mut report)?;
         assert_eq!(lowered.meta, Some(serde_json::json!({"progress": 0.5})));
-        assert_eq!(serde_json::to_value(&lowered).unwrap(), parsed(json));
+        assert_eq!(serde_json::to_value(&lowered)?, parsed(json)?);
+        Ok(())
     }
 
     /// Annotations a newer peer sends are unmodelled here, and must come back
@@ -452,9 +450,10 @@ mod tests {
     /// produce a plausible-looking object — just missing the member the
     /// sender actually sent, which is the failure this pins.
     #[test]
-    fn unmodelled_annotations_are_returned_whole() {
+    fn unmodelled_annotations_are_returned_whole() -> Result<(), TestError> {
         let json = r#"{"content":[{"type":"text","text":"x","annotations":{"priority":0.5,"unheardOf":true}}]}"#;
-        assert_eq!(round_trip(json), parsed(json));
+        assert_eq!(round_trip(json)?, parsed(json)?);
+        Ok(())
     }
 
     /// A modelled annotation is lifted into the IR rather than left as text, so
@@ -497,9 +496,10 @@ mod tests {
     /// `priority` is `f64` on the wire and in the IR, so a value the peer sent
     /// is the value the peer gets back.
     #[test]
-    fn priority_is_not_narrowed_on_the_way_through() {
+    fn priority_is_not_narrowed_on_the_way_through() -> Result<(), TestError> {
         let json = r#"{"content":[{"type":"text","text":"x","annotations":{"priority":0.1}}]}"#;
-        assert_eq!(round_trip(json), parsed(json));
+        assert_eq!(round_trip(json)?, parsed(json)?);
+        Ok(())
     }
 
     /// A block this build does not model cannot be written at a revision with
@@ -508,30 +508,31 @@ mod tests {
     /// because the IR cannot know which member would hold it — so this is the
     /// codec refusing on its own account.
     #[test]
-    fn an_unmodelled_block_is_refused_rather_than_dropped() {
+    fn an_unmodelled_block_is_refused_rather_than_dropped() -> Result<(), TestError> {
         let codec = V2024_11_05;
         let mut ir = ToolResult::new(vec![Content::Text(TextContent::new("x"))]);
         ir.content.push(Content::Unknown(UnknownContent {
             type_name: "video".to_owned(),
-            raw: JsonObject::new(r#"{"type":"video"}"#.to_owned()).expect("valid JSON object"),
+            raw: JsonObject::new(r#"{"type":"video"}"#.to_owned())?,
             extensions: crate::domain::ir::Extensions::empty(),
         }));
 
         let mut report = TranslationReport::new(codec.version());
-        let error = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect_err("no union member for it");
+        let Err(error) = codec.lower(ir, DegradePolicy::strict(), &mut report) else {
+            return Err("this must be refused".into());
+        };
         assert!(
             error.to_string().contains("video"),
             "the error must name the block: {error}"
         );
+        Ok(())
     }
 
     /// Audio arrives at `2025-03-26`, so the gate refuses it here before the
     /// codec is ever reached. This is the gate working, and the codec must not
     /// be a second place that decides.
     #[test]
-    fn audio_is_refused_by_the_gate_before_the_codec_sees_it() {
+    fn audio_is_refused_by_the_gate_before_the_codec_sees_it() -> Result<(), TestError> {
         let codec = V2024_11_05;
         let ir = ToolResult::new(vec![Content::Audio(crate::domain::ir::AudioContent::new(
             "AAA",
@@ -539,9 +540,9 @@ mod tests {
         ))]);
 
         let mut report = TranslationReport::new(codec.version());
-        let error = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect_err("audio needs 2025-03-26");
+        let Err(error) = codec.lower(ir, DegradePolicy::strict(), &mut report) else {
+            return Err("this must be refused".into());
+        };
 
         let gate = lower_tool_result(
             ToolResult::new(vec![Content::Audio(crate::domain::ir::AudioContent::new(
@@ -554,12 +555,13 @@ mod tests {
         );
         assert!(gate.is_err(), "the gate is what refuses, not the codec");
         assert!(!error.to_string().is_empty());
+        Ok(())
     }
 
     /// The IR's own round trip, independent of the wire, so a failure here
     /// points at the IR rather than at the codec.
     #[test]
-    fn a_typed_result_survives_lift_and_lower() {
+    fn a_typed_result_survives_lift_and_lower() -> Result<(), TestError> {
         let codec = V2024_11_05;
         let ir = ToolResult::new(vec![
             Content::Text(TextContent::new("hello")),
@@ -568,11 +570,10 @@ mod tests {
         ]);
 
         let mut report = TranslationReport::new(codec.version());
-        let wire = codec
-            .lower(ir.clone(), DegradePolicy::strict(), &mut report)
-            .expect("expressible");
+        let wire = codec.lower(ir.clone(), DegradePolicy::strict(), &mut report)?;
         assert!(report.is_empty());
         assert_eq!(codec.lift(&wire), ir);
+        Ok(())
     }
 
     /// `Annotations::empty()` on the wire is `None`, not `Some({})`. Writing an

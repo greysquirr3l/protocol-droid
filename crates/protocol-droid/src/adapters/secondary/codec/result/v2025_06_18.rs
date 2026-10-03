@@ -54,21 +54,17 @@ fn lift_annotations(annotations: &wire::Annotations) -> Annotations {
     }
 }
 
-fn lower_annotations(
-    annotations: Option<&Annotations>,
-) -> Result<Option<wire::Annotations>, LowerError> {
-    let Some(annotations) = annotations else {
-        return Ok(None);
-    };
+fn lower_annotations(annotations: Option<&Annotations>) -> Option<wire::Annotations> {
+    let annotations = annotations?;
     let extra = annotations.extensions.to_json_object();
     if annotations.audience.is_empty()
         && annotations.priority.is_none()
         && annotations.last_modified.is_none()
         && extra.is_empty()
     {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(wire::Annotations {
+    Some(wire::Annotations {
         audience: (!annotations.audience.is_empty()).then(|| {
             annotations
                 .audience
@@ -82,7 +78,7 @@ fn lower_annotations(
         last_modified: annotations.last_modified.clone(),
         priority: annotations.priority,
         extra,
-    }))
+    })
 }
 
 /// The key a `structuredContent` that is not a JSON object travels under.
@@ -289,14 +285,14 @@ fn lower_block(block: &Content) -> Result<wire::ContentBlock, LowerError> {
     let lowered = match block {
         Content::Text(text) => wire::ContentBlock::Member0(wire::TextContent {
             meta: take_meta(&text.extensions),
-            annotations: lower_annotations(text.annotations.as_ref())?,
+            annotations: lower_annotations(text.annotations.as_ref()),
             text: text.text.clone(),
             r#type: TEXT_TYPE.to_owned(),
             extra: text.extensions.to_json_object(),
         }),
         Content::Image(image) => wire::ContentBlock::Member1(wire::ImageContent {
             meta: take_meta(&image.extensions),
-            annotations: lower_annotations(image.annotations.as_ref())?,
+            annotations: lower_annotations(image.annotations.as_ref()),
             data: image.data.clone(),
             mime_type: image.mime_type.clone(),
             r#type: IMAGE_TYPE.to_owned(),
@@ -304,7 +300,7 @@ fn lower_block(block: &Content) -> Result<wire::ContentBlock, LowerError> {
         }),
         Content::Audio(audio) => wire::ContentBlock::Member2(wire::AudioContent {
             meta: take_meta(&audio.extensions),
-            annotations: lower_annotations(audio.annotations.as_ref())?,
+            annotations: lower_annotations(audio.annotations.as_ref()),
             data: audio.data.clone(),
             mime_type: audio.mime_type.clone(),
             r#type: AUDIO_TYPE.to_owned(),
@@ -331,7 +327,7 @@ fn lower_block(block: &Content) -> Result<wire::ContentBlock, LowerError> {
             }
             wire::ContentBlock::Member3(wire::ResourceLink {
                 meta: take_meta(&link.extensions),
-                annotations: lower_annotations(link.annotations.as_ref())?,
+                annotations: lower_annotations(link.annotations.as_ref()),
                 description: link.description.clone(),
                 mime_type: link.mime_type.clone(),
                 name: link.name.clone(),
@@ -342,39 +338,7 @@ fn lower_block(block: &Content) -> Result<wire::ContentBlock, LowerError> {
                 extra: link.extensions.to_json_object(),
             })
         }
-        Content::EmbeddedResource(resource) => {
-            let contents = if let Some(text) = &resource.text {
-                wire::EmbeddedResourceResourceChoice::Member0(wire::TextResourceContents {
-                    meta: None,
-                    mime_type: resource.mime_type.clone(),
-                    text: text.clone(),
-                    uri: resource.uri.clone(),
-                    extra: serde_json::Map::new(),
-                })
-            } else if let Some(blob) = &resource.blob {
-                wire::EmbeddedResourceResourceChoice::Member1(wire::BlobResourceContents {
-                    meta: None,
-                    blob: blob.clone(),
-                    mime_type: resource.mime_type.clone(),
-                    uri: resource.uri.clone(),
-                    extra: serde_json::Map::new(),
-                })
-            } else {
-                return Err(LowerError::FieldNotRepresentable {
-                    field: "resource".to_owned(),
-                    expected: "a text or blob body",
-                    detail: "the resource has neither `text` nor `blob`".to_owned(),
-                    target: ProtocolVersion::V2025_06_18,
-                });
-            };
-            wire::ContentBlock::Member4(wire::EmbeddedResource {
-                meta: take_meta(&resource.extensions),
-                annotations: lower_annotations(resource.annotations.as_ref())?,
-                resource: contents,
-                r#type: RESOURCE_TYPE.to_owned(),
-                extra: resource.extensions.to_json_object(),
-            })
-        }
+        Content::EmbeddedResource(resource) => lower_embedded(resource)?,
         Content::Unknown(unknown) => {
             return Err(LowerError::FieldNotRepresentable {
                 field: unknown.type_name.clone(),
@@ -389,58 +353,101 @@ fn lower_block(block: &Content) -> Result<wire::ContentBlock, LowerError> {
     Ok(lowered)
 }
 
+/// Lowers an embedded resource, whose body is a union of its own.
+///
+/// Split out of [`lower_block`] because it is the only arm that has to choose
+/// between two wire types rather than fill one in.
+fn lower_embedded(resource: &EmbeddedResource) -> Result<wire::ContentBlock, LowerError> {
+    let contents = if let Some(text) = &resource.text {
+        wire::EmbeddedResourceResourceChoice::Member0(wire::TextResourceContents {
+            meta: None,
+            mime_type: resource.mime_type.clone(),
+            text: text.clone(),
+            uri: resource.uri.clone(),
+            extra: serde_json::Map::new(),
+        })
+    } else if let Some(blob) = &resource.blob {
+        wire::EmbeddedResourceResourceChoice::Member1(wire::BlobResourceContents {
+            meta: None,
+            blob: blob.clone(),
+            mime_type: resource.mime_type.clone(),
+            uri: resource.uri.clone(),
+            extra: serde_json::Map::new(),
+        })
+    } else {
+        return Err(LowerError::FieldNotRepresentable {
+            field: "resource".to_owned(),
+            expected: "a text or blob body",
+            detail: "the resource has neither `text` nor `blob`".to_owned(),
+            target: ProtocolVersion::V2025_06_18,
+        });
+    };
+    Ok(wire::ContentBlock::Member4(wire::EmbeddedResource {
+        meta: take_meta(&resource.extensions),
+        annotations: lower_annotations(resource.annotations.as_ref()),
+        resource: contents,
+        r#type: RESOURCE_TYPE.to_owned(),
+        extra: resource.extensions.to_json_object(),
+    }))
+}
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "tests assert on fallible calls and panic with the failing precondition; propagating errors would replace a clear failure message with noise"
-    )]
-
-    use std::assert_matches;
-
     use super::V2025_06_18;
-    use crate::domain::{Feature, ProtocolVersion};
+    use crate::domain::DegradePolicy;
+    use crate::domain::ir::Codec;
     use crate::domain::ir::lower::{LowerError, TranslationReport};
     use crate::domain::ir::{Content, ResourceLinkContent, ToolResult};
-    use crate::domain::ir::Codec;
-    use crate::domain::DegradePolicy;
+    use crate::domain::{Feature, ProtocolVersion};
 
-    fn round_trip(json: &str) -> serde_json::Value {
+    /// What a test fails with.
+    ///
+    /// One type for every error a test body can hit, so `?` carries a codec
+    /// error, a JSON error or a bare message alike and the harness prints it
+    /// rather than the test having to choose between three error types.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn round_trip(json: &str) -> Result<serde_json::Value, TestError> {
         let codec = V2025_06_18;
-        let wire: super::wire::CallToolResult = serde_json::from_str(json).expect("fixture parses");
+        let wire: super::wire::CallToolResult = serde_json::from_str(json)?;
         let mut report = TranslationReport::new(codec.version());
-        let lowered = codec
-            .lower(codec.lift(&wire), DegradePolicy::strict(), &mut report)
-            .expect("expressible at 2025-06-18");
-        serde_json::to_value(&lowered).expect("serialises")
+        let lowered = codec.lower(codec.lift(&wire), DegradePolicy::strict(), &mut report)?;
+        Ok(serde_json::to_value(&lowered)?)
     }
 
     /// A resource link is inserted as the *fourth* arm here, which pushes the
     /// embedded resource to fifth. The union is untagged, so getting that wrong
     /// does not fail — a link would arrive as a resource and vice versa.
     #[test]
-    fn a_link_and_a_resource_land_in_different_arms() {
+    fn a_link_and_a_resource_land_in_different_arms() -> Result<(), TestError> {
         let codec = V2025_06_18;
-        let link: super::wire::CallToolResult =
-            serde_json::from_str(r#"{"content":[{"type":"resource_link","uri":"file:///a","name":"a"}]}"#)
-                .expect("parses");
-        let resource: super::wire::CallToolResult =
-            serde_json::from_str(r#"{"content":[{"type":"resource","resource":{"uri":"file:///a","text":"b"}}]}"#)
-                .expect("parses");
+        let link: super::wire::CallToolResult = serde_json::from_str(
+            r#"{"content":[{"type":"resource_link","uri":"file:///a","name":"a"}]}"#,
+        )?;
+        let resource: super::wire::CallToolResult = serde_json::from_str(
+            r#"{"content":[{"type":"resource","resource":{"uri":"file:///a","text":"b"}}]}"#,
+        )?;
 
         assert!(matches!(
-            codec.lift(&link).content[0],
+            codec
+                .lift(&link)
+                .content
+                .first()
+                .ok_or("the link has no blocks")?,
             Content::ResourceLink(_)
         ));
         assert!(matches!(
-            codec.lift(&resource).content[0],
+            codec
+                .lift(&resource)
+                .content
+                .first()
+                .ok_or("the resource has no blocks")?,
             Content::EmbeddedResource(_)
         ));
+        Ok(())
     }
 
     #[test]
-    fn a_result_round_trips_through_json() {
+    fn a_result_round_trips_through_json() -> Result<(), TestError> {
         for json in [
             r#"{"content":[{"type":"text","text":"hello"}]}"#,
             r#"{"content":[{"type":"resource","resource":{"uri":"file:///a","text":"body"}}]}"#,
@@ -448,49 +455,51 @@ mod tests {
             r#"{"content":[{"type":"text","text":"x","annotations":{"lastModified":"2025-06-18T00:00:00Z","priority":0.1}}]}"#,
         ] {
             assert_eq!(
-                round_trip(json),
-                serde_json::from_str::<serde_json::Value>(json).expect("valid JSON"),
+                round_trip(json)?,
+                serde_json::from_str::<serde_json::Value>(json)?,
                 "did not survive the crossing"
             );
         }
+        Ok(())
     }
 
     /// A block gains its own `_meta` at this revision, and it has to come back
     /// as a field rather than as a member of the catch-all bag.
     #[test]
-    fn a_blocks_meta_survives_as_a_field() {
+    fn a_blocks_meta_survives_as_a_field() -> Result<(), TestError> {
         let json = r#"{"content":[{"type":"text","text":"x","_meta":{"tag":"a"}}]}"#;
         let codec = V2025_06_18;
-        let wire: super::wire::CallToolResult = serde_json::from_str(json).expect("parses");
+        let wire: super::wire::CallToolResult = serde_json::from_str(json)?;
         let ir = codec.lift(&wire);
 
         let mut report = TranslationReport::new(codec.version());
-        let lowered = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect("expressible");
-        let super::wire::ContentBlock::Member0(text) = &lowered.content[0] else {
-            panic!("a text block must lower to the text arm");
+        let lowered = codec.lower(ir, DegradePolicy::strict(), &mut report)?;
+        let block = lowered.content.first().ok_or("the result has no blocks")?;
+        let super::wire::ContentBlock::Member0(text) = block else {
+            return Err("a text block must lower to the text arm".into());
         };
         assert_eq!(text.meta, Some(serde_json::json!({"tag": "a"})));
+        Ok(())
     }
 
     /// The wire type is a bare `Value`, so a peer may send a `structuredContent`
     /// that is not an object. The IR's field holds only objects, so the value
     /// rides in the bag — dropping it would be the one thing a lift may not do.
     #[test]
-    fn a_non_object_structured_content_survives_whole() {
+    fn a_non_object_structured_content_survives_whole() -> Result<(), TestError> {
         let json = r#"{"content":[],"structuredContent":[1,2]}"#;
         assert_eq!(
-            round_trip(json),
-            serde_json::from_str::<serde_json::Value>(json).expect("valid JSON")
+            round_trip(json)?,
+            serde_json::from_str::<serde_json::Value>(json)?
         );
+        Ok(())
     }
 
     /// `size` is `i64` on the wire and `u64` here, so a size past `i64::MAX`
     /// has no representation and is refused rather than clamped to something the
     /// sender did not write.
     #[test]
-    fn a_size_this_revision_cannot_hold_is_refused() {
+    fn a_size_this_revision_cannot_hold_is_refused() -> Result<(), TestError> {
         let codec = V2025_06_18;
         let ir = ToolResult::new(vec![Content::ResourceLink(ResourceLinkContent {
             size: Some(u64::MAX),
@@ -498,14 +507,13 @@ mod tests {
         })]);
 
         let mut report = TranslationReport::new(codec.version());
-        let error = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect_err("i64 cannot hold this");
+        let Err(error) = codec.lower(ir, DegradePolicy::strict(), &mut report) else {
+            return Err("i64 cannot hold this size, so it must be refused".into());
+        };
         assert!(error.to_string().contains("size"), "{error}");
+        Ok(())
     }
 
-    /// `icons` arrive at `2025-11-25`, so there is no field to write them into
-    /// at this revision.
     /// The gate refuses `icons` before the codec is reached.
     ///
     /// `ResourceLinkContent::required_features` raises the feature when the
@@ -514,7 +522,9 @@ mod tests {
     /// value rather than its `Display`, for the reason given in the
     /// `2025-03-26` codec's equivalent test.
     #[test]
-    fn icons_are_refused_by_the_gate_rather_than_dropped() {
+    fn icons_are_refused_by_the_gate_rather_than_dropped() -> Result<(), TestError> {
+        use std::assert_matches;
+
         let codec = V2025_06_18;
         let link = ResourceLinkContent {
             icons: vec![crate::domain::ir::ResourceIcon::new("file:///i.png")],
@@ -522,13 +532,13 @@ mod tests {
         };
 
         let mut report = TranslationReport::new(codec.version());
-        let error = codec
-            .lower(
-                ToolResult::new(vec![Content::ResourceLink(link)]),
-                DegradePolicy::strict(),
-                &mut report,
-            )
-            .expect_err("icons arrive at 2025-11-25");
+        let Err(error) = codec.lower(
+            ToolResult::new(vec![Content::ResourceLink(link)]),
+            DegradePolicy::strict(),
+            &mut report,
+        ) else {
+            return Err("icons arrive at 2025-11-25, so this must be refused".into());
+        };
         assert_matches!(
             error,
             LowerError::FeatureUnavailable {
@@ -536,5 +546,6 @@ mod tests {
                 negotiated: ProtocolVersion::V2025_06_18,
             }
         );
+        Ok(())
     }
 }

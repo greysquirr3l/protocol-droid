@@ -38,9 +38,12 @@
 //! `DegradeRule`'s. A codec that formed a second opinion is how two revisions
 //! start disagreeing about what they support.
 
+pub mod draft;
 pub mod v2024_11_05;
 pub mod v2025_03_26;
 pub mod v2025_06_18;
+pub mod v2025_11_25;
+pub mod v2026_07_28;
 
 /// The key `_meta` travels under in the IR's extension bag.
 ///
@@ -61,3 +64,28 @@ pub(super) const IMAGE_TYPE: &str = "image";
 pub(super) const AUDIO_TYPE: &str = "audio";
 pub(super) const RESOURCE_LINK_TYPE: &str = "resource_link";
 pub(super) const RESOURCE_TYPE: &str = "resource";
+
+#[cfg(test)]
+mod tests {
+    use super::draft::Draft;
+    use super::v2026_07_28::V2026_07_28;
+    use crate::domain::ProtocolVersion;
+    use crate::domain::ir::Codec;
+
+    /// `draft` and `2026-07-28` share a version string, so both codecs report
+    /// the same revision.
+    ///
+    /// Upstream's floating `draft` schema declares
+    /// `LATEST_PROTOCOL_VERSION = "2026-07-28"` — the same as the final
+    /// revision. The two differ in schema shape and nothing else that a peer
+    /// can see. A session that has negotiated a version has no way to tell
+    /// which shape it is talking to, so a codec that reported a sixth version
+    /// would be reporting a distinction the wire does not carry.
+    #[test]
+    fn the_draft_shape_is_not_a_version_of_its_own() {
+        assert_eq!(Draft.version(), ProtocolVersion::V2026_07_28);
+        assert_eq!(V2026_07_28.version(), ProtocolVersion::V2026_07_28);
+        // And it is not a sixth entry in the catalogue.
+        assert_eq!(ProtocolVersion::KNOWN.len(), 5);
+    }
+}

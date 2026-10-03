@@ -291,29 +291,29 @@ fn lower_block(block: &Content) -> Result<wire::CallToolResultContentChoice, Low
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "tests assert on fallible calls and panic with the failing precondition; propagating errors would replace a clear failure message with noise"
-    )]
+
+    /// What a test fails with.
+    ///
+    /// One type for every error a test body can hit, so `?` carries a codec
+    /// error, a JSON error or a bare message alike and the harness prints it
+    /// rather than the test having to choose between three error types.
+    type TestError = Box<dyn std::error::Error>;
 
     use super::V2025_03_26;
     use std::assert_matches;
 
-    use crate::domain::{Feature, ProtocolVersion};
+    use crate::domain::DegradePolicy;
+    use crate::domain::ir::Codec;
     use crate::domain::ir::lower::{LowerError, TranslationReport};
     use crate::domain::ir::{Content, Role, ToolResult};
-    use crate::domain::ir::Codec;
-    use crate::domain::DegradePolicy;
+    use crate::domain::{Feature, ProtocolVersion};
 
-    fn round_trip(json: &str) -> serde_json::Value {
+    fn round_trip(json: &str) -> Result<serde_json::Value, TestError> {
         let codec = V2025_03_26;
-        let wire: super::wire::CallToolResult = serde_json::from_str(json).expect("fixture parses");
+        let wire: super::wire::CallToolResult = serde_json::from_str(json)?;
         let mut report = TranslationReport::new(codec.version());
-        let lowered = codec
-            .lower(codec.lift(&wire), DegradePolicy::strict(), &mut report)
-            .expect("expressible at 2025-03-26");
-        serde_json::to_value(&lowered).expect("serialises")
+        let lowered = codec.lower(codec.lift(&wire), DegradePolicy::strict(), &mut report)?;
+        Ok(serde_json::to_value(&lowered)?)
     }
 
     /// The union is untagged, and audio and image are the same shape: a `type`,
@@ -337,21 +337,28 @@ mod tests {
     /// single-valued type rather than a string. Until then this fails, and
     /// failing is the correct state -- it is the test that should be loud.
     #[test]
-    fn audio_and_image_land_in_different_arms() {
+    fn audio_and_image_land_in_different_arms() -> Result<(), TestError> {
         let codec = V2025_03_26;
-        let audio: super::wire::CallToolResult =
-            serde_json::from_str(r#"{"content":[{"type":"audio","data":"AAA","mimeType":"audio/wav"}]}"#)
-                .expect("parses");
-        let image: super::wire::CallToolResult =
-            serde_json::from_str(r#"{"content":[{"type":"image","data":"AAA","mimeType":"image/png"}]}"#)
-                .expect("parses");
+        let audio: super::wire::CallToolResult = serde_json::from_str(
+            r#"{"content":[{"type":"audio","data":"AAA","mimeType":"audio/wav"}]}"#,
+        )?;
+        let image: super::wire::CallToolResult = serde_json::from_str(
+            r#"{"content":[{"type":"image","data":"AAA","mimeType":"image/png"}]}"#,
+        )?;
 
-        assert!(matches!(codec.lift(&audio).content[0], Content::Audio(_)));
-        assert!(matches!(codec.lift(&image).content[0], Content::Image(_)));
+        assert!(matches!(
+            codec.lift(&audio).content.first().ok_or("no audio block")?,
+            Content::Audio(_)
+        ));
+        assert!(matches!(
+            codec.lift(&image).content.first().ok_or("no image block")?,
+            Content::Image(_)
+        ));
+        Ok(())
     }
 
     #[test]
-    fn a_result_round_trips_through_json() {
+    fn a_result_round_trips_through_json() -> Result<(), TestError> {
         for json in [
             r#"{"content":[{"type":"text","text":"hello"}]}"#,
             r#"{"content":[{"type":"resource","resource":{"uri":"file:///a","text":"body"}}]}"#,
@@ -359,22 +366,24 @@ mod tests {
             r#"{"content":[],"isError":true}"#,
         ] {
             assert_eq!(
-                round_trip(json),
-                serde_json::from_str::<serde_json::Value>(json).expect("valid JSON"),
+                round_trip(json)?,
+                serde_json::from_str::<serde_json::Value>(json)?,
                 "did not survive the crossing"
             );
         }
+        Ok(())
     }
 
     /// Typed `annotations` means an unmodelled member lands in the struct's
     /// `extra` bag rather than anywhere else, and has to come back out.
     #[test]
-    fn an_unmodelled_annotation_member_survives_the_structs_extra_bag() {
+    fn an_unmodelled_annotation_member_survives_the_structs_extra_bag() -> Result<(), TestError> {
         let json = r#"{"content":[{"type":"text","text":"x","annotations":{"audience":["user"],"unheardOf":true}}]}"#;
         assert_eq!(
-            round_trip(json),
-            serde_json::from_str::<serde_json::Value>(json).expect("valid JSON")
+            round_trip(json)?,
+            serde_json::from_str::<serde_json::Value>(json)?
         );
+        Ok(())
     }
 
     /// Annotations are typed here, so `lastModified` has no field to land in.
@@ -390,24 +399,22 @@ mod tests {
     /// formatting rather than of the behaviour. Matching the variant is what
     /// says the refusal was for the right reason.
     #[test]
-    fn last_modified_is_refused_by_the_gate() {
+    fn last_modified_is_refused_by_the_gate() -> Result<(), TestError> {
         let codec = V2025_03_26;
-        let ir = ToolResult::new(vec![Content::Text(
-            crate::domain::ir::TextContent {
-                text: "x".to_owned(),
-                annotations: Some(crate::domain::ir::Annotations {
-                    last_modified: Some("2025-06-18T00:00:00Z".to_owned()),
-                    audience: vec![Role::User],
-                    ..crate::domain::ir::Annotations::empty()
-                }),
-                extensions: crate::domain::ir::Extensions::empty(),
-            },
-        )]);
+        let ir = ToolResult::new(vec![Content::Text(crate::domain::ir::TextContent {
+            text: "x".to_owned(),
+            annotations: Some(crate::domain::ir::Annotations {
+                last_modified: Some("2025-06-18T00:00:00Z".to_owned()),
+                audience: vec![Role::User],
+                ..crate::domain::ir::Annotations::empty()
+            }),
+            extensions: crate::domain::ir::Extensions::empty(),
+        })]);
 
         let mut report = TranslationReport::new(codec.version());
-        let error = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect_err("this revision has no lastModified");
+        let Err(error) = codec.lower(ir, DegradePolicy::strict(), &mut report) else {
+            return Err("this must be refused".into());
+        };
         assert_matches!(
             error,
             LowerError::FeatureUnavailable {
@@ -415,21 +422,24 @@ mod tests {
                 negotiated: ProtocolVersion::V2025_03_26,
             }
         );
+        Ok(())
     }
 
     /// `structuredContent` does not exist at this revision, so there is no
     /// field to write it into and no way to carry it.
     #[test]
-    fn structured_content_is_refused_by_the_gate() {
+    fn structured_content_is_refused_by_the_gate() -> Result<(), TestError> {
         let codec = V2025_03_26;
-        let ir = ToolResult::new(vec![Content::Text(crate::domain::ir::TextContent::new("x"))])
-            .with_structured(r#"{"a":1}"#)
-            .expect("valid");
+        let ir = ToolResult::new(vec![Content::Text(crate::domain::ir::TextContent::new(
+            "x",
+        ))])
+        .with_structured(r#"{"a":1}"#)?;
 
         let mut report = TranslationReport::new(codec.version());
-        let error = codec
-            .lower(ir, DegradePolicy::strict(), &mut report)
-            .expect_err("structuredContent arrives at 2025-06-18");
+        let Err(error) = codec.lower(ir, DegradePolicy::strict(), &mut report) else {
+            return Err("this must be refused".into());
+        };
         assert!(!error.to_string().is_empty());
+        Ok(())
     }
 }
