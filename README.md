@@ -89,6 +89,30 @@ Two rules are worth knowing before reading the code:
   `--no-default-features` build sheds transports and heavy integrations, never
   spec revisions.
 
+## Releasing
+
+The release chain is automated end to end, with one manual step that is not
+visible in the code:
+
+```
+CI (on main, green) → auto-tag.yml → tag → release.yml → crates.io
+```
+
+A tag is created with `GITHUB_TOKEN`, which deliberately does **not** trigger
+other workflows' `on: push` filters — so `release.yml` is triggered by
+`workflow_run`, not by `push: tags`, and resolves the tag from the run's
+`head_sha`.
+
+> **Before the first release**, create a GitHub Environment named `release`
+> (repository → Settings → Environments) and enable **Required reviewers** on
+> it.
+>
+> `release.yml` declares `environment: release`, but nothing in this repository
+> creates it. Without that manual step the key is a no-op and the publish job
+> runs unattended — the exact thing it was added to prevent. There is also
+> nothing to do if you are on a fork with no registry token: the job warns and
+> exits 0 instead of failing the chain.
+
 ## Licence
 
 MIT OR Apache-2.0.

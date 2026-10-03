@@ -16,13 +16,19 @@ permissions:
 jobs:
   tag:
     name: tag
-    # Only a green run on main earns a tag. The pull_requests guard matters:
-    # `workflow_run` also fires for the CI runs GitHub performs on pull
-    # requests, and those must never produce a tag.
+    # Only a green run on main earns a tag.
+    #
+    # `workflow_run.event` is the event that *started* the upstream run, so it
+    # is what tells a push to main apart from a pull request, and that clause is
+    # the whole guard.
+    #
+    # A `github.event.pull_requests[0] == null` clause used to sit here as a
+    # second guard. It never did anything: the `workflow_run` payload has no
+    # `pull_requests` key at all — that array only appears in `pull_request*`
+    # events — so the lookup was always null and the comparison always true.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.pull_requests[0] == null
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     permissions:
       # The one job in this repository that needs write access.

@@ -84,6 +84,12 @@ jobs:
     runs-on: ubuntu-latest
     # Gate the upload on a reviewable environment rather than letting a green
     # CI run push four crates to crates.io unattended.
+    #
+    # THIS IS A NO-OP UNLESS THE ENVIRONMENT IS CONFIGURED. Nothing in this
+    # repository creates it, so until someone creates an environment named
+    # `release` in the repository settings *with required reviewers enabled*,
+    # the publish step runs unattended. The key is kept because it is the right
+    # shape; the gate is manual setup, not code. See "Releasing" in README.md.
     environment: release
     permissions:
       contents: read
