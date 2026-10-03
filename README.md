@@ -91,8 +91,19 @@ Two rules are worth knowing before reading the code:
 
 ## Releasing
 
-The release chain is automated end to end, with one manual step that is not
-visible in the code:
+> **Automatic release is currently disabled.** `release.yml` has no automatic
+> trigger on purpose. The `publish` job uploads four crates to crates.io, and the
+> review gate meant to sit in front of it does not exist: the `release`
+> environment is created but carries no protection rules, because GitHub does
+> not offer required reviewers for private repositories on the free plan. The
+> automatic trigger was removed rather than left armed behind a gate that does
+> not bite.
+>
+> To re-enable, see the comment at the top of
+> [release.yml](.github/workflows/release.yml) — it takes two changes, and the
+> environment rules are the one that is not code.
+
+The chain, once re-enabled, is:
 
 ```
 CI (on main, green) → auto-tag.yml → tag → release.yml → crates.io
@@ -103,15 +114,8 @@ other workflows' `on: push` filters — so `release.yml` is triggered by
 `workflow_run`, not by `push: tags`, and resolves the tag from the run's
 `head_sha`.
 
-> **Before the first release**, create a GitHub Environment named `release`
-> (repository → Settings → Environments) and enable **Required reviewers** on
-> it.
->
-> `release.yml` declares `environment: release`, but nothing in this repository
-> creates it. Without that manual step the key is a no-op and the publish job
-> runs unattended — the exact thing it was added to prevent. There is also
-> nothing to do if you are on a fork with no registry token: the job warns and
-> exits 0 instead of failing the chain.
+There is also nothing to do if you are on a fork with no registry token: the
+publish job warns and exits 0 instead of failing the chain.
 
 ## Licence
 

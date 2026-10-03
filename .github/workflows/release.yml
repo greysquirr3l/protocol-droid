@@ -1,12 +1,23 @@
 name: Release
 
-# Triggered by Auto Tag completing. `on: push: tags` would never fire here,
-# because the tag is pushed with GITHUB_TOKEN and GitHub deliberately suppresses
-# workflow triggers for pushes made with that token.
+# DISABLED — manual trigger only. There is deliberately no automatic trigger.
+#
+# The `publish` job uploads four crates to crates.io, and the review gate that
+# is supposed to sit in front of it is not real: the `release` environment
+# exists but carries no protection rules, because GitHub does not offer required
+# reviewers for private repositories on the free plan. The former
+# `workflow_run` trigger meant a green CI run on main would publish unattended.
+#
+# Re-enabling release means doing both of these, not just the first:
+#   1. add required reviewers to the `release` environment, or move the
+#      repository to a plan that supports them, and
+#   2. restore the `workflow_run` trigger on completion of "Auto Tag", which is
+#      how a tag becomes a release.
+#
+# Nothing is dispatched by accident in the meantime. `resolve-tag` fails fast
+# if a run does start, rather than publishing from a half-resolved state.
 on:
-  workflow_run:
-    workflows: ["Auto Tag"]
-    types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,6 +36,14 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
+      # This workflow is disabled (see the top of the file). A manual dispatch
+      # carries no `workflow_run` payload, so fail here with the reason rather
+      # than letting a half-resolved run reach `publish`.
+      - name: Refuse a manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "::error::automatic release is disabled. Re-enable it per the comment at the top of this file before publishing."
+          exit 1
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
