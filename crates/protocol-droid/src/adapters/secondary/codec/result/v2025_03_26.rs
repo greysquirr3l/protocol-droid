@@ -334,7 +334,6 @@ mod tests {
     /// single-valued type rather than a string. Until then this fails, and
     /// failing is the correct state -- it is the test that should be loud.
     #[test]
-    #[ignore = "codegen emits `type` as String, so the union cannot tell audio from image"]
     fn audio_and_image_land_in_different_arms() {
         let codec = V2025_03_26;
         let audio: super::wire::CallToolResult =
@@ -388,7 +387,7 @@ mod tests {
     /// than on the message: the refusal happens, one layer later than the
     /// design intends.
     #[test]
-    #[ignore = "the gate does not raise ToolAnnotationsLastModified; the codec is catching it instead"]
+    #[ignore = "OPEN: the value lowers instead of being refused; root cause not yet located"]
     fn last_modified_is_refused_rather_than_smuggled_into_extra() {
         let codec = V2025_03_26;
         let ir = ToolResult::new(vec![Content::Text(

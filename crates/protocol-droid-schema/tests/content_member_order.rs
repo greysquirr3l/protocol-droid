@@ -217,8 +217,7 @@ fn arm_is_claimed_by_const() {
 /// for the other and re-serialization genuinely discriminates here.
 #[test]
 fn arms_that_differ_in_shape_do_discriminate() {
-    let link: v2025_06_18::ContentBlock =
-        serde_json::from_value(block("link")).expect("parses");
+    let link: v2025_06_18::ContentBlock = serde_json::from_value(block("link")).expect("parses");
     assert!(matches!(link, v2025_06_18::ContentBlock::Member3(_)));
 
     let resource: v2025_06_18::ContentBlock =

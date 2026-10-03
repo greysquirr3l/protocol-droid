@@ -200,26 +200,112 @@ pub fn emit(file: &SchemaFile) -> Generated {
             .map(|(i, m)| lower(m, &file.defs, &member_path(ident, i)))
             .collect();
 
-        let _ = writeln!(
-            source,
-            "/// One of the alternatives the specification allows for `{doc_name}`.\n\
-             ///\n\
-             /// Emitted untagged: JSON carries no wrapper identifying which\n\
-             /// alternative was sent, so serde matches the first member that\n\
-             /// round-trips. That matches `anyOf` closely enough for the wire\n\
-             /// types, and the ordering here is the schema's own."
-        );
-        let _ = writeln!(
-            source,
-            "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]"
-        );
-        let _ = writeln!(source, "#[serde(untagged)]");
-        let _ = writeln!(source, "pub enum {ident} {{");
-        for (i, member) in members.iter().enumerate() {
-            let _ = writeln!(source, "    /// Alternative {i}.", i = i + 1);
-            let _ = writeln!(source, "    Member{i}({ty}),", ty = member.render());
+        // A member that fixes its own `type` is a union that can be told apart
+        // by its discriminant rather than by member order. See
+        // `discriminants` for why that distinction is the whole point.
+        let discriminants: Option<Vec<&str>> = union
+            .members
+            .iter()
+            .map(|m| type_const(m, &file.defs))
+            .collect::<Option<Vec<_>>>()
+            .filter(|tags| {
+                // Dispatch is only sound when the discriminant is *injective* --
+                // when a tag identifies exactly one alternative. A union whose
+                // members nest their own unions can have three members all
+                // tagged `string`, and a `match` on that cannot tell them apart
+                // however it is written. Those keep the untagged fallback, which
+                // is right: the tag is not carrying the information the arms
+                // differ by.
+                let unique = tags.iter().collect::<std::collections::BTreeSet<_>>();
+                unique.len() == tags.len()
+            });
+
+        match &discriminants {
+            Some(tags) => {
+                let _ = writeln!(
+                    source,
+                    "/// One of the alternatives the specification allows for `{doc_name}`.\n\
+                     ///\n\
+                     /// Dispatched on the `type` member. Every alternative fixes\n\
+                     /// its own `type`, so the JSON *does* say which one was sent\n\
+                     /// even though it is not wrapped — and matching on member order\n\
+                     /// instead would be guessing. `ImageContent` and `AudioContent`\n\
+                     /// are both `{{ data, mimeType }}`; tried in order, an audio\n\
+                     /// block matches the image arm and is re-emitted with\n\
+                     /// `\"type\": \"image\"`, silently and without an error.\n\
+                     ///\n\
+                     /// An unrecognised or absent `type` is a decode failure rather\n\
+                     /// than a fall-through, so a malformed message cannot be quietly\n\
+                     /// accepted as whichever alternative happens to parse."
+                );
+                // `Serialize` keeps `untagged`; only `Deserialize` is
+                // hand-written. The attribute has to stay even though the
+                // manual impl ignores it, or the enum encodes as
+                // `{"Member0": {...}}` rather than as the member itself.
+                let _ = writeln!(source, "#[derive(Debug, Clone, PartialEq, Serialize)]");
+                let _ = writeln!(source, "#[serde(untagged)]");
+                let _ = writeln!(source, "pub enum {ident} {{");
+                for (i, member) in members.iter().enumerate() {
+                    let _ = writeln!(source, "    /// Alternative {i}.", i = i + 1);
+                    let _ = writeln!(source, "    Member{i}({ty}),", ty = member.render());
+                }
+                let _ = writeln!(source, "}}\n");
+                let _ = writeln!(source, "impl<'de> serde::Deserialize<'de> for {ident} {{");
+                // `Result` is fully qualified because the specification defines
+                // a type of that name, and it is in scope in every generated
+                // module: an unqualified `Result<Self, D::Error>` resolves to
+                // the MCP one, which takes no generic arguments.
+                let _ = writeln!(
+                    source,
+                    "    fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>\n    \
+                     where\n        D: serde::Deserializer<'de>,\n    {{"
+                );
+                let _ = writeln!(
+                    source,
+                    "        let value = serde_json::Value::deserialize(deserializer)?;\n\
+                     \x20       let tag = value\n            .get(\"type\")\n            .and_then(serde_json::Value::as_str)\n            .ok_or_else(|| serde::de::Error::custom(\"a `{doc_name}` must carry a `type` string\"))?;\n\
+                     \x20       match tag {{"
+                );
+                for (i, tag) in tags.iter().enumerate() {
+                    let _ = writeln!(
+                        source,
+                        "            \"{tag}\" => serde_json::from_value(value)\n                \
+                         .map(|inner| {ident}::Member{i}(inner))\n                \
+                         .map_err(<D::Error as serde::de::Error>::custom),"
+                    );
+                }
+                let listed = tags.join(", ");
+                let _ = writeln!(
+                    source,
+                    "            other => Err(<D::Error as serde::de::Error>::custom(format!(\n                \
+                     \"`{{other}}` is not a {doc_name}; expected one of {listed}\"))),"
+                );
+                let _ = writeln!(source, "        }}");
+                let _ = writeln!(source, "    }}");
+                let _ = writeln!(source, "}}\n");
+            }
+            None => {
+                let _ = writeln!(
+                    source,
+                    "/// One of the alternatives the specification allows for `{doc_name}`.\n\
+                     ///\n\
+                     /// Emitted untagged: the alternatives are not told apart by a\n\
+                     /// `type` member, so serde matches the first that round-trips and\n\
+                     /// the ordering here is the schema's own."
+                );
+                let _ = writeln!(
+                    source,
+                    "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]"
+                );
+                let _ = writeln!(source, "#[serde(untagged)]");
+                let _ = writeln!(source, "pub enum {ident} {{");
+                for (i, member) in members.iter().enumerate() {
+                    let _ = writeln!(source, "    /// Alternative {i}.", i = i + 1);
+                    let _ = writeln!(source, "    Member{i}({ty}),", ty = member.render());
+                }
+                let _ = writeln!(source, "}}\n");
+            }
         }
-        let _ = writeln!(source, "}}\n");
     }
 
     let _ = writeln!(
@@ -255,6 +341,23 @@ pub fn emit(file: &SchemaFile) -> Generated {
         type_names: file.defs.keys().cloned().collect(),
         dangling_refs: dangling,
     }
+}
+
+/// The `type` value a union member fixes for itself, if it fixes one.
+///
+/// The specification discriminates its content blocks with
+/// `{"type": "image", "const": ...}`-shaped members, and the model already
+/// carries that `const` — [`Schema::constant`]. Reading it back here is what
+/// lets the union dispatch on the tag the peer actually sent.
+///
+/// A member that is not a reference, or whose target declares no `type`, or
+/// whose `type` carries no string `const`, yields `None`; the caller then
+/// falls back to matching on order, because a union with a member that fixes
+/// no tag cannot be dispatched at all.
+fn type_const<'a>(member: &'a Schema, defs: &'a BTreeMap<String, Schema>) -> Option<&'a str> {
+    let target = member.def_ref()?;
+    let property = defs.get(target)?.properties.get("type")?;
+    property.constant.as_ref()?.as_str()
 }
 
 fn emit_def(out: &mut String, name: &str, schema: &Schema, defs: &BTreeMap<String, Schema>) {
