@@ -89,6 +89,52 @@ Two rules are worth knowing before reading the code:
   `--no-default-features` build sheds transports and heavy integrations, never
   spec revisions.
 
+## Branch protection
+
+`main` is protected by [`.github/branch-protection.json`](.github/branch-protection.json),
+which follows the OpenSSF Baseline branch-protection controls. Re-apply it with:
+
+```bash
+./scripts/apply-branch-protection.sh          # defaults to the current repo
+./scripts/apply-branch-protection.sh owner/repo
+```
+
+There is no sync *from* GitHub. Editing protection in the settings UI works,
+but the next run of that script reverts it, so changes belong in the file.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Required PR reviews | 1 | No direct commits to `main` |
+| Stale reviews dismissed | yes | Approval does not survive new pushes |
+| Conversation resolution | required | Review threads get resolved, not ignored |
+| Force pushes | blocked | |
+| Branch deletion | blocked | Deleting the primary branch is deliberate |
+| Status checks | 9, strict | See below |
+| **`enforce_admins`** | **`false`** | **Deviation — see below** |
+
+> **Deviation: admins can bypass.** `enforce_admins` is `false`, so a repository
+> admin can push straight to `main` and bypass every rule above. That does not
+> meet the baseline, which treats admin bypass as a finding. It is on for now
+> because this is a solo repository and an admin-only lockout is worse than the
+> gap. Flipping it to `true` is a one-word change in the payload.
+
+### The nine status checks
+
+They are the names CI actually *reports*, not the job ids in `ci.yml`. The test
+job is a 3 × 2 matrix, so it emits six separate checks; naming a single literal
+`test` context would leave five of them ungated while the branch looked
+protected.
+
+```
+fmt   clippy   supply chain
+test (ubuntu-latest,  all-features)          test (ubuntu-latest,  no-default-features)
+test (macos-latest,  all-features)          test (macos-latest,  no-default-features)
+test (windows-latest, all-features)         test (windows-latest, no-default-features)
+```
+
+Renaming a CI job means updating this file in the same commit, or `main` becomes
+unmergeable on a context that will never report.
+
 ## Releasing
 
 > **Automatic release is currently disabled.** `release.yml` has no automatic
