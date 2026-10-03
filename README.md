@@ -99,18 +99,18 @@ which follows the OpenSSF Baseline branch-protection controls. Re-apply it with:
 ./scripts/apply-branch-protection.sh owner/repo
 ```
 
-There is no sync *from* GitHub. Editing protection in the settings UI works,
+There is no sync _from_ GitHub. Editing protection in the settings UI works,
 but the next run of that script reverts it, so changes belong in the file.
 
-| Setting | Value | Why |
-| --- | --- | --- |
-| Required PR reviews | 1 | No direct commits to `main` |
-| Stale reviews dismissed | yes | Approval does not survive new pushes |
-| Conversation resolution | required | Review threads get resolved, not ignored |
-| Force pushes | blocked | |
-| Branch deletion | blocked | Deleting the primary branch is deliberate |
-| Status checks | 9, strict | See below |
-| **`enforce_admins`** | **`false`** | **Deviation — see below** |
+| Setting                 | Value       | Why                                       |
+| ----------------------- | ----------- | ----------------------------------------- |
+| Required PR reviews     | 1           | No direct commits to `main`               |
+| Stale reviews dismissed | yes         | Approval does not survive new pushes      |
+| Conversation resolution | required    | Review threads get resolved, not ignored  |
+| Force pushes            | blocked     |                                           |
+| Branch deletion         | blocked     | Deleting the primary branch is deliberate |
+| Status checks           | 9, strict   | See below                                 |
+| **`enforce_admins`**    | **`false`** | **Deviation — see below**                 |
 
 > **Deviation: admins can bypass.** `enforce_admins` is `false`, so a repository
 > admin can push straight to `main` and bypass every rule above. That does not
@@ -120,7 +120,7 @@ but the next run of that script reverts it, so changes belong in the file.
 
 ### The nine status checks
 
-They are the names CI actually *reports*, not the job ids in `ci.yml`. The test
+They are the names CI actually _reports_, not the job ids in `ci.yml`. The test
 job is a 3 × 2 matrix, so it emits six separate checks; naming a single literal
 `test` context would leave five of them ungated while the branch looked
 protected.

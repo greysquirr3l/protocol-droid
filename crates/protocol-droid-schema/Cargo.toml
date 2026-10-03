@@ -25,12 +25,13 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
 
-# build.rs `include!`s src/domain/manifest.rs so the build script and the
-# integration test verify the vendored tree through one implementation instead of
-# two copies that can drift. The included file must therefore stay free of
-# `crate::` references, and every crate it uses must appear here.
+# build.rs `#[path]`-includes src/domain/manifest.rs and src/generator/** so the
+# build script and the library share one implementation instead of two copies
+# that can drift. The included files must therefore stay free of `crate::`
+# references, and every crate they use must appear here.
 [build-dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
