@@ -24,9 +24,15 @@
 //!   that names a rule for the missing feature, the rule applies and the report
 //!   says so.
 //!
-//! There is no third outcome, and that is the property worth stating: lowering
-//! never returns a value it cannot account for. A caller that gets `Ok` either
-//! has a lossless translation or a report that names what was lost.
+//! The third outcome is not a downgrade but a refusal of a different kind:
+//! [`LowerError::FieldNotRepresentable`], where the value is fine as untyped
+//! data but does not fit a struct the target revision requires. That one is a
+//! property of the value rather than of the revision, so no policy can authorise
+//! it; see the variant for why the alternatives are worse.
+//!
+//! What still holds is the property worth stating: lowering never returns a
+//! value it cannot account for. A caller that gets `Ok` either has a lossless
+//! translation or a report that names what was lost.
 
 mod report;
 mod rule;
@@ -61,6 +67,61 @@ pub enum LowerError {
     NoRuleForFeature {
         /// The feature with no rule.
         feature: Feature,
+    },
+
+    /// A field the target revision types as a struct does not fit it.
+    ///
+    /// This is the `2026-07-28` `meta` case, and it is deliberately *not* a
+    /// [`LowerError::FeatureUnavailable`]. That variant says a revision cannot
+    /// express a shape at all, so the fix is to negotiate something else or
+    /// authorise a downgrade. This one says a *value* does not fit a shape: the
+    /// same value lowers cleanly at `2025-06-18`, where `meta` is an untyped
+    /// `serde_json::Value`, and fails at every revision that types it. Reporting
+    /// it as a missing feature would put a false claim in the error — that the
+    /// field is unavailable at the older revision — and would refuse messages
+    /// that lower perfectly well.
+    ///
+    /// # Why no `DegradeRule` applies
+    ///
+    /// Every other variant here can be talked out of by a policy, and three
+    /// options were considered for this one. All three are worse than refusing:
+    ///
+    /// - **Synthesise the missing member.** A fabricated `version` reads as
+    ///   authoritative and was never sent by anyone.
+    /// - **Drop the field, keep the rest of `meta`.** Silent data loss, and
+    ///   `meta` is exactly where a sender puts something it meant to be
+    ///   understood.
+    /// - **Move the value into the struct's `extra` bag.** This one is a trap.
+    ///   `ResultMetaObject` really does carry `#[serde(flatten)] extra`, so
+    ///   putting `io.modelcontextprotocol/serverInfo` in there serialises
+    ///   straight back out and *looks* lossless. It is not: the reader treats
+    ///   that key as a known member and tries to parse it as an `Implementation`,
+    ///   which is the parse that just failed here. So the document is unreadable
+    ///   by its intended reader, and building it anyway launders the rejection
+    ///   out of this layer and onto the peer — where the bridge looks healthy
+    ///   and the error lands a long way from its cause.
+    ///
+    /// Refusing is the only option that leaves the failure where it can be
+    /// diagnosed. Note this leaves nothing for a [`DegradePolicy`] to do, and
+    /// that is the intent rather than an omission: the only rule available would
+    /// discard the sender's data.
+    ///
+    /// # The blast radius is narrower than it looks
+    ///
+    /// The IR holds `meta` as a raw value, so a `meta` lifted from a
+    /// `2026-07-28` peer has already been through that peer's deserialiser and
+    /// will always re-parse. Only a value from a revision that treats `meta` as
+    /// untyped, or one built by hand, can reach this.
+    #[error("`{field}` does not fit {expected} required at {target}: {detail}")]
+    FieldNotRepresentable {
+        /// The JSON key that could not be represented.
+        field: String,
+        /// The type the target revision requires there.
+        expected: &'static str,
+        /// Why the value did not fit it.
+        detail: String,
+        /// The revision that types the field.
+        target: ProtocolVersion,
     },
 }
 
@@ -333,6 +394,49 @@ mod tests {
         CapabilitySet, DegradePolicy, Feature, FeatureProfile, Negotiation, ProtocolVersion,
         TransportKind, resolve,
     };
+
+    /// The two failures are different in kind, and a codec that reports a value
+    /// problem as a capability problem refuses messages that lower cleanly.
+    ///
+    /// `FieldNotRepresentable` is not `FeatureUnavailable` and must not be
+    /// spelled as one. The same `meta` lowers at `2025-06-18` — where the field
+    /// is an untyped value — and fails at `2026-07-28`, where the revision types
+    /// it as a struct with required members. Reading that as "the field needs a
+    /// feature `2025-06-18` lacks" would put a false claim in the error and
+    /// refuse the older revision, which can carry the value untouched.
+    #[test]
+    fn a_value_that_does_not_fit_is_not_reported_as_a_missing_feature() {
+        let not_representable = LowerError::FieldNotRepresentable {
+            field: "io.modelcontextprotocol/serverInfo".to_owned(),
+            expected: "Implementation",
+            detail: "missing field `version`".to_owned(),
+            target: ProtocolVersion::V2026_07_28,
+        };
+        let unavailable = LowerError::FeatureUnavailable {
+            feature: Feature::ToolResultType,
+            negotiated: ProtocolVersion::V2025_06_18,
+        };
+
+        assert_ne!(not_representable, unavailable);
+        assert!(not_representable.to_string().contains("serverInfo"));
+        assert!(!not_representable.to_string().contains("ToolResultType"));
+    }
+
+    /// The error names the target revision, because the same value is fine at
+    /// another one and the diagnostic is useless without it.
+    #[test]
+    fn the_unrepresentable_field_error_names_where_it_failed() {
+        let error = LowerError::FieldNotRepresentable {
+            field: "io.modelcontextprotocol/serverInfo".to_owned(),
+            expected: "Implementation",
+            detail: "missing field `version`".to_owned(),
+            target: ProtocolVersion::V2026_07_28,
+        };
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("2026-07-28"), "{rendered}");
+        assert!(rendered.contains("missing field `version`"), "{rendered}");
+    }
 
     /// A session at `version` with both sides advertising everything that
     /// version defines.
