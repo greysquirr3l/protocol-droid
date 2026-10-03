@@ -27,6 +27,25 @@
 //! value, so a block that landed in the wrong arm comes back with the wrong
 //! tag and the comparison fails. A plain "does it deserialize" assertion would
 //! pass for exactly the bug this is looking for.
+//!
+//! # What that reasoning assumes, and why it does not hold
+//!
+//! The above is wrong, and the mistake was worth leaving visible for a moment
+//! before correcting it.
+//!
+//! It assumes the `type` member *constrains* the arm, so that a block in the
+//! wrong arm necessarily re-serialises to a different tag. It does not. The
+//! generator emits `r#type: String` with only `#[serde(rename = "type")]` — the
+//! specification's `{"const": "image"}` is read into the schema model and then
+//! ignored by the emitter. So a block that lands in the image arm keeps
+//! whatever `type` it was sent with, and re-serialises to **byte-identical**
+//! JSON. `assert_arm_is_stable` therefore passes for precisely the case it
+//! exists to catch, and the suite has been green over a silent corruption.
+//!
+//! `arm_is_claimed_by_const` below is the assertion that actually holds. It
+//! looks at the arm rather than the bytes, so it does not depend on the emitter
+//! enforcing a `const` it currently ignores. It is `#[ignore]`d only because
+//! the bug is real today, not because the assertion is wrong.
 
 // These tests assert on fallible parsing and panic with the failing fixture, so
 // the expected lints are switched off for the file rather than every call site.
@@ -159,4 +178,50 @@ fn an_audio_block_is_not_accepted_as_an_image() {
     assert_eq!(image_back, image);
     assert_ne!(audio_back, image_back);
     assert!(as_image.is_ok() || audio_as_image.is_ok());
+}
+
+/// Asserts that a block lands in the arm its `type` names, by looking at the
+/// arm rather than at the bytes.
+///
+/// This is the assertion `assert_arm_is_stable` cannot make. Re-serialisation
+/// only discriminates when the emitter enforces the specification's `const`,
+/// and it does not: `r#type` is a `String`, so a block in the wrong arm
+/// re-serialises to exactly the JSON it came in as. Matching the arm removes
+/// that dependency — the test asks the question it means to ask instead of
+/// asking one the emitter happens to let through.
+///
+/// The failure is what the bug looks like, so it is spelled out rather than
+/// hidden behind a comparison: an audio block is an `ImageContent`, with
+/// nothing anywhere reporting a problem.
+#[test]
+#[ignore = "codegen emits `type` as String, so an audio block lands in the image arm"]
+fn arm_is_claimed_by_const() {
+    let audio: v2025_03_26::CallToolResultContentChoice =
+        serde_json::from_value(block("audio")).expect("parses");
+
+    assert!(
+        matches!(audio, v2025_03_26::CallToolResultContentChoice::Member2(_)),
+        "an audio block landed in the image arm. The union is untagged and \
+         `r#type` is a plain `String`, so `ImageContent` accepts \
+         {{\"type\":\"audio\"}} and wins on member order. The audio is being \
+         served back as an image with no error at any layer."
+    );
+}
+
+/// The same question for a link, where the arms differ in shape rather than in
+/// `type`.
+///
+/// Included because it is the case that *does* work today, and a net that only
+/// ever finds bugs is a net nobody trusts. `ResourceLink` requires `uri` and
+/// `name`, `EmbeddedResource` requires `resource`, so neither can be mistaken
+/// for the other and re-serialization genuinely discriminates here.
+#[test]
+fn arms_that_differ_in_shape_do_discriminate() {
+    let link: v2025_06_18::ContentBlock =
+        serde_json::from_value(block("link")).expect("parses");
+    assert!(matches!(link, v2025_06_18::ContentBlock::Member3(_)));
+
+    let resource: v2025_06_18::ContentBlock =
+        serde_json::from_value(block("resource")).expect("parses");
+    assert!(matches!(resource, v2025_06_18::ContentBlock::Member4(_)));
 }
