@@ -9,9 +9,11 @@
 
 mod capability;
 mod feature;
+pub mod ir;
 mod negotiation;
 mod protocol_version;
 mod release_date;
+mod request_id;
 mod supported_versions;
 mod transport;
 
@@ -26,6 +28,7 @@ pub use negotiation::{
 };
 pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVersionError};
 pub use release_date::{ParseReleaseDateError, ReleaseDate};
+pub use request_id::RequestId;
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
 pub use transport::{TransportKind, transport_allowed};
 
