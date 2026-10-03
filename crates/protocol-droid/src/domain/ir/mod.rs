@@ -38,14 +38,16 @@
 //! ```
 //!
 //! Each file holds one concern, and the dependency direction is downward:
-//! `content` and `tool` use `features`, `json` and `extensions`, and nothing
-//! uses `content`. `message` sits above the rest and is the only place they are
-//! assembled.
+//! `content`, `tool` and `lower` use `features`, `json` and `extensions`, and
+//! nothing uses `content`. `message` sits above the rest and is the only place
+//! they are assembled. `lower` is public because the codec layer implements its
+//! `Lowering` trait and a bridge reads its reports.
 
 mod content;
 mod extensions;
 mod features;
 mod json;
+pub mod lower;
 mod message;
 mod tool;
 
@@ -56,6 +58,7 @@ pub use content::{
 pub use extensions::{ExtensionValue, Extensions};
 pub use features::FeatureSet;
 pub use json::{JsonObject, JsonObjectError};
+pub use lower::{DegradeRule, Loss, LowerError, Lowering, TranslationReport, TranslationStep};
 pub use message::{
     IrError, IrErrorCode, IrMessage, IrNotification, IrParams, IrRequest, IrResult, MethodName,
 };

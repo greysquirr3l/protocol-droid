@@ -21,8 +21,8 @@
 //! a text block and *clears* `structured_content`. Appending preserves the
 //! result's own content, which is the part the tool meant to be read; clearing
 //! prevents a lowering bug from leaving a field on a revision that has no field
-//! for it. The returned [`Downgrade`] names the feature lost so T08 can put it
-//! in a `TranslationReport` without re-deriving it.
+//! for it. The returned [`Downgrade`] names the feature lost, so the caller can
+//! put it in a `TranslationReport` without re-deriving it.
 
 use crate::domain::Feature;
 use crate::domain::ir::content::{Content, TextContent};
@@ -124,25 +124,24 @@ impl ToolResult {
     /// ```
     /// use protocol_droid::domain::ir::{Content, ToolResult};
     ///
-    /// let result = ToolResult::text("done").with_structured(r#"{"ok":true}"#)?;
+    /// let mut result = ToolResult::text("done").with_structured(r#"{"ok":true}"#)?;
     /// assert_eq!(result.required_features().len(), 1);
     ///
-    /// let downgraded = result.downgrade_structured_output().unwrap();
-    /// assert_eq!(downgraded.lost, protocol_droid::domain::Feature::ToolStructuredOutput);
+    /// let downgrade = result.downgrade_structured_output().unwrap();
+    /// assert_eq!(downgrade.lost, protocol_droid::domain::Feature::ToolStructuredOutput);
     /// // The original text survived, and the JSON was appended.
-    /// assert_eq!(downgraded.result.content.len(), 2);
-    /// assert!(downgraded.result.structured_content.is_none());
+    /// assert_eq!(result.content.len(), 2);
+    /// assert!(result.structured_content.is_none());
     /// // And it is now expressible at every revision.
-    /// assert!(downgraded.result.is_lossless_anywhere());
+    /// assert!(result.is_lossless_anywhere());
     /// # Ok::<(), protocol_droid::domain::ir::JsonObjectError>(())
     /// ```
     #[must_use]
-    pub fn downgrade_structured_output(mut self) -> Option<Downgrade> {
+    pub fn downgrade_structured_output(&mut self) -> Option<Downgrade> {
         let structured = self.structured_content.take()?;
-        let json = structured.as_str();
+        let json = structured.into_string();
         self.content.push(Content::Text(TextContent::new(json)));
         Some(Downgrade {
-            result: self,
             lost: Feature::ToolStructuredOutput,
             note: "structuredContent serialised into a text content block",
         })
@@ -150,10 +149,11 @@ impl ToolResult {
 }
 
 /// A change lowering made to make a value expressible.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Describes what happened; the value itself is changed in place, so there is
+/// nothing to hand back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Downgrade {
-    /// The rewritten value.
-    pub result: ToolResult,
     /// The feature that was given up.
     pub lost: Feature,
     /// A human-readable description, for the `TranslationReport`.
@@ -232,11 +232,11 @@ mod tests {
                 .contains(Feature::ToolStructuredOutput)
         );
 
-        let downgraded = source.downgrade_structured_output().unwrap();
-        assert_eq!(downgraded.lost, Feature::ToolStructuredOutput);
-        assert!(!downgraded.note.is_empty());
+        let mut result = source;
+        let downgrade = result.downgrade_structured_output().unwrap();
+        assert_eq!(downgrade.lost, Feature::ToolStructuredOutput);
+        assert!(!downgrade.note.is_empty());
 
-        let result = downgraded.result;
         // The field is gone, so there is nothing left for an encoder to
         // wrongly emit.
         assert!(result.structured_content.is_none());
@@ -268,24 +268,20 @@ mod tests {
     /// to take.
     #[test]
     fn downgrading_twice_appends_once() {
-        let once = ToolResult::text("x")
-            .with_structured(r#"{"a":1}"#)
-            .unwrap()
-            .downgrade_structured_output()
-            .unwrap();
-        let second = once.result.clone().downgrade_structured_output();
-        assert!(second.is_none());
-        assert_eq!(once.result.content.len(), 2);
+        let mut once = ToolResult::text("x").with_structured(r#"{"a":1}"#).unwrap();
+        assert!(once.downgrade_structured_output().is_some());
+        assert!(once.downgrade_structured_output().is_none());
+        assert_eq!(once.content.len(), 2);
     }
 
     #[test]
     fn the_error_flag_survives_a_downgrade() {
-        let failed = ToolResult::text("boom")
+        let mut failed = ToolResult::text("boom")
             .error()
             .with_structured(r#"{"e":1}"#)
             .unwrap();
-        let downgraded = failed.downgrade_structured_output().unwrap();
-        assert!(downgraded.result.is_error);
+        assert!(failed.downgrade_structured_output().is_some());
+        assert!(failed.is_error);
     }
 
     /// The appended text is the exact bytes that were received, which is what
@@ -293,12 +289,9 @@ mod tests {
     #[test]
     fn the_appended_text_is_byte_identical() {
         let json = r#"{ "unit" : "c" , "n" : 1.0 }"#;
-        let downgraded = ToolResult::text("x")
-            .with_structured(json)
-            .unwrap()
-            .downgrade_structured_output()
-            .unwrap();
-        let Some(Content::Text(added)) = downgraded.result.content.get(1) else {
+        let mut downgraded = ToolResult::text("x").with_structured(json).unwrap();
+        assert!(downgraded.downgrade_structured_output().is_some());
+        let Some(Content::Text(added)) = downgraded.content.get(1) else {
             panic!("expected an appended text block");
         };
         assert_eq!(added.text, json);

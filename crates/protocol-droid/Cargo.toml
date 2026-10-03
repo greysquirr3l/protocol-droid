@@ -25,6 +25,10 @@ thiserror = { workspace = true }
 # The golden feature profiles are snapshots a human reviews, so a matrix change
 # shows up as a diff to read rather than as a failure to debug.
 insta = { workspace = true }
+# The lowering properties are the crate's central claim — that a value which
+# fits survives a round trip, and that the gate is exact — so they are generated
+# rather than hand-picked. A hand-picked value proves one case was thought of.
+proptest = { workspace = true }
 # The capability table is checked against the vendored `schema.json` files, so
 # the domain's model is verified against the bytes it describes rather than
 # against a second copy of the same assumptions.
