@@ -209,6 +209,13 @@ pub struct ResourceLinkContent {
     pub mime_type: Option<String>,
     /// The size in bytes, if known.
     pub size: Option<u64>,
+    /// A human-readable title for the resource. `2025-06-18`.
+    ///
+    /// Distinct from `name`: `name` is the identifier a client uses to ask for
+    /// the resource, `title` is a label for a human reading the result. The
+    /// specification defines both, and a link that carried only `title` across a
+    /// crossing would arrive stripped of it.
+    pub title: Option<String>,
     /// Optional annotations, `2025-03-26`.
     pub annotations: Option<Annotations>,
     /// Unmodelled fields.
@@ -225,6 +232,7 @@ impl ResourceLinkContent {
             description: None,
             mime_type: None,
             size: None,
+            title: None,
             annotations: None,
             extensions: Extensions::empty(),
         }
