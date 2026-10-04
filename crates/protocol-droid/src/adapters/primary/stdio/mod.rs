@@ -31,15 +31,26 @@
 //! second implementation, and the framing logic — the part with the security
 //! properties — would be duplicated along with it.
 //!
+//! # Where the conversation is
+//!
+//! The three adapters above are a byte layer and stay one. The loop that reads
+//! a frame, routes it and answers it is [`serve::ServeLoop`], and the reply
+//! document it writes is [`reply`]. Both sit in this module because they are
+//! still stdio: the loop's central rule is that this transport's stdout carries
+//! MCP messages and nothing else, and that rule is about this process's
+//! streams rather than about MCP.
+//!
 //! # What is deliberately not here
 //!
-//! No spawning, no lifecycle, and no JSON-RPC. This is a byte layer; the loop
-//! that reads a frame, routes it, and answers lives above it, and the process
-//! management that gives it a stream in the first place is a separate concern.
-//! A single unterminated line has no framing error, because the framing layer
-//! cannot know whether the peer is mid-message or has gone away.
+//! No spawning and no lifecycle. The loop runs against whatever byte streams it
+//! is given, and the process management that gives it a child's stdin and
+//! stdout in the first place is a separate concern. A single unterminated line
+//! has no framing error either, because the framing layer cannot know whether
+//! the peer is mid-message or has gone away.
 
 mod diagnostics;
+pub mod reply;
+mod serve;
 mod sink;
 mod source;
 
@@ -47,6 +58,8 @@ mod source;
 mod testing;
 
 pub use diagnostics::{Diagnostics, DiagnosticsWriter};
+pub use reply::ReplyError;
+pub use serve::{ServeError, ServeLoop, ServeReport};
 pub use sink::StdioSink;
 pub use source::StdioSource;
 
