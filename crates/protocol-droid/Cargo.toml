@@ -28,6 +28,10 @@ default = ["serde"]
 serde = []
 
 [dependencies]
+# The registry publishes a new immutable snapshot by swapping the `Arc`. Not
+# optional: the capability's requirement is that reads are lock-free, and an
+# `RwLock` would make `tools/list` contend with a publish.
+arc-swap = { workspace = true }
 protocol-droid-schema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -63,4 +67,8 @@ workspace = true
 # that is meant to be run directly.
 [[bench]]
 name = "jsonrpc_hot_path"
+harness = false
+
+[[bench]]
+name = "registry"
 harness = false

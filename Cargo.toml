@@ -58,6 +58,18 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 # Benchmarking. The envelope path is the one perf-critical path in the crate, so
 # its costs are measured on every CI run rather than estimated.
 divan = { version = "0.1.21", default-features = false }
+# The dynamic registry's snapshot. `ArcSwap<Snapshot>` is the transaction
+# boundary: a writer builds a whole new snapshot and swaps the `Arc` in one
+# atomic store, and a reader on the `tools/list` or `tools/call` path pays a
+# load and nothing else. `1.9.2` is the latest release and declares no
+# `rust-version` at all, so it cannot drag the 1.98 floor upward — verified with
+# `cargo info arc-swap` rather than assumed, and the absence of a declared MSRV
+# is recorded in PROGRESS.md because an undeclared floor is not the same as a low
+# one. The crate is not a model-checker target: it has no `loom` instrumentation
+# (checked in its own source), so loom could not see the swap it is there to
+# verify. T11's concurrency proof is a std-thread stress test over the real type
+# for that reason.
+arc-swap = { version = "1.9.2" }
 # Assertion macros that print the actual variant on failure. `assert!(matches!(..))`
 # reports only "assertion failed", which is useless for an error-code test
 # where the whole point is *which* code came back.
