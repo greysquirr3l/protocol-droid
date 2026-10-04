@@ -285,13 +285,21 @@ mod tests {
         ("tools/call", McpMethod::ToolsCall, true),
         ("resources/list", McpMethod::ResourcesList, true),
         ("resources/read", McpMethod::ResourcesRead, true),
-        ("resources/templates/list", McpMethod::ResourceTemplatesList, true),
+        (
+            "resources/templates/list",
+            McpMethod::ResourceTemplatesList,
+            true,
+        ),
         ("prompts/list", McpMethod::PromptsList, true),
         ("prompts/get", McpMethod::PromptsGet, true),
         ("logging/setLevel", McpMethod::SetLogLevel, true),
         ("completion/complete", McpMethod::Complete, true),
         ("roots/list", McpMethod::RootsList, true),
-        ("sampling/createMessage", McpMethod::SamplingCreateMessage, true),
+        (
+            "sampling/createMessage",
+            McpMethod::SamplingCreateMessage,
+            true,
+        ),
         ("elicitation/create", McpMethod::ElicitationCreate, true),
         (
             "notifications/initialized",
@@ -429,7 +437,10 @@ mod tests {
         match route(input) {
             Ok(Routed::Reply { id, payload }) => {
                 assert_eq!(id.as_number(), Some(1));
-                assert_matches!(payload, crate::application::jsonrpc::ReplyPayload::Result(_));
+                assert_matches!(
+                    payload,
+                    crate::application::jsonrpc::ReplyPayload::Result(_)
+                );
             }
             other => return Err(format!("expected a reply, got {other:?}").into()),
         }

@@ -34,10 +34,10 @@ pub mod progress;
 pub mod registry;
 pub mod state;
 
+pub use cancellation::Cancelled;
 pub use cancellation::{AbortReason, CancelReason, CancellationToken};
 pub use progress::{ProgressCursor, ProgressToken, ProgressUpdate};
 pub use registry::{
     CancelOutcome, DuplicateRequest, InFlight, RequestOrigin, RequestRegistry, UnknownRequest,
 };
-pub use cancellation::Cancelled;
 pub use state::{Instant, LifecycleError, LifecycleEvent, Session, SessionId, SessionState};

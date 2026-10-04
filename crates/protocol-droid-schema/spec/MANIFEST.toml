@@ -5,6 +5,12 @@
 # both verify the files on disk against the digests recorded here.
 #
 # NEVER hand-edit a digest. Re-run the xtask.
+#
+# The revision keys are quoted: `[revisions."2024-11-05"]`, not
+# `[revisions.2024-11-05]`. Both are legal TOML 1.0, but taplo's parser reads a
+# bare key beginning with a digit as a number and reports "expected identifier",
+# so the unquoted form lights up the editor with parse errors. Do not
+# "normalise" these back to bare keys.
 
 [meta]
 schema_version = 1
@@ -26,7 +32,7 @@ raw_base = "https://raw.githubusercontent.com/modelcontextprotocol/specification
 # `schema/` directory rather than `schema/<version>/` — the per-version layout
 # was introduced later. Do not "fix" this path; it 404s at the newer layout.
 
-[revisions.2024-11-05]
+[revisions."2024-11-05"]
 tag = "2024-11-05"
 commit = "0d63bea927001bedf3be3e59be735c979ba0aacb"
 schema_prefix = "schema"
@@ -35,7 +41,7 @@ schema_prefix = "schema"
 # as authored: the verifier then expects the file on disk but holds no digest
 # for it, so it can be edited without breaking the build.
 
-[revisions.2024-11-05.files]
+[revisions."2024-11-05".files]
 "schema.json" = "56d9e706cc8b0daf690a483960aa4ba62217c863d36ff1d7f8bbb83ab049903d"
 "schema.ts"   = "3cc60f4f2ab5d6129d2bab47954d534546be6f3f1920ffb9ff9a60cb04339586"
 # CHANGELOG.md is deliberately absent: it is authored, not vendored (see
@@ -46,52 +52,52 @@ schema_prefix = "schema"
 
 # ─── 2025-03-26 ───────────────────────────────────────────────────────────────
 
-[revisions.2025-03-26]
+[revisions."2025-03-26"]
 tag = "2025-03-26"
 commit = "9236eb1cbfa02c17ab45c83a7bdbe55c450070be"
 schema_prefix = "schema/2025-03-26"
 changelog = "docs/specification/2025-03-26/changelog.md"
 
-[revisions.2025-03-26.files]
+[revisions."2025-03-26".files]
 "schema.json"   = "dd1619bf96fcd8c50fe46f0dd05b4b9bb9356010040ae985fa595fee226ff4ed"
 "schema.ts"     = "d76b5f653af272c2d58681c68bde24cece1bea7216debedeb108b60a0116d6cc"
 "CHANGELOG.md"  = "ce11e369a38616efdd4003caf8ea3f930cb6a63736215eff45715669a620fe73"
 
 # ─── 2025-06-18 ───────────────────────────────────────────────────────────────
 
-[revisions.2025-06-18]
+[revisions."2025-06-18"]
 tag = "2025-06-18"
 commit = "f5ccad944fdf2b7d9cc70cf817f66ca5a8aa03a4"
 schema_prefix = "schema/2025-06-18"
 changelog = "docs/specification/2025-06-18/changelog.mdx"
 
-[revisions.2025-06-18.files]
+[revisions."2025-06-18".files]
 "schema.json"   = "05020a692319467847cdb1794b1306567f52860353b5ff2f2bc2b0140819305b"
 "schema.ts"     = "0838332b90a9188c09fecddcaced2cd2d626126925d181bef8fc4785884706cf"
 "CHANGELOG.md"  = "d2b6024c301f3c7ef5948b458eb9a553ca7bd19ee990fb2cfbbe41354a9900b5"
 
 # ─── 2025-11-25 ───────────────────────────────────────────────────────────────
 
-[revisions.2025-11-25]
+[revisions."2025-11-25"]
 tag = "2025-11-25"
 commit = "38c84e9f93ad191d9eb26d92b945d17bd0efcaf3"
 schema_prefix = "schema/2025-11-25"
 changelog = "docs/specification/2025-11-25/changelog.mdx"
 
-[revisions.2025-11-25.files]
+[revisions."2025-11-25".files]
 "schema.json"   = "1ffe4c5577974012f5fa02af14ea88df4b7146679df1abaaad497c8d9230ca8a"
 "schema.ts"     = "0845473b20273dae35df6651b831540be3d5866a42d0ad324e4a06caaa398a07"
 "CHANGELOG.md"  = "d21083d5ada5706026550ed13ec2ccfb0a8b3b271918698c33d18d2c41d942ae"
 
 # ─── 2026-07-28 ───────────────────────────────────────────────────────────────
 
-[revisions.2026-07-28]
+[revisions."2026-07-28"]
 tag = "2026-07-28"
 commit = "5f5440bb26a62e2cf3440b92da5a667efa03b267"
 schema_prefix = "schema/2026-07-28"
 changelog = "docs/specification/2026-07-28/changelog.mdx"
 
-[revisions.2026-07-28.files]
+[revisions."2026-07-28".files]
 "schema.json"   = "ef70b61f99b6d2e5e3b46863822eab08dff6a45bedc7a08914e0e5b133f40203"
 "schema.ts"     = "742750af0bb8c716e7030c4977c992b55d1adc4407e9e66997db5846baedc2cd"
 "CHANGELOG.md"  = "ba4d0ba299ff0b45d26c52111d41dc0c862dd04ef973f63f93570c2b020f3974"

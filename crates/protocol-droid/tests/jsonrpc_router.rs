@@ -88,7 +88,11 @@ fn a_known_method_routes() -> Result<(), TestError> {
     let routed = route(br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#)?;
     assert_matches!(
         routed,
-        Routed::Request { method: McpMethod::Ping, id: WireId::Number(1), .. }
+        Routed::Request {
+            method: McpMethod::Ping,
+            id: WireId::Number(1),
+            ..
+        }
     );
     Ok(())
 }
@@ -114,7 +118,10 @@ fn a_notification_routes_without_an_id() -> Result<(), TestError> {
     let routed = route(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
     assert_matches!(
         routed,
-        Routed::Notification { method: McpMethod::InitializedNotification, .. }
+        Routed::Notification {
+            method: McpMethod::InitializedNotification,
+            ..
+        }
     );
     Ok(())
 }
@@ -139,7 +146,10 @@ fn a_method_removed_from_the_spec_is_as_unknown_as_one_never_added() {
     // — the table cannot tell the two apart, and it must not try.
     assert_matches!(
         route(br#"{"jsonrpc":"2.0","id":1,"method":"roots/list"}"#),
-        Ok(Routed::Request { method: McpMethod::RootsList, .. }),
+        Ok(Routed::Request {
+            method: McpMethod::RootsList,
+            ..
+        }),
         "a method the spec still defines must route",
     );
     assert_matches!(
@@ -173,7 +183,13 @@ fn a_reply_is_passed_through_rather_than_routed() -> Result<(), TestError> {
     let error = route(br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}"#)?;
     assert_matches!(
         error,
-        Routed::Reply { payload: ReplyPayload::Error { code: -32601, message: "nope" }, .. }
+        Routed::Reply {
+            payload: ReplyPayload::Error {
+                code: -32601,
+                message: "nope"
+            },
+            ..
+        }
     );
     Ok(())
 }
@@ -241,7 +257,11 @@ fn a_notification_name_is_only_ever_a_notification() {
         );
     }
     for method in [McpMethod::Ping, McpMethod::ToolsCall] {
-        assert!(method.is_request(), "{} is named as a request", method.as_str());
+        assert!(
+            method.is_request(),
+            "{} is named as a request",
+            method.as_str()
+        );
     }
 }
 
@@ -307,12 +327,18 @@ fn a_batch_routes_every_element_in_order_when_it_is_allowed() -> Result<(), Test
         &AllowBatching,
     )?;
     assert_eq!(routed.len(), 3);
-    assert_eq!(routed.first().ok_or("no first")?.method(), Some(McpMethod::Ping));
+    assert_eq!(
+        routed.first().ok_or("no first")?.method(),
+        Some(McpMethod::Ping)
+    );
     assert_eq!(
         routed.get(1).ok_or("no second")?.method(),
         Some(McpMethod::InitializedNotification),
     );
-    assert_eq!(routed.get(2).ok_or("no third")?.method(), Some(McpMethod::ToolsList));
+    assert_eq!(
+        routed.get(2).ok_or("no third")?.method(),
+        Some(McpMethod::ToolsList)
+    );
     Ok(())
 }
 
@@ -325,15 +351,13 @@ fn route_with_policy<'a, P: BatchPolicy>(
     profile: &FeatureProfile,
     policy: &P,
 ) -> Result<usize, BorrowedError<'a>> {
-    Ok(
-        protocol_droid::application::jsonrpc::route_frame(
-            input,
-            &McpMethodTable::TABLE,
-            profile,
-            policy,
-        )?
-        .len(),
-    )
+    Ok(protocol_droid::application::jsonrpc::route_frame(
+        input,
+        &McpMethodTable::TABLE,
+        profile,
+        policy,
+    )?
+    .len())
 }
 
 #[test]

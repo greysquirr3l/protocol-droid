@@ -118,6 +118,26 @@ fn parse_digest_line(line: &str) -> Option<DigestLine<'_>> {
     })
 }
 
+/// Match a `revisions` table header, returning its revision and whether it is
+/// the nested `.files` table.
+///
+/// The revision segment ships quoted — `[revisions."2024-11-05"]` — because
+/// taplo's parser rejects a bare key beginning with a digit, which every
+/// revision name here does. The quotes are stripped so the key compares equal
+/// to the revision name the parsed manifest holds. The bare spelling is still
+/// accepted, so an older unquoted manifest keeps working unchanged.
+pub(crate) fn revision_table(name: &str) -> Option<(&str, bool)> {
+    let rest = name.strip_prefix("revisions.")?;
+    let (rev, is_files) = rest
+        .strip_suffix(".files")
+        .map_or((rest, false), |rev| (rev, true));
+    let rev = rev
+        .strip_prefix('"')
+        .and_then(|quoted| quoted.strip_suffix('"'))
+        .unwrap_or(rev);
+    Some((rev, is_files))
+}
+
 /// Apply new digests to a manifest's text, preserving comments and layout.
 ///
 /// `updates` maps a revision name to the new digest of each of its files. Only
@@ -156,15 +176,10 @@ pub fn apply_digest_updates(
             // A new table header ends whichever table we were in.
             in_files_table = false;
             if let Some(name) = rest.strip_suffix(']')
-                && let Some(rev) = name.strip_prefix("revisions.")
+                && let Some((rev, is_files)) = revision_table(name)
             {
-                match rev.strip_suffix(".files") {
-                    Some(rev) => {
-                        in_files_table = true;
-                        revision = Some(rev.to_owned());
-                    }
-                    None => revision = Some(rev.to_owned()),
-                }
+                in_files_table = is_files;
+                revision = Some(rev.to_owned());
             }
         }
 
@@ -225,7 +240,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{apply_digest_updates, parse_digest_line};
+    use super::{apply_digest_updates, parse_digest_line, revision_table};
 
     const NEW: &str = "aaaa";
 
@@ -269,7 +284,7 @@ mod tests {
         for line in [
             "schema_prefix = \"schema/2025-06-18\"",
             "tag = \"2025-06-18\"",
-            "[revisions.2025-06-18.files]",
+            "[revisions.\"2025-06-18\".files]",
             "# \"schema.json\" = \"short\"",
             "floating = true",
             "",
@@ -293,11 +308,11 @@ mod tests {
     fn comments_and_layout_survive_a_rewrite() {
         let text = "\
 # leading comment
-[revisions.2025-06-18]
+[revisions.\"2025-06-18\"]
 tag = \"2025-06-18\"
 
 # why this revision is vendored
-[revisions.2025-06-18.files]
+[revisions.\"2025-06-18\".files]
 \"schema.json\" = \"1111111111111111111111111111111111111111111111111111111111111111\"
 \"schema.ts\"   = \"2222222222222222222222222222222222222222222222222222222222222222\"  # kept
 ";
@@ -320,10 +335,10 @@ tag = \"2025-06-18\"
     #[test]
     fn a_digest_in_another_revision_is_not_touched() {
         let text = "\
-[revisions.2024-11-05.files]
+[revisions.\"2024-11-05\".files]
 \"schema.json\" = \"1111111111111111111111111111111111111111111111111111111111111111\"
 
-[revisions.2025-06-18.files]
+[revisions.\"2025-06-18\".files]
 \"schema.json\" = \"1111111111111111111111111111111111111111111111111111111111111111\"
 ";
         let out = apply_digest_updates(text, &one()).expect("rewrite must succeed");
@@ -336,7 +351,7 @@ tag = \"2025-06-18\"
 
     #[test]
     fn a_file_with_no_digest_line_is_an_error() {
-        let text = "[revisions.2025-06-18]\ntag = \"2025-06-18\"\n";
+        let text = "[revisions.\"2025-06-18\"]\ntag = \"2025-06-18\"\n";
         let mut updates = one();
         updates
             .get_mut("2025-06-18")
@@ -344,5 +359,37 @@ tag = \"2025-06-18\"
             .insert("schema-extra.json".to_owned(), NEW.to_owned());
         let error = apply_digest_updates(text, &updates).expect_err("must fail");
         assert!(error.contains("schema-extra.json"), "error: {error}");
+    }
+
+    #[test]
+    fn quoted_and_bare_revision_headers_resolve_alike() {
+        // The manifest ships quoted, because taplo's parser rejects a bare key
+        // starting with a digit. A bare header must still resolve to the same
+        // revision so an older unquoted manifest keeps working.
+        for header in ["revisions.\"2025-06-18\"", "revisions.2025-06-18"] {
+            assert_eq!(
+                revision_table(header),
+                Some(("2025-06-18", false)),
+                "header: {header}"
+            );
+            assert_eq!(
+                revision_table(&format!("{header}.files")),
+                Some(("2025-06-18", true)),
+                "header: {header}.files"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_revision_header_still_rewrites_digests() {
+        let text = "\
+[revisions.2025-06-18.files]
+\"schema.json\" = \"1111111111111111111111111111111111111111111111111111111111111111\"
+";
+        let out = apply_digest_updates(text, &one()).expect("rewrite must succeed");
+        assert!(
+            out.contains("\"schema.json\" = \"aaaa\""),
+            "not rewritten: {out}"
+        );
     }
 }

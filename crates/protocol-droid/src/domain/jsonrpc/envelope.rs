@@ -119,9 +119,7 @@ impl<'a> WireId<'a> {
             // of range. The specification says an id must not contain
             // fractional parts; an integer too large for `i64` fails the same
             // check for the same reason, and both are told apart by the text.
-            Err(_) if serde_json::from_str::<f64>(raw).is_ok() => {
-                Err(WireIdError::NotAnInteger)
-            }
+            Err(_) if serde_json::from_str::<f64>(raw).is_ok() => Err(WireIdError::NotAnInteger),
             Err(_) => Err(WireIdError::NotAnId),
         }
     }
@@ -316,12 +314,10 @@ impl<'a> Envelope<'a> {
     #[must_use]
     pub fn routeable(&self) -> Option<(&Method<'a>, Option<&WireId<'a>>)> {
         match self.kind {
-            MessageKind::Request | MessageKind::Notification => {
-                Some((
-                    self.method.as_ref().unwrap_or(&Method::Borrowed("")),
-                    self.id.as_ref(),
-                ))
-            }
+            MessageKind::Request | MessageKind::Notification => Some((
+                self.method.as_ref().unwrap_or(&Method::Borrowed("")),
+                self.id.as_ref(),
+            )),
             MessageKind::Result | MessageKind::Error => None,
         }
     }
@@ -595,7 +591,8 @@ pub fn decode(input: &[u8]) -> Result<Frame<'_>, DecodeError> {
         // than -32700 — so the deserialise is allowed to fail and the error is
         // reclassified below.
         Some(b'{') => {
-            let message: WireMessage<'_> = serde_json::from_slice(input).map_err(|error| map_json_error(&error))?;
+            let message: WireMessage<'_> =
+                serde_json::from_slice(input).map_err(|error| map_json_error(&error))?;
             validate(&message)?;
             Ok(Frame::Single(message.into()))
         }
@@ -729,13 +726,12 @@ mod tests {
     //! `assert_matches!` rather than `assert!(matches!(..))` so a failure prints the
     //! actual variant instead of `assertion failed`.
 
-
-    use assert_matches::assert_matches;
+    use crate::domain::RequestId;
+    use crate::domain::ir::IrErrorCode;
     use crate::domain::jsonrpc::{
         DecodeError, Envelope, Frame, MessageKind, Method, Outcome, WireId, WireIdError, decode,
     };
-    use crate::domain::RequestId;
-    use crate::domain::ir::IrErrorCode;
+    use assert_matches::assert_matches;
 
     type TestError = Box<dyn std::error::Error>;
 
@@ -764,7 +760,8 @@ mod tests {
 
     #[test]
     fn a_notification_has_no_id_and_expects_nothing() -> Result<(), TestError> {
-        let envelope = first(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.as_bytes())?;
+        let envelope =
+            first(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.as_bytes())?;
         assert_eq!(envelope.kind(), MessageKind::Notification);
         assert_eq!(envelope.id(), None);
         assert!(!envelope.expects_reply());
@@ -778,7 +775,9 @@ mod tests {
         assert!(!result.expects_reply());
         assert_matches!(result.outcome(), Some(Outcome::Result(_)));
 
-        let error = first(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}"#.as_bytes())?;
+        let error = first(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}"#.as_bytes(),
+        )?;
         assert_eq!(error.kind(), MessageKind::Error);
         assert_matches!(
             error.outcome(),
@@ -789,7 +788,9 @@ mod tests {
 
     #[test]
     fn malformed_json_is_parse_error() {
-        let error = decode(b"{\"jsonrpc\":").map(|frame| format!("{frame:?}")).unwrap_err();
+        let error = decode(b"{\"jsonrpc\":")
+            .map(|frame| format!("{frame:?}"))
+            .unwrap_err();
         assert_eq!(error, DecodeError::Json);
         assert_eq!(error.code(), IrErrorCode::ParseError);
         assert_eq!(error.code().code(), -32700);
@@ -875,15 +876,18 @@ mod tests {
         // `2^63` is a JSON integer but not an `i64`. Wrapping it would put a
         // different request on the in-flight map than the peer asked for, and the
         // collision is silent.
-        let error = decode(br#"{"jsonrpc":"2.0","id":9223372036854775808,"method":"ping"}"#)
-            .unwrap_err();
+        let error =
+            decode(br#"{"jsonrpc":"2.0","id":9223372036854775808,"method":"ping"}"#).unwrap_err();
         assert_matches!(error, DecodeError::InvalidRequest(_));
     }
 
     #[test]
     fn a_wire_id_becomes_an_owned_request_id_without_loss() -> Result<(), TestError> {
         for (input, expected) in [
-            (r#"{"jsonrpc":"2.0","id":42,"method":"ping"}"#, RequestId::number(42)),
+            (
+                r#"{"jsonrpc":"2.0","id":42,"method":"ping"}"#,
+                RequestId::number(42),
+            ),
             (
                 r#"{"jsonrpc":"2.0","id":"abc","method":"ping"}"#,
                 RequestId::text("abc"),
@@ -948,7 +952,10 @@ mod tests {
         assert!(frame.is_batch());
         let envelopes = frame.envelopes();
         assert_eq!(envelopes.len(), 2);
-        assert_eq!(envelopes.first().ok_or("no first")?.id(), Some(&WireId::Number(1)));
+        assert_eq!(
+            envelopes.first().ok_or("no first")?.id(),
+            Some(&WireId::Number(1))
+        );
         assert_eq!(
             envelopes.get(1).ok_or("no second")?.kind(),
             MessageKind::Notification,
@@ -1055,7 +1062,10 @@ mod tests {
         );
 
         let notification = first(r#"{"jsonrpc":"2.0","method":"ping"}"#.as_bytes())?;
-        assert_eq!(notification.routeable(), Some((&Method::Borrowed("ping"), None)));
+        assert_eq!(
+            notification.routeable(),
+            Some((&Method::Borrowed("ping"), None))
+        );
 
         let reply = first(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.as_bytes())?;
         assert_eq!(reply.routeable(), None, "a reply has no method to route");
@@ -1074,7 +1084,10 @@ mod tests {
             .id()
             .and_then(WireId::as_number)
             .ok_or("a numeric id must stay a number")?;
-        assert_eq!(value, 9_007_199_254_740_993, "and it must be exact past 2^53");
+        assert_eq!(
+            value, 9_007_199_254_740_993,
+            "and it must be exact past 2^53"
+        );
         Ok(())
     }
 }

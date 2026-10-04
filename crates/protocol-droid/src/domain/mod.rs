@@ -5,8 +5,9 @@
 //! every function here is deterministic and testable.
 //!
 //! Populated by T04 (protocol version value objects), T05-T08 (feature profile,
-//! negotiation, canonical IR, per-revision codecs) and T10 (the session
-//! aggregate: lifecycle, in-flight requests, cancellation, progress).
+//! negotiation, canonical IR, per-revision codecs), T10 (the session aggregate:
+//! lifecycle, in-flight requests, cancellation, progress) and T11 (the registry's
+//! pure half: primitives, visibility, snapshots).
 
 mod capability;
 pub mod feature;
@@ -14,6 +15,7 @@ pub mod ir;
 pub mod jsonrpc;
 mod negotiation;
 mod protocol_version;
+pub mod registry;
 mod release_date;
 mod request_id;
 pub mod session;

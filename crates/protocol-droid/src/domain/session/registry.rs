@@ -368,9 +368,7 @@ mod tests {
         CancelOutcome, DuplicateRequest, InFlight, RequestOrigin, RequestRegistry, UnknownRequest,
     };
     use crate::domain::RequestId;
-    use crate::domain::session::cancellation::{
-        AbortReason, CancelReason, CancellationToken,
-    };
+    use crate::domain::session::cancellation::{AbortReason, CancelReason, CancellationToken};
     use crate::domain::session::progress::ProgressToken;
     use crate::domain::session::state::Instant;
 
@@ -428,8 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_in_flight_id_is_refused_and_the_first_entry_survives()
-    -> Result<(), Failure> {
+    fn a_duplicate_in_flight_id_is_refused_and_the_first_entry_survives() -> Result<(), Failure> {
         let mut registry = RequestRegistry::new();
         let id = RequestId::number(1);
         registry.register(id.clone(), entry(None, None))?;
@@ -491,8 +488,8 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_budget_expires_immediately_and_an_absent_budget_never_expires()
-    -> Result<(), Failure> {
+    fn a_zero_budget_expires_immediately_and_an_absent_budget_never_expires() -> Result<(), Failure>
+    {
         let mut registry = RequestRegistry::new();
         let bounded = RequestId::number(1);
         let unbounded = RequestId::number(2);

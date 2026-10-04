@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::manifest::{Manifest, hex_digest};
-use crate::manifest_edit::apply_digest_updates;
+use crate::manifest_edit::{apply_digest_updates, revision_table};
 
 /// GitHub's API host, used only to resolve a floating revision to a commit.
 const GITHUB_API: &str = "https://api.github.com";
@@ -44,7 +44,8 @@ fn rewrite_commit(text: &str, revision: &str, commit: &str) -> String {
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-            in_table = rest == format!("revisions.{revision}");
+            in_table =
+                revision_table(rest).is_some_and(|(rev, is_files)| !is_files && rev == revision);
         }
         if in_table && line.starts_with("commit = ") {
             out.push_str("commit = \"");

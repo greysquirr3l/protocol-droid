@@ -40,6 +40,7 @@
 //! message, which is the difference between a diagnosable failure and a silent
 //! drop.
 
+use crate::domain::ir::FeatureSet;
 use crate::domain::{
     Capability, CapabilitySet, ProtocolVersion, Side, TransportKind, transport_allowed,
 };
@@ -831,6 +832,21 @@ impl FeatureProfile {
         Self {
             bits: self.bits & other.bits,
         }
+    }
+
+    /// This profile viewed as a [`FeatureSet`].
+    ///
+    /// The two types share one bit encoding precisely so that this is a copy of
+    /// a `u128` and every comparison between them is a mask test. The
+    /// alternative — `FeatureSet::union_of(self.iter())` — walks all
+    /// [`Feature::ALL`] and calls [`allows`](Self::allows) for each, and
+    /// `allows` resolves its bit by scanning `ALL` for a matching name. That is
+    /// quadratic in the feature count, which is invisible when a decision is
+    /// made once per message and not when it is made once per primitive on a
+    /// `tools/list` of a thousand tools.
+    #[must_use]
+    pub const fn as_set(self) -> FeatureSet {
+        FeatureSet::from_bits(self.bits)
     }
 
     /// The bit a feature occupies, found by name so a new variant cannot leave

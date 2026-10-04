@@ -84,6 +84,34 @@ impl FeatureSet {
         features.into_iter().fold(Self::empty(), Self::with)
     }
 
+    /// The features in `self` that are not in `other`.
+    #[must_use]
+    pub const fn difference(self, other: Self) -> Self {
+        Self {
+            bits: self.bits & !other.bits,
+        }
+    }
+
+    /// A set from the raw bit encoding.
+    ///
+    /// The encoding is shared with [`FeatureProfile`](crate::domain::FeatureProfile),
+    /// which is what lets `required.is_subset_of(&profile.as_set())` be one
+    /// mask test. This constructor is the only way to build a set from those
+    /// bits, and it exists so that sharing has exactly one door: a caller that
+    /// wanted a set from somewhere else would have to hand-assemble the same
+    /// `u128`, and the type would no longer be trustworthy as a mirror of a
+    /// profile.
+    #[must_use]
+    pub const fn from_bits(bits: u128) -> Self {
+        Self { bits }
+    }
+
+    /// The raw bit encoding, shared with [`FeatureProfile`](crate::domain::FeatureProfile).
+    #[must_use]
+    pub const fn bits(self) -> u128 {
+        self.bits
+    }
+
     /// Whether every feature in `self` is also in `other`.
     ///
     /// This is the lowering gate: "can the session express this value".

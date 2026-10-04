@@ -17,3 +17,10 @@ capabilities/
 # Rust build artifacts
 /target/
 **/*.rs.bk
+
+# Repo Temporary files
+tmp/
+.markdownlint.json
+.markdownlintignore
+.mcp.json
+.taplo.toml
