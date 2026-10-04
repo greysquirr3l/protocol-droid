@@ -20,8 +20,10 @@ use std::sync::Arc;
 
 use crate::application::registry::store::RegistryStore;
 use crate::application::server::context::RequestContext;
-use crate::domain::ir::{FeatureSet, JsonObject};
-use crate::domain::registry::{Primitive, PrimitiveId, Prompt, Registered, Resource, Tool};
+use crate::domain::ir::JsonObject;
+use crate::domain::registry::{
+    Primitive, PrimitiveId, PrimitiveKind, Prompt, Registered, Resource, ResourceTemplate, Tool,
+};
 
 /// A tool handler, and what it answers with.
 ///
@@ -48,16 +50,13 @@ pub type BoxFuture = std::pin::Pin<Box<dyn Future<Output = JsonObject> + Send>>;
 /// log line can use. The name and the schema are the parts that identify it.
 struct ToolEntry {
     name: PrimitiveId,
-    tool: Tool,
     handler: ToolHandler,
-    required: FeatureSet,
 }
 
 impl core::fmt::Debug for ToolEntry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ToolEntry")
             .field("name", &self.name)
-            .field("tool", &self.tool)
             .finish_non_exhaustive()
     }
 }
@@ -123,8 +122,6 @@ impl Server {
             name: name.into(),
             registry: RegistryStore::new(),
             tools: Vec::new(),
-            resources: Vec::new(),
-            prompts: Vec::new(),
         }
     }
 
@@ -169,13 +166,28 @@ impl Server {
     /// wrote their own lookup would drift, and the drift would show up as a
     /// tool that is in the registry and not callable.
     ///
+    /// Visibility is decided by the **registry**, and only by the registry. It
+    /// used to be a second, cheaper check over a cached `required` set held by
+    /// each tool entry — which covered features and not scopes. So a
+    /// scope-restricted tool was absent from `tools/list` and still ran on
+    /// `tools/call`, which is the existence oracle
+    /// [`UnknownTool`](DispatchError::UnknownTool) exists to prevent.
+    ///
+    /// The cached set is gone rather than kept as a belt-and-braces second
+    /// check. Once the registry gate runs first, that check can only ever
+    /// agree with it, so it decides nothing — and a check that decides nothing
+    /// is a check that can drift into deciding the wrong thing without anyone
+    /// noticing. One predicate for the whole surface is the property worth
+    /// having.
+    ///
     /// # Errors
     ///
-    /// [`DispatchError::UnknownTool`] when no tool of that name is registered.
-    /// [`DispatchError::NotCallable`] when the tool is registered but its
-    /// required features are not negotiated on `ctx`'s session — the caller
-    /// has already passed the profile gate, so this is the registry's own
-    /// metadata disagreeing, which is a server bug and is reported as one.
+    /// [`DispatchError::UnknownTool`] when no tool of that name is registered
+    /// **or** when this session may not see it — because it requires a
+    /// feature the profile lacks, or a scope the caller does not hold. The two
+    /// are deliberately the same answer: a different one for each would let a
+    /// caller read the existence of a tool it is not allowed to know about.
+    /// The server still logs which it was.
     pub async fn call(
         &self,
         ctx: &RequestContext,
@@ -187,9 +199,23 @@ impl Server {
             .iter()
             .find(|entry| entry.name.as_str() == name)
             .ok_or(DispatchError::UnknownTool)?;
-        if !entry.required.is_subset_of(ctx.peer().profile().as_set()) {
-            return Err(DispatchError::NotCallable);
+
+        // The gate, once, for both halves of the surface. After this the tool
+        // is known to exist *and* to be visible to this session, so the
+        // handler is reached with no further checking to disagree with.
+        if self
+            .registry
+            .get_visible(
+                ctx.peer().auth(),
+                &ctx.peer().profile(),
+                PrimitiveKind::Tool,
+                name,
+            )
+            .is_none()
+        {
+            return Err(DispatchError::UnknownTool);
         }
+
         Ok((entry.handler)(ctx.clone(), args).await)
     }
 }
@@ -209,6 +235,22 @@ pub enum DispatchError {
     /// it requires.
     #[error("the session did not negotiate what this tool requires")]
     NotCallable,
+
+    /// No method of that name exists.
+    ///
+    /// Refused on the method, not on a tool, because the caller named a method
+    /// and there is no tool to say anything about.
+    #[error("no such method")]
+    UnknownMethod,
+
+    /// `tools/call` params were not the shape a call has to be: not an object,
+    /// no string `name`, or an `arguments` that is not an object.
+    ///
+    /// A distinct variant from `UnknownTool` because a call with no `name` at
+    /// all has not failed to find a tool — it never named one, and answering
+    /// "no such tool" would send the caller looking for a tool that works.
+    #[error("the call parameters are not a tool call")]
+    MalformedParams,
 }
 
 /// The builder behind [`Server::builder`].
@@ -217,8 +259,6 @@ pub struct ServerBuilder {
     name: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
-    resources: Vec<Registered>,
-    prompts: Vec<Registered>,
 }
 
 impl ServerBuilder {
@@ -235,23 +275,33 @@ impl ServerBuilder {
     /// one in neither is a handler that never runs. There is no state in
     /// between for a caller to be wrong in.
     #[must_use]
-    pub fn tool(mut self, tool: Tool, handler: ToolHandler) -> Self {
-        // `from` rather than a builder chain on `Registered`: the conversion
-        // is the only way to reach a `Registered`, and spelling it once here
-        // means a future field on `Registered` cannot be forgotten below.
-        //
-        // The requirement is read off the same conversion and cached. Asking
-        // the primitive again on every call would clone a `Tool` per dispatch
-        // to answer a question that is fixed the moment it is registered.
-        let as_primitive = Primitive::from(tool.clone());
-        let required = as_primitive.meta().required_features();
-        self.registry.register(Registered::from(as_primitive));
-        self.tools.push(ToolEntry {
-            name: tool.name.clone(),
-            tool,
-            handler,
-            required,
-        });
+    pub fn tool(self, tool: Tool, handler: ToolHandler) -> Self {
+        self.restricted_tool(Registered::from(Primitive::from(tool)), handler)
+    }
+
+    /// Adds a tool that carries its own requirements.
+    ///
+    /// [`tool`](Self::tool) takes a [`Tool`], and a `Tool` cannot say
+    /// "callers need the `files:read` scope" — that lives on [`Registered`],
+    /// which wraps a primitive with the policy it must satisfy. So without this
+    /// method the scope half of `is_visible` is reachable from no builder
+    /// call, `auth.rs` is dead code, and a server can be built that has no way
+    /// to express an authorisation rule at all. That is the same dead-gate
+    /// shape T11 found, one layer up.
+    ///
+    /// A `Registered` carrying something other than a tool is registered
+    /// under its own id and left out of the call table: it stays visible to
+    /// `tools/list` and the listing is the truth, so nothing is silently
+    /// dropped, but there is no handler to name for a `tools/call` of it.
+    #[must_use]
+    pub fn restricted_tool(mut self, registered: Registered, handler: ToolHandler) -> Self {
+        if let Primitive::Tool(tool) = registered.primitive() {
+            self.tools.push(ToolEntry {
+                name: tool.name.clone(),
+                handler,
+            });
+        }
+        self.registry.register(registered);
         self
     }
 
@@ -276,20 +326,35 @@ impl ServerBuilder {
     }
 
     /// Adds a resource.
+    ///
+    /// Publishes to the registry rather than holding a side list, for the same
+    /// reason `tool` does: a resource in a builder field but not in the
+    /// registry is a resource no `resources/list` can name. The field it used
+    /// to live in was dropped by `build`, so a server with resources had a
+    /// builder that looked populated and an always-empty listing.
     #[must_use]
-    pub fn resource(mut self, resource: Resource) -> Self {
-        self.resources
-            .push(Registered::from(Primitive::from(resource)));
+    pub fn resource(self, resource: Resource) -> Self {        self.registry.register(Registered::from(Primitive::from(resource)));
+        self
+    }
+
+    /// Adds a resource template.
+    ///
+    /// Templates are listed by their own method, and they are a distinct
+    /// [`PrimitiveKind`] in the registry, so a template needs its own entry
+    /// point rather than sharing `resource`'s.
+    #[must_use]
+    pub fn resource_template(self, template: ResourceTemplate) -> Self {
+        self.registry
+            .register(Registered::from(Primitive::from(template)));
         self
     }
 
     /// Adds a prompt.
     #[must_use]
-    pub fn prompt(mut self, prompt: Prompt) -> Self {
-        self.prompts.push(Registered::from(Primitive::from(prompt)));
+    pub fn prompt(self, prompt: Prompt) -> Self {
+        self.registry.register(Registered::from(Primitive::from(prompt)));
         self
     }
-
     /// Finishes the server.
     #[must_use]
     pub fn build(self) -> Server {
@@ -517,7 +582,14 @@ mod tests {
             Ok(answer) => Err(Failure::from(format!(
                 "a tool the session cannot call returned {answer}"
             ))),
-            Err(DispatchError::NotCallable) => Ok(()),
+            // `UnknownTool`, not `NotCallable`, and the distinction is the
+            // point. A tool this session may not see is a tool this session is
+            // not told about: answering "it exists but you may not have it"
+            // would confirm it exists, and a caller could then enumerate the
+            // registry by watching which names come back refused. The same
+            // answer as a tool that is not there is what makes the refusal
+            // probe-proof.
+            Err(DispatchError::UnknownTool) => Ok(()),
             Err(other) => Err(Failure::from(format!(
                 "refused for the wrong reason: {other}"
             ))),

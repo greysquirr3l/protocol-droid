@@ -33,6 +33,7 @@ use crate::application::server::error::GatedError;
 use crate::application::session::DynFrameSink;
 use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::ir::JsonObject;
+use crate::domain::registry::AuthContext;
 use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
 use crate::domain::{ProtocolVersion, RequestId};
 
@@ -187,6 +188,7 @@ pub struct PeerSession {
     negotiated: ProtocolVersion,
     profile: FeatureProfile,
     session: SessionId,
+    auth: AuthContext,
     exchange: Arc<dyn DynExchange>,
     sink: Arc<dyn DynFrameSink>,
 }
@@ -202,6 +204,7 @@ impl core::fmt::Debug for PeerSession {
         f.debug_struct("PeerSession")
             .field("negotiated", &self.negotiated)
             .field("session", &self.session)
+            .field("principal", &self.auth.principal())
             .field("feature_count", &self.profile.len())
             .finish_non_exhaustive()
     }
@@ -209,6 +212,13 @@ impl core::fmt::Debug for PeerSession {
 
 impl PeerSession {
     /// Records what a connection negotiated, and where its frames go.
+    ///
+    /// The caller is [`AuthContext::anonymous`], which holds no scopes. That
+    /// is a default-deny default and not a convenience: a primitive requiring
+    /// a scope is invisible to an anonymous session, and one requiring none is
+    /// visible to everybody. [`with_auth`](Self::with_auth) is how a real
+    /// principal arrives, so a transport that never calls it serves exactly
+    /// the primitives nobody had to authorise.
     #[must_use]
     pub fn new(
         negotiated: ProtocolVersion,
@@ -221,9 +231,41 @@ impl PeerSession {
             negotiated,
             profile,
             session,
+            auth: AuthContext::anonymous(),
             exchange,
             sink,
         }
+    }
+
+    /// The caller, for the visibility gate.
+    #[must_use]
+    pub const fn auth(&self) -> &AuthContext {
+        &self.auth
+    }
+
+    /// Narrows what this session may do.
+    ///
+    /// Separate from the constructor because a profile can be narrowed after
+    /// the fact in a way it cannot be widened. The `2026-07-28` stateless
+    /// lifecycle is the reason: every request carries its own version and
+    /// capabilities in `_meta` and is served against its own profile, so the
+    /// connection settles one profile and each request may hold less.
+    ///
+    /// Narrowing only, deliberately. Widening would let a caller grant a
+    /// session a feature the negotiation never produced, and that is the
+    /// "rules-tightening in code" hazard in its most dangerous form: the
+    /// refusal it defeats is a refusal the peer was never entitled to.
+    #[must_use]
+    pub const fn with_profile(mut self, profile: FeatureProfile) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    /// Records who the caller is.
+    #[must_use]
+    pub fn with_auth(mut self, auth: AuthContext) -> Self {
+        self.auth = auth;
+        self
     }
 
     /// The revision this connection settled on.

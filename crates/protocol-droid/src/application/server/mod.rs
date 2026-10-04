@@ -17,6 +17,12 @@
 //! [`error::GatedError`] is what a handler gets when it asks for something this
 //! session did not negotiate.
 //!
+//! [`dispatch::Dispatcher`] is the method table: it turns a peer's method name
+//! into a call on [`builder::Server`], and is what a transport holds once the
+//! frames are decoded. It is separate from the builder because describing a
+//! server and routing a request against it are different jobs, and only the
+//! second one is I/O-shaped.
+//!
 //! # The boundary this module sits on
 //!
 //! The session engine below in [`super::session`] is protocol-neutral: it holds
@@ -28,8 +34,10 @@
 
 pub mod builder;
 pub mod context;
+pub mod dispatch;
 pub mod error;
 
-pub use builder::{BoxFuture, Server, ServerBuilder, ToolHandler};
+pub use builder::{BoxFuture, DispatchError, Server, ServerBuilder, ToolHandler};
 pub use context::{CallbackExchange, DynExchange, ExchangeError, PeerSession, RequestContext};
+pub use dispatch::Dispatcher;
 pub use error::GatedError;

@@ -60,7 +60,8 @@ pub(crate) type TestError = Box<dyn core::error::Error>;
 
 pub use auth::{AuthContext, Scope, ScopeSet};
 pub use primitive::{
-    Primitive, PrimitiveId, PrimitiveKind, Prompt, Registered, Resource, ResourceTemplate, Tool,
+    Primitive, PrimitiveId, PrimitiveKind, Prompt, PromptArgument, Registered, Resource,
+    ResourceTemplate, Tool,
 };
 pub use snapshot::{Snapshot, SnapshotBuilder};
 pub use visibility::{is_visible, missing_features, missing_scopes};

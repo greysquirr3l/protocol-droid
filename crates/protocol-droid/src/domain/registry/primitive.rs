@@ -88,6 +88,28 @@ impl PrimitiveKind {
             Self::Prompt => "prompt",
         }
     }
+
+    /// The feature a session needs before it may list this kind.
+    ///
+    /// So the listing methods' gates are written once. A table here rather than
+    /// at each call site is the point: `resources/list` and
+    /// `resources/templates/list` are separate methods in the spec, and a
+    /// second place naming which requires which feature is a second place to
+    /// forget it.
+    ///
+    /// `ResourceTemplate` maps to [`Feature::Resources`], not to a feature of
+    /// its own, because the specification's `resources` capability covers
+    /// templates too. A peer that can list resources can list their templates;
+    /// a separate feature would gate the two independently and let a session
+    /// hold the odd combination the spec has no way to express.
+    #[must_use]
+    pub const fn feature(self) -> Feature {
+        match self {
+            Self::Tool => Feature::Tools,
+            Self::Resource | Self::ResourceTemplate => Feature::Resources,
+            Self::Prompt => Feature::Prompts,
+        }
+    }
 }
 
 impl fmt::Display for PrimitiveKind {
