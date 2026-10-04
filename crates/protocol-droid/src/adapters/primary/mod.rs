@@ -6,3 +6,6 @@
 //! defined for 2024-11-05, stateful Streamable HTTP, and the stateless
 //! lifecycle from 2026-07-28. Each is feature-gated so a
 //! `--no-default-features` build stays a lean core.
+
+#[cfg(feature = "stdio")]
+pub mod stdio;

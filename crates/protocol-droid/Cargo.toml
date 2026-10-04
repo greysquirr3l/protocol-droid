@@ -22,10 +22,16 @@ categories.workspace = true
 # two can be benchmarked against each other rather than argued about; it is off
 # by default because a `default-features = false` build has to stay lean and
 # because a decoder that is only fast on some targets is a portability trap.
-default = ["serde"]
+default = ["serde", "stdio"]
 # serde_json is the portable default and is always compiled — the generated
 # wire types depend on it, so it is data rather than an optional integration.
 serde = []
+# T13. The stdio transport is the only adapter in the crate that names a
+# runtime, so it is the one adapter that is gated. `default-features = false`
+# drops the executor, the `AsyncRead`/`AsyncWrite` plumbing and the diagnostic
+# channel with it, leaving the domain, the IR and every codec — which is the
+# shape a server that speaks only HTTP, or a tool that only speaks the IR, wants.
+stdio = ["dep:tokio"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
@@ -38,6 +44,10 @@ schemars = "1.2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Only the `stdio` adapter needs an executor. `io-util` for the `AsyncReadExt`
+# and `AsyncWriteExt` helpers, `io-std` for `tokio::io::Stderr`; `rt` and
+# `sync` come from the workspace declaration above and are not repeated.
+tokio = { workspace = true, optional = true, features = ["io-std", "io-util"] }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,

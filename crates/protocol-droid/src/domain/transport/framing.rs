@@ -170,7 +170,10 @@ pub enum MaxFrameSizeError {
 /// A domain error: the framing layer knows about sizes and encodings and nothing
 /// else, so nothing in it is an `io::Error` or a `serde_json::Error`, and an
 /// adapter that hits a broken pipe maps that at its own boundary instead.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+///
+/// Every field is `Copy`, so the whole error is: it is a size and an offset,
+/// and there is nothing in it worth owning twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FramingError {
     /// A frame exceeded the decoder's configured limit.
     ///
