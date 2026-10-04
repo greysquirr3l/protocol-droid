@@ -1,0 +1,5 @@
+error: a #[resource] method is registered once, while the server is being built, so there is nothing to await: write `fn readme() -> Resource` without `async`. A function that has to wait is a #[tool], and that one is called per request rather than per server.
+  --> tests/ui/fail/resource_async.rs:15:5
+   |
+15 |     async fn readme() -> protocol_droid::domain::registry::Resource {
+   |     ^^^^^

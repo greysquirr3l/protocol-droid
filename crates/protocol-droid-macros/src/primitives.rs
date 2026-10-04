@@ -188,9 +188,9 @@ impl Mark {
 /// is to be read once.
 fn lower_first(name: &str) -> String {
     let mut characters = name.chars();
-    characters
-        .next()
-        .map_or_else(String::new, |first| first.to_lowercase().chain(characters).collect())
+    characters.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(characters).collect()
+    })
 }
 
 #[cfg(test)]

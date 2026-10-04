@@ -1,0 +1,5 @@
+error: a #[tool] handler takes its context first, before the arguments: the generated handler is given the context and then the decoded arguments, in that order, so a context written after an argument has nowhere to go. Move it to the front of the parameter list.
+  --> tests/ui/fail/context_not_first.rs:25:9
+   |
+25 |         ctx: protocol_droid::application::server::context::RequestContext,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -79,6 +79,15 @@ fn is_context(arg: &FnArg) -> bool {
 /// called by name and a receiver would have nothing to receive from; and a
 /// second context parameter, which is almost certainly a typo and which would
 /// otherwise generate two fields named the same thing.
+///
+/// A context that is not the first parameter is also refused. The generated
+/// handler is handed the context and then the decoded arguments, in that order,
+/// so a `RequestContext` written after a plain argument has nowhere to go. Left
+/// to the type checker this arrives as a wall of `expected fn(RequestContext,
+/// String), found fn(String, RequestContext)` notes about a bound in a handler
+/// factory the author never wrote, which reads as a bug in the macro rather
+/// than as the parameter order — so it is caught here, where the message can
+/// say which way round the two go.
 pub(crate) fn read_handler(
     attrs: &[syn::Attribute],
     attribute: proc_macro2::TokenStream,
@@ -101,6 +110,11 @@ pub(crate) fn read_handler(
 
     let mut takes_context = false;
     let mut positional = Vec::new();
+    // Whether a plain argument has been read, which is how a context that is
+    // not first is recognised. The generated handler is handed the context and
+    // then the decoded arguments, in that order, so the context is written
+    // first; a context after an argument has nowhere to go.
+    let mut seen_argument = false;
 
     for arg in &sig.inputs {
         match arg {
@@ -120,9 +134,21 @@ pub(crate) fn read_handler(
                          is the second",
                     ));
                 }
+                if seen_argument {
+                    return Err(syn::Error::new_spanned(
+                        typed,
+                        "a #[tool] handler takes its context first, before the arguments: \
+                         the generated handler is given the context and then the decoded \
+                         arguments, in that order, so a context written after an argument \
+                         has nowhere to go. Move it to the front of the parameter list.",
+                    ));
+                }
                 takes_context = true;
             }
-            FnArg::Typed(typed) => positional.push(typed.clone()),
+            FnArg::Typed(typed) => {
+                seen_argument = true;
+                positional.push(typed.clone());
+            }
         }
     }
 
@@ -287,10 +313,51 @@ fn outcome(handler: &Handler, call_args: &TokenStream) -> TokenStream {
             }
         }
     } else {
+        // One expression, not two statements. The caller splices this into
+        // `match (#outcome) { .. }`, so anything but a single expression here
+        // lands a `let` in expression position and the expansion does not
+        // parse — which is what this did before, and it meant every handler
+        // that did not return a `Result` failed with `expected expression,
+        // found 'let' statement` pointing at the `#[server]` attribute rather
+        // than at the signature that caused it.
+        //
+        // The binding is not needed to keep the answer alive: a temporary
+        // borrowed as a call argument lives to the end of the enclosing
+        // statement, and `success` returns an owned document, so nothing
+        // borrows the answer past this expression.
         quote! {
-            let answer = function(#call_args).await;
-            ::protocol_droid::application::server::result::success(&answer)
+            ::protocol_droid::application::server::result::success(
+                &function(#call_args).await
+            )
         }
+    }
+}
+
+/// The generic parameters a handler factory is declared with.
+///
+/// Varies by return type, and has to: a type parameter that no bound and no
+/// body position mentions is one the caller cannot infer, so the tool factory's
+/// call to the handler factory fails with `cannot infer type of the type
+/// parameter __Error` before it reaches the handler at all. That is exactly
+/// what a plain `async fn f() -> T` hit — `__Error` was declared for every
+/// handler but only constrained for the `Result` ones, and the parse error the
+/// plain path used to also raise stood in front of this one, so neither had
+/// ever been seen.
+///
+/// Its own function for the same reason `bounds` has one: the declaration and
+/// the `where` clause have to agree about which parameters exist, and the two
+/// are read side by side far more often than either is read alone.
+fn generics(
+    handler: &Handler,
+    f_ty: &Ident,
+    fut_ty: &Ident,
+    error_ty: &Ident,
+    answer_ty: &Ident,
+) -> TokenStream {
+    if is_result(handler) {
+        quote! { <#f_ty, #fut_ty, #error_ty, #answer_ty> }
+    } else {
+        quote! { <#f_ty, #fut_ty, #answer_ty> }
     }
 }
 
@@ -374,6 +441,7 @@ pub(crate) fn handler_factory(handler: &Handler) -> TokenStream {
 
     let handler_fn = format_ident!("__{}_{}_HANDLER", handler.prefix, handler.fn_name);
 
+    let generics_clause = generics(handler, &f_ty, &fut_ty, &error_ty, &answer_ty);
     let bounds_clause = bounds(handler, &fut_ty, &error_ty, &answer_ty);
     let outcome = outcome(handler, &call_args);
 
@@ -384,7 +452,7 @@ pub(crate) fn handler_factory(handler: &Handler) -> TokenStream {
             non_snake_case,
             reason = "generated by #[server], and never named by a user",
         )]
-        fn #handler_fn<#f_ty, #fut_ty, #error_ty, #answer_ty>(f: #f_ty) -> ::protocol_droid::application::server::ToolHandler
+        fn #handler_fn #generics_clause (f: #f_ty) -> ::protocol_droid::application::server::ToolHandler
         where
             // `ToolHandler` is `Arc<dyn Fn .. + Send + Sync>`, so the closure
             // is `Fn` and the function it captures has to be too: an `FnOnce`

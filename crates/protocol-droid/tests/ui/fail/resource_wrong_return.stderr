@@ -1,0 +1,5 @@
+error: a #[resource] method must return `Resource`, not `String`: `ServerBuilder::resource` registers a `Resource`, and the method is called once to produce it. A function that runs per request is a #[tool].
+  --> tests/ui/fail/resource_wrong_return.rs:16:20
+   |
+16 |     fn readme() -> String {
+   |                    ^^^^^^

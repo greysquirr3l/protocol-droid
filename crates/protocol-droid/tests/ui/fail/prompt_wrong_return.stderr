@@ -1,0 +1,5 @@
+error: a #[prompt] method must return `Prompt`, not `Resource`: `ServerBuilder::prompt` registers a `Prompt`, and the method is called once to produce it. A function that runs per request is a #[tool].
+  --> tests/ui/fail/prompt_wrong_return.rs:15:20
+   |
+15 |     fn review() -> protocol_droid::domain::registry::Resource {
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
