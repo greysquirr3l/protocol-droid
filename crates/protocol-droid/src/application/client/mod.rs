@@ -367,12 +367,15 @@ impl Client {
         let owned = match JsonObject::new(params) {
             Ok(object) => object,
             Err(error) => {
-                return Err(ClientError::Transport(TransportError::Unavailable(format!(
-                    "{method} was given parameters that are not a JSON object: {error}"
-                ))));
+                return Err(ClientError::Transport(TransportError::Unavailable(
+                    format!("{method} was given parameters that are not a JSON object: {error}"),
+                )));
             }
         };
-        self.transport.send(method, &owned).await.map_err(ClientError::from)
+        self.transport
+            .send(method, &owned)
+            .await
+            .map_err(ClientError::from)
     }
 }
 
@@ -495,8 +498,8 @@ mod tests {
     /// `Transport` — which is what makes this a test of the gate and not of
     /// the transport. The error variant is the whole assertion.
     #[tokio::test]
-    async fn a_gated_call_on_a_session_without_it_never_reaches_the_transport(
-    ) -> Result<(), TestError> {
+    async fn a_gated_call_on_a_session_without_it_never_reaches_the_transport()
+    -> Result<(), TestError> {
         // 2024-11-05 has elicitation only in... it does not have it at all.
         // Resolving with empty capabilities on both sides is the honest way to
         // say "this session negotiated nothing optional".
@@ -589,9 +592,7 @@ mod tests {
         let config = ClientConfig::speaking(empty, TransportKind::Stdio);
 
         match config {
-            Ok(_) => Err(Failure::from(
-                "a client offering no revisions was accepted",
-            )),
+            Ok(_) => Err(Failure::from("a client offering no revisions was accepted")),
             Err(_) => Ok(()),
         }
     }

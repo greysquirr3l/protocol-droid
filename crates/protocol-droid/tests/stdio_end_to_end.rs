@@ -394,10 +394,13 @@ fn at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Result<&'a serde_json:
 /// The string at `path`, or a failure carrying what was actually there.
 fn string_at(value: &serde_json::Value, path: &[&str]) -> Result<String, Failure> {
     let found = at(value, path)?;
-    found.as_str().map(str::to_owned).ok_or_else(|| Failure::Unexpected {
-        what: "a string",
-        got: found.to_string(),
-    })
+    found
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Failure::Unexpected {
+            what: "a string",
+            got: found.to_string(),
+        })
 }
 
 /// The result object of a reply, as a value.
@@ -413,12 +416,10 @@ fn result_of(reply: &JsonObject) -> Result<serde_json::Value, Failure> {
 /// The `tools` array of a `tools/list` reply, as `(name, description)` pairs.
 fn tool_names(listed: &serde_json::Value) -> Result<Vec<String>, Failure> {
     let tools = at(listed, &["tools"])?;
-    let array = tools
-        .as_array()
-        .ok_or_else(|| Failure::Unexpected {
-            what: "a tools array",
-            got: tools.to_string(),
-        })?;
+    let array = tools.as_array().ok_or_else(|| Failure::Unexpected {
+        what: "a tools array",
+        got: tools.to_string(),
+    })?;
 
     // A hand-rolled fold rather than an iterator chain, because every `?` in
     // one of those is a conversion that has to name its own failure.
@@ -442,12 +443,10 @@ fn tool_named<'a>(
     name: &str,
 ) -> Result<&'a serde_json::Value, Failure> {
     let tools = at(listed, &["tools"])?;
-    let array = tools
-        .as_array()
-        .ok_or_else(|| Failure::Unexpected {
-            what: "a tools array",
-            got: tools.to_string(),
-        })?;
+    let array = tools.as_array().ok_or_else(|| Failure::Unexpected {
+        what: "a tools array",
+        got: tools.to_string(),
+    })?;
 
     for tool in array {
         if tool.get("name").and_then(serde_json::Value::as_str) == Some(name) {
@@ -481,10 +480,7 @@ fn initialize_params() -> Result<JsonObject, Failure> {
 /// Whatever spawning does, plus [`Failure::TimedOut`] if the spawn itself did
 /// not finish inside [`GUARD`] — which on a loaded machine is a real outcome
 /// and should read as such rather than as a hang.
-async fn client_on(
-    path: &Path,
-    capture: &Capture,
-) -> Result<StdioClient<Capture>, Failure> {
+async fn client_on(path: &Path, capture: &Capture) -> Result<StdioClient<Capture>, Failure> {
     let spec = spec_for(path)?;
     let config = ClientConfig::new(StdioConfig::new(MaxFrameSize::new(CLIENT_CEILING)?));
     Ok(tokio::time::timeout(
@@ -504,12 +500,9 @@ async fn client_on(
 async fn initialize(client: &StdioClient<Capture>) -> Result<serde_json::Value, Failure> {
     let id = client.next_request_id();
     let method = MethodName::new("initialize")?;
-    let reply = tokio::time::timeout(
-        GUARD,
-        client.call(&id, &method, &initialize_params()?),
-    )
-    .await
-    .map_err(|_| Failure::TimedOut("the initialize handshake"))??;
+    let reply = tokio::time::timeout(GUARD, client.call(&id, &method, &initialize_params()?))
+        .await
+        .map_err(|_| Failure::TimedOut("the initialize handshake"))??;
 
     result_of(&reply)
 }
@@ -629,9 +622,7 @@ async fn list_and_check_schemas(client: &StdioClient<Capture>) -> Result<(), Fai
         what: "a required-arguments array",
         got: required.to_string(),
     })?;
-    let text_is_required = entries
-        .iter()
-        .any(|entry| entry.as_str() == Some("text"));
+    let text_is_required = entries.iter().any(|entry| entry.as_str() == Some("text"));
     if !text_is_required {
         return Err(Failure::Unexpected {
             what: "shout's required arguments",
@@ -646,8 +637,7 @@ async fn list_and_check_schemas(client: &StdioClient<Capture>) -> Result<(), Fai
 /// length is there so a call that came back unchanged is visibly wrong rather
 /// than coincidentally right.
 async fn call_and_check_content(client: &StdioClient<Capture>) -> Result<(), Failure> {
-    let call_params =
-        JsonObject::new(r#"{"name":"shout","arguments":{"text":"hello droid"}}"#)?;
+    let call_params = JsonObject::new(r#"{"name":"shout","arguments":{"text":"hello droid"}}"#)?;
     let called = result_of(
         &tokio::time::timeout(
             GUARD,
@@ -711,18 +701,12 @@ async fn call_and_check_content(client: &StdioClient<Capture>) -> Result<(), Fai
 async fn notification_draws_no_answer(client: &StdioClient<Capture>) -> Result<(), Failure> {
     let ping_id = client.next_request_id();
     let notification = MethodName::new("notifications/initialized")?;
-    tokio::time::timeout(
-        GUARD,
-        client.notify(&notification, &JsonObject::default()),
-    )
-    .await
-    .map_err(|_| Failure::TimedOut("a notification"))??;
+    tokio::time::timeout(GUARD, client.notify(&notification, &JsonObject::default()))
+        .await
+        .map_err(|_| Failure::TimedOut("a notification"))??;
 
-    let ping_document = request_document(
-        &ping_id,
-        &MethodName::new("ping")?,
-        &JsonObject::default(),
-    )?;
+    let ping_document =
+        request_document(&ping_id, &MethodName::new("ping")?, &JsonObject::default())?;
     let document = ping_document.to_string();
     tokio::time::timeout(GUARD, client.send_document(&document))
         .await
@@ -863,9 +847,8 @@ async fn the_childs_stderr_never_reaches_the_protocol_stream() -> Result<(), Fai
     initialize(&client).await?;
 
     let padding = "a".repeat(OVERSIZED_PADDING);
-    let oversized = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"ping","params":{{"pad":"{padding}"}}}}"#
-    );
+    let oversized =
+        format!(r#"{{"jsonrpc":"2.0","id":1,"method":"ping","params":{{"pad":"{padding}"}}}}"#);
 
     // The write may or may not complete, and that is not what is under test.
     // The child refuses the frame at its ceiling and exits, which closes the
