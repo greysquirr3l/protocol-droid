@@ -11,20 +11,30 @@
 
 mod capability;
 pub mod feature;
+pub mod idempotency;
 pub mod ir;
 pub mod jsonrpc;
+pub mod mcp;
 mod negotiation;
 mod protocol_version;
 pub mod registry;
 mod release_date;
 mod request_id;
 pub mod session;
+mod stream;
 mod supported_versions;
 mod transport;
 
 pub use capability::{CAPABILITY_TABLE, Capability, CapabilitySet, Side, defined_in};
 pub use feature::{
     DegradePolicy, FEATURES, Feature, FeatureProfile, FeatureSpec, Negotiation, resolve,
+};
+pub use idempotency::{
+    Claim, ClaimToken, CompletedResults, IdempotencyError, IdempotencyKey, StaleClaim,
+};
+pub use mcp::{
+    MCP_METHOD_HEADER, MCP_NAME_HEADER, McpSessionId, McpSessionIdError, RoutingHeaderError,
+    RoutingHeaders, RoutingName, RoutingTarget, VISIBLE_ASCII_RANGE,
 };
 pub use negotiation::{
     NegotiatedSession, NegotiationError, PeerInfo, ServerDecision, StatelessRequest,
@@ -35,6 +45,9 @@ pub use negotiation::{
 pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVersionError};
 pub use release_date::{ParseReleaseDateError, ReleaseDate};
 pub use request_id::RequestId;
+pub use stream::{
+    EventId, EventRing, RECOMMENDED_CAPACITY, RecommendedCapacity, Replay, StreamEvent,
+};
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
 pub use transport::{
     FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, TransportKind, encode_frame,

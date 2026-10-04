@@ -5,6 +5,7 @@
 //! domain depends on but must never call globally).
 
 pub mod codec;
+pub mod idempotency;
 pub mod mcp;
 
 // T13. The client half of the stdio transport: spawning a child server, killing

@@ -6,9 +6,11 @@
 //! infrastructure error type ever appears in a signature here.
 //!
 //! Populated by T06 (negotiation), T08 (codecs), T09 (JSON-RPC routing), T10
-//! (session engine), T11 (dynamic registry) and T12 (server and client APIs).
+//! (session engine), T11 (dynamic registry), T12 (server and client APIs) and
+//! T14 (the idempotency store a retried `tools/call` is deduplicated through).
 
 pub mod client;
+pub mod idempotency;
 pub mod jsonrpc;
 pub mod registry;
 pub mod server;
