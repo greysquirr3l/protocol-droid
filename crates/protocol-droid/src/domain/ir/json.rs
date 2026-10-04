@@ -78,10 +78,78 @@ impl JsonObject {
         &self.text
     }
 
+    /// Validates a `serde_json::Value` and stores it.
+    ///
+    /// A tool handler's result is built from data — the argument echoed back,
+    /// a computed value, an error message composed from a failure. Doing that
+    /// with `new` means `format!`ing a JSON document by hand, and a handler
+    /// that interpolates a peer's string into a JSON literal without escaping
+    /// it is an injection bug. This is the constructor that makes that mistake
+    /// unavailable.
+    ///
+    /// The value is serialised rather than kept, so a `JsonObject` is still one
+    /// validated `String` and still owns no borrowed peer's data.
+    ///
+    /// # Errors
+    ///
+    /// [`JsonObjectError::NotAnObject`] when the value is not an object.
+    /// [`JsonObjectError::InvalidJson`] when the value cannot be serialised,
+    /// which for a `Value` cannot happen — but the error type is the honest
+    /// one, and inventing a second error for an unreachable case would be a
+    /// promise this function cannot keep.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::domain::ir::JsonObject;
+    ///
+    /// let value = serde_json::json!({ "echoed": "quotes \" and \\ survive" });
+    /// let json = JsonObject::from_value(value)?;
+    /// assert_eq!(json.as_str(), r#"{"echoed":"quotes \" and \\ survive"}"#);
+    /// # Ok::<(), protocol_droid::domain::ir::JsonObjectError>(())
+    /// ```
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller hands over a Value it built and does not want back. \
+                  Almost every call site is `JsonObject::from_value(json!({..}))`, \
+                  and by reference would force each one to bind a temporary \
+                  first — the lint is right that the body only reads it, and \
+                  taking it is still the signature a caller wants."
+    )]
+    pub fn from_value(value: serde_json::Value) -> Result<Self, JsonObjectError> {
+        if !value.is_object() {
+            return Err(JsonObjectError::NotAnObject);
+        }
+        serde_json::to_string(&value)
+            .map(|text| Self { text })
+            .map_err(|error| JsonObjectError::InvalidJson {
+                offset: error.column(),
+            })
+    }
+
     /// Consumes the object, yielding its text.
     #[must_use]
     pub fn into_string(self) -> String {
         self.text
+    }
+}
+
+impl Default for JsonObject {
+    /// The empty object, `{}`.
+    ///
+    /// A tool handler returns a `JsonObject` and cannot return a `Result`,
+    /// because MCP reports a tool failure as a successful call carrying
+    /// `isError: true`. So a handler that cannot build the result it meant to
+    /// build needs somewhere to fall back to, and it needs to be infallible.
+    /// `{}` is that place: it is a valid document under every revision of the
+    /// protocol, so no fallback can itself be a parse error.
+    ///
+    /// Not `""`, which is the default a `String`-backed type reaches for and
+    /// which is not a JSON object at all.
+    fn default() -> Self {
+        Self {
+            text: String::from("{}"),
+        }
     }
 }
 

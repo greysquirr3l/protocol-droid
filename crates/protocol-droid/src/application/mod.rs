@@ -8,5 +8,8 @@
 //! Populated by T06 (negotiation), T08 (codecs), T09 (JSON-RPC routing), T10
 //! (session engine), T11 (dynamic registry) and T12 (server and client APIs).
 
+pub mod client;
 pub mod jsonrpc;
+pub mod registry;
+pub mod server;
 pub mod session;
