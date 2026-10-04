@@ -44,10 +44,22 @@ schemars = "1.2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# Only the `stdio` adapter needs an executor. `io-util` for the `AsyncReadExt`
-# and `AsyncWriteExt` helpers, `io-std` for `tokio::io::Stderr`; `rt` and
-# `sync` come from the workspace declaration above and are not repeated.
-tokio = { workspace = true, optional = true, features = ["io-std", "io-util"] }
+# Only the `stdio` adapter needs an executor. `io-std` for the `AsyncRead`/
+# `AsyncWrite` helpers and `tokio::io::Stderr`, `io-util` for the `AsyncReadExt`
+# and `AsyncWriteExt` traits, and `process` for the child a client spawns.
+#
+# `process` does NOT need the public `signal` feature. On a Unix target tokio
+# compiles its `SIGCHLD` reaper for `process` regardless, because
+# `cfg_signal_internal!` in tokio's `macros/cfg.rs` is
+# `any(feature = "signal", all(unix, feature = "process"))` — so enabling
+# `signal` would add the public signal *API* and buy nothing, and a client that
+# never registers a signal handler has no use for it. `rt` and `sync` come from
+# the workspace declaration above and are not repeated.
+tokio = { workspace = true, optional = true, features = [
+    "io-std",
+    "io-util",
+    "process",
+] }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,

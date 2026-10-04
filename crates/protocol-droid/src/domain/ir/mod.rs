@@ -64,5 +64,6 @@ pub use json::{JsonObject, JsonObjectError};
 pub use lower::{DegradeRule, Loss, LowerError, Lowering, TranslationReport, TranslationStep};
 pub use message::{
     IrError, IrErrorCode, IrMessage, IrNotification, IrParams, IrRequest, IrResult, MethodName,
+    MethodNameError,
 };
 pub use tool::{Downgrade, ToolResult};

@@ -6,3 +6,10 @@
 
 pub mod codec;
 pub mod mcp;
+
+// T13. The client half of the stdio transport: spawning a child server, killing
+// it on drop, and keeping its stderr off the protocol stream. Gated with the
+// server half because it is the same dependency — a tokio runtime and pipes —
+// and a build that speaks stdio on one side and not the other has no use.
+#[cfg(feature = "stdio")]
+pub mod stdio;
