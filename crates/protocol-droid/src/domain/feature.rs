@@ -849,6 +849,84 @@ impl FeatureProfile {
         FeatureSet::from_bits(self.bits)
     }
 
+    /// The server-side capabilities this session is on, as a set.
+    ///
+    /// This is the answer to "what does this server advertise", read back out
+    /// of the same profile every feature gate consults. It is a fold over
+    /// [`FEATURES`] — the same table [`resolve`](crate::domain::resolve) is a
+    /// fold over — taking the `server_cap` of every server-side row the profile
+    /// allows.
+    ///
+    /// # Why a server's advertisement is derived and not declared
+    ///
+    /// A server's `InitializeResult` has to state its capabilities, and the
+    /// obvious implementation is a second list beside the feature matrix. That
+    /// list would be a second thing to update, and the two would disagree the
+    /// first time a feature was added to [`FEATURES`] and not to the list: the
+    /// gate would switch on a capability the handshake never claimed, and the
+    /// peer would have been told at connect time not to use it.
+    ///
+    /// Deriving it inverts that. The advertisement is a *function of the gate*,
+    /// so it cannot be edited independently of it, and the only way to widen
+    /// what a server advertises is to widen what it actually does.
+    ///
+    /// Two properties fall out of reading the profile rather than the
+    /// declaration:
+    ///
+    /// - **Client capabilities are excluded by construction.** Their rows are
+    ///   [`Side::Client`] with no `server_cap`, so there is no path by which
+    ///   `roots`, `sampling` or `elicitation` reaches a `ServerCapabilities`
+    ///   object, which has no field for them.
+    /// - **The revision narrows it.** A capability survives only if the feature
+    ///   behind it is defined in the negotiated version, so a server that
+    ///   declared everything still advertises only what the agreed revision can
+    ///   name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::domain::{
+    ///     Capability, CapabilitySet, Feature, Negotiation, ProtocolVersion,
+    ///     TransportKind, resolve,
+    /// };
+    ///
+    /// // A server that declared nothing advertises nothing.
+    /// let version = ProtocolVersion::V2025_06_18;
+    /// let silent = resolve(Negotiation {
+    ///     version,
+    ///     client_caps: CapabilitySet::all_for(version),
+    ///     server_caps: CapabilitySet::empty(),
+    ///     transport: TransportKind::Stdio,
+    /// });
+    /// assert!(silent.advertised_by_server().is_empty());
+    ///
+    /// // A server that declared tools advertises tools, and nothing a
+    /// // client-side-only gate would have switched on.
+    /// let loud = resolve(Negotiation {
+    ///     version,
+    ///     client_caps: CapabilitySet::all_for(version),
+    ///     server_caps: CapabilitySet::empty().with(Capability::Tools),
+    ///     transport: TransportKind::Stdio,
+    /// });
+    /// let advertised = loud.advertised_by_server();
+    /// assert!(advertised.contains(Capability::Tools));
+    /// assert!(!advertised.contains(Capability::ToolsListChanged));
+    /// assert!(!advertised.contains(Capability::Sampling), "client-side");
+    /// ```
+    #[must_use]
+    pub fn advertised_by_server(self) -> CapabilitySet {
+        let mut advertised = CapabilitySet::empty();
+        for spec in FEATURES {
+            if !spec.side.includes_server() || !self.allows(spec.feature) {
+                continue;
+            }
+            if let Some(capability) = spec.server_cap {
+                advertised.insert(capability);
+            }
+        }
+        advertised
+    }
+
     /// The bit a feature occupies, found by name so a new variant cannot leave
     /// a stale hand-assigned bit behind.
     fn bit_of(feature: Feature) -> u128 {

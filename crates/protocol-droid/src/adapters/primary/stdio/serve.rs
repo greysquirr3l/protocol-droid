@@ -464,13 +464,21 @@ fn request_id(id: Option<&WireId<'_>>) -> RequestId {
 /// is worse than one that says no. The codes are the closest the standard
 /// offers: a method nobody serves is `-32601`, a call that does not name
 /// something callable is `-32602`, and a session that did not negotiate a
-/// feature is a server-side condition rather than either, so it takes the
-/// server-side code.
+/// feature — or one settled on a revision this build cannot serve — is a
+/// server-side condition rather than either, so it takes the server-side code.
+///
+/// A malformed `initialize` is `-32602` like any other malformed params: the
+/// peer sent a request whose body it could not have meant, which is the same
+/// condition whatever the method was.
 fn describe_dispatch_error(error: &DispatchError) -> (IrErrorCode, String) {
     let code = match error {
         DispatchError::UnknownMethod => IrErrorCode::MethodNotFound,
-        DispatchError::MalformedParams | DispatchError::UnknownTool => IrErrorCode::InvalidParams,
-        DispatchError::NotCallable => IrErrorCode::InternalError,
+        DispatchError::MalformedParams
+        | DispatchError::MalformedInitialize
+        | DispatchError::UnknownTool => IrErrorCode::InvalidParams,
+        DispatchError::NotCallable | DispatchError::UnnegotiableVersion => {
+            IrErrorCode::InternalError
+        }
     };
     (code, error.to_string())
 }

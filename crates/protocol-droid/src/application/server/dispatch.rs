@@ -31,9 +31,13 @@ use std::sync::Arc;
 use crate::application::registry::listing::Listing;
 use crate::application::server::builder::{DispatchError, Server};
 use crate::application::server::context::RequestContext;
-use crate::domain::feature::Feature;
+use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
+use crate::domain::{
+    Capability, ProtocolVersion, ServerDecision, SupportedVersions, handshake_defined_in,
+    negotiate_server,
+};
 
 /// Routes methods to a server's handlers.
 #[derive(Clone)]
@@ -85,9 +89,23 @@ impl Dispatcher {
         params: &JsonObject,
     ) -> Result<JsonObject, DispatchError> {
         match method {
-            // `ping` is defined in every revision and answers on an otherwise
-            // idle session, so gating it would refuse the request it exists
-            // for. That is why it is the one method here with no gate.
+            // `initialize` is the one method with no gate, and for the
+            // opposite reason to `ping`. `ping` may be answered on a session
+            // that already exists; `initialize` is the request that *creates*
+            // the session, so consulting the feature profile to decide whether
+            // to serve it would ask the session whether it exists and take the
+            // answer from something that has not been built yet. The
+            // negotiation that does decide it has already happened — the
+            // revision in the result is the one the session settled on — so
+            // the gate has nothing left to contribute here.
+            //
+            // The one thing it *does* still have to contribute is which
+            // revision that is: on `2026-07-28` there is no handshake to
+            // perform, and the handler refuses rather than inventing one.
+            "initialize" => self.initialize(ctx, params),
+            // `ping` is defined in every revision that has a session and
+            // answers on an otherwise idle one, so gating it would refuse the
+            // request it exists for.
             "ping" => Ok(JsonObject::default()),
             "tools/list" => self.list(ctx, PrimitiveKind::Tool, "tools"),
             "resources/list" => self.list(ctx, PrimitiveKind::Resource, "resources"),
@@ -98,6 +116,95 @@ impl Dispatcher {
             "tools/call" => self.call_tool(ctx, params).await,
             _ => Err(DispatchError::UnknownMethod),
         }
+    }
+
+    /// Answers the handshake: this server, the revision it speaks, and what it
+    /// can do.
+    ///
+    /// The result is the IR form of `InitializeResult` — `protocolVersion`,
+    /// `capabilities`, `serverInfo` — which are the three fields every
+    /// revision that has a handshake marks required. `instructions` is omitted
+    /// rather than emitted empty: it is optional, it is a human-facing hint
+    /// with no source on a [`Server`], and an empty string is worse than
+    /// absent, because a client that reads it has been told the server has no
+    /// instructions when what it means is that this server supplies none.
+    ///
+    /// # What decides the revision
+    ///
+    /// The session's, not the request's. `params.protocolVersion` is what the
+    /// client *offered*; by the time a request reaches a dispatcher the layer
+    /// that owns negotiation has already settled the revision, and the session
+    /// is running on it. Answering with the offer instead would let a client
+    /// move a session onto a revision the transport never negotiated for it,
+    /// and the profile gating every other method would be one revision ahead of
+    /// the wire.
+    ///
+    /// The offer is still read and still checked, for the two reasons a
+    /// malformed handshake matters. And the version this build can actually
+    /// serve is settled by [`negotiate_server`], which is the function that
+    /// already answers that question everywhere else in the crate — a
+    /// `CounterOffered` decision here means the session is on a revision with
+    /// no wire types behind it, which is a state worth reporting rather than
+    /// answering around.
+    ///
+    /// # What decides `capabilities`
+    ///
+    /// [`FeatureProfile::advertised_by_server`] — the profile, read back. The
+    /// advertisement is a fold over the same table every feature gate is a fold
+    /// over, so it cannot claim a capability the session will not act on, and
+    /// it cannot decline one it will.
+    ///
+    /// # Errors
+    ///
+    /// - [`DispatchError::UnnegotiableVersion`] when the session is on a
+    ///   revision this build has no wire types for.
+    /// - [`DispatchError::UnknownMethod`] when the session's revision has no
+    ///   handshake at all — `2026-07-28` and `draft` removed `initialize` and
+    ///   its result, so a request for it on one of those revisions is asking
+    ///   for a method the revision does not define.
+    /// - [`DispatchError::MalformedInitialize`] when `params` is not an object
+    ///   with a string `protocolVersion` that parses, a `capabilities` object,
+    ///   and a `clientInfo` carrying a `name`.
+    fn initialize(
+        &self,
+        ctx: &RequestContext,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        // `negotiate_server` is the crate's existing answer to "can this build
+        // serve that revision", and the `Echoed` arm is the one a healthy
+        // session takes. Reaching `CounterOffered` means the session is on a
+        // version outside `SupportedVersions::all()` — an `Unknown`, which
+        // `resolve` also treats as defining nothing.
+        let supported = SupportedVersions::all().map_err(|_| DispatchError::UnnegotiableVersion)?;
+        let version = match negotiate_server(ctx.peer().negotiated(), &supported) {
+            ServerDecision::Echoed(version) => version,
+            ServerDecision::CounterOffered { .. } => {
+                return Err(DispatchError::UnnegotiableVersion);
+            }
+        };
+
+        // SEP-2575 removed the handshake in `2026-07-28`. There is no result
+        // shape to build, so this is the spec's own answer — the method is not
+        // defined on this revision — and not a `FeatureUnavailable` dressed up
+        // as one.
+        if !handshake_defined_in(version) {
+            return Err(DispatchError::UnknownMethod);
+        }
+
+        // Checked for shape, deliberately not read for value: see
+        // `check_initialize_params` for why the answer is the server's own
+        // rather than an echo of the request.
+        check_initialize_params(params)?;
+
+        let result = serde_json::json!({
+            "protocolVersion": version.as_wire(),
+            "capabilities": server_capabilities_json(ctx.peer().profile()),
+            "serverInfo": {
+                "name": self.server.name(),
+                "version": self.server.version(),
+            },
+        });
+        JsonObject::from_value(result).map_err(|_| DispatchError::MalformedInitialize)
     }
 
     /// One of the four listing methods.
@@ -147,6 +254,153 @@ impl Dispatcher {
         }
         Err(DispatchError::NotCallable)
     }
+}
+
+/// Checks that `initialize` params are the shape the handshake has to be.
+///
+/// Every revision that has a handshake marks `capabilities`, `clientInfo` and
+/// `protocolVersion` required on `InitializeRequestParams`, and `Implementation`
+/// marks `name` and `version` required inside `clientInfo`. Each is read and
+/// type-checked here, which is what "not a silently-ignored field" means: a
+/// missing or misshapen required field is a refusal, not a default.
+///
+/// # Why this returns nothing
+///
+/// A check, not a parse, and the distinction is worth stating because the
+/// crate's rule is to parse rather than validate. It returns nothing because
+/// nothing in the answer comes from the request: `protocolVersion` is the
+/// session's revision, `capabilities` is the session's profile, and
+/// `serverInfo` is this server. The offer is a statement about the *client*,
+/// and the layer that owns that is the one that negotiated the session — it
+/// already holds the client's capability set and, on a `NegotiatedSession`,
+/// the client's [`PeerInfo`]. Reading it again here to build a value nobody
+/// consumes would be the second source of truth, not the first.
+///
+/// The one field whose parse *is* a decision: `protocolVersion` is run through
+/// [`ProtocolVersion`]'s `FromStr`, so a client offering a revision this build
+/// has never heard of — which the specification explicitly allows, and which
+/// [`negotiate_server`] answers with the server's own version rather than an
+/// error — still gets a session, while a string that is not a `YYYY-MM-DD`
+/// date is a typo and is refused.
+///
+/// # Errors
+///
+/// [`DispatchError::MalformedInitialize`] when the body is not an object,
+/// when `protocolVersion` is absent, is not a string, or does not parse as a
+/// protocol version; when `capabilities` is absent or is not an object; or
+/// when `clientInfo` is absent, is not an object, or has no `name`.
+///
+/// `clientInfo.version` is the one required field not enforced. It is
+/// free-form, nothing in this crate's answer depends on it, and refusing a
+/// handshake over a missing version string would buy a stricter reading of one
+/// schema at the cost of every client that omits it.
+fn check_initialize_params(params: &JsonObject) -> Result<(), DispatchError> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(params.as_str()).map_err(|_| DispatchError::MalformedInitialize)?;
+    let object = parsed
+        .as_object()
+        .ok_or(DispatchError::MalformedInitialize)?;
+
+    object
+        .get("protocolVersion")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(DispatchError::MalformedInitialize)?
+        .parse::<ProtocolVersion>()
+        .map_err(|_| DispatchError::MalformedInitialize)?;
+
+    if !object
+        .get("capabilities")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Err(DispatchError::MalformedInitialize);
+    }
+
+    object
+        .get("clientInfo")
+        .filter(|value| value.is_object())
+        .and_then(|client| client.get("name"))
+        .filter(|name| name.is_string())
+        .ok_or(DispatchError::MalformedInitialize)?;
+
+    Ok(())
+}
+
+/// How one server capability appears in a `ServerCapabilities` object.
+///
+/// The vendored schema nests — `{"tools": {"listChanged": true}}`, not a flat
+/// `{"tools": true, "toolsListChanged": true}` — so each row is the key it
+/// sits under plus the key inside that object, if it has one. A parent with
+/// no child still emits its own empty object, because `tools` is present
+/// exactly when the server has tools and the presence is the whole signal.
+///
+/// Data rather than a `match` for the same reason [`FEATURES`] is data: a
+/// capability added to the domain without a row here would otherwise be
+/// dropped silently, and the test that walks the table against every
+/// server-side capability is what keeps the two in step.
+///
+/// [`FEATURES`]: crate::domain::FEATURES
+const SERVER_CAPABILITY_WIRE: &[(Capability, &str, Option<&str>)] = &[
+    (Capability::Experimental, "experimental", None),
+    (Capability::Tools, "tools", None),
+    (Capability::ToolsListChanged, "tools", Some("listChanged")),
+    (Capability::Resources, "resources", None),
+    (
+        Capability::ResourcesSubscribe,
+        "resources",
+        Some("subscribe"),
+    ),
+    (
+        Capability::ResourcesListChanged,
+        "resources",
+        Some("listChanged"),
+    ),
+    (Capability::Prompts, "prompts", None),
+    (
+        Capability::PromptsListChanged,
+        "prompts",
+        Some("listChanged"),
+    ),
+    (Capability::Completions, "completions", None),
+    (Capability::Logging, "logging", None),
+    (Capability::Tasks, "tasks", None),
+];
+
+/// Renders the session's server capabilities as a `ServerCapabilities` object.
+///
+/// Reads [`FeatureProfile::advertised_by_server`] rather than being handed a
+/// set, so there is no way to reach this function with a capability set that
+/// did not come from the profile. That is the drift this exists to prevent: a
+/// caller that passed in its own set would be free to advertise a flag the
+/// gates behind it would refuse, and the peer would have been told otherwise
+/// at connect time.
+///
+/// A capability in the derived set with no row in [`SERVER_CAPABILITY_WIRE`]
+/// is not emitted. Two are in that position and neither is reachable: the
+/// client-side ones, which [`advertised_by_server`] cannot produce because
+/// their feature rows are `Side::Client`, and
+/// [`Capability::Extensions`][extensions], which only `2026-07-28` defines —
+/// a revision the handler has already refused before getting here, because
+/// that revision has no `InitializeResult` to put it in.
+fn server_capabilities_json(profile: FeatureProfile) -> serde_json::Value {
+    let advertised = profile.advertised_by_server();
+    let mut root = serde_json::Map::new();
+
+    for (capability, key, child) in SERVER_CAPABILITY_WIRE {
+        if !advertised.contains(*capability) {
+            continue;
+        }
+        let entry = root
+            .entry((*key).to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let serde_json::Value::Object(parent) = entry else {
+            continue;
+        };
+        if let Some(child) = child {
+            parent.insert((*child).to_string(), serde_json::Value::Bool(true));
+        }
+    }
+
+    serde_json::Value::Object(root)
 }
 
 /// Reads `name` and `arguments` out of a `tools/call` params object.
@@ -283,6 +537,8 @@ mod tests {
         Message(String),
         /// A fixture was not a JSON object.
         Fixture(JsonObjectError),
+        /// A result the dispatcher built did not read back as JSON.
+        Result(serde_json::Error),
     }
 
     impl core::fmt::Display for Failure {
@@ -290,6 +546,7 @@ mod tests {
             match self {
                 Self::Message(text) => f.write_str(text),
                 Self::Fixture(error) => write!(f, "bad fixture: {error}"),
+                Self::Result(error) => write!(f, "unreadable result: {error}"),
             }
         }
     }
@@ -311,6 +568,12 @@ mod tests {
     impl From<JsonObjectError> for Failure {
         fn from(error: JsonObjectError) -> Self {
             Self::Fixture(error)
+        }
+    }
+
+    impl From<serde_json::Error> for Failure {
+        fn from(error: serde_json::Error) -> Self {
+            Self::Result(error)
         }
     }
 
@@ -388,6 +651,150 @@ mod tests {
     /// A request on `peer`.
     fn ctx(peer: &PeerSession) -> RequestContext {
         RequestContext::for_request(peer, RequestId::text("r1"), CancellationToken::new(), None)
+    }
+
+    /// `initialize` params for a client that offers `version`.
+    fn init_params(version: &str) -> Result<JsonObject, TestError> {
+        Ok(JsonObject::new(
+            r#"{"protocolVersion":""#.to_string()
+                + version
+                + r#"","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}"#,
+        )?)
+    }
+
+    /// An IR object read back as a `serde_json` value.
+    fn parsed(object: &JsonObject) -> Result<serde_json::Value, TestError> {
+        Ok(serde_json::from_str(object.as_str())?)
+    }
+
+    /// The handshake answers with the revision the session negotiated, not the
+    /// one the client asked for.
+    ///
+    /// The distinction is the test's whole point: a client offering a version
+    /// this build cannot speak has already been negotiated down by the time a
+    /// request reaches here, so echoing the *request* would tell the peer it
+    /// got the revision it asked for when it did not.
+    #[tokio::test]
+    async fn initialize_reports_the_negotiated_revision() -> Result<(), TestError> {
+        let version = ProtocolVersion::V2025_06_18;
+        let peer = peer(version, ScopeSet::all(), CapabilitySet::all_for(version));
+        // The client offers 2024-11-05; the session is on 2025-06-18.
+        let result = dispatcher()?
+            .dispatch(&ctx(&peer), "initialize", &init_params("2024-11-05")?)
+            .await
+            .map_err(|error| Failure::Message(format!("the handshake refused: {error}")))?;
+
+        let reported = parsed(&result)?
+            .get("protocolVersion")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("the handshake did not report a revision")?
+            .to_string();
+        assert_eq!(reported, version.to_string());
+        Ok(())
+    }
+
+    /// The reported capabilities are the features the profile allows, not a
+    /// second list kept beside it.
+    ///
+    /// The server here declared one tool and negotiated everything, so `tools`
+    /// is present. What must *not* appear is anything client-side: a
+    /// `ServerCapabilities` object has no field for `roots` or `sampling`, and
+    /// a handshake that grew one would be promising a field the peer's schema
+    /// has no place to read.
+    #[tokio::test]
+    async fn the_handshake_advertises_only_server_capabilities() -> Result<(), TestError> {
+        let version = ProtocolVersion::V2025_06_18;
+        let peer = peer(version, ScopeSet::all(), CapabilitySet::all_for(version));
+        let result = dispatcher()?
+            .dispatch(&ctx(&peer), "initialize", &init_params("2025-06-18")?)
+            .await
+            .map_err(|error| Failure::Message(format!("the handshake refused: {error}")))?;
+
+        let capabilities = parsed(&result)?
+            .get("capabilities")
+            .cloned()
+            .ok_or("the handshake advertised no capabilities")?;
+        for forbidden in ["roots", "sampling", "elicitation"] {
+            assert!(
+                capabilities.get(forbidden).is_none(),
+                "a client-side capability reached the server advertisement: {forbidden}"
+            );
+        }
+        assert!(
+            capabilities.get("tools").is_some(),
+            "a session that negotiated tools did not advertise them"
+        );
+        Ok(())
+    }
+
+    /// The handshake is what establishes the session, so it answers on a peer
+    /// that negotiated no tools at all.
+    ///
+    /// Gating it the way every other method is gated would mean a client
+    /// could never start a conversation, because a session begins with
+    /// capabilities rather than with any.
+    #[tokio::test]
+    async fn initialize_answers_on_a_session_with_no_features() -> Result<(), TestError> {
+        let version = ProtocolVersion::V2025_06_18;
+        let peer = peer(version, ScopeSet::all(), CapabilitySet::empty());
+        let outcome = dispatcher()?
+            .dispatch(&ctx(&peer), "initialize", &init_params("2025-06-18")?)
+            .await;
+
+        assert!(outcome.is_ok(), "the handshake was gated off: {outcome:?}");
+        Ok(())
+    }
+
+    /// Every refusal below is a body a client could not have meant, and they
+    /// are one error rather than three: a caller that distinguishes "no
+    /// `clientInfo`" from "no `name` inside it" is distinguishing two spellings
+    /// of the same mistake.
+    #[tokio::test]
+    async fn a_malformed_handshake_is_refused_whatever_is_missing() -> Result<(), TestError> {
+        let version = ProtocolVersion::V2025_06_18;
+        let peer = peer(version, ScopeSet::all(), CapabilitySet::all_for(version));
+
+        let bodies = [
+            "{}",
+            r#"{"capabilities":{},"clientInfo":{"name":"p","version":"0"}}"#,
+            r#"{"protocolVersion":"2025-06-18","clientInfo":{"name":"p","version":"0"}}"#,
+            r#"{"protocolVersion":"2025-06-18","capabilities":{}}"#,
+            r#"{"protocolVersion":"2025-06-18","capabilities":[],"clientInfo":{"name":"p"}}"#,
+            r#"{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{}}"#,
+            r#"{"protocolVersion":"nonsense","capabilities":{},"clientInfo":{"name":"p"}}"#,
+        ];
+        for body in bodies {
+            let outcome = dispatcher()?
+                .dispatch(&ctx(&peer), "initialize", &JsonObject::new(body)?)
+                .await;
+            assert_eq!(
+                outcome,
+                Err(DispatchError::MalformedInitialize),
+                "this body was accepted: {body}"
+            );
+        }
+        Ok(())
+    }
+
+    /// SEP-2575 removed the handshake in `2026-07-28`, so a session on that
+    /// revision refuses `initialize` rather than answering a request the
+    /// revision has no shape for.
+    ///
+    /// The refusal is `UnknownMethod` and not `MalformedInitialize`: the method
+    /// is not refused because the *body* is wrong, it is refused because on
+    /// this revision the method does not exist, and a client that migrates its
+    /// code to the new revision should see a different error for the same
+    /// request than one that typos it on an old revision.
+    #[tokio::test]
+    async fn a_session_without_the_handshake_refuses_the_method() -> Result<(), TestError> {
+        let version = ProtocolVersion::V2026_07_28;
+        let peer = peer(version, ScopeSet::all(), CapabilitySet::all_for(version));
+        let outcome = dispatcher()?
+            .dispatch(&ctx(&peer), "initialize", &init_params("2026-07-28")?)
+            .await;
+
+        assert_eq!(outcome, Err(DispatchError::UnknownMethod));
+        Ok(())
     }
 
     /// A method no revision defines.

@@ -105,6 +105,7 @@ impl core::fmt::Debug for ToolEntry {
 #[derive(Debug)]
 pub struct Server {
     name: String,
+    version: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
 }
@@ -120,6 +121,7 @@ impl Server {
     pub fn builder(name: impl Into<String>) -> ServerBuilder {
         ServerBuilder {
             name: name.into(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             registry: RegistryStore::new(),
             tools: Vec::new(),
         }
@@ -129,6 +131,20 @@ impl Server {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The version this server reports in `serverInfo`.
+    ///
+    /// Free-form on the wire — the schema types it as a plain `string` — so
+    /// nothing constrains the format, only that a peer can read it. It lives
+    /// beside [`name`](Self::name) because the two are the same fact: they are
+    /// the two fields of the `serverInfo` object, they are both about who this
+    /// server is rather than what it does, and splitting them would mean a
+    /// server whose `name` came from the builder and whose `version` came from
+    /// somewhere else.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     /// How many tools are registered, hidden or not.
@@ -251,17 +267,58 @@ pub enum DispatchError {
     /// "no such tool" would send the caller looking for a tool that works.
     #[error("the call parameters are not a tool call")]
     MalformedParams,
+
+    /// `initialize` params were not the shape the handshake has to be.
+    ///
+    /// Separate from [`MalformedParams`](Self::MalformedParams) because the
+    /// two failures are not the same event: that one says a tool call named
+    /// nothing, and this one says the one request that establishes a session
+    /// arrived in a shape that would have to be guessed at. A peer sending it
+    /// has a bug worth naming, not a tool to go looking for.
+    ///
+    /// Covers a body that is not an object, a missing or non-string
+    /// `protocolVersion`, a string that is not a protocol version, a missing or
+    /// non-object `capabilities`, and a `clientInfo` with no `name`.
+    #[error("the initialize parameters are not a handshake")]
+    MalformedInitialize,
+
+    /// The session is on a revision this build has no wire types for.
+    ///
+    /// Distinct from a refused *method* ([`UnknownMethod`](Self::UnknownMethod))
+    /// because nothing about the request was wrong: the method exists, the
+    /// params parse, and the answer cannot be built because the revision the
+    /// session settled on is one [`negotiate_server`] would have to counter-
+    /// offer. The session should never be in this state — it is reported
+    /// rather than papered over, because the alternative is emitting a result
+    /// whose shape the revision cannot express.
+    #[error("the session is on a revision this build cannot serve")]
+    UnnegotiableVersion,
 }
 
 /// The builder behind [`Server::builder`].
 #[derive(Debug)]
 pub struct ServerBuilder {
     name: String,
+    version: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
 }
 
 impl ServerBuilder {
+    /// Sets the version this server reports in `serverInfo`.
+    ///
+    /// Defaults to the version of the crate that built it, which is right for
+    /// a server that *is* this crate — the examples, the conformance runner —
+    /// and wrong for one that merely links it. A library user shipping their
+    /// own server should say so here rather than let the dependency's version
+    /// stand in for theirs, which would have every downstream server claiming
+    /// to be whatever `protocol-droid` happened to be pinned at.
+    #[must_use]
+    pub fn version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
+        self
+    }
+
     /// Adds a tool, and publishes it to the registry in the same step.
     ///
     /// Takes a whole [`Tool`] rather than a name and a schema string, because
@@ -364,6 +421,7 @@ impl ServerBuilder {
     pub fn build(self) -> Server {
         Server {
             name: self.name,
+            version: self.version,
             registry: self.registry,
             tools: self.tools,
         }

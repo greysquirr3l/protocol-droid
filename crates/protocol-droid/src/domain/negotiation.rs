@@ -56,6 +56,41 @@ pub const fn assumed_version_without_signal() -> ProtocolVersion {
     ProtocolVersion::V2025_03_26
 }
 
+/// Whether `version` has an `initialize` handshake at all.
+///
+/// `2024-11-05` through `2025-11-25` define `InitializeRequest` and
+/// `InitializeResult`, both with `protocolVersion`, `capabilities` and
+/// `serverInfo` required. SEP-2575 removes the handshake in `2026-07-28`: the
+/// vendored schema for that revision has no `InitializeRequest` and no
+/// `InitializeResult`, and a session is established by the transport rather
+/// than by a round trip.
+///
+/// A question with no schema answer behind it, and so the reason it is asked
+/// here rather than being read off a feature row: the handshake is a
+/// message, and a removed message is not a behaviour that switched off. `ping`
+/// is a feature in [`FEATURES`](crate::domain::FEATURES) because something can
+/// still depend on it being refused; the handshake has nothing left to gate.
+///
+/// # Examples
+///
+/// ```
+/// use protocol_droid::domain::{ProtocolVersion, handshake_defined_in};
+///
+/// assert!(handshake_defined_in(ProtocolVersion::V2025_11_25));
+/// // SEP-2575: no `initialize` request or result exists in this revision.
+/// assert!(!handshake_defined_in(ProtocolVersion::V2026_07_28));
+/// ```
+#[must_use]
+pub const fn handshake_defined_in(version: ProtocolVersion) -> bool {
+    matches!(
+        version,
+        ProtocolVersion::V2024_11_05
+            | ProtocolVersion::V2025_03_26
+            | ProtocolVersion::V2025_06_18
+            | ProtocolVersion::V2025_11_25
+    )
+}
+
 /// What a peer calls itself.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PeerInfo {
