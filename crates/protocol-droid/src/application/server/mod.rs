@@ -36,8 +36,10 @@ pub mod builder;
 pub mod context;
 pub mod dispatch;
 pub mod error;
+pub mod result;
 
 pub use builder::{BoxFuture, DispatchError, Server, ServerBuilder, ToolHandler};
 pub use context::{CallbackExchange, DynExchange, ExchangeError, PeerSession, RequestContext};
 pub use dispatch::Dispatcher;
 pub use error::GatedError;
+pub use result::OutcomeError;

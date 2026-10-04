@@ -17,8 +17,22 @@ categories.workspace = true
 # would consume it, which is why this is a separate crate rather than a module.
 proc-macro = true
 
-# No dependencies and no macros yet. The attribute macros on the server and
-# client APIs land with T12.
+# The generated code names `protocol_droid` through `::`, so the macro crate
+# itself needs nothing from it — only `syn`, to read the signatures.
 
 [lints]
 workspace = true
+
+[dependencies]
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+syn = { version = "3.0.6", features = ["full", "extra-traits"] }
+
+[dev-dependencies]
+# A dev-dependency cycle, so this crate's doctests can use the macros
+# on a type that actually compiles. `version` is required alongside
+# `path` and not optional: cargo-deny bans bare path dependencies, and
+# rightly — a published crate cannot name a path.
+protocol-droid = { path = "../protocol-droid", version = "0.1.0" }
+schemars = "1.2.2"
+serde = { workspace = true, features = ["derive"] }

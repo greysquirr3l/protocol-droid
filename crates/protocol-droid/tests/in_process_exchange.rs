@@ -38,22 +38,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use protocol_droid::application::client::{Client, ClientTransport, TransportError};
-use protocol_droid::application::server::context::{
-    CallbackExchange, ExchangeError, PeerSession,
-};
+use protocol_droid::application::server::context::{CallbackExchange, ExchangeError, PeerSession};
 use protocol_droid::application::server::{
     DispatchError, Dispatcher, RequestContext, Server, ToolHandler,
 };
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
 use protocol_droid::domain::ir::{JsonObject, JsonObjectError};
-use protocol_droid::domain::registry::{
-    AuthContext, Primitive, Registered, Scope, ScopeSet, Tool,
-};
+use protocol_droid::domain::registry::{AuthContext, Primitive, Registered, Scope, ScopeSet, Tool};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
-use protocol_droid::domain::{
-    CapabilitySet, Feature, ProtocolVersion, RequestId, TransportKind,
-};
+use protocol_droid::domain::{CapabilitySet, Feature, ProtocolVersion, RequestId, TransportKind};
 
 /// Every revision this crate has wire types for.
 ///
@@ -215,9 +209,10 @@ impl CountingSink {
 /// length one.
 fn server() -> Result<Server, TestError> {
     let public = Tool::new(PUBLIC_TOOL, r#"{"type":"object"}"#)?;
-    let restricted = Registered::from(Primitive::from(
-        Tool::new(RESTRICTED_TOOL, r#"{"type":"object"}"#)?,
-    ))
+    let restricted = Registered::from(Primitive::from(Tool::new(
+        RESTRICTED_TOOL,
+        r#"{"type":"object"}"#,
+    )?))
     .requiring_scope(Scope::Read);
 
     Ok(Server::builder("probe")
@@ -241,7 +236,10 @@ fn echo_handler() -> ToolHandler {
 /// `client_caps` is empty so the server's profile is the strictest a real one
 /// can be. A server that advertised everything would mask a gate that never
 /// closes, and this file exists partly to notice gates that never close.
-fn server_side(version: ProtocolVersion, principal: AuthContext) -> (PeerSession, Arc<CountingSink>) {
+fn server_side(
+    version: ProtocolVersion,
+    principal: AuthContext,
+) -> (PeerSession, Arc<CountingSink>) {
     let sink = Arc::new(CountingSink::default());
     let peer = PeerSession::new(
         version,
@@ -294,12 +292,7 @@ fn connected(
 /// literal, so the id and the cancellation token are the same across the
 /// matrix and a failure in one pair is comparable with a failure in another.
 fn request_context(peer: &PeerSession) -> RequestContext {
-    RequestContext::for_request(
-        peer,
-        RequestId::text("r1"),
-        CancellationToken::new(),
-        None,
-    )
+    RequestContext::for_request(peer, RequestId::text("r1"), CancellationToken::new(), None)
 }
 
 /// Runs the whole exchange for one `(client, server)` pair.
@@ -317,7 +310,9 @@ async fn exchange(
 
     // `tools/list` — a method every revision carries.
     let listed = client.list_tools().await.map_err(|error| {
-        Failure::from(format!("tools/list failed for {v_client} -> {v_server}: {error}"))
+        Failure::from(format!(
+            "tools/list failed for {v_client} -> {v_server}: {error}"
+        ))
     })?;
     let names = tool_names(&listed)?;
 
@@ -345,9 +340,14 @@ async fn exchange(
     // it across a parse would claim something this path never promised and
     // would fail on any value whose keys were not already sorted.
     let arguments = JsonObject::new(r#"{"text":"quote \" and brace }","n":1}"#)?;
-    let called = client.call_tool(PUBLIC_TOOL, &arguments).await.map_err(|error| {
-        Failure::from(format!("tools/call failed for {v_client} -> {v_server}: {error}"))
-    })?;
+    let called = client
+        .call_tool(PUBLIC_TOOL, &arguments)
+        .await
+        .map_err(|error| {
+            Failure::from(format!(
+                "tools/call failed for {v_client} -> {v_server}: {error}"
+            ))
+        })?;
     let sent: serde_json::Value = serde_json::from_str(arguments.as_str())
         .map_err(|error| Failure::from(format!("the fixture is not JSON: {error}")))?;
     let got: serde_json::Value = serde_json::from_str(called.as_str())
@@ -490,11 +490,7 @@ async fn a_tool_requiring_a_missing_feature_is_refused() -> Result<(), TestError
         Some(&DispatchError::UnknownTool),
         "a session without ToolStructuredOutput called a tool that needs it"
     );
-    assert_eq!(
-        sink.written(),
-        0,
-        "the refusal wrote to the transport"
-    );
+    assert_eq!(sink.written(), 0, "the refusal wrote to the transport");
     Ok(())
 }
 
@@ -531,7 +527,9 @@ async fn a_client_without_the_feature_refuses_before_sending() -> Result<(), Tes
         ));
     }
     match client.list_tools().await {
-        Ok(answer) => Err(Failure::from(format!("the refusal did not happen: {answer}"))),
+        Ok(answer) => Err(Failure::from(format!(
+            "the refusal did not happen: {answer}"
+        ))),
         Err(_) if sink.written() == 0 => Ok(()),
         Err(error) => Err(Failure::from(format!(
             "the client refused, but something had already been written: {error}"

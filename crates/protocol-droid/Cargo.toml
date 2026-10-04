@@ -32,7 +32,9 @@ serde = []
 # optional: the capability's requirement is that reads are lock-free, and an
 # `RwLock` would make `tools/list` contend with a publish.
 arc-swap = { workspace = true }
+protocol-droid-macros = { version = "0.1.0", path = "../protocol-droid-macros" }
 protocol-droid-schema = { workspace = true }
+schemars = "1.2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -59,6 +61,7 @@ serde_json = { workspace = true }
 # and then suppressed from answering. `time::pause` makes the deadline part of
 # that test instantaneous and deterministic.
 tokio = { workspace = true }
+trybuild = "1.0.121"
 
 [lints]
 workspace = true

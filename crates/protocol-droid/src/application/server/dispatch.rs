@@ -189,8 +189,11 @@ fn split_call_params(params: &JsonObject) -> Result<(String, JsonObject), Dispat
 /// propagating because a listing that cannot be encoded should read as empty
 /// to the caller rather than take the whole response down.
 fn wrap_listing(key: &str, listing: &Listing) -> JsonObject {
-    let entries: Vec<serde_json::Value> =
-        listing.visible().iter().map(|entry| listing_entry(entry)).collect();
+    let entries: Vec<serde_json::Value> = listing
+        .visible()
+        .iter()
+        .map(|entry| listing_entry(entry))
+        .collect();
     JsonObject::from_value(serde_json::json!({ key: entries })).unwrap_or_default()
 }
 
@@ -203,11 +206,25 @@ fn wrap_listing(key: &str, listing: &Listing) -> JsonObject {
 /// future `None` quietly, undoing the check.
 fn listing_entry(registered: &Registered) -> serde_json::Value {
     match registered.primitive() {
-        Primitive::Tool(tool) => serde_json::json!({
-            "name": tool.name.as_str(),
-            "description": tool.description,
-            "inputSchema": tool.input_schema.as_str(),
-        }),
+        Primitive::Tool(tool) => {
+            let mut entry = serde_json::json!({
+                "name": tool.name.as_str(),
+                "description": tool.description,
+            });
+            if let (serde_json::Value::Object(map), Ok(schema)) = (
+                &mut entry,
+                serde_json::from_str::<serde_json::Value>(tool.input_schema.as_str()),
+            ) {
+                // Embedded as a value, not as a string. `json!` will not do
+                // this for us: `"inputSchema": text.as_str()` produces a JSON
+                // *string* whose characters happen to be JSON, so every peer
+                // would read a schema where the specification says an object,
+                // and the failure would surface in the client as a tool with
+                // no arguments rather than here.
+                map.insert("inputSchema".to_string(), schema);
+            }
+            entry
+        }
         Primitive::Resource(resource) => serde_json::json!({
             "uri": resource.uri.as_str(),
             "name": resource.name,
@@ -337,9 +354,10 @@ mod tests {
 
     /// A dispatcher over one plain tool and one scope-restricted tool.
     fn dispatcher() -> Result<Dispatcher, TestError> {
-        let restricted = Registered::from(Primitive::from(
-            Tool::new("secret", r#"{"type":"object"}"#)?,
-        ))
+        let restricted = Registered::from(Primitive::from(Tool::new(
+            "secret",
+            r#"{"type":"object"}"#,
+        )?))
         .requiring_scope(Scope::Read);
 
         Ok(Dispatcher::new(Arc::new(
@@ -351,11 +369,7 @@ mod tests {
     }
 
     /// A session at `version` with `scopes`, negotiating `server_caps`.
-    fn peer(
-        version: ProtocolVersion,
-        scopes: ScopeSet,
-        server_caps: CapabilitySet,
-    ) -> PeerSession {
+    fn peer(version: ProtocolVersion, scopes: ScopeSet, server_caps: CapabilitySet) -> PeerSession {
         PeerSession::new(
             version,
             resolve(Negotiation {
@@ -373,12 +387,7 @@ mod tests {
 
     /// A request on `peer`.
     fn ctx(peer: &PeerSession) -> RequestContext {
-        RequestContext::for_request(
-            peer,
-            RequestId::text("r1"),
-            CancellationToken::new(),
-            None,
-        )
+        RequestContext::for_request(peer, RequestId::text("r1"), CancellationToken::new(), None)
     }
 
     /// A method no revision defines.
@@ -402,7 +411,9 @@ mod tests {
         let version = ProtocolVersion::V2025_06_18;
         let peer = peer(version, ScopeSet::all(), CapabilitySet::all_for(version));
         let params = JsonObject::new(r#"{"arguments":{}}"#)?;
-        let outcome = dispatcher()?.dispatch(&ctx(&peer), "tools/call", &params).await;
+        let outcome = dispatcher()?
+            .dispatch(&ctx(&peer), "tools/call", &params)
+            .await;
         assert_eq!(outcome, Err(DispatchError::MalformedParams));
         Ok(())
     }
@@ -416,7 +427,10 @@ mod tests {
         let outcome = dispatcher()?
             .dispatch(&ctx(&peer), "tools/call", &params)
             .await;
-        assert_eq!(outcome.map(|answer| answer.as_str().to_string()), Ok("{}".to_string()));
+        assert_eq!(
+            outcome.map(|answer| answer.as_str().to_string()),
+            Ok("{}".to_string())
+        );
         Ok(())
     }
 
@@ -441,7 +455,10 @@ mod tests {
         let outcome = dispatcher()?
             .dispatch(&ctx(&peer), "ping", &JsonObject::default())
             .await;
-        assert_eq!(outcome.map(|answer| answer.as_str().to_string()), Ok("{}".to_string()));
+        assert_eq!(
+            outcome.map(|answer| answer.as_str().to_string()),
+            Ok("{}".to_string())
+        );
         Ok(())
     }
 
@@ -458,8 +475,8 @@ mod tests {
             .dispatch(&ctx(&peer), "tools/list", &JsonObject::default())
             .await
             .map_err(|error| Failure::from(error.to_string()))?;
-        let parsed: serde_json::Value =
-            serde_json::from_str(listed.as_str()).map_err(|error| Failure::from(error.to_string()))?;
+        let parsed: serde_json::Value = serde_json::from_str(listed.as_str())
+            .map_err(|error| Failure::from(error.to_string()))?;
         let names: Vec<&str> = parsed
             .get("tools")
             .and_then(serde_json::Value::as_array)
