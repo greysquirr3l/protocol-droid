@@ -50,6 +50,11 @@ proptest = { workspace = true }
 # the domain's model is verified against the bytes it describes rather than
 # against a second copy of the same assumptions.
 serde_json = { workspace = true }
+# The cancellation race test needs a real scheduler: a single-poll harness can
+# prove the waker fires, but not that a handler awaiting the signal is resumed
+# and then suppressed from answering. `time::pause` makes the deadline part of
+# that test instantaneous and deterministic.
+tokio = { workspace = true }
 
 [lints]
 workspace = true

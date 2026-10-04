@@ -4,8 +4,9 @@
 //! generation are injected from outside it rather than called globally, so
 //! every function here is deterministic and testable.
 //!
-//! Populated by T04 (protocol version value objects) and T05-T08 (feature
-//! profile, negotiation, canonical IR, per-revision codecs).
+//! Populated by T04 (protocol version value objects), T05-T08 (feature profile,
+//! negotiation, canonical IR, per-revision codecs) and T10 (the session
+//! aggregate: lifecycle, in-flight requests, cancellation, progress).
 
 mod capability;
 pub mod feature;
@@ -15,6 +16,7 @@ mod negotiation;
 mod protocol_version;
 mod release_date;
 mod request_id;
+pub mod session;
 mod supported_versions;
 mod transport;
 

@@ -77,6 +77,18 @@ jsonschema = { version = "0.58.5", default-features = false }
 # snapshot, and the dependency is only here to hold the golden feature profiles
 # for a human to review.
 insta = { version = "1.43.0", default-features = false }
+# Test-only, and deliberately a dev-dependency: the session engine's domain is
+# runtime-free, so a production `tokio` dependency would be the crate reaching
+# for an executor it does not own. The features are the minimum that runs a
+# multi-task test with a paused clock — `test-util` for `time::pause`, which is
+# what makes a deadline testable without a real sleep.
+tokio = { version = "1.48.0", default-features = false, features = [
+    "macros",
+    "rt",
+    "sync",
+    "time",
+    "test-util",
+] }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 # Provenance manifest parsing and content digests for the vendored spec files.
