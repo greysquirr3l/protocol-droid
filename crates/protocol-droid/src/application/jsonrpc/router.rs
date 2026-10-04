@@ -318,7 +318,13 @@ pub fn route_one<'a, M: MethodTable>(
     envelope: Envelope<'a>,
     table: &M,
 ) -> Result<RoutedMessage<'a, M>, RouteError<'a>> {
-    let Envelope { kind, method, params, id, outcome } = envelope;
+    let Envelope {
+        kind,
+        method,
+        params,
+        id,
+        outcome,
+    } = envelope;
     let method = method.unwrap_or_default();
     match kind {
         MessageKind::Request => {
@@ -462,7 +468,9 @@ mod tests {
 
     impl TestTable {
         const fn new() -> Self {
-            Self { decoded: std::cell::Cell::new(0) }
+            Self {
+                decoded: std::cell::Cell::new(0),
+            }
         }
     }
 
@@ -499,7 +507,8 @@ mod tests {
     }
 
     /// A batch, as a peer would send it.
-    const BATCH: &[u8] = br#"[{"jsonrpc":"2.0","id":1,"method":"alpha"},{"jsonrpc":"2.0","id":2,"method":"beta"}]"#;
+    const BATCH: &[u8] =
+        br#"[{"jsonrpc":"2.0","id":1,"method":"alpha"},{"jsonrpc":"2.0","id":2,"method":"beta"}]"#;
 
     #[test]
     fn a_request_reports_its_method_through_the_accessor() {
@@ -541,13 +550,8 @@ mod tests {
     #[test]
     fn a_batch_routes_every_element_in_order() {
         let table = TestTable::new();
-        let routed = route_frame(
-            BATCH,
-            &table,
-            &FeatureProfile::all(),
-            &ProfileBatching,
-        )
-        .expect("batching is allowed in this profile");
+        let routed = route_frame(BATCH, &table, &FeatureProfile::all(), &ProfileBatching)
+            .expect("batching is allowed in this profile");
         let methods: Vec<_> = routed.iter().filter_map(Routed::method).collect();
         assert_eq!(methods, [TestMethod::Alpha, TestMethod::Beta]);
     }
@@ -581,24 +585,27 @@ mod tests {
         let table = TestTable::new();
         let routed = route_frame(input, &table, &FeatureProfile::empty(), &DenyBatching)
             .expect("a single message is not a batch");
-        assert_eq!(routed.len(), 1, "DenyBatching must not refuse a single message");
+        assert_eq!(
+            routed.len(),
+            1,
+            "DenyBatching must not refuse a single message"
+        );
 
         let table = TestTable::new();
         let routed = route_frame(input, &table, &FeatureProfile::empty(), &AllowBatching)
             .expect("a single message is not a batch");
-        assert_eq!(routed.len(), 1, "AllowBatching must not refuse a single message");
+        assert_eq!(
+            routed.len(),
+            1,
+            "AllowBatching must not refuse a single message"
+        );
     }
 
     #[test]
     fn the_profile_decides_whether_a_batch_is_allowed() {
         let table = TestTable::new();
-        let error = route_frame(
-            BATCH,
-            &table,
-            &FeatureProfile::empty(),
-            &ProfileBatching,
-        )
-        .expect_err("this profile has no batching");
+        let error = route_frame(BATCH, &table, &FeatureProfile::empty(), &ProfileBatching)
+            .expect_err("this profile has no batching");
         assert_eq!(
             error.code(),
             IrErrorCode::InvalidRequest,
@@ -633,8 +640,7 @@ mod tests {
         // unanswerable with no error at all, so the decoder keeps them
         // distinct and refuses this one as `-32600`.
         let input = br#"{"jsonrpc":"2.0","id":null,"method":"alpha"}"#;
-        let error = crate::domain::jsonrpc::decode(input)
-            .expect_err("a null id is not a valid id");
+        let error = crate::domain::jsonrpc::decode(input).expect_err("a null id is not a valid id");
         assert_eq!(error.code(), IrErrorCode::InvalidRequest);
         assert!(
             error.to_string().contains("number or a string"),

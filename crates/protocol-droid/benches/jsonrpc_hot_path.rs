@@ -32,7 +32,6 @@
 //! being busy: these benchmarks are allocation-sensitive, so a noisy machine
 //! shows up as a uniform shift across all of them rather than one line moving.
 
-
 // divan's `#[bench]` macro matches its argument against a fn pointer written
 // with an elided `Bencher`, and it does that before this crate's lints are
 // resolved. Spelling the two lifetimes out is what the macro rejects, so the
@@ -59,7 +58,6 @@ use protocol_droid::application::jsonrpc::{
 use protocol_droid::domain::feature::FeatureProfile;
 use protocol_droid::domain::jsonrpc::{Envelope, Frame, WireId, decode};
 use serde_json::value::RawValue;
-
 
 /// A request with a numeric id and no params — the smallest thing that is
 /// still a request.
