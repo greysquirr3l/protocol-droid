@@ -333,7 +333,9 @@ impl ServerBuilder {
     /// to live in was dropped by `build`, so a server with resources had a
     /// builder that looked populated and an always-empty listing.
     #[must_use]
-    pub fn resource(self, resource: Resource) -> Self {        self.registry.register(Registered::from(Primitive::from(resource)));
+    pub fn resource(self, resource: Resource) -> Self {
+        self.registry
+            .register(Registered::from(Primitive::from(resource)));
         self
     }
 
@@ -352,9 +354,11 @@ impl ServerBuilder {
     /// Adds a prompt.
     #[must_use]
     pub fn prompt(self, prompt: Prompt) -> Self {
-        self.registry.register(Registered::from(Primitive::from(prompt)));
+        self.registry
+            .register(Registered::from(Primitive::from(prompt)));
         self
     }
+
     /// Finishes the server.
     #[must_use]
     pub fn build(self) -> Server {

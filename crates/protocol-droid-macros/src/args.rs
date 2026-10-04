@@ -11,8 +11,6 @@ use syn::{FnArg, Ident, PatType, Type};
 
 /// What a macro learned from a handler signature.
 pub(crate) struct Handler {
-    /// The generated argument struct's name, unique per handler.
-    pub(crate) args_ident: Ident,
     /// The handler's own name, which is the tool's name unless overridden.
     pub(crate) fn_name: Ident,
     /// The tool name, from `name = "..."` or the function name.
@@ -29,13 +27,30 @@ pub(crate) struct Handler {
     pub(crate) prefix: String,
 }
 
+impl Handler {
+    /// The generated argument struct's name, unique per type and handler.
+    ///
+    /// A method rather than a field, because the type's name is not known when
+    /// the handler is read: `read_handler` sees the signature alone, and
+    /// `expand_server` only afterwards knows which `impl` block it came from.
+    /// A field would therefore have been frozen at the unprefixed name, and
+    /// two `#[server]` types with a tool method of the same name in one module
+    /// — ordinary Rust, and the thing the prefix on every *other* generated
+    /// item exists to survive — would both declare `__add_Args` at module
+    /// scope and fail with a duplicate definition naming a struct the author
+    /// never wrote.
+    pub(crate) fn args_ident(&self) -> Ident {
+        format_ident!("__{}_{}_Args", self.prefix, self.fn_name)
+    }
+}
+
 /// The last segment of a type path, if it is one.
 ///
 /// A handler may write `RequestContext`, `crate::RequestContext` or
 /// `protocol_droid::application::server::RequestContext`, and all three mean
 /// the context. Matching the last segment is what lets the shorthand work
 /// without a `use` at every call site.
-fn last_segment(ty: &Type) -> Option<&Ident> {
+pub(crate) fn last_segment(ty: &Type) -> Option<&Ident> {
     match ty {
         Type::Path(path) => path.path.segments.last().map(|segment| &segment.ident),
         _ => None,
@@ -57,15 +72,29 @@ fn is_context(arg: &FnArg) -> bool {
 ///
 /// # Errors
 ///
-/// A `self` parameter — a tool is called by name and a receiver would have
-/// nothing to receive from — and a second context parameter, which is almost
-/// certainly a typo and which would otherwise generate two fields named the
-/// same thing.
+/// A `fn` that is not `async` — the generated factory awaits what the handler
+/// returns, so a plain value has nothing to await and the failure would
+/// otherwise arrive as a wall of type errors about the `Future` bound rather
+/// than as the one edit that fixes it; a `self` parameter, because a tool is
+/// called by name and a receiver would have nothing to receive from; and a
+/// second context parameter, which is almost certainly a typo and which would
+/// otherwise generate two fields named the same thing.
 pub(crate) fn read_handler(
     attrs: &[syn::Attribute],
     attribute: proc_macro2::TokenStream,
     sig: &syn::Signature,
 ) -> syn::Result<Handler> {
+    if sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            sig,
+            "a #[tool] handler is awaited when a peer calls it, so it has to be an `async fn`: \
+             the generated factory calls it and awaits the future it returns, and a plain `fn` \
+             answers with a value that has nothing to await. Mark it `async`, or if it really \
+             does no waiting, keep the `async` — an idle future is cheaper than an unbuildable \
+             server.",
+        ));
+    }
+
     let fields = literal_fields(attribute)?;
     let tool_name = field(&fields, "name").unwrap_or_else(|| sig.ident.to_string());
     let description = field(&fields, "description").or_else(|| description_from(attrs));
@@ -98,7 +127,6 @@ pub(crate) fn read_handler(
     }
 
     Ok(Handler {
-        args_ident: format_ident!("__{}_Args", sig.ident),
         fn_name: sig.ident.clone(),
         tool_name,
         description,
@@ -118,7 +146,7 @@ pub(crate) fn read_handler(
 /// peer that sends extra members is not rejected — the arguments are this
 /// tool's, not the peer's to get right.
 pub(crate) fn args_struct(handler: &Handler) -> TokenStream {
-    let args_ident = &handler.args_ident;
+    let args_ident = handler.args_ident();
 
     if handler.positional.is_empty() {
         // A braced struct with no fields, not a unit struct. A unit struct
@@ -202,7 +230,7 @@ pub(crate) fn handler_fn_ident(handler: &Handler) -> proc_macro2::Ident {
 /// learn that an argument type has no schema.
 pub(crate) fn tool_fn(handler: &Handler) -> TokenStream {
     let tool_fn = format_ident!("__{}_{}_TOOL", handler.prefix, handler.fn_name);
-    let args_ident = &handler.args_ident;
+    let args_ident = handler.args_ident();
     let tool_name = &handler.tool_name;
     let described = handler.description.as_ref().map_or_else(
         proc_macro2::TokenStream::new,
@@ -271,12 +299,7 @@ fn outcome(handler: &Handler, call_args: &TokenStream) -> TokenStream {
 /// Its own function because every clause is load-bearing and the reasons are
 /// the point: get one of the bounds wrong and the code still compiles, fails to
 /// satisfy `ToolHandler`, or — worst — compiles and is callable once.
-fn bounds(
-    handler: &Handler,
-    fut_ty: &Ident,
-    error_ty: &Ident,
-    answer_ty: &Ident,
-) -> TokenStream {
+fn bounds(handler: &Handler, fut_ty: &Ident, error_ty: &Ident, answer_ty: &Ident) -> TokenStream {
     if is_result(handler) {
         quote! {
             #fut_ty: ::core::future::Future<Output = ::core::result::Result<#answer_ty, #error_ty>>
@@ -293,7 +316,7 @@ fn bounds(
 }
 
 pub(crate) fn handler_factory(handler: &Handler) -> TokenStream {
-    let args_ident = &handler.args_ident;
+    let args_ident = handler.args_ident();
     let f_ty = format_ident!("__F");
     let fut_ty = format_ident!("__Fut");
     let error_ty = format_ident!("__Error");

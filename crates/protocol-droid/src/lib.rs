@@ -33,7 +33,7 @@ pub mod adapters;
 pub mod application;
 pub mod domain;
 
-pub use protocol_droid_macros::{server, tool};
+pub use protocol_droid_macros::{prompt, resource, server, tool};
 pub use schemars;
 pub use serde;
 pub use serde_json;

@@ -41,7 +41,7 @@ use protocol_droid::application::server::{Dispatcher, Server};
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
 use protocol_droid::domain::ir::JsonObject;
-use protocol_droid::domain::registry::AuthContext;
+use protocol_droid::domain::registry::{AuthContext, Prompt, PromptArgument, Resource};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
 use protocol_droid::domain::{CapabilitySet, ProtocolVersion, RequestId, TransportKind};
 use serde::Serialize;
@@ -88,10 +88,79 @@ impl Demo {
         Ok("named".to_string())
     }
 
+    /// A resource, described by the method rather than by the doc comment
+    /// above it: a `#[resource]` is a value, and a value carries its own
+    /// description, so there is nothing to derive.
+    #[protocol_droid::resource]
+    fn readme() -> Resource {
+        let mut resource = Resource::new("file:///README.md", "readme");
+        resource.description = Some("The project's readme.".to_string());
+        resource.mime_type = Some("text/markdown".to_string());
+        resource
+    }
+
+    /// A second resource, so "the first one registered" is not a claim the
+    /// test can make by looking at one entry.
+    #[protocol_droid::resource]
+    fn licence() -> Resource {
+        Resource::new("file:///LICENSE", "licence")
+    }
+
+    /// A prompt, with two arguments of differing requiredness, so a
+    /// `prompts/list` that flattened them to names — or lost the flag — fails.
+    #[protocol_droid::prompt]
+    fn review() -> Prompt {
+        let mut prompt = Prompt::new("review");
+        prompt.arguments.push(PromptArgument {
+            name: "diff".to_string(),
+            description: Some("The text to review.".to_string()),
+            title: None,
+            required: true,
+        });
+        prompt.arguments.push(PromptArgument {
+            name: "focus".to_string(),
+            description: None,
+            title: None,
+            required: false,
+        });
+        prompt
+    }
+
     /// Not a tool, so the server must leave it out.
     #[allow(dead_code, reason = "the test asserts it was not registered as one")]
     async fn helper(&self) -> i32 {
         7
+    }
+}
+
+/// A second server in the same module, with methods `Demo` also has.
+///
+/// Every generated item for a tool is named `__{Type}_{fn}_*`, and a
+/// `#[resource]` or `#[prompt]` generates no name at all — only the
+/// registration that calls the method. This type exists to hold that claim to
+/// account: before the prefix reached the generated argument struct, `Demo`'s
+/// `add` and this type's `add` both declared `__add_Args` at module scope and
+/// the file would not compile at all.
+struct Other;
+
+#[protocol_droid::server(name = "other-server")]
+impl Other {
+    /// The same name, the same shape, a different answer.
+    #[protocol_droid::tool]
+    async fn add(a: i32, b: i32) -> Result<AddAnswer, DemoError> {
+        Ok(AddAnswer { total: a * b })
+    }
+
+    /// Also the same name as `Demo::readme`, and also a resource.
+    #[protocol_droid::resource]
+    fn readme() -> Resource {
+        Resource::new("file:///other/README.md", "other-readme")
+    }
+
+    /// Also the same name as `Demo::review`, and also a prompt.
+    #[protocol_droid::prompt]
+    fn review() -> Prompt {
+        Prompt::new("other-review")
     }
 }
 
@@ -209,31 +278,23 @@ fn dispatcher(server: Server) -> Arc<Dispatcher> {
 
 /// The `tools/list` answer, as JSON.
 async fn list(dispatcher: &Arc<Dispatcher>) -> Result<serde_json::Value, TestError> {
-    let version = ProtocolVersion::V2025_06_18;
-    let peer = PeerSession::new(
-        version,
-        resolve(Negotiation {
-            version,
-            client_caps: CapabilitySet::all_for(version),
-            server_caps: CapabilitySet::all_for(version),
-            transport: TransportKind::StreamableHttp,
-        }),
-        SessionId::new(1),
-        Arc::new(NoExchange),
-        Arc::new(NoSink),
-    )
-    .with_auth(AuthContext::unrestricted("tester"));
-    let ctx = RequestContext::for_request(
-        &peer,
-        RequestId::text("list"),
-        CancellationToken::new(),
-        None,
-    );
+    listing(dispatcher, "tools/list").await
+}
 
+/// The answer to one of the four listing methods, as JSON.
+///
+/// One function rather than four, because the four differ only in the method
+/// name and each was otherwise a second copy of the session the `dispatch`
+/// helper already builds. The `list` above is the tools case of this, kept
+/// because most of the tests here are about tools.
+async fn listing(
+    dispatcher: &Arc<Dispatcher>,
+    method: &str,
+) -> Result<serde_json::Value, TestError> {
     let listed = dispatcher
-        .dispatch(&ctx, "tools/list", &JsonObject::default())
+        .dispatch(&context(), method, &JsonObject::default())
         .await
-        .map_err(|error| Failure::from(error.to_string()))?;
+        .map_err(|error| Failure::from(format!("{method} was refused: {error}")))?;
     serde_json::from_str(listed.as_str())
         .map_err(|error| Failure::from(format!("the listing is not JSON: {error}")))
 }
@@ -243,19 +304,66 @@ fn tool<'a>(
     listing: &'a serde_json::Value,
     name: &str,
 ) -> Result<&'a serde_json::Value, TestError> {
+    entry(listing, "tools", "name", name)
+}
+
+/// The one entry of `listing[key]` whose `field` reads `value`, as JSON.
+///
+/// A resource is keyed by its uri and a prompt by its name, so the field to
+/// match on differs per kind; taking it as an argument is what lets one lookup
+/// serve both listings without pretending they share a key.
+fn entry<'a>(
+    listing: &'a serde_json::Value,
+    key: &str,
+    field: &str,
+    value: &str,
+) -> Result<&'a serde_json::Value, TestError> {
     listing
-        .get("tools")
+        .get(key)
         .and_then(serde_json::Value::as_array)
-        .ok_or("the listing has no tools array")?
+        .ok_or_else(|| Failure::from(format!("the listing has no {key} array")))?
         .iter()
-        .find(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some(name))
-        .ok_or_else(|| Failure::from(format!("no tool named {name} in the listing")))
+        .find(|entry| entry.get(field).and_then(serde_json::Value::as_str) == Some(value))
+        .ok_or_else(|| Failure::from(format!("no {key} entry whose {field} is {value}")))
+}
+
+/// Every identifier in one listing — a tool's name, a resource's uri, a
+/// prompt's name — sorted.
+///
+/// Sorted for the same reason `properties` sorts: a listing is a JSON array
+/// built in registration order, and comparing that against a literal asserts
+/// on the order the methods happened to be written in.
+fn ids(listing: &serde_json::Value, key: &str, field: &str) -> Result<Vec<String>, TestError> {
+    let mut found: Vec<String> = listing
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Failure::from(format!("the listing has no {key} array")))?
+        .iter()
+        .filter_map(|entry| entry.get(field).and_then(serde_json::Value::as_str))
+        .map(ToString::to_string)
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
+/// One member of a call result's `structuredContent`, as JSON.
+fn structured(answer: &JsonObject, member: &str) -> Result<serde_json::Value, TestError> {
+    let parsed: serde_json::Value = serde_json::from_str(answer.as_str())
+        .map_err(|error| Failure::from(format!("the answer is not JSON: {error}")))?;
+    parsed
+        .get("structuredContent")
+        .and_then(|content| content.get(member))
+        .cloned()
+        .ok_or_else(|| Failure::from(format!("the answer has no structuredContent.{member}")))
 }
 
 /// The schema's property names, sorted — the tool's arguments.
 fn properties(schema: &serde_json::Value) -> Vec<String> {
     let mut names = Vec::new();
-    if let Some(members) = schema.get("properties").and_then(serde_json::Value::as_object) {
+    if let Some(members) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
         for name in members.keys() {
             names.push(name.clone());
         }
@@ -502,6 +610,173 @@ async fn an_unannotated_method_is_not_a_tool() -> Result<(), TestError> {
         .any(|name| name == "helper")
     {
         return Err(Failure::from("an unannotated method was registered"));
+    }
+    Ok(())
+}
+
+/// A `#[resource]` reaches `resources/list` with the value its method built.
+///
+/// Not merely that registration returned. `ServerBuilder::resource` publishes
+/// to the registry and returns the builder, so a macro that expanded to a
+/// registration nothing kept would pass any test that stopped at `Ok(…)` — and
+/// the resource would simply be absent from a peer that asked for it. Every
+/// field below is set in the method body, so the listing is a reading of the
+/// returned value rather than of the attribute.
+#[tokio::test]
+async fn a_resource_lands_in_the_listing_as_its_method_returned_it() -> Result<(), TestError> {
+    let dispatcher = dispatcher(Demo.into_server()?);
+    let listed = listing(&dispatcher, "resources/list").await?;
+
+    let readme = entry(&listed, "resources", "uri", "file:///README.md")?;
+    let expected = serde_json::json!({
+        "uri": "file:///README.md",
+        "name": "readme",
+        "description": "The project's readme.",
+        "mimeType": "text/markdown",
+    });
+    if readme != &expected {
+        return Err(Failure::from(format!(
+            "the readme resource is listed as {readme}"
+        )));
+    }
+    Ok(())
+}
+
+/// Every marked method is registered — both resources, not only the first.
+///
+/// A registration that overwrote its predecessor would pass a test that looks
+/// at one entry, because the entry it looks at would still be right.
+#[tokio::test]
+async fn every_marked_resource_is_listed() -> Result<(), TestError> {
+    let dispatcher = dispatcher(Demo.into_server()?);
+    let listed = listing(&dispatcher, "resources/list").await?;
+
+    let uris = ids(&listed, "resources", "uri")?;
+    if uris != ["file:///LICENSE", "file:///README.md"] {
+        return Err(Failure::from(format!("the resources listed are {uris:?}")));
+    }
+    Ok(())
+}
+
+/// A `#[prompt]` reaches `prompts/list` with its arguments, in order.
+///
+/// The arguments are the part that goes wrong quietly: a prompt that listed
+/// without them is still a prompt, and a client that prompts for a review and
+/// is given no argument to fill in fails at the peer rather than here.
+#[tokio::test]
+async fn a_prompt_lands_in_the_listing_with_its_arguments() -> Result<(), TestError> {
+    let dispatcher = dispatcher(Demo.into_server()?);
+    let listed = listing(&dispatcher, "prompts/list").await?;
+
+    let review = entry(&listed, "prompts", "name", "review")?;
+    let expected = serde_json::json!({
+        "name": "review",
+        "description": null,
+        "arguments": [
+            {"name": "diff", "description": "The text to review.", "required": true},
+            {"name": "focus", "description": null, "required": false},
+        ],
+    });
+    if review != &expected {
+        return Err(Failure::from(format!(
+            "the review prompt is listed as {review}"
+        )));
+    }
+    Ok(())
+}
+
+/// A tool and a resource in one `#[server]` block reach their own listings.
+///
+/// They are registered through different builder methods and stored under
+/// different kinds, so the failure worth ruling out is one displacing the
+/// other: a server whose `tools/list` has lost the tool, or whose
+/// `resources/list` holds something no `resources/read` can name. The tool is
+/// called as well as listed, because a tool that lists and cannot run is the
+/// other half of the same bug.
+#[tokio::test]
+async fn a_resource_and_a_tool_do_not_collide() -> Result<(), TestError> {
+    let dispatcher = dispatcher(Demo.into_server()?);
+    let tools = listing(&dispatcher, "tools/list").await?;
+    let resources = listing(&dispatcher, "resources/list").await?;
+    let prompts = listing(&dispatcher, "prompts/list").await?;
+
+    // The tool is still a tool, and still answers.
+    tool(&tools, "add")?;
+    let ctx = context();
+    let answer = dispatcher
+        .dispatch(&ctx, "tools/call", &call("add", r#"{"a":2,"b":3}"#))
+        .await
+        .map_err(|error| Failure::from(error.to_string()))?;
+    if structured(&answer, "total")? != 5 {
+        return Err(Failure::from("add did not answer with the sum"));
+    }
+
+    // And the resource is still a resource. Every other assertion in this
+    // test is a negative one, and a negative assertion about a listing that
+    // came back empty holds vacuously: dropping the registration outright
+    // leaves every "nothing landed in the wrong place" claim true. One
+    // positive read is what keeps the rest of them about collision rather
+    // than about absence.
+    entry(&resources, "resources", "uri", "file:///README.md")?;
+    entry(&prompts, "prompts", "name", "review")?;
+
+    // And neither of the primitives is listed as a tool.
+    let names = ids(&tools, "tools", "name")?;
+    for primitive in ["readme", "review"] {
+        if names.iter().any(|name| name == primitive) {
+            return Err(Failure::from(format!("{primitive} was listed as a tool")));
+        }
+    }
+
+    // Nor is the tool listed as either of the other two kinds.
+    if ids(&resources, "resources", "uri")?
+        .iter()
+        .any(|uri| uri == "add")
+        || ids(&prompts, "prompts", "name")?
+            .iter()
+            .any(|name| name == "add")
+    {
+        return Err(Failure::from("the tool was listed as a primitive"));
+    }
+    Ok(())
+}
+
+/// Two servers in one module each keep their own primitives.
+///
+/// The generated items for a tool are named `__{Type}_{fn}_*` and a
+/// `#[resource]` or `#[prompt]` generates no name at all, so this file
+/// compiling at all is half the claim — the other half is that `Other`'s `add`
+/// multiplies where `Demo`'s adds, rather than one of the two registrations
+/// having replaced the other.
+#[tokio::test]
+async fn two_servers_in_one_module_keep_their_own_primitives() -> Result<(), TestError> {
+    let dispatcher = dispatcher(Other.into_server()?);
+
+    let tools = listing(&dispatcher, "tools/list").await?;
+    let ctx = context();
+    let answer = dispatcher
+        .dispatch(&ctx, "tools/call", &call("add", r#"{"a":2,"b":3}"#))
+        .await
+        .map_err(|error| Failure::from(error.to_string()))?;
+    if structured(&answer, "total")? != 6 {
+        return Err(Failure::from(
+            "the other server's add did not answer with the product",
+        ));
+    }
+    if ids(&tools, "tools", "name")? != ["add"] {
+        return Err(Failure::from("the other server's tool listing is wrong"));
+    }
+
+    let resources = listing(&dispatcher, "resources/list").await?;
+    if ids(&resources, "resources", "uri")? != ["file:///other/README.md"] {
+        return Err(Failure::from(
+            "the other server's resource listing is wrong",
+        ));
+    }
+
+    let prompts = listing(&dispatcher, "prompts/list").await?;
+    if ids(&prompts, "prompts", "name")? != ["other-review"] {
+        return Err(Failure::from("the other server's prompt listing is wrong"));
     }
     Ok(())
 }
