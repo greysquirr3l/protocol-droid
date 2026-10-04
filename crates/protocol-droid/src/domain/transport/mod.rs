@@ -18,6 +18,21 @@
 //! [`LegacySse`]: Self::LegacySse
 //! [`StreamableHttp`]: Self::StreamableHttp
 //! [`StatelessHttp`]: Self::StatelessHttp
+//!
+//! # What else is here
+//!
+//! [`framing`] — the byte-level delimiter, which is not an MCP concept and
+//! carries no revision. It lives beside `TransportKind` rather than under an
+//! adapter because the stdio server and the stdio client are *both* its
+//! consumers, and a shared piece of a transport that only one of the two can
+//! reach is a shared piece of a transport that one of them has to fork.
+
+// Private, like this module: the items are re-exported by name rather than the
+// module itself, so `unreachable_pub` does not apply and there is exactly one
+// path to each of them.
+mod framing;
+
+pub use framing::{FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, encode_frame};
 
 use core::fmt;
 

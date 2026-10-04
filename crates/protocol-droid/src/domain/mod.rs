@@ -35,7 +35,10 @@ pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVe
 pub use release_date::{ParseReleaseDateError, ReleaseDate};
 pub use request_id::RequestId;
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
-pub use transport::{TransportKind, transport_allowed};
+pub use transport::{
+    FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, TransportKind, encode_frame,
+    transport_allowed,
+};
 
 #[cfg(test)]
 mod tests {
