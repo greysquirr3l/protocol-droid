@@ -16,12 +16,29 @@ categories.workspace = true
 # SSE path, and OAuth are introduced by the tasks that implement them (T13-T16),
 # not declared empty in advance.
 
+[features]
+# The envelope decoder defaults to `serde_json`, which is portable and has no
+# target-specific code. `simd` swaps in a vectorised parser behind a flag so the
+# two can be benchmarked against each other rather than argued about; it is off
+# by default because a `default-features = false` build has to stay lean and
+# because a decoder that is only fast on some targets is a portability trap.
+default = ["serde"]
+# serde_json is the portable default and is always compiled — the generated
+# wire types depend on it, so it is data rather than an optional integration.
+serde = []
+
 [dependencies]
 protocol-droid-schema = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# The envelope path is the project's one perf-critical path, so its decode,
+# route, and params-decode costs are measured rather than estimated. CI gates a
+# >10% regression against the committed baseline.
+divan = { workspace = true }
+assert_matches = { workspace = true }
 # The golden feature profiles are snapshots a human reviews, so a matrix change
 # shows up as a diff to read rather than as a failure to debug.
 insta = { workspace = true }
@@ -36,3 +53,9 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+# divan is its own harness; libtest would only add a wrapper around a binary
+# that is meant to be run directly.
+[[bench]]
+name = "jsonrpc_hot_path"
+harness = false

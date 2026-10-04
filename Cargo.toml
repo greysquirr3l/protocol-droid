@@ -54,7 +54,14 @@ protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.1.
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+# Benchmarking. The envelope path is the one perf-critical path in the crate, so
+# its costs are measured on every CI run rather than estimated.
+divan = { version = "0.1.21", default-features = false }
+# Assertion macros that print the actual variant on failure. `assert!(matches!(..))`
+# reports only "assertion failed", which is useless for an error-code test
+# where the whole point is *which* code came back.
+assert_matches = "1.5.0"
 
 # Property-based testing for the generated wire types. `fork` and `timeout` are
 # off: they exist to persist a failing case across runs via a temp directory,

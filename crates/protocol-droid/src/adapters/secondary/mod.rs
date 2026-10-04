@@ -5,3 +5,4 @@
 //! domain depends on but must never call globally).
 
 pub mod codec;
+pub mod mcp;

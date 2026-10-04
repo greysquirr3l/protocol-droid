@@ -8,8 +8,9 @@
 //! profile, negotiation, canonical IR, per-revision codecs).
 
 mod capability;
-mod feature;
+pub mod feature;
 pub mod ir;
+pub mod jsonrpc;
 mod negotiation;
 mod protocol_version;
 mod release_date;
