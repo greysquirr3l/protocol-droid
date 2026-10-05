@@ -17,3 +17,5 @@
 
 #[cfg(feature = "http")]
 pub mod http;
+#[cfg(feature = "legacy-sse")]
+pub mod legacy_sse;

@@ -87,6 +87,30 @@ pub enum Refusal {
     #[error("this endpoint requires a scope the caller does not hold")]
     Forbidden,
 
+    /// The `Origin` header named an origin this server does not serve.
+    ///
+    /// The one refusal in this enum that is a **specification MUST** rather
+    /// than a JSON-RPC-shaped complaint:
+    ///
+    /// > Servers **MUST** validate the `Origin` header on all incoming
+    /// > connections to prevent DNS rebinding attacks
+    ///
+    /// Cited: <https://modelcontextprotocol.io/specification/2024-11-05/basic/transports>
+    ///
+    /// Carries nothing from the header. The value is attacker-chosen, and a
+    /// refusal that echoes it into a response body is reflecting untrusted
+    /// input back to whoever sent it — for no diagnostic gain, since the sender
+    /// knows exactly what they sent. The operator reads the refusal type; the
+    /// attacker learns nothing they did not send.
+    ///
+    /// Distinct from [`Forbidden`](Self::Forbidden), which is an
+    /// authorization decision about a *credential*. This is a decision about
+    /// where the request came from, made before the request is authenticated,
+    /// because the point is to refuse the connection rather than to reject an
+    /// identity.
+    #[error("this request's Origin is not one this server serves")]
+    ForeignOrigin,
+
     /// The body was not a JSON-RPC frame this build can decode.
     #[error("the request body is not a decodable JSON-RPC frame: {reason}")]
     MalformedBody {
@@ -167,7 +191,15 @@ impl Refusal {
 
             Self::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+
+            // 403 and not 401 for both arms, and the two are the same status
+            // for different reasons. `Forbidden` is an authorization decision
+            // about a credential. `ForeignOrigin` is a decision about where
+            // the request came from, made before the request is authenticated
+            // — and a `WWW-Authenticate` challenge on either would be advice
+            // to authenticate with something that cannot help, because
+            // nothing about the caller's identity changes a foreign origin.
+            Self::Forbidden | Self::ForeignOrigin => StatusCode::FORBIDDEN,
 
             // Not the specification's number; see the module docs. Both
             // resume refusals are a conflict between the client's cursor and
@@ -220,6 +252,7 @@ impl Refusal {
             Self::StreamGap { .. } => -32005,
             Self::UnknownCursor { .. } => -32006,
             Self::MalformedCursor => -32007,
+            Self::ForeignOrigin => -32008,
         }
     }
 
@@ -294,6 +327,7 @@ const fn slug(refusal: &Refusal) -> &'static str {
         Refusal::StreamGap { .. } => "stream_gap",
         Refusal::UnknownCursor { .. } => "unknown_cursor",
         Refusal::MalformedCursor => "malformed_cursor",
+        Refusal::ForeignOrigin => "foreign_origin",
         Refusal::Handler(_) => "handler_error",
     }
 }

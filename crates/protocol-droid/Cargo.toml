@@ -44,6 +44,14 @@ stdio = ["dep:tokio"]
 # without it, so a consumer that only wants the IR and the codecs pays for none
 # of this.
 http = ["dep:axum", "dep:futures-core", "dep:reqwest", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
+# T15. The deprecated 2024-11-05 HTTP+SSE transport, which `2025-03-26`
+# replaced and which is the only transport that revision speaks. It needs the
+# HTTP stack, so it implies it rather than listing it again — and it is a
+# separate gate from `http` because the two are alternatives, not a set: a
+# server that speaks Streamable HTTP has no use for a second endpoint and an
+# `endpoint` event. `TransportKind::LegacySse` stays ungated in the domain,
+# because describing a transport costs nothing and only speaking it does.
+legacy-sse = ["http"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
