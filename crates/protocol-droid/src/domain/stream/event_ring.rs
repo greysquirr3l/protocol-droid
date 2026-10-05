@@ -414,12 +414,21 @@ impl<T> EventRing<T> {
             return Replay::Unknown { requested, last };
         }
         // `requested < last`, so at least one event is outstanding. Whether it
-        // can be served is decided by the last drop, not by the current front:
-        // the watermark is inclusive of the dropped event itself, because a
-        // client that quotes the id of a dropped event is asking for what comes
-        // *after* it, and the ring cannot prove it kept the rest contiguous.
+        // can be served is decided by the last drop, not by the current front.
+        //
+        // `replay_from(Some(id))` means "I have seen through `id`, send me what
+        // follows", so a client quoting exactly `evicted_through` is asking for
+        // `evicted_through + 1` onward — every one of which is still here. The
+        // test is therefore `requested < evicted_through`, exclusive.
+        //
+        // An inclusive test here is a trap with no good recovery: a caller that
+        // backs its cursor off to `evicted_through` to recover is told it is
+        // still behind and gets nothing but gap notices forever, and a caller
+        // that instead moves to `evicted_through + 1` skips the one surviving
+        // event. Both readings lose, which is what makes the exclusive test the
+        // only one a caller can act on.
         if let Some(evicted_through) = self.evicted_through
-            && requested <= evicted_through
+            && requested < evicted_through
         {
             return Replay::Gap {
                 requested,
@@ -594,25 +603,30 @@ mod tests {
         ring.push("c");
         let fourth = ring.push("d");
 
-        match ring.replay_from(Some(first)) {
+        // `first` was evicted, but quoting it is the client saying it *received*
+        // `first`, which is a cursor the ring can serve. The gap is one id
+        // lower — a client that has seen less than the oldest thing ever issued.
+        let asked = EventId::WATERMARK;
+        let _ = first;
+        match ring.replay_from(Some(asked)) {
             Replay::Gap {
                 requested,
                 evicted_through,
                 last,
             } => {
-                if requested != first {
+                if requested != asked {
                     return Err(Failure::WrongIds(vec![requested.get()]));
                 }
                 if last != fourth {
                     return Err(Failure::WrongIds(vec![last.get()]));
                 }
                 // The gap has to name the boundary that put the client behind
-                // it, and that boundary is at or after the id it asked for —
-                // which is precisely what makes this a `Gap` and not a
-                // `Buffered`. It also has to name an event that really was
-                // dropped, so a client told to resync somewhere it already is
-                // is not stranded.
-                if evicted_through.get() < requested.get() {
+                // it, and that boundary is strictly _after_ the id it asked
+                // for — a client holding `evicted_through` itself can still be
+                // served everything after it. It also has to name an event that
+                // really was dropped, so a client told to resync somewhere it
+                // already is not stranded.
+                if evicted_through.get() <= requested.get() {
                     return Err(Failure::WrongIds(vec![evicted_through.get()]));
                 }
                 if evicted_through.get() > last.get() {
@@ -789,6 +803,59 @@ mod tests {
         Ok(())
     }
 
+    /// Quoting a dropped id is servable; quoting an *older* one is a gap.
+    ///
+    /// The distinction is the whole contract of the resume argument, and it
+    /// runs against the intuition. `replay_from(Some(id))` means "I have seen
+    /// through `id`, send me what follows", so a client quoting an id the ring
+    /// no longer holds is a client that received it — the drop happened after
+    /// that client was last seen. Everything after the drop is contiguous, so
+    /// the answer is `Buffered` of the survivors.
+    ///
+    /// Reading the same situation inclusively leaves a caller no move that
+    /// does not lose. A cursor at `evicted_through` is refused again, and a
+    /// cursor at `evicted_through + 1` skips the one surviving event. The
+    /// exclusive test is the only one a caller can act on, which is why this
+    /// test exists in this shape rather than as a single-arm assertion.
+    #[test]
+    fn quoting_a_dropped_id_is_servable_but_older_is_not() -> Result<(), Failure> {
+        let mut ring = ring(3)?;
+        let first = ring.push("a");
+        ring.push("b");
+        ring.push("c");
+        ring.push("d");
+        // `first` is the evicted id.
+        let held = match ring.replay_from(Some(first)) {
+            Replay::Buffered { events, .. } => events,
+            Replay::UpToDate { .. } => {
+                return Err(Failure::Outcome("a held id was reported as up to date"));
+            }
+            Replay::Gap { .. } => {
+                return Err(Failure::Outcome(
+                    "a client holding the dropped id was told it was behind",
+                ));
+            }
+            Replay::Unknown { .. } => {
+                return Err(Failure::Outcome(
+                    "a client holding the dropped id was told it was unknown",
+                ));
+            }
+        };
+        // Everything after the drop, in order, starting at the first survivor.
+        let ids: Vec<u64> = held.iter().map(|event| event.id().get()).collect();
+        if ids != vec![2, 3, 4] {
+            return Err(Failure::WrongIds(ids));
+        }
+        // One id lower, and the client genuinely is behind.
+        if !matches!(
+            ring.replay_from(Some(EventId::WATERMARK)),
+            Replay::Gap { .. }
+        ) {
+            return Err(Failure::Outcome("a cursor below the drop was not a gap"));
+        }
+        Ok(())
+    }
+
     /// A ring of one is the smallest that can lose anything, and it must still
     /// report the loss rather than serve a stream with a hole in it.
     #[test]
@@ -796,9 +863,23 @@ mod tests {
         let mut ring = ring(1)?;
         let first = ring.push("a");
         ring.push("b");
-        if !matches!(ring.replay_from(Some(first)), Replay::Gap { .. }) {
+        // Resuming from *below* the drop is the gap case. A one-slot ring
+        // holding only `b` evicted `first`, so a client that has seen less than
+        // `first` has lost something.
+        if !matches!(
+            ring.replay_from(Some(EventId::WATERMARK)),
+            Replay::Gap { .. }
+        ) {
             return Err(Failure::Outcome(
                 "a one-slot ring did not report its eviction",
+            ));
+        }
+        // ...and resuming from the dropped id itself is not a gap, because
+        // that quote *is* the client saying it received it. What follows is all
+        // still here. See `quoting_a_dropped_id_is_servable_but_older_is_not`.
+        if !matches!(ring.replay_from(Some(first)), Replay::Buffered { .. }) {
+            return Err(Failure::Outcome(
+                "a client holding the dropped id was refused its own successor",
             ));
         }
         Ok(())
@@ -833,13 +914,15 @@ mod tests {
     #[test]
     fn completeness_agrees_with_the_arm() -> Result<(), Failure> {
         let mut ring = ring(2)?;
-        let first = ring.push("a");
+        ring.push("a");
         ring.push("b");
         ring.push("c");
         let cases = [
             (ring.replay_from(None), true),
             (ring.replay_from(Some(ring.last())), true),
-            (ring.replay_from(Some(first)), false),
+            // The only thing incomplete is a gap, so this case has to be a real
+            // one: a cursor below the eviction point, not the dropped id itself.
+            (ring.replay_from(Some(EventId::WATERMARK)), false),
             (ring.replay_from(Some(EventId::new(77))), false),
         ];
         for (replay, expected) in cases {
