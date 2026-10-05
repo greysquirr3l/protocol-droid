@@ -29,8 +29,12 @@ mod routing_headers;
 mod session_id;
 
 pub mod authorization;
+pub mod resource_metadata;
 
 pub use authorization::{AuthorizationModel, ClientRegistration, authorization_model};
+pub use resource_metadata::{
+    BearerMethod, ResourceMetadata, ResourceUri, ResourceUriError, WELL_KNOWN,
+};
 pub use routing_headers::{
     MCP_METHOD_HEADER, MCP_NAME_HEADER, RoutingHeaderError, RoutingHeaders, RoutingName,
     RoutingTarget,

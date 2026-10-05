@@ -36,9 +36,10 @@ pub use idempotency::{
     Claim, ClaimToken, CompletedResults, IdempotencyError, IdempotencyKey, StaleClaim,
 };
 pub use mcp::{
-    AuthorizationModel, ClientRegistration, MCP_METHOD_HEADER, MCP_NAME_HEADER, McpSessionId,
-    McpSessionIdError, RoutingHeaderError, RoutingHeaders, RoutingName, RoutingTarget,
-    VISIBLE_ASCII_RANGE, authorization_model,
+    AuthorizationModel, BearerMethod, ClientRegistration, MCP_METHOD_HEADER, MCP_NAME_HEADER,
+    McpSessionId, McpSessionIdError, ResourceMetadata, ResourceUri, ResourceUriError,
+    RoutingHeaderError, RoutingHeaders, RoutingName, RoutingTarget, VISIBLE_ASCII_RANGE,
+    WELL_KNOWN, authorization_model,
 };
 pub use negotiation::{
     NegotiatedSession, NegotiationError, PeerInfo, ServerDecision, StatelessRequest,
