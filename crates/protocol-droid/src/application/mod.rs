@@ -12,6 +12,7 @@
 pub mod client;
 pub mod idempotency;
 pub mod jsonrpc;
+pub mod oauth;
 pub mod registry;
 pub mod server;
 pub mod session;
