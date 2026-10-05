@@ -223,11 +223,43 @@ impl HttpClient {
             method: "CLIENT",
             error,
         })?;
-        Ok(Self {
+        Ok(Self::from_client(inner, config))
+    }
+
+    /// Builds a client around a connection pool that already exists.
+    ///
+    /// Exists for the auto-detect step, which holds a `reqwest::Client` before
+    /// it knows which transport the peer speaks — the probe request is the thing
+    /// that tells it. Handing that pool to whichever client wins means one TLS
+    /// handshake and one DNS resolution for the whole connection, rather than a
+    /// second set for the transport that happened to win.
+    ///
+    /// Takes the pool by value and cannot fail, because there is nothing left
+    /// to validate: the configuration was checked by whoever parsed it, and the
+    /// pool is already built.
+    #[must_use]
+    pub const fn from_client(inner: reqwest::Client, config: HttpClientConfig) -> Self {
+        Self {
             inner,
             config,
             session: Mutex::new(None),
-        })
+        }
+    }
+
+    /// A client that already knows the session the peer issued.
+    ///
+    /// For the same probe: its response already carried an `Mcp-Session-Id`, and
+    /// every later request has to carry it. Reconstructing the client from
+    /// scratch to recover that header would mean re-running the handshake, and
+    /// an `initialize` run twice is a second session on a server that is
+    /// counting them.
+    #[must_use]
+    pub fn resuming(self, id: McpSessionId) -> Self {
+        *self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
+        self
     }
 
     /// The configuration this client was built with.
