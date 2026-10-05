@@ -28,6 +28,9 @@
 mod routing_headers;
 mod session_id;
 
+pub mod authorization;
+
+pub use authorization::{AuthorizationModel, ClientRegistration, authorization_model};
 pub use routing_headers::{
     MCP_METHOD_HEADER, MCP_NAME_HEADER, RoutingHeaderError, RoutingHeaders, RoutingName,
     RoutingTarget,
