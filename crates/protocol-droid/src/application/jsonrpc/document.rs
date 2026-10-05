@@ -61,7 +61,7 @@ const NO_PEER_MESSAGE: &str = "the peer reported an error with no message";
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::adapters::secondary::stdio::request_document;
+/// use protocol_droid::application::jsonrpc::document::request_document;
 /// use protocol_droid::domain::RequestId;
 /// use protocol_droid::domain::ir::{JsonObject, MethodName};
 ///
@@ -101,7 +101,7 @@ pub fn request_document(
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::adapters::secondary::stdio::notification_document;
+/// use protocol_droid::application::jsonrpc::document::notification_document;
 /// use protocol_droid::domain::ir::{JsonObject, MethodName};
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -143,7 +143,7 @@ pub fn notification_document(
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::adapters::secondary::stdio::reply_result;
+/// use protocol_droid::application::jsonrpc::document::reply_result;
 /// use protocol_droid::domain::RequestId;
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {

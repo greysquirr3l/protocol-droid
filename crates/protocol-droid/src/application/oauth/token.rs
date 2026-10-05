@@ -88,6 +88,22 @@ impl TokenClaims {
         self
     }
 
+    /// Adds an audience entry that arrives as a string.
+    ///
+    /// Skipped rather than fatal when it does not parse. An `aud` entry that is
+    /// not an absolute URI cannot equal this server's resource, so ignoring it
+    /// and letting the audience check decide is the same answer as refusing —
+    /// and a server that names one malformed audience *alongside* a valid one
+    /// has still issued a usable token, which refusing outright would throw
+    /// away.
+    #[must_use]
+    pub fn with_audience_string(mut self, audience: impl AsRef<str>) -> Self {
+        if let Ok(parsed) = ResourceUri::new(audience.as_ref()) {
+            self.audience.push(parsed);
+        }
+        self
+    }
+
     /// Sets when the token stops being valid.
     #[must_use]
     pub const fn with_expiry(mut self, at: SystemTime) -> Self {
@@ -300,9 +316,10 @@ impl<'a> TokenPolicy<'a> {
 /// ```
 /// use std::time::{Duration, SystemTime};
 ///
-/// use protocol_droid::application::oauth::{ScopePolicy, Scope, TokenClaims, TokenPolicy, verify};
+/// use protocol_droid::application::oauth::{ScopePolicy, TokenClaims, TokenPolicy, verify};
 /// use protocol_droid::domain::mcp::ResourceUri;
-/// use protocol_droid::domain::{ProtocolVersion, ScopeSet, authorization_model};
+/// use protocol_droid::domain::registry::{Scope, ScopeSet};
+/// use protocol_droid::domain::{ProtocolVersion, authorization_model};
 ///
 /// struct Permissive;
 /// impl ScopePolicy for Permissive {
@@ -324,7 +341,7 @@ impl<'a> TokenPolicy<'a> {
 ///     .with_expiry(now + Duration::from_secs(60))
 ///     .with_scope("mcp:read");
 ///
-/// let context = verify(good, &policy, &Permissive, now)?;
+/// let context = verify(&good, &policy, &Permissive, now)?;
 /// assert_eq!(context.principal(), "alice");
 /// assert!(context.holds(ScopeSet::empty().with(Scope::Read)));
 ///
@@ -333,11 +350,11 @@ impl<'a> TokenPolicy<'a> {
 ///     .with_subject("alice")
 ///     .with_audience(ResourceUri::new("https://evil.example/mcp")?)
 ///     .with_expiry(now + Duration::from_secs(60));
-/// assert!(verify(elsewhere, &policy, &Permissive, now).is_err());
+/// assert!(verify(&elsewhere, &policy, &Permissive, now).is_err());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn verify(
-    claims: TokenClaims,
+    claims: &TokenClaims,
     policy: &TokenPolicy<'_>,
     scopes: &dyn ScopePolicy,
     now: SystemTime,
@@ -384,6 +401,83 @@ pub fn verify(
         scopes.principal(subject, &claims.scopes),
         resolved,
     ))
+}
+
+/// Why no claims could be established for a presented token.
+///
+/// Two kinds, and the distinction is the one a client cannot recover from
+/// either: a token that was *refused* is refused, and a token whose validity
+/// could not be *determined* is in a different position. Reporting the second
+/// as the first sends a caller to re-authenticate against an authorization
+/// server that was merely unreachable, and reports a client's credentials as
+/// bad when they were never wrong.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SourceError {
+    /// The authorization server, or this crate's own rules, refused the token.
+    #[error(transparent)]
+    Refused(#[from] Refusal),
+
+    /// The authorization server could not be asked, or its answer was not
+    /// readable.
+    ///
+    /// Carries a reason for the log and nothing else. It must never carry the
+    /// token: this type is the first place a token could end up in a message
+    /// somebody pastes into a bug report.
+    #[error("the authorization server could not be asked: {0}")]
+    Unavailable(String),
+}
+
+/// Where verified claims come from.
+///
+/// The consumer is [`authenticate`], and the line this port draws is the whole
+/// design: an adapter establishes *authenticity* — the signature checked, or the
+/// authorization server asked — and this crate applies *authorization*: the
+/// audience, the expiry, the issuer, the scopes. Neither half can do the other's
+/// job, and in particular a decode is not a verify, which is why
+/// [`TokenClaims`] has no constructor that takes a raw string.
+///
+/// # Object safety
+///
+/// An `async fn` on a trait is native RPITIT and is not object safe. That is
+/// deliberate: the call site takes `impl TokenSource`, so this monomorphises and
+/// pays nothing per call. A deployment that must choose a source at runtime
+/// holds an enum over two variants rather than a `dyn` — which costs less than
+/// the per-request boxing that a trait object here would need.
+pub trait TokenSource: Send + Sync {
+    /// Establishes what `presented` says, or refuses it.
+    ///
+    /// `presented` is the bare token — not an `Authorization` header. Stripping
+    /// the scheme is the transport's job, so that an adapter never has to know
+    /// which header the credential arrived in.
+    fn claims(
+        &self,
+        presented: &str,
+    ) -> impl Future<Output = Result<TokenClaims, SourceError>> + Send;
+}
+
+/// Authenticates a presented bearer token end to end.
+///
+/// [`TokenSource::claims`] for the authenticity, then [`verify`] for the
+/// authorization rules, in that order and with no other path between them.
+///
+/// The token is borrowed and never stored, cloned into a message, or logged —
+/// it exists for the length of this call and then only as whatever the
+/// authorization server chose to say about it.
+///
+/// # Errors
+///
+/// [`SourceError::Refused`] for a token that was refused, and
+/// [`SourceError::Unavailable`] when the authorization server could not be
+/// asked. The two mean different things to a caller and are not merged.
+pub async fn authenticate(
+    source: &impl TokenSource,
+    policy: &TokenPolicy<'_>,
+    scopes: &dyn ScopePolicy,
+    bearer: &str,
+    now: SystemTime,
+) -> Result<AuthContext, SourceError> {
+    let claims = source.claims(bearer).await?;
+    Ok(verify(&claims, policy, scopes, now)?)
 }
 
 #[cfg(test)]

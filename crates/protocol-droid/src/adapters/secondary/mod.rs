@@ -12,6 +12,9 @@ pub mod mcp;
 // consumer that only embeds the IR and the codecs has no use for a TLS stack,
 // and `default = false` is how it says so.
 #[cfg(feature = "http")]
+pub mod oauth;
+
+#[cfg(feature = "http")]
 pub mod transport;
 
 // T13. The client half of the stdio transport: spawning a child server, killing

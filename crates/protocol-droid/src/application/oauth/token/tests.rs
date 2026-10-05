@@ -86,7 +86,7 @@ fn a_valid_token_yields_a_context_with_its_scopes() -> Result<(), Failure> {
     let resource = ResourceUri::new(RESOURCE)?;
     let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28));
 
-    let context = verify(valid_claims()?, &policy, &TwoScopes, now())?;
+    let context = verify(&valid_claims()?, &policy, &TwoScopes, now())?;
 
     assert_eq!(context.principal(), "alice");
     assert!(context.holds(ScopeSet::empty().with(Scope::Read)));
@@ -106,7 +106,7 @@ fn a_wrong_audience_is_refused() -> Result<(), Failure> {
         .with_scope("mcp:read");
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::AudienceMismatch),
     );
     Ok(())
@@ -120,7 +120,7 @@ fn an_expired_token_is_refused() -> Result<(), Failure> {
     let claims = valid_claims()?.with_expiry(now() - Duration::from_secs(1));
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::Expired),
     );
     Ok(())
@@ -135,7 +135,7 @@ fn a_token_expiring_exactly_now_is_refused() -> Result<(), Failure> {
     let claims = valid_claims()?.with_expiry(now());
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::Expired),
     );
     Ok(())
@@ -148,7 +148,7 @@ fn a_token_that_is_not_valid_yet_is_refused() -> Result<(), Failure> {
     let claims = valid_claims()?.with_not_before(in_future());
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::NotYetValid),
     );
     Ok(())
@@ -165,7 +165,7 @@ fn a_token_with_no_audience_is_refused() -> Result<(), Failure> {
         .with_scope("mcp:read");
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::AudienceMismatch),
     );
     Ok(())
@@ -182,7 +182,7 @@ fn sharing_an_audience_array_with_this_server_is_enough() -> Result<(), Failure>
     // form, and the reason this cannot reuse [`claims_for`]'s single audience.
     let claims = claims_for(OTHER, &["mcp:read"])?.with_audience(resource.clone());
 
-    let context = verify(claims, &policy, &TwoScopes, now())?;
+    let context = verify(&claims, &policy, &TwoScopes, now())?;
     assert_eq!(context.principal(), "alice");
     Ok(())
 }
@@ -200,7 +200,7 @@ fn a_sibling_path_on_the_same_host_is_a_different_resource() -> Result<(), Failu
         .with_scope("mcp:read");
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::AudienceMismatch),
     );
     Ok(())
@@ -214,7 +214,7 @@ fn an_unexpected_issuer_is_refused() -> Result<(), Failure> {
     let claims = valid_claims()?.with_issuer("https://elsewhere.example.com");
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::IssuerMismatch),
     );
     Ok(())
@@ -229,7 +229,7 @@ fn an_absent_issuer_is_not_a_mismatch() -> Result<(), Failure> {
         .with_expected_issuer("https://auth.example.com");
 
     assert!(!policy.accepts_any_issuer());
-    assert!(verify(valid_claims()?, &policy, &TwoScopes, now()).is_ok());
+    assert!(verify(&valid_claims()?, &policy, &TwoScopes, now()).is_ok());
     Ok(())
 }
 
@@ -243,7 +243,7 @@ fn a_token_naming_no_subject_is_refused() -> Result<(), Failure> {
         .with_scope("mcp:read");
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::NoSubject),
     );
     Ok(())
@@ -259,7 +259,7 @@ fn a_token_whose_scopes_map_to_nothing_is_refused() -> Result<(), Failure> {
     let claims = claims_for(RESOURCE, &["some:scope:this:deployment:never:issued"])?;
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::Unscoped),
     );
     Ok(())
@@ -274,7 +274,7 @@ fn an_unconfigured_deployment_refuses_every_token() -> Result<(), Failure> {
     let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28));
 
     assert_eq!(
-        verify(valid_claims()?, &policy, &NoScopes, now()),
+        verify(&valid_claims()?, &policy, &NoScopes, now()),
         Err(Refusal::Unscoped),
     );
     Ok(())
@@ -286,7 +286,7 @@ fn several_scopes_union_rather_than_replace() -> Result<(), Failure> {
     let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28));
     let claims = claims_for(RESOURCE, &["mcp:read", "mcp:write", "unknown:scope"])?;
 
-    let context = verify(claims, &policy, &TwoScopes, now())?;
+    let context = verify(&claims, &policy, &TwoScopes, now())?;
     assert!(context.holds(ScopeSet::empty().with(Scope::Read).with(Scope::Write)));
     Ok(())
 }
@@ -299,7 +299,7 @@ fn a_revision_without_a_framework_accepts_no_token() -> Result<(), Failure> {
     let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2024_11_05));
 
     assert_eq!(
-        verify(valid_claims()?, &policy, &TwoScopes, now()),
+        verify(&valid_claims()?, &policy, &TwoScopes, now()),
         Err(Refusal::AudienceMismatch),
     );
     Ok(())
@@ -316,7 +316,7 @@ fn every_revision_with_a_framework_checks_the_audience() -> Result<(), Failure> 
         let policy = TokenPolicy::new(&resource, authorization_model(version));
         let claims = claims_for(OTHER, &["mcp:read"])?;
 
-        let got = verify(claims, &policy, &TwoScopes, now());
+        let got = verify(&claims, &policy, &TwoScopes, now());
         assert_eq!(
             got,
             Err(Refusal::AudienceMismatch),
@@ -340,7 +340,7 @@ fn expiry_is_reported_before_a_mismatch() -> Result<(), Failure> {
         .with_scope("mcp:read");
 
     assert_eq!(
-        verify(claims, &policy, &TwoScopes, now()),
+        verify(&claims, &policy, &TwoScopes, now()),
         Err(Refusal::Expired),
     );
     Ok(())
@@ -356,6 +356,6 @@ fn scope_strings_reach_the_verifier_untranslated() -> Result<(), Failure> {
 
     let resource = ResourceUri::new(RESOURCE)?;
     let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28));
-    assert!(verify(claims, &policy, &TwoScopes, now()).is_ok());
+    assert!(verify(&claims, &policy, &TwoScopes, now()).is_ok());
     Ok(())
 }

@@ -12,4 +12,7 @@
 
 mod token;
 
-pub use token::{NoScopes, Refusal, ScopePolicy, TokenClaims, TokenPolicy, verify};
+pub use token::{
+    NoScopes, Refusal, ScopePolicy, SourceError, TokenClaims, TokenPolicy, TokenSource,
+    authenticate, verify,
+};
