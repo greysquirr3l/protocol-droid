@@ -44,8 +44,10 @@
 //! that has no better number. `recommended_capacity_covers_a_reconnect` is
 //! where the reasoning behind that number is written down and checked.
 
+mod event_name;
 mod event_ring;
 
+pub use event_name::{EventName, EventNameError, names};
 pub use event_ring::{
     EventId, EventRing, RECOMMENDED_CAPACITY, RecommendedCapacity, Replay, StreamEvent,
 };

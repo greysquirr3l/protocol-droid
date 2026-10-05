@@ -46,7 +46,8 @@ pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVe
 pub use release_date::{ParseReleaseDateError, ReleaseDate};
 pub use request_id::RequestId;
 pub use stream::{
-    EventId, EventRing, RECOMMENDED_CAPACITY, RecommendedCapacity, Replay, StreamEvent,
+    EventId, EventName, EventNameError, EventRing, RECOMMENDED_CAPACITY, RecommendedCapacity,
+    Replay, StreamEvent, names,
 };
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
 pub use transport::{

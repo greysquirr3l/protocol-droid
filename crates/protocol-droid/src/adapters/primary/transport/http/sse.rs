@@ -55,13 +55,16 @@ use core::str::FromStr;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::domain::EventId;
+use crate::domain::{EventId, EventName, EventNameError};
 
 /// The field name carrying the event id a client resumes from.
 const ID_FIELD: &str = "id";
 
 /// The field name carrying the payload.
 const DATA_FIELD: &str = "data";
+
+/// The field name carrying the event's name.
+const EVENT_FIELD: &str = "event";
 
 /// One `text/event-stream` frame.
 ///
@@ -71,11 +74,20 @@ const DATA_FIELD: &str = "data";
 /// encoder that always wrote an `id` would either invent a cursor position
 /// that never existed or refuse to emit the frame at all.
 ///
+/// `name` is optional for the same reason, and for a sharper one: Streamable
+/// HTTP never sets it — every frame on that transport is a message and the
+/// name carries nothing. The `2024-11-05` transport names *every* frame, and a
+/// client that dispatches on the name is the only way to tell an `endpoint`
+/// frame (where to POST) from a `message` frame (a JSON-RPC payload). A codec
+/// that dropped the name would parse a legacy stream perfectly and hand the
+/// client two indistinguishable event kinds.
+///
 /// A frame *with* no `data` does not exist as a value: the standard dispatches
 /// nothing for such a block, so [`decode`](Self::decode) reports
 /// [`SseError::NoData`] and [`dispatch`](Self::dispatch) reports `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseEvent {
+    name: Option<EventName>,
     id: Option<EventId>,
     data: String,
 }
@@ -84,13 +96,65 @@ impl SseEvent {
     /// A frame with a resume cursor.
     #[must_use]
     pub const fn new(id: EventId, data: String) -> Self {
-        Self { id: Some(id), data }
+        Self {
+            name: None,
+            id: Some(id),
+            data,
+        }
     }
 
     /// A frame with no resume cursor, which leaves the client's where it was.
     #[must_use]
     pub const fn without_id(data: String) -> Self {
-        Self { id: None, data }
+        Self {
+            name: None,
+            id: None,
+            data,
+        }
+    }
+
+    /// A named frame, for the transports that dispatch on the name.
+    ///
+    /// Takes an [`EventName`] rather than a `&str` because a name is spliced
+    /// into a line and a line can be terminated from inside it — the injection
+    /// is a parse away, and [`EventName`] is the parse that closes it.
+    /// Constructed from a `&'static str` the way the legacy transport's two
+    /// names are; a dynamic name goes through [`EventName::from_str`].
+    ///
+    /// A named frame carries no resume cursor, and that is a property of the
+    /// transport rather than a restriction: `2024-11-05` has no `Last-Event-ID`
+    /// and no replay, so a name is never combined with a cursor on this
+    /// transport. The two are still representable together for a future
+    /// transport that does name and resume at once.
+    #[must_use]
+    pub const fn named(name: EventName, data: String) -> Self {
+        Self {
+            name: Some(name),
+            id: None,
+            data,
+        }
+    }
+
+    /// A named frame that also carries a resume cursor.
+    #[must_use]
+    pub const fn named_with_id(name: EventName, id: EventId, data: String) -> Self {
+        Self {
+            name: Some(name),
+            id: Some(id),
+            data,
+        }
+    }
+
+    /// The frame's name, if it has one.
+    #[must_use]
+    pub const fn name(&self) -> Option<&EventName> {
+        self.name.as_ref()
+    }
+
+    /// Whether this frame is the named `event`.
+    #[must_use]
+    pub fn is_named(&self, event: &EventName) -> bool {
+        self.name.as_ref().is_some_and(|name| name.is(event))
     }
 
     /// A frame whose data is `value` serialised as JSON.
@@ -135,15 +199,26 @@ impl SseEvent {
 
     /// The bytes to write, without a trailing flush.
     ///
-    /// `id: <n>\n` first, then one `data: ` line per line of the payload, then
-    /// the blank line that dispatches the event. A payload with no newline in
-    /// it is therefore exactly one `data:` line, and one with *k* newlines is
-    /// *k + 1* — which is the claim
+    /// `event: <name>` and `id: <n>` first when present, then one `data: `
+    /// line per line of the payload, then the blank line that dispatches the
+    /// event. A payload with no newline in it is therefore exactly one `data:`
+    /// line, and one with *k* newlines is *k + 1* — which is the claim
     /// [`a_newline_in_the_payload_becomes_another_data_line`](Self::tests::a_newline_in_the_payload_becomes_another_data_line)
     /// exists to hold.
+    ///
+    /// Field order is not load-bearing: the standard dispatches on field
+    /// *names*, and this decoder does the same. `event` goes first because that
+    /// is the order the WHATWG examples use, and a reader that happened to care
+    /// about order would at least be agreeing with the examples.
     #[must_use]
     pub fn encode(&self) -> String {
-        let mut out = String::with_capacity(self.data.len() + 16);
+        let mut out = String::with_capacity(self.data.len() + 32);
+        if let Some(name) = &self.name {
+            // `EventName`'s parse refuses CR and LF, so this cannot be a
+            // second field. That is the whole reason it is a newtype and the
+            // whole reason the write is unchecked.
+            let _ = writeln!(out, "{EVENT_FIELD}: {name}");
+        }
         if let Some(id) = self.id {
             // `EventId` is a `u64` and `Display` writes decimal, so this
             // cannot fail and cannot produce anything a header would reject.
@@ -167,8 +242,10 @@ impl SseEvent {
     ///
     /// # Errors
     ///
-    /// [`SseError::NoData`] if the block carries no `data:` field, and
-    /// [`SseError::MalformedId`] if an `id:` field is not a decimal event id.
+    /// [`SseError::NoData`] if the block carries no `data:` field,
+    /// [`SseError::MalformedId`] if an `id:` field is not a decimal event id,
+    /// and [`SseError::MalformedName`](SseError::MalformedName) if an `event:`
+    /// field is not a usable name.
     pub fn decode(block: &str) -> Result<Self, SseError> {
         Self::dispatch(block)?.ok_or(SseError::NoData)
     }
@@ -188,7 +265,14 @@ impl SseEvent {
     /// meaningful watermark meaning "before the first event", and quietly
     /// reading a corrupt id as that would tell a client it has seen everything
     /// when it has seen nothing.
+    ///
+    /// [`SseError::MalformedName`] if an `event:` field is empty or contains a
+    /// line terminator. An empty one is refused for the same reason a zero id
+    /// is not read as a watermark: `event:` with no value means the *default*
+    /// name, and treating it as a name of its own would make `Some("")` and
+    /// `None` two spellings of one dispatch.
     pub fn dispatch(block: &str) -> Result<Option<Self>, SseError> {
+        let mut name: Option<EventName> = None;
         let mut id: Option<EventId> = None;
         // Accumulated as a `Vec<&str>` of lines and joined once, rather than
         // pushed as a running string: the join is the only place a separator
@@ -224,9 +308,20 @@ impl SseEvent {
                     // the client believes it has already received.
                     Err(error) => return ControlFlow::Break(error),
                 },
+                EVENT_FIELD => match EventName::from_str(value) {
+                    Ok(parsed) => name = Some(parsed),
+                    Err(error) => {
+                        return ControlFlow::Break(SseError::MalformedName(error));
+                    }
+                },
                 DATA_FIELD => data.push(value),
-                // `event`, `retry` and anything a future revision adds are
-                // ignored, per the standard. MCP does not use them.
+                // `retry` and anything a future revision adds are ignored, per
+                // the standard. MCP does not use them. `event` used to be in
+                // this arm too, on the grounds that MCP did not use it — which
+                // was true of the Streamable HTTP transport and false of
+                // `2024-11-05`, where every frame is named and the name is the
+                // only thing that distinguishes an `endpoint` frame from a
+                // `message` one.
                 _ => {}
             }
             ControlFlow::Continue(())
@@ -236,6 +331,7 @@ impl SseEvent {
             return Ok(None);
         }
         Ok(Some(Self {
+            name,
             id,
             data: data.join("\n"),
         }))
@@ -333,7 +429,7 @@ fn for_each_line<'i>(
 /// serialised is this process's bug, a corrupt id is the peer's, and a block
 /// with no data is not a failure at all — the standard simply dispatches
 /// nothing for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SseError {
     /// The block carried no `data:` field, so the standard dispatches no event.
     #[error("this block carries no data field, so it dispatches no event")]
@@ -348,6 +444,17 @@ pub enum SseError {
     #[error("the id field is not a decimal event id")]
     MalformedId,
 
+    /// An `event:` field was not a usable event name.
+    ///
+    /// Carries the [`EventNameError`] because the two reasons are worth telling
+    /// apart when reading a log: an empty name is a peer that wrote
+    /// `event:` and nothing else, and a name holding a line terminator is a
+    /// peer — or something pretending to be one — that tried to smuggle a
+    /// second field through a frame. Neither echoes the offending value, for
+    /// the reason [`MalformedId`](Self::MalformedId) does not.
+    #[error("the event field is not a usable event name: {0}")]
+    MalformedName(EventNameError),
+
     /// The value has a map key that is not a string, so it has no JSON form.
     #[error("the payload cannot be serialised as JSON")]
     Unserialisable,
@@ -358,7 +465,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{SseError, SseEvent, for_each_line};
-    use crate::domain::EventId;
+    use crate::domain::{EventId, EventName, EventNameError, names};
+    use core::str::FromStr;
 
     type TestError = Box<dyn std::error::Error>;
 
@@ -658,6 +766,156 @@ mod tests {
             }
         }
         assert_eq!(decoded, frames.to_vec());
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // The `event` name
+    // -----------------------------------------------------------------------
+
+    /// A named frame survives the wire with its name attached.
+    ///
+    /// The claim the legacy transport rests on: a client that dispatches on
+    /// the name has to be able to *get* the name, and the only way to know
+    /// that is a round trip rather than a comparison against a hand-written
+    /// expectation.
+    #[test]
+    fn a_named_frame_round_trips_its_name() -> Result<(), TestError> {
+        let frame = SseEvent::named(names::ENDPOINT, "/messages?sessionId=abc".to_string());
+        let decoded = SseEvent::decode(&frame.encode())?;
+
+        if !decoded.is_named(&names::ENDPOINT) {
+            return Err("the name did not survive the round trip".into());
+        }
+        if decoded.data() != "/messages?sessionId=abc" {
+            return Err("the payload changed across the round trip".into());
+        }
+        // And it must not look like a `message`, or a client dispatching on
+        // the name would take the wrong branch.
+        if decoded.is_named(&names::MESSAGE) {
+            return Err("an endpoint frame was mistaken for a message".into());
+        }
+        Ok(())
+    }
+
+    /// An unnamed frame stays unnamed, which is what Streamable HTTP needs.
+    #[test]
+    fn an_unnamed_frame_stays_unnamed() -> Result<(), TestError> {
+        let frame = SseEvent::new(EventId::new(7), "{}".to_string());
+        let decoded = SseEvent::decode(&frame.encode())?;
+
+        if decoded.name().is_some() {
+            return Err("an unnamed frame came back named".into());
+        }
+        if decoded.is_named(&names::MESSAGE) {
+            return Err("an unnamed frame matched a name".into());
+        }
+        Ok(())
+    }
+
+    /// The two names and their payloads, encoded the way a legacy server
+    /// writes them, decode as the two things a legacy client must tell apart.
+    #[test]
+    fn the_two_legacy_frames_are_told_apart_by_name() -> Result<(), TestError> {
+        let wire = concat!(
+            "event: endpoint\ndata: /messages?sessionId=abc\n\n",
+            "event: message\ndata: {\"jsonrpc\":\"2.0\"}\n\n",
+        );
+        let mut frames = Vec::new();
+        for block in wire.split("\n\n").filter(|b| !b.trim().is_empty()) {
+            frames.push(SseEvent::decode(block)?);
+        }
+        // Borrowed rather than destructured by value: a slice cannot be moved
+        // out of, and the claim is the *shape* of the pair, which a by-ref
+        // pattern says as plainly as a by-value one.
+        let [endpoint, message] = frames.as_slice() else {
+            return Err(format!("expected two frames, found {}", frames.len()).into());
+        };
+
+        if !endpoint.is_named(&names::ENDPOINT) {
+            return Err("the first frame is not an endpoint frame".into());
+        }
+        if endpoint.data() != "/messages?sessionId=abc" {
+            return Err("the endpoint frame lost its URI".into());
+        }
+        if !message.is_named(&names::MESSAGE) {
+            return Err("the second frame is not a message frame".into());
+        }
+        Ok(())
+    }
+
+    /// A newline between `event:` and the next field is a **separator**, not
+    /// part of a name — and the decoder gets that right by never being able to
+    /// see the alternative.
+    ///
+    /// The first version of this test asserted that a name containing a
+    /// terminator is refused, and it was asserting something unreachable.
+    /// [`for_each_line`](super::for_each_line) has already split the block on
+    /// LF (and on CR) by the time a field value is parsed, so a value can
+    /// never *contain* a terminator by the time [`EventName::from_str`] sees
+    /// it. The `LineTerminator` arm of `EventNameError` is therefore
+    /// unreachable from the decoder and exists for the **encoder** side, where
+    /// a name this crate wrote is spliced into a line.
+    ///
+    /// What the decoder is obliged to do is read the two lines as what they
+    /// are — a name and a payload — and this asserts that. A decoder that
+    /// tried to "repair" the injection by refusing the block would be wrong:
+    /// this text is a perfectly legal frame.
+    #[test]
+    fn a_terminator_after_a_name_is_a_separator_and_not_part_of_it() -> Result<(), TestError> {
+        let block = "event: message\ndata: {\"jsonrpc\":\"2.0\"}\n\n";
+        let frame = SseEvent::decode(block)?;
+
+        if !frame.is_named(&names::MESSAGE) {
+            return Err("the name was not read as `message`".into());
+        }
+        if frame.data() != "{\"jsonrpc\":\"2.0\"}" {
+            return Err(format!("the payload was read as {:?}", frame.data()).into());
+        }
+        Ok(())
+    }
+
+    /// `event:` with no value means the default name, not a name of its own.
+    ///
+    /// Accepting it would make `Some("")` and `None` two spellings of one
+    /// dispatch, and a client comparing the name would have to handle both.
+    #[test]
+    fn an_empty_event_field_is_refused() -> Result<(), TestError> {
+        let block = "event:\ndata: x\n\n";
+        if SseEvent::decode(block) != Err(SseError::MalformedName(EventNameError::Empty)) {
+            return Err("an empty event field was not refused".into());
+        }
+        Ok(())
+    }
+
+    /// The encoder writes the name on its own line, before the data.
+    ///
+    /// Asserted on the bytes rather than through a decode, because a codec
+    /// that dropped the name and one that wrote it in the wrong place both
+    /// round-trip cleanly through *this* decoder — and a legacy peer does not
+    /// use this decoder.
+    #[test]
+    fn the_encoder_writes_the_name_on_its_own_line() -> Result<(), TestError> {
+        let encoded = SseEvent::named(names::MESSAGE, "{}".to_string()).encode();
+        if !encoded.starts_with("event: message\ndata: {}\n\n") {
+            return Err(format!("encoded as {encoded:?}").into());
+        }
+        Ok(())
+    }
+
+    /// A parsed name and a constant name are the same name.
+    ///
+    /// `Cow` makes the two representations different — one borrowed, one owned
+    /// — and a comparison that read the representation rather than the
+    /// characters would make every dispatch against a peer's name fail. This
+    /// is the test for that, through the frame, which is where it would bite.
+    #[test]
+    fn a_peer_supplied_name_matches_a_constant_one() -> Result<(), TestError> {
+        let parsed = EventName::from_str("message")?;
+        let frame = SseEvent::named(parsed, "{}".to_string());
+        if !frame.is_named(&names::MESSAGE) {
+            return Err("a parsed name did not match the constant".into());
+        }
         Ok(())
     }
 }
