@@ -91,7 +91,7 @@ pub use refusal::Refusal;
 pub use resume::{Resume, decide, plan};
 pub use router::{
     EventSource, Inbound, InvalidHeaderValue, McpRouter, RequestHandler, SessionHandle,
-    with_security,
+    Unsessioned, with_security,
 };
 pub use session_store::{SessionStore, SessionStoreError};
 pub use sse::{SseError, SseEvent};

@@ -88,6 +88,7 @@ use super::{
     Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
     ServerConfig, SessionStore,
 };
+use crate::domain::ProtocolVersion;
 use crate::domain::mcp::McpSessionId;
 use crate::domain::registry::AuthContext;
 
@@ -104,6 +105,16 @@ const SESSION_HEADER: HeaderName = HeaderName::from_static("mcp-session-id");
 /// The standard SSE resume header. Not MCP-specific: it comes from the HTML
 /// `EventSource` contract every SSE implementation inherits.
 const LAST_EVENT_ID: HeaderName = HeaderName::from_static("last-event-id");
+
+/// The header a client asserts its session's revision with. Mandatory from
+/// **2025-06-18** (PR #548) and absent before it, which is why its absence is
+/// not an error here and its presence is a parsed value.
+///
+/// The adapter reads it but does not judge it. `check_protocol_header` compares
+/// a header against the revision a session *negotiated*, and only the protocol
+/// layer knows that; what the transport owes is to have parsed the bytes once,
+/// so nothing downstream ever sees a raw `HeaderValue`.
+const PROTOCOL_HEADER: HeaderName = HeaderName::from_static("mcp-protocol-version");
 
 /// The three security headers, parsed once at construction.
 ///
@@ -208,6 +219,17 @@ pub enum SessionHandle<S> {
     /// answers the second with a `400` and never reaches the handler, so this
     /// arm can only mean the first.
     Establishing,
+    /// The body is a complete stateless request, and the profile for it comes
+    /// from the body rather than from a stored session.
+    ///
+    /// The **2026-07-28** lifecycle, and the reason this enum has three arms
+    /// rather than two. A stateless request never becomes a session, so
+    /// modelling it as [`Establishing`] would have the router hand the
+    /// protocol layer an id to issue, and modelling it as
+    /// [`SessionHandle::Live`] would mean inventing a session that does not
+    /// exist. Either way the `_meta` version the request carries — the only
+    /// signal a stateless request has — gets ignored.
+    Stateless,
     /// The header named a session this server holds.
     Live {
         /// The id, as the server issued it.
@@ -215,6 +237,22 @@ pub enum SessionHandle<S> {
         /// The stored session.
         session: Arc<S>,
     },
+}
+
+/// What a body means when the request named no session.
+///
+/// The protocol layer answers this because the router is protocol-neutral: it
+/// cannot know that `initialize` opens a session, nor that a **2026-07-28**
+/// request carrying a version in `_meta` stands on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsessioned {
+    /// The body opens a session.
+    Establishing,
+    /// The body is self-describing and is served against its own profile.
+    Stateless,
+    /// The body belongs to a session and the header named none. The router
+    /// answers this with a `400` and the handler is never asked.
+    NeedsSession,
 }
 
 /// A request the router has resolved and hands to the protocol layer.
@@ -226,6 +264,15 @@ pub struct Inbound<'a, S> {
     pub session: SessionHandle<S>,
     /// The body, already bounded by [`ServerConfig::max_body`].
     pub body: &'a [u8],
+    /// The `MCP-Protocol-Version` header, parsed once here or refused as
+    /// malformed, and `None` when the client sent none.
+    ///
+    /// Absence is not a fault: the header became mandatory in **2025-06-18**
+    /// and a pre-existing client legitimately omits it. The handler compares
+    /// it against the revision the session negotiated, through
+    /// [`check_protocol_header`](crate::domain::check_protocol_header), which
+    /// is the only place that knows the answer.
+    pub protocol: Option<ProtocolVersion>,
 }
 
 /// The `POST` route's port: everything this module deliberately does not know.
@@ -248,7 +295,7 @@ pub struct Inbound<'a, S> {
 /// use axum::http::Response;
 /// use protocol_droid::adapters::primary::transport::http::{
 ///     EventSource, EventTail, Inbound, McpRouter, Refusal, RequestHandler, ServerConfig,
-///     SessionStore,
+///     SessionStore, Unsessioned,
 /// };
 /// use protocol_droid::application::session::IdSource;
 /// use protocol_droid::domain::session::state::SessionId;
@@ -265,15 +312,15 @@ pub struct Inbound<'a, S> {
 /// struct Server;
 ///
 /// impl<S: EventSource> RequestHandler<S> for Server {
-///     fn establishes_session(&self, _body: &[u8]) -> bool {
-///         true
+///     fn unsessioned(&self, _body: &[u8]) -> Unsessioned {
+///         Unsessioned::Establishing
 ///     }
 ///
 ///     async fn dispatch(
 ///         &self,
 ///         call: Inbound<'_, S>,
 ///     ) -> Result<Response<Body>, Refusal> {
-///         let _ = (call.context, call.session, call.body);
+///         let _ = (call.context, call.session, call.body, call.protocol);
 ///         Err(Refusal::Handler("this example serves no methods".to_owned()))
 ///     }
 /// }
@@ -287,13 +334,19 @@ pub struct Inbound<'a, S> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait RequestHandler<S>: Send + Sync + 'static {
-    /// Whether a request body opens a session, and therefore needs no
-    /// `Mcp-Session-Id` header.
+    /// What a request body means when it named no session.
     ///
     /// Asked for every `POST` whose header is absent, and never for one whose
     /// header is present — so a body that establishes a session but arrives
     /// with a bad id is still a `400`.
-    fn establishes_session(&self, body: &[u8]) -> bool;
+    ///
+    /// Three answers rather than a bool, because a boolean cannot express the
+    /// case the **2026-07-28** stateless lifecycle adds: a request that is
+    /// complete on its own, carries its version in `_meta`, and is served
+    /// against a profile resolved per request. That is not "opens a session"
+    /// and it is not "needs one", and a two-valued question has to lie about
+    /// one of them.
+    fn unsessioned(&self, body: &[u8]) -> Unsessioned;
 
     /// Runs the request.
     ///
@@ -511,13 +564,25 @@ where
         Err(refusal) => return refuse(refusal),
     };
 
-    // The body is read before the header is resolved, because "does this open
-    // a session?" is a question about the body. It is asked only when the
-    // header is absent, and asking it is the same as not consulting the store —
-    // an absent header never reaches a lookup.
+    // The version header is parsed before anything is dispatched, so a client
+    // that wrote a broken one is refused without the request running. What it
+    // *disagrees* with is not decided here: that is a comparison against the
+    // session's negotiated revision, and only the protocol layer knows it.
+    let protocol = match read_protocol(&headers) {
+        Ok(protocol) => protocol,
+        Err(refusal) => return refuse(refusal),
+    };
+
+    // The body is read before the header is resolved, because "what does this
+    // body mean without a session?" is a question about the body. It is asked
+    // only when the header is absent, and asking it is the same as not
+    // consulting the store — an absent header never reaches a lookup.
     let session = match Header::read(&headers, &SESSION_HEADER) {
-        Header::Absent if state.handler.establishes_session(&body) => SessionHandle::Establishing,
-        Header::Absent => return refuse(Refusal::MissingSession),
+        Header::Absent => match state.handler.unsessioned(&body) {
+            Unsessioned::Establishing => SessionHandle::Establishing,
+            Unsessioned::Stateless => SessionHandle::Stateless,
+            Unsessioned::NeedsSession => return refuse(Refusal::MissingSession),
+        },
         Header::Value(_) | Header::Unreadable => match resolve_session(&state.sessions, &headers) {
             Ok(session) => session,
             Err(refusal) => return refuse(refusal),
@@ -528,6 +593,7 @@ where
         context: &context,
         session,
         body: &body,
+        protocol,
     };
     match state.handler.dispatch(call).await {
         Ok(response) => response,
@@ -707,6 +773,32 @@ fn resolve_session<S: EventSource>(
 /// # Errors
 ///
 /// [`Refusal::BodyTooLarge`] or [`Refusal::Handler`].
+/// Reads `MCP-Protocol-Version`, or `None` when the client sent none.
+///
+/// A header that is present but is not a date this build can parse is a
+/// `400` here rather than something the handler has to notice. A date it
+/// cannot *know* — a future revision — parses to
+/// [`ProtocolVersion::Unknown`] and is carried through, because refusing it
+/// here would make this server unusable the day a new revision ships, which is
+/// the one outcome the negotiation rules exist to prevent.
+fn read_protocol(headers: &HeaderMap) -> Result<Option<ProtocolVersion>, Refusal> {
+    let raw = match Header::read(headers, &PROTOCOL_HEADER) {
+        Header::Absent => return Ok(None),
+        Header::Unreadable => {
+            return Err(Refusal::ProtocolHeader {
+                reason: String::from("the value is not visible ASCII"),
+            });
+        }
+        Header::Value(value) => value,
+    };
+    raw.parse::<ProtocolVersion>()
+        .map(Some)
+        .map_err(|_| Refusal::ProtocolHeader {
+            reason: raw.to_owned(),
+        })
+}
+
+/// The `POST` route's body, bounded by [`ServerConfig::max_body`].
 async fn read_body(body: Body, limit: usize) -> Result<Bytes, Refusal> {
     let mut chunks = body.into_data_stream();
     let mut collected: Vec<u8> = Vec::new();

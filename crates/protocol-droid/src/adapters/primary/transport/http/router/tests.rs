@@ -22,15 +22,17 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::{Inbound, McpRouter, RequestHandler, SessionHandle, authenticate, resolve_session};
+use super::{
+    Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned, authenticate, resolve_session,
+};
 use crate::adapters::primary::transport::http::{
-    AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders, ServerConfig,
-    SessionStore, Streaming,
+    Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
+    ServerConfig, SessionStore, Streaming,
 };
 use crate::application::session::IdSource;
 use crate::domain::registry::auth::{AuthContext, ScopeSet};
 use crate::domain::session::SessionId;
-use crate::domain::{EventId, McpSessionId};
+use crate::domain::{EventId, McpSessionId, ProtocolVersion};
 
 /// Every fallible call in this module funnels through here, so a failure prints
 /// the engine's own account of what it refused.
@@ -43,6 +45,24 @@ type TestError = Box<dyn std::error::Error>;
 /// convert.
 fn fail(message: impl Into<String>) -> TestError {
     message.into().into()
+}
+
+/// States a claim that has already been computed.
+///
+/// Takes the two sides by reference and renders them into the failure, so a
+/// failing test says which value was wrong rather than only that something
+/// was. The call site keeps the comparison visible — `require(seen == want, …)`
+/// — so a test that stops comparing anything is obvious at a glance.
+fn require<T: PartialEq + core::fmt::Debug>(
+    got: &T,
+    want: &T,
+    because: &str,
+) -> Result<(), TestError> {
+    if got == want {
+        Ok(())
+    } else {
+        Err(fail(format!("{because}: got {got:?}, wanted {want:?}")))
+    }
 }
 
 /// Draws predictable session ids so a test can name the one it expects.
@@ -68,6 +88,8 @@ struct Recorder {
     dispatches: AtomicU64,
     /// The session each call resolved to, as a nameable string.
     seen: std::sync::Mutex<Vec<String>>,
+    /// The `MCP-Protocol-Version` each call was handed, already parsed.
+    protocols: std::sync::Mutex<Vec<Option<String>>>,
 }
 
 impl Recorder {
@@ -75,6 +97,14 @@ impl Recorder {
         self.seen
             .lock()
             .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// The parsed version header of each dispatch, in order.
+    fn protocols(&self) -> Vec<Option<String>> {
+        self.protocols
+            .lock()
+            .map(|versions| versions.clone())
             .unwrap_or_default()
     }
 
@@ -87,11 +117,19 @@ impl Recorder {
 struct Echo {
     recorder: Arc<Recorder>,
     establish: bool,
+    /// What an unsessioned body means when the handler is not told otherwise.
+    stateless: bool,
 }
 
 impl RequestHandler<EventTail<Value>> for Echo {
-    fn establishes_session(&self, _body: &[u8]) -> bool {
-        self.establish
+    fn unsessioned(&self, _body: &[u8]) -> Unsessioned {
+        if self.establish {
+            Unsessioned::Establishing
+        } else if self.stateless {
+            Unsessioned::Stateless
+        } else {
+            Unsessioned::NeedsSession
+        }
     }
 
     fn dispatch(
@@ -101,12 +139,17 @@ impl RequestHandler<EventTail<Value>> for Echo {
         let recorder = Arc::clone(&self.recorder);
         let name = match &call.session {
             SessionHandle::Establishing => "establishing".to_owned(),
+            SessionHandle::Stateless => "stateless".to_owned(),
             SessionHandle::Live { id, .. } => id.to_string(),
         };
+        let protocol = call.protocol.map(|version| version.to_string());
         async move {
             recorder.dispatches.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut seen) = recorder.seen.lock() {
                 seen.push(name);
+            }
+            if let Ok(mut versions) = recorder.protocols.lock() {
+                versions.push(protocol);
             }
             Ok(json_response(StatusCode::OK, &json!({ "ok": true })))
         }
@@ -174,6 +217,34 @@ impl Harness {
         policy: AuthPolicy,
         authenticator: Arc<dyn Authenticator + Send + Sync>,
     ) -> Result<Self, TestError> {
+        Self::from_shape(config, sessions, establish, false, policy, authenticator)
+    }
+
+    /// [`Self::from_parts`] with the handler also answering `Unsessioned` as
+    /// stateless, which is what the **2026-07-28** lifecycle looks like from
+    /// the router's side.
+    fn stateless(
+        config: ServerConfig,
+        sessions: Arc<SessionStore<EventTail<Value>>>,
+    ) -> Result<Self, TestError> {
+        Self::from_shape(
+            config,
+            sessions,
+            false,
+            true,
+            AuthPolicy::default(),
+            Arc::new(Anonymous),
+        )
+    }
+
+    fn from_shape(
+        config: ServerConfig,
+        sessions: Arc<SessionStore<EventTail<Value>>>,
+        establish: bool,
+        stateless: bool,
+        policy: AuthPolicy,
+        authenticator: Arc<dyn Authenticator + Send + Sync>,
+    ) -> Result<Self, TestError> {
         let recorder = Arc::new(Recorder::default());
         let router = McpRouter::new(
             config,
@@ -181,6 +252,7 @@ impl Harness {
             Echo {
                 recorder: Arc::clone(&recorder),
                 establish,
+                stateless,
             },
         )
         .with_policy(policy)
@@ -948,5 +1020,194 @@ async fn the_gate_and_the_lookup_are_independently_usable() -> Result<(), TestEr
     if resolve_session(&sessions, &HeaderMap::new()).is_ok() {
         return Err(fail("a request with no session header resolved"));
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The version header, and what a request means without a session
+// ---------------------------------------------------------------------------
+
+/// A `POST` carrying an `MCP-Protocol-Version` the build can parse.
+fn post_at_version(
+    version: ProtocolVersion,
+) -> Result<Request<Body>, TestError> {
+    let mut request = post("{}")?;
+    let value = header::HeaderValue::from_str(&version.to_string())?;
+    request
+        .headers_mut()
+        .insert("mcp-protocol-version", value);
+    Ok(request)
+}
+
+#[tokio::test]
+async fn the_version_header_reaches_the_handler_parsed() -> Result<(), TestError> {
+    // The transport owes the handler one thing about this header: that the
+    // bytes were parsed exactly once, at the boundary. So the handler is
+    // handed a `ProtocolVersion` and never a `HeaderValue`, and the recorded
+    // value is the version rather than the text it was written as.
+    let harness = Harness::build(true)?;
+    for version in [
+        ProtocolVersion::V2024_11_05,
+        ProtocolVersion::V2025_06_18,
+        ProtocolVersion::V2026_07_28,
+    ] {
+        let _ = harness.send(post_at_version(version)?).await?;
+    }
+    let seen = harness.recorder.protocols();
+    let expected: Vec<Option<String>> = [
+        ProtocolVersion::V2024_11_05,
+        ProtocolVersion::V2025_06_18,
+        ProtocolVersion::V2026_07_28,
+    ]
+    .iter()
+    .map(|version| Some(version.to_string()))
+    .collect();
+    require(
+        &seen,
+        &expected,
+        "the handler was not handed the parsed header",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_version_header_this_build_cannot_read_is_a_four_hundred() -> Result<(), TestError> {
+    // Present but unreadable is a broken client, not one that disagrees: there
+    // is no revision for the header to have named. Refusing here means the
+    // request never reaches the handler, which is the only way to be sure a
+    // bad header cannot be read as an absent one.
+    let harness = Harness::build(true)?;
+    let mut request = post("{}")?;
+    request
+        .headers_mut()
+        .insert("mcp-protocol-version", header::HeaderValue::from_static("not-a-date"));
+    let response = harness.send(request).await?;
+    require(
+        &response.status(),
+        &StatusCode::BAD_REQUEST,
+        "a malformed version header was not refused",
+    )?;
+    require(
+        &harness.recorder.dispatches(),
+        &0,
+        "a request with a malformed version header was still dispatched",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_version_header_this_build_does_not_know_yet_is_carried_through() -> Result<(), TestError> {
+    // A date the build has no wire types for is `Unknown`, not an error. The
+    // alternative — refusing what we cannot name — makes this server unusable
+    // the day a new revision ships, which is the one outcome the negotiation
+    // rules exist to prevent.
+    let future = "2099-01-01".parse::<ProtocolVersion>()?;
+    let harness = Harness::build(true)?;
+    let _ = harness.send(post_at_version(future)?).await?;
+    let seen = harness.recorder.protocols();
+    let expected = vec![Some(future.to_string())];
+    require(
+        &seen,
+        &expected,
+        "a future revision was refused rather than carried",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_request_with_no_version_header_is_not_refused() -> Result<(), TestError> {
+    // The header became mandatory in 2025-06-18 and a pre-existing client
+    // legitimately omits it. Absence is `None`, and the handler applies its
+    // own fallback; a router that refused it would break every 2025-03-26 peer.
+    let harness = Harness::build(true)?;
+    let _ = harness.send(post("{}")?).await?;
+    let expected = vec![None];
+    require(
+        &harness.recorder.protocols(),
+        &expected,
+        "an absent version header was not carried as absent",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_stateless_request_is_served_without_a_session() -> Result<(), TestError> {
+    // 2026-07-28: no initialize, no Mcp-Session-Id, and the profile comes from
+    // the body. The router's part is to not insist on a session — the handler
+    // told it the body stands alone, and inventing one would have made the
+    // `_meta` version the request carries the only signal the server ignores.
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let harness = Harness::stateless(ServerConfig::new()?, Arc::clone(&sessions))?;
+    let _ = harness.send(post_at_version(ProtocolVersion::V2026_07_28)?).await?;
+    let expected = vec![String::from("stateless")];
+    require(
+        &harness.recorder.seen(),
+        &expected,
+        "a stateless request was not served as one",
+    )?;
+    let stored = sessions.len()?;
+    require(
+        &stored,
+        &0,
+        "a stateless request minted a session it does not have",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_stateless_requests_are_gated_independently() -> Result<(), TestError> {
+    // The scenario the capability file names. Nothing is shared between them —
+    // no session, no cursor, no negotiated version — so each one's header is
+    // the whole of what it is gated by, and a router that cached the first
+    // answer would serve the second under the wrong revision.
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let harness = Harness::stateless(ServerConfig::new()?, Arc::clone(&sessions))?;
+    for version in [
+        ProtocolVersion::V2025_03_26,
+        ProtocolVersion::V2026_07_28,
+        ProtocolVersion::V2025_03_26,
+    ] {
+        let _ = harness.send(post_at_version(version)?).await?;
+    }
+    let seen = harness.recorder.protocols();
+    let expected: Vec<Option<String>> = [
+        ProtocolVersion::V2025_03_26,
+        ProtocolVersion::V2026_07_28,
+        ProtocolVersion::V2025_03_26,
+    ]
+    .iter()
+    .map(|version| Some(version.to_string()))
+    .collect();
+    require(
+        &seen,
+        &expected,
+        "a stateless request was gated by another's header",
+    )?;
+    let expected = vec![String::from("stateless"); 3];
+    require(
+        &harness.recorder.seen(),
+        &expected,
+        "a stateless request was not served as one",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_request_needing_a_session_and_naming_none_is_a_four_hundred() -> Result<(), TestError> {
+    // The third answer to the unsessioned question, and the one the two-valued
+    // version of the question could not express without lying about one of
+    // the others.
+    let harness = Harness::build(false)?;
+    let response = harness.send(post("{}")?).await?;
+    require(
+        &response.status(),
+        &StatusCode::BAD_REQUEST,
+        "a request needing a session was not refused",
+    )?;
+    require(
+        &harness.recorder.dispatches(),
+        &0,
+        "a refused request was still dispatched",
+    )?;
     Ok(())
 }
