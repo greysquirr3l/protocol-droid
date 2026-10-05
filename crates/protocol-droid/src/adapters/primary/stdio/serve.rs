@@ -476,9 +476,18 @@ fn describe_dispatch_error(error: &DispatchError) -> (IrErrorCode, String) {
         DispatchError::MalformedParams
         | DispatchError::MalformedInitialize
         | DispatchError::UnknownTool => IrErrorCode::InvalidParams,
-        DispatchError::NotCallable | DispatchError::UnnegotiableVersion => {
-            IrErrorCode::InternalError
-        }
+        // A request that names an id this session is already working on is a
+        // frame that violates JSON-RPC, so it takes the code for a frame the
+        // specification does not permit — not the code for a tool it cannot
+        // run, which is a different failure with a different fix.
+        DispatchError::DuplicateInFlight(_) => IrErrorCode::InvalidRequest,
+        // A store that cannot be reached is this server's problem, whatever
+        // the peer sent, so it is a server-side code. Reporting it as the
+        // caller's fault would send a client looking for a bug in its own
+        // request when the recording of results is what failed.
+        DispatchError::NotCallable
+        | DispatchError::UnnegotiableVersion
+        | DispatchError::IdempotencyUnavailable(_) => IrErrorCode::InternalError,
     };
     (code, error.to_string())
 }

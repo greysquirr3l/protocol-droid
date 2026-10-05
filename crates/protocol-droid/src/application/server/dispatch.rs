@@ -32,6 +32,7 @@ use crate::application::registry::listing::Listing;
 use crate::application::server::builder::{DispatchError, Server};
 use crate::application::server::context::RequestContext;
 use crate::domain::feature::{Feature, FeatureProfile};
+use crate::domain::idempotency::{Claim, IdempotencyKey};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::{
@@ -227,6 +228,44 @@ impl Dispatcher {
     }
 
     /// `tools/call`, through the server's own dispatch.
+    /// Runs one `tools/call`, at most once per request id.
+    ///
+    /// The order here is not a style choice; it is the claim:
+    ///
+    /// 1. **Check.** Claim the key before anything runs. Claiming after would
+    ///    leave a window in which two callers both see an absent key.
+    /// 2. **Execute.** Only the caller that was handed the token runs the
+    ///    tool. A caller that finds a completed key answers from the recording
+    ///    and never reaches the handler, and one that finds an in-flight key
+    ///    is refused rather than queued — see [`DispatchError::DuplicateInFlight`].
+    /// 3. **Persist.** Record the result, or release the claim, before
+    ///    returning. A result that is returned but not recorded is a result a
+    ///    retry will not find, and a key that is neither recorded nor released
+    ///    is a key nobody can ever claim again.
+    ///
+    /// # Why a failed call releases rather than records
+    ///
+    /// An `Err` here means the tool produced no result — the gate refused it,
+    /// or the handler failed. There is nothing to replay, so recording it would
+    /// hand every future retry the same refusal for a condition that may have
+    /// been fixed, and would make a transient failure permanent. Releasing
+    /// makes the next attempt a fresh one, which is what a caller sending the
+    /// same id again is asking for.
+    ///
+    /// The consequence is that a tool which *ran* and then failed is retried.
+    /// That is the honest answer: this layer cannot tell a tool that had no
+    /// effect from one that charged a card and then failed to answer, and
+    /// guessing "no effect" would silently drop work. A tool that must not
+    /// run twice needs a key of its own — which is the tool's own port, not
+    /// this one.
+    ///
+    /// # What a dropped connection costs
+    ///
+    /// A client whose POST never got an answer retries with the same request
+    /// id. It gets the recorded result, and the tool ran once. This is the
+    /// only reason the store is on `Server` rather than left to the transport:
+    /// the transport sees a dropped socket and knows nothing about what the
+    /// tool did, and only the layer that ran it can answer.
     async fn call_tool(
         &self,
         ctx: &RequestContext,
@@ -234,7 +273,44 @@ impl Dispatcher {
     ) -> Result<JsonObject, DispatchError> {
         Self::require(ctx, Feature::Tools)?;
         let (name, arguments) = split_call_params(params)?;
-        self.server.call(ctx, &name, arguments).await
+
+        // A request id is only unique within a session — every client numbers
+        // its first request `1` — so the key carries both. Keying on the id
+        // alone would answer one session's call with another's result.
+        let key = IdempotencyKey::for_request(&ctx.peer().session(), ctx.request_id());
+        let token = match self.server.idempotency().claim(&key)? {
+            // Recorded already. The answer is the recording, and the tool does
+            // not run.
+            Claim::Completed(recorded) => return Ok(recorded),
+            // Someone else holds it. Refusing is what keeps one side effect
+            // from running twice; the holder is a real request.
+            Claim::InFlight => {
+                return Err(DispatchError::DuplicateInFlight(
+                    ctx.request_id().to_string(),
+                ));
+            }
+            Claim::Claimed { token } => token,
+        };
+
+        let outcome = self.server.call(ctx, &name, arguments).await;
+        match outcome {
+            Ok(result) => {
+                // The result is both the answer and the recording, and
+                // `complete` takes it by value, so it is cloned out. `JsonObject`
+                // holds its bytes in an `Arc`, so this is a pointer bump and
+                // not a copy of the document.
+                self.server.idempotency().complete(&token, result.clone())?;
+                Ok(result)
+            }
+            Err(error) => {
+                // Release before returning, so the key is claimable again. A
+                // failed record or release is not swallowed: it is reported,
+                // because a key stuck in `Claimed` is invisible to every later
+                // caller and looks exactly like a server that stopped working.
+                self.server.idempotency().abandon(&token)?;
+                Err(error)
+            }
+        }
     }
 
     /// The gate every method shares, in one place.
@@ -516,7 +592,9 @@ fn prompt_argument(argument: &PromptArgument) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{DispatchError, Dispatcher};
     use crate::application::server::context::{
@@ -571,6 +649,12 @@ mod tests {
         }
     }
 
+    impl From<DispatchError> for Failure {
+        fn from(error: DispatchError) -> Self {
+            Self::Message(error.to_string())
+        }
+    }
+
     impl From<serde_json::Error> for Failure {
         fn from(error: serde_json::Error) -> Self {
             Self::Result(error)
@@ -578,6 +662,18 @@ mod tests {
     }
 
     type TestError = Failure;
+
+    /// The test's own complaint.
+    ///
+    /// A helper rather than `Err("...".into())` at each site, because that
+    /// spelling settles the module's error type on `&str` — which converts to
+    /// both itself and `Box<dyn Error>`, so the compiler picks it from the
+    /// first early return and every `?` in the body then has no valid
+    /// conversion. A vague error type is a compile error that points at the
+    /// `?` and not at the `Err` that caused it.
+    fn fail(message: impl Into<String>) -> TestError {
+        Failure::Message(message.into())
+    }
 
     /// An exchange that refuses, so no test here can accidentally pass by
     /// having a callback answered.
@@ -651,6 +747,42 @@ mod tests {
     /// A request on `peer`.
     fn ctx(peer: &PeerSession) -> RequestContext {
         RequestContext::for_request(peer, RequestId::text("r1"), CancellationToken::new(), None)
+    }
+
+    /// The server capabilities a fully-featured session negotiates at
+    /// `version`.
+    fn caps(version: ProtocolVersion) -> CapabilitySet {
+        CapabilitySet::all_for(version)
+    }
+
+    /// A session on session `id`, so a test can hold two at once.
+    ///
+    /// The existing [`peer`] pins session 1, which is fine until a test needs
+    /// to prove that two sessions are not the same session.
+    fn peer_on(
+        version: ProtocolVersion,
+        scopes: ScopeSet,
+        server_caps: CapabilitySet,
+        id: u64,
+    ) -> PeerSession {
+        PeerSession::new(
+            version,
+            resolve(Negotiation {
+                version,
+                client_caps: CapabilitySet::empty(),
+                server_caps,
+                transport: TransportKind::StreamableHttp,
+            }),
+            SessionId::new(id),
+            Arc::new(NoExchange),
+            Arc::new(NoSink),
+        )
+        .with_auth(AuthContext::new("tester", scopes))
+    }
+
+    /// The one tool the idempotency tests call.
+    fn charge_tool() -> Result<Tool, TestError> {
+        Ok(Tool::new("charge", r#"{"type":"object"}"#)?)
     }
 
     /// `initialize` params for a client that offers `version`.
@@ -910,6 +1042,382 @@ mod tests {
             "an unrestricted caller could not see the restricted tool: {}",
             listed.as_str()
         );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // A retried call runs the tool once
+    // -----------------------------------------------------------------------
+
+    /// A dispatcher whose tool counts how many times it ran.
+    ///
+    /// A counter rather than a `Cell<bool>`: the claim is that the tool runs
+    /// _once_, and a boolean cannot distinguish one from two. A handler that
+    /// returned a different answer each time would also work, and counting is
+    /// the version that says what it means.
+    fn counting(count: &Arc<AtomicUsize>, answer: &'static str) -> Result<Dispatcher, TestError> {
+        let answer = JsonObject::new(answer).unwrap_or_default();
+        let seen = Arc::clone(count);
+        let handler: ToolHandler = Arc::new(move |_ctx, _args| {
+            let count = Arc::clone(&seen);
+            let answer = answer.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                answer
+            })
+        });
+        Ok(Dispatcher::new(Arc::new(
+            Server::builder("test")
+                .tool(charge_tool()?, handler)
+                .build(),
+        )))
+    }
+
+    /// The tool a dropped connection leaves behind, on a session that asks
+    /// twice with the same request id.
+    ///
+    /// This is the scenario the whole store exists for. A client whose POST
+    /// got no answer retries, because it cannot tell a dropped connection from
+    /// a call that never arrived — and the retry must not be a second charge.
+    #[tokio::test]
+    async fn a_retry_after_a_dropped_connection_runs_the_tool_once() -> Result<(), TestError> {
+        let count = Arc::new(AtomicUsize::new(0));
+        let dispatcher = counting(&count, r#"{"charged":true}"#)?;
+        let peer = peer(
+            ProtocolVersion::V2025_06_18,
+            ScopeSet::all(),
+            caps(ProtocolVersion::V2025_06_18),
+        );
+        let params = JsonObject::new(r#"{"name":"charge"}"#)?;
+
+        // The first attempt: the server runs the tool and records the answer.
+        // The client never sees it — the connection dropped — which is not
+        // something this layer can observe, and is the point.
+        let first = dispatcher
+            .dispatch(&ctx(&peer), "tools/call", &params)
+            .await?;
+        // The retry, same id.
+        let second = dispatcher
+            .dispatch(&ctx(&peer), "tools/call", &params)
+            .await?;
+
+        if count.load(Ordering::SeqCst) != 1 {
+            return Err(fail(format!(
+                "the tool ran {} times",
+                count.load(Ordering::SeqCst)
+            )));
+        }
+        if first != second {
+            return Err(fail("the retry was not answered from the recording"));
+        }
+        Ok(())
+    }
+
+    /// The same request id on a *different* session is a different call.
+    ///
+    /// Both sessions send id `r1`, which is what every client does — ids are
+    /// only unique per connection. A key built from the request id alone would
+    /// answer the second session with the first one's result, and the test
+    /// would still be green on every other case in this module.
+    #[tokio::test]
+    async fn the_same_request_id_on_another_session_is_not_a_retry() -> Result<(), TestError> {
+        let count = Arc::new(AtomicUsize::new(0));
+        let dispatcher = counting(&count, r#"{"charged":true}"#)?;
+        let version = ProtocolVersion::V2025_06_18;
+        let params = JsonObject::new(r#"{"name":"charge"}"#)?;
+
+        let first_peer = peer(version, ScopeSet::all(), caps(version));
+        let second_peer = peer_on(version, ScopeSet::all(), caps(version), 2);
+
+        let _ = dispatcher
+            .dispatch(&ctx(&first_peer), "tools/call", &params)
+            .await?;
+        let _ = dispatcher
+            .dispatch(&ctx(&second_peer), "tools/call", &params)
+            .await?;
+
+        if count.load(Ordering::SeqCst) != 2 {
+            return Err(fail(format!(
+                "two sessions ran the tool {} time(s); the second was treated as a retry",
+                count.load(Ordering::SeqCst)
+            )));
+        }
+        Ok(())
+    }
+
+    /// A store that remembers the order it was driven in.
+    ///
+    /// The black-box tests above prove what a retry gets; this proves the
+    /// *sequence* that produces it, which is the thing the ordering rule is
+    /// actually about. It is white-box on purpose: "the claim is released on
+    /// failure" has no black-box observable here, because a tool that fails at
+    /// the gate fails the same way whether its key was released or recorded,
+    /// and a test that cannot tell those apart is not testing the release.
+    #[derive(Debug, Default)]
+    struct Journal {
+        log: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl Journal {
+        fn entries(&self) -> Vec<&'static str> {
+            self.log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    /// A capacity for a test store.
+    ///
+    /// `unwrap_or` rather than `unwrap`, which the crate denies, and rather
+    /// than a `match`, which `option_if_let_else` rejects — a `NonZeroUsize`
+    /// has no other readable spelling. The fallback is unreachable for any
+    /// count a caller writes, and `NonZeroUsize::MIN` is the honest answer if
+    /// one does arrive: a zero-capacity store rather than a panic in a test.
+    fn room_for(keys: usize) -> NonZeroUsize {
+        NonZeroUsize::new(keys).unwrap_or(NonZeroUsize::MIN)
+    }
+
+    /// A store over the real one, logging each operation.
+    struct Recording {
+        inner: crate::adapters::secondary::idempotency::InMemoryIdempotencyStore<JsonObject>,
+        log: Arc<Journal>,
+    }
+
+    impl crate::application::idempotency::IdempotencyStore for Recording {
+        type Result = JsonObject;
+
+        fn claim(
+            &self,
+            key: &crate::domain::idempotency::IdempotencyKey,
+        ) -> Result<
+            crate::domain::idempotency::Claim<Self::Result>,
+            crate::domain::idempotency::IdempotencyError,
+        > {
+            self.log
+                .log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push("claim");
+            self.inner.claim(key)
+        }
+
+        fn complete(
+            &self,
+            token: &crate::domain::idempotency::ClaimToken,
+            result: Self::Result,
+        ) -> Result<(), crate::domain::idempotency::IdempotencyError> {
+            self.log
+                .log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push("complete");
+            self.inner.complete(token, result)
+        }
+
+        fn abandon(
+            &self,
+            token: &crate::domain::idempotency::ClaimToken,
+        ) -> Result<(), crate::domain::idempotency::IdempotencyError> {
+            self.log
+                .log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push("abandon");
+            self.inner.abandon(token)
+        }
+    }
+
+    /// A recorded call is `claim` then `complete`, and nothing else.
+    ///
+    /// The order is the claim: recording before executing would answer a
+    /// concurrent caller with a result that does not exist yet, and never
+    /// recording would answer a retry by running the tool again.
+    #[tokio::test]
+    async fn a_successful_call_claims_then_records() -> Result<(), TestError> {
+        let journal = Arc::new(Journal::default());
+        let store = Arc::new(Recording {
+            inner: crate::adapters::secondary::idempotency::InMemoryIdempotencyStore::with_capacity(
+                room_for(8),
+            ),
+            log: Arc::clone(&journal),
+        });
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        let handler: ToolHandler = Arc::new(move |_ctx, _args| {
+            let count = Arc::clone(&seen);
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                JsonObject::new(r#"{"charged":true}"#).unwrap_or_default()
+            })
+        });
+        let dispatcher = Dispatcher::new(Arc::new(
+            Server::builder("test")
+                .tool(charge_tool()?, handler)
+                .idempotency(store)
+                .build(),
+        ));
+        let version = ProtocolVersion::V2025_06_18;
+        let peer = peer(version, ScopeSet::all(), caps(version));
+        let params = JsonObject::new(r#"{"name":"charge"}"#)?;
+
+        let _ = dispatcher
+            .dispatch(&ctx(&peer), "tools/call", &params)
+            .await?;
+        // The retry claims again — the key is still there — and then stops,
+        // because the answer is already recorded.
+        let _ = dispatcher
+            .dispatch(&ctx(&peer), "tools/call", &params)
+            .await?;
+
+        if journal.entries() != vec!["claim", "complete", "claim"] {
+            return Err(fail(format!("the store saw {:?}", journal.entries())));
+        }
+        if count.load(Ordering::SeqCst) != 1 {
+            return Err(fail(format!(
+                "the tool ran {} times",
+                count.load(Ordering::SeqCst)
+            )));
+        }
+        Ok(())
+    }
+
+    /// A call that fails is `claim` then `abandon`, and the key is reusable.
+    ///
+    /// The gate is the only place a `tools/call` can fail — a handler that
+    /// wants to report a problem returns `isError` content, which is a
+    /// *result*, not an error — so the session below is one that cannot see
+    /// the tool. The observable is what happens on the second call: a released
+    /// key is claimable and the gate is consulted again, and a recorded one
+    /// would come straight back as the recorded refusal without ever reaching
+    /// a handler.
+    #[tokio::test]
+    async fn a_refused_call_releases_the_key() -> Result<(), TestError> {
+        let journal = Arc::new(Journal::default());
+        let store = Arc::new(Recording {
+            inner: crate::adapters::secondary::idempotency::InMemoryIdempotencyStore::with_capacity(
+                room_for(8),
+            ),
+            log: Arc::clone(&journal),
+        });
+        let secret = Registered::from(Primitive::from(Tool::new(
+            "secret",
+            r#"{"type":"object"}"#,
+        )?))
+        .requiring_scope(Scope::Read);
+        let handler: ToolHandler = Arc::new(|_ctx, _args| {
+            Box::pin(async { JsonObject::new(r#"{"leaked":true}"#).unwrap_or_default() })
+        });
+        let dispatcher = Dispatcher::new(Arc::new(
+            Server::builder("test")
+                .restricted_tool(secret, handler)
+                .idempotency(store)
+                .build(),
+        ));
+        // A session with no scopes cannot see a `Read`-restricted tool.
+        let version = ProtocolVersion::V2025_06_18;
+        let peer = peer(version, ScopeSet::empty(), caps(version));
+        let params = JsonObject::new(r#"{"name":"secret"}"#)?;
+
+        for _ in 0..2 {
+            let outcome = dispatcher
+                .dispatch(&ctx(&peer), "tools/call", &params)
+                .await;
+            if outcome != Err(DispatchError::UnknownTool) {
+                return Err(fail(format!("a hidden tool answered {outcome:?}")));
+            }
+        }
+        // A released key is claimable, so both attempts claim it. A recorded
+        // one would show `claim` twice and then nothing — but with the
+        // recorded refusal returned before the handler, and the log would
+        // still read the same, which is why the refusal itself is asserted
+        // above rather than inferred from the log.
+        if journal.entries() != vec!["claim", "abandon", "claim", "abandon"] {
+            return Err(fail(format!("the store saw {:?}", journal.entries())));
+        }
+        Ok(())
+    }
+
+    /// A second request with an id the first still holds is refused, not run.
+    ///
+    /// The handler parks until released, so the claim is checked while the
+    /// first call is genuinely mid-flight — which is the only state where
+    /// `InFlight` exists, and the only state where running twice is possible.
+    #[tokio::test]
+    async fn a_duplicate_while_the_first_is_running_is_refused() -> Result<(), TestError> {
+        let count = Arc::new(AtomicUsize::new(0));
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let gate_rx = Arc::new(tokio::sync::Mutex::new(Some(gate_rx)));
+        let seen = Arc::clone(&count);
+        let handler: ToolHandler = Arc::new(move |_ctx, _args| {
+            let count = Arc::clone(&seen);
+            let gate_rx = Arc::clone(&gate_rx);
+            Box::pin(async move {
+                // Park until the test releases it, so the first call is
+                // provably still holding its key. The guard is dropped
+                // before the `if let`, not at the end of it: held across the
+                // inner `await` it would be a lock this task does not
+                // release, which is the deadlock `significant_drop_in_scrutinee`
+                // exists to catch rather than a style note.
+                let waiting = { gate_rx.lock().await.take() };
+                if let Some(receiver) = waiting {
+                    let _ = receiver.await;
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                JsonObject::new(r#"{"charged":true}"#).unwrap_or_default()
+            })
+        });
+        let dispatcher = Dispatcher::new(Arc::new(
+            Server::builder("test")
+                .tool(charge_tool()?, handler)
+                .build(),
+        ));
+        let peer = peer(
+            ProtocolVersion::V2025_06_18,
+            ScopeSet::all(),
+            caps(ProtocolVersion::V2025_06_18),
+        );
+        let params = JsonObject::new(r#"{"name":"charge"}"#)?;
+
+        // The spawned call borrows nothing: `Dispatcher` is `Clone` and
+        // `ctx` builds a fresh context over the same session, which is what
+        // makes this a genuine race rather than two calls one after another.
+        let running = tokio::spawn({
+            let dispatcher = Dispatcher::new(Arc::clone(dispatcher.server()));
+            let peer = peer_on(
+                ProtocolVersion::V2025_06_18,
+                ScopeSet::all(),
+                caps(ProtocolVersion::V2025_06_18),
+                1,
+            );
+            let params = JsonObject::new(r#"{"name":"charge"}"#)?;
+            async move {
+                dispatcher
+                    .dispatch(&ctx(&peer), "tools/call", &params)
+                    .await
+            }
+        });
+        // Let the spawned call reach the handler, which is where it parks.
+        // Without this the duplicate could be issued first and be the one
+        // that claims the key, and the test would pass for the wrong reason.
+        tokio::task::yield_now().await;
+
+        let duplicate = dispatcher
+            .dispatch(&ctx(&peer), "tools/call", &params)
+            .await;
+        let _ = gate_tx.send(());
+        let _ = running.await;
+
+        match duplicate {
+            Err(DispatchError::DuplicateInFlight(_)) => {}
+            other => return Err(fail(format!("the duplicate answered {other:?}"))),
+        }
+        if count.load(Ordering::SeqCst) != 1 {
+            return Err(fail(format!(
+                "the tool ran {} time(s) while a duplicate was refused",
+                count.load(Ordering::SeqCst)
+            )));
+        }
         Ok(())
     }
 }

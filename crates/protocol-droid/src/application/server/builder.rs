@@ -16,10 +16,14 @@
 //! is wrong in five of the six shapes a caller wants. The builder makes the
 //! order free and names each thing at the call site.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use crate::adapters::secondary::idempotency::InMemoryIdempotencyStore;
+use crate::application::idempotency::IdempotencyStore;
 use crate::application::registry::store::RegistryStore;
 use crate::application::server::context::RequestContext;
+use crate::domain::idempotency::IdempotencyError;
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{
     Primitive, PrimitiveId, PrimitiveKind, Prompt, Registered, Resource, ResourceTemplate, Tool,
@@ -102,12 +106,43 @@ impl core::fmt::Debug for ToolEntry {
 /// assert!(server.handler("echo").is_some());
 /// assert!(server.handler("missing").is_none());
 /// ```
-#[derive(Debug)]
+// Manual `Debug` rather than derived, for the reason `Dispatcher` has one: the
+// store is a `dyn` port with no readable state, so the derived form would
+// print `idempotency: <unknown>` on every line of a post-mortem and say
+// nothing. What a reader wants is the name, the tool count, and whether a
+// store was ever supplied — the third because a server still on the default
+// has an in-memory bound, and that is the question to ask first when a
+// recorded result has gone missing across a restart.
 pub struct Server {
     name: String,
     version: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
+    /// Deduplicates `tools/call` by request.
+    ///
+    /// A trait object rather than a concrete store because a caller serving
+    /// over HTTP wants a bound that outlives one process — a retried call may
+    /// arrive at a different replica — and a concrete `InMemoryIdempotencyStore`
+    /// in this field would be the kind of type that compiles everywhere and is
+    /// only correct on the one host. The default is the in-memory store, which
+    /// is correct for a single process and honest about being so.
+    idempotency: Arc<dyn IdempotencyStore<Result = JsonObject>>,
+}
+
+impl core::fmt::Debug for Server {
+    /// Prints the name, the version, and the tool count.
+    ///
+    /// Not the store, and the omission is deliberate: a built server always
+    /// has one, so printing that would say nothing. Whether a store was
+    /// *supplied* is a question about the builder, and the builder's own
+    /// `Debug` is where it is answerable.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Server")
+            .field("name", &self.name)
+            .field("version", &self.version)
+            .field("tool_count", &self.tools.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Server {
@@ -124,6 +159,7 @@ impl Server {
             version: env!("CARGO_PKG_VERSION").to_string(),
             registry: RegistryStore::new(),
             tools: Vec::new(),
+            idempotency: None,
         }
     }
 
@@ -151,6 +187,17 @@ impl Server {
     #[must_use]
     pub const fn tool_count(&self) -> usize {
         self.tools.len()
+    }
+
+    /// The store `tools/call` is deduplicated through.
+    ///
+    /// Exposed so a transport can answer "have you seen this id before?"
+    /// without running the tool, which is what a resuming peer wants: it has
+    /// dropped a connection and wants to know whether the call it never saw
+    /// answered actually happened.
+    #[must_use]
+    pub const fn idempotency(&self) -> &Arc<dyn IdempotencyStore<Result = JsonObject>> {
+        &self.idempotency
     }
 
     /// The registry, for the transport that serves it.
@@ -293,15 +340,62 @@ pub enum DispatchError {
     /// whose shape the revision cannot express.
     #[error("the session is on a revision this build cannot serve")]
     UnnegotiableVersion,
+
+    /// A second request arrived with an id this session is still working on.
+    ///
+    /// The JSON-RPC reading, and the reason it is an error rather than a
+    /// queue: the first request is a real, running, side-effecting call, and
+    /// the second carries no way to say what should happen to it. Running the
+    /// tool twice is the answer a retry gets by accident, and this is the
+    /// answer it gets on purpose. A client that wants the first result waits
+    /// for it and retries later — at which point the id is `Completed` and
+    /// comes straight back.
+    #[error("request {} is already in flight on this session", .0)]
+    DuplicateInFlight(String),
+
+    /// The store holding recorded results could not be reached.
+    ///
+    /// Reported rather than swallowed because the alternative is the one thing
+    /// this whole path exists to prevent: a store that errors, a caller that
+    /// treats the error as "no claim", and a tool that runs a second time.
+    /// Failing the call is the only answer that does not charge a client twice
+    /// behind its back.
+    #[error("recorded results are unavailable: {0}")]
+    IdempotencyUnavailable(String),
+}
+
+impl From<IdempotencyError> for DispatchError {
+    /// Keeps a poisoned or absent store from reading as an absent claim.
+    fn from(error: IdempotencyError) -> Self {
+        Self::IdempotencyUnavailable(error.to_string())
+    }
 }
 
 /// The builder behind [`Server::builder`].
-#[derive(Debug)]
 pub struct ServerBuilder {
     name: String,
     version: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
+    idempotency: Option<Arc<dyn IdempotencyStore<Result = JsonObject>>>,
+}
+
+impl core::fmt::Debug for ServerBuilder {
+    /// Prints the same three facts as [`Server`], plus whether a store was
+    /// supplied.
+    ///
+    /// The last is the one worth having here, and it is the question to ask
+    /// first when a recorded result has gone missing across a restart: a
+    /// server still on the default has an in-process bound, and no way to see
+    /// that from the built server it became.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ServerBuilder")
+            .field("name", &self.name)
+            .field("version", &self.version)
+            .field("tool_count", &self.tools.len())
+            .field("idempotency_supplied", &self.idempotency.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ServerBuilder {
@@ -316,6 +410,19 @@ impl ServerBuilder {
     #[must_use]
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
+        self
+    }
+
+    /// Replaces the store `tools/call` is deduplicated through.
+    ///
+    /// For a store that outlives the process — a shared cache, a table — or
+    /// for a test that wants to assert on what was recorded. A server that
+    /// keeps its own `IdSource` across restarts has a gap the in-memory
+    /// default cannot close: a call recorded before a restart is unknown
+    /// after it, and the retry runs the tool again.
+    #[must_use]
+    pub fn idempotency(mut self, store: Arc<dyn IdempotencyStore<Result = JsonObject>>) -> Self {
+        self.idempotency = Some(store);
         self
     }
 
@@ -419,11 +526,30 @@ impl ServerBuilder {
     /// Finishes the server.
     #[must_use]
     pub fn build(self) -> Server {
+        // Deduplicating by default rather than on request. A caller who has
+        // never heard of idempotency is the caller most likely to be serving
+        // a retriable HTTP transport, where a dropped connection turns one
+        // call into two, and a store that has to be opted into is a store
+        // nobody will think to opt into. The default is the bound that fails
+        // safe: a server that forgets runs a tool once rather than twice.
+        let idempotency = self.idempotency.unwrap_or_else(|| {
+            // 4096 keys is generous for a single process and small enough to
+            // bound memory. The capacity is a policy number, not a constant
+            // with a meaning, so it is named rather than inlined.
+            const DEFAULT_KEYS: NonZeroUsize = match NonZeroUsize::new(4096) {
+                Some(value) => value,
+                // Unreachable: 4096 is not zero. A `match` rather than an
+                // `unwrap` because the crate denies that.
+                None => NonZeroUsize::MIN,
+            };
+            Arc::new(InMemoryIdempotencyStore::with_capacity(DEFAULT_KEYS))
+        });
         Server {
             name: self.name,
             version: self.version,
             registry: self.registry,
             tools: self.tools,
+            idempotency,
         }
     }
 }

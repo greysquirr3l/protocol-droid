@@ -60,6 +60,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::domain::RequestId;
+use crate::domain::session::SessionId;
 
 /// The key a side effect is deduplicated by.
 ///
@@ -86,6 +87,29 @@ impl IdempotencyKey {
     #[must_use]
     pub fn from_request_id(id: &RequestId) -> Self {
         Self::new(id.to_string())
+    }
+
+    /// The key for one request within one session.
+    ///
+    /// A request id alone is not a key, and the reason is that ids are only
+    /// unique per connection: every MCP client numbers its first request `1`,
+    /// so `("session-a", 7)` and `("session-b", 7)` are two different calls. A
+    /// store keyed on the bare id would answer the second session's `7` with
+    /// the first session's result — a cross-session data leak wearing the
+    /// costume of a duplicate.
+    ///
+    /// The separator is a byte that cannot appear in either half. `SessionId`
+    /// renders as an integer and `RequestId` is a number or a string, and a
+    /// string id is free to contain anything the peer typed, so the join has to
+    /// be unambiguous in the general case: `session = 1, id = "2:3"` and
+    /// `session = 12, id = "3"` both render, and only a separator that the id
+    /// cannot contain keeps them apart. A `/` is the choice because MCP session
+    /// ids and the ids a client sends are both opaque, and a `/` in a client-chosen
+    /// id is legal — so this is a delimiter, not an escape, and the two halves
+    /// are distinguished by the _first_ separator rather than by a scan.
+    #[must_use]
+    pub fn for_request(session: &SessionId, id: &RequestId) -> Self {
+        Self(Arc::from(format!("{session}/{id}").as_str()))
     }
 
     /// The key as a string.
