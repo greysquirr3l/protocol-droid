@@ -31,13 +31,13 @@ use std::sync::Arc;
 use crate::application::registry::listing::Listing;
 use crate::application::server::builder::{DispatchError, Server};
 use crate::application::server::context::RequestContext;
+use crate::domain::SERVER_CAPABILITY_WIRE;
 use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::idempotency::{Claim, IdempotencyKey};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::{
-    Capability, ProtocolVersion, ServerDecision, SupportedVersions, handshake_defined_in,
-    negotiate_server,
+    ProtocolVersion, ServerDecision, SupportedVersions, handshake_defined_in, negotiate_server,
 };
 
 /// Routes methods to a server's handlers.
@@ -401,46 +401,6 @@ fn check_initialize_params(params: &JsonObject) -> Result<(), DispatchError> {
     Ok(())
 }
 
-/// How one server capability appears in a `ServerCapabilities` object.
-///
-/// The vendored schema nests — `{"tools": {"listChanged": true}}`, not a flat
-/// `{"tools": true, "toolsListChanged": true}` — so each row is the key it
-/// sits under plus the key inside that object, if it has one. A parent with
-/// no child still emits its own empty object, because `tools` is present
-/// exactly when the server has tools and the presence is the whole signal.
-///
-/// Data rather than a `match` for the same reason [`FEATURES`] is data: a
-/// capability added to the domain without a row here would otherwise be
-/// dropped silently, and the test that walks the table against every
-/// server-side capability is what keeps the two in step.
-///
-/// [`FEATURES`]: crate::domain::FEATURES
-const SERVER_CAPABILITY_WIRE: &[(Capability, &str, Option<&str>)] = &[
-    (Capability::Experimental, "experimental", None),
-    (Capability::Tools, "tools", None),
-    (Capability::ToolsListChanged, "tools", Some("listChanged")),
-    (Capability::Resources, "resources", None),
-    (
-        Capability::ResourcesSubscribe,
-        "resources",
-        Some("subscribe"),
-    ),
-    (
-        Capability::ResourcesListChanged,
-        "resources",
-        Some("listChanged"),
-    ),
-    (Capability::Prompts, "prompts", None),
-    (
-        Capability::PromptsListChanged,
-        "prompts",
-        Some("listChanged"),
-    ),
-    (Capability::Completions, "completions", None),
-    (Capability::Logging, "logging", None),
-    (Capability::Tasks, "tasks", None),
-];
-
 /// Renders the session's server capabilities as a `ServerCapabilities` object.
 ///
 /// Reads [`FeatureProfile::advertised_by_server`] rather than being handed a
@@ -457,23 +417,45 @@ const SERVER_CAPABILITY_WIRE: &[(Capability, &str, Option<&str>)] = &[
 /// [`Capability::Extensions`][extensions], which only `2026-07-28` defines —
 /// a revision the handler has already refused before getting here, because
 /// that revision has no `InitializeResult` to put it in.
+/// Asserts `path` on `root`, creating every object on the way.
+///
+/// A path of one key leaves an **empty object** rather than a boolean, because
+/// a parent capability's presence is the claim and the schema gives it an
+/// object: `ClientCapabilities.roots` is an object, so `"roots": {}` is the
+/// wire form and `"roots": true` is not one any schema admits. A longer path
+/// ends in `true`, because a sub-capability like `listChanged` genuinely is a
+/// boolean.
+fn insert_path(root: &mut serde_json::Map<String, serde_json::Value>, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut cursor = root;
+    for key in parents {
+        let entry = cursor
+            .entry((*key).to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let serde_json::Value::Object(parent) = entry else {
+            return;
+        };
+        cursor = parent;
+    }
+    let leaf = if parents.is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::Value::Bool(true)
+    };
+    cursor.insert((*last).to_string(), leaf);
+}
+
 fn server_capabilities_json(profile: FeatureProfile) -> serde_json::Value {
     let advertised = profile.advertised_by_server();
     let mut root = serde_json::Map::new();
 
-    for (capability, key, child) in SERVER_CAPABILITY_WIRE {
+    for (capability, path) in SERVER_CAPABILITY_WIRE {
         if !advertised.contains(*capability) {
             continue;
         }
-        let entry = root
-            .entry((*key).to_string())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        let serde_json::Value::Object(parent) = entry else {
-            continue;
-        };
-        if let Some(child) = child {
-            parent.insert((*child).to_string(), serde_json::Value::Bool(true));
-        }
+        insert_path(&mut root, path);
     }
 
     serde_json::Value::Object(root)

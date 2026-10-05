@@ -133,6 +133,22 @@ struct InProcess {
 }
 
 impl ClientTransport for InProcess {
+    /// Answers nothing, because a notification is not asking anything.
+    ///
+    /// A test that asserted on the notification would have to read the
+    /// dispatcher's log, which is what [`InProcess::send`] does. The
+    /// handshake tests that matter here are about the *result* of the
+    /// handshake, and the notification's own delivery is a claim about the
+    /// transport, not about this.
+    fn notify(
+        &self,
+        _method: &str,
+        _params: &JsonObject,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_>>
+    {
+        Box::pin(async { Ok(()) })
+    }
+
     fn send(
         &self,
         method: &str,

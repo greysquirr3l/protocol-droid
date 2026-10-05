@@ -24,10 +24,12 @@
 //! implementor answer for both, and a replay source only reads at all.
 
 pub mod batch;
+pub mod document;
 pub mod frame_source;
 pub mod router;
 
 pub use batch::{AllowBatching, BatchPolicy, DenyBatching, ProfileBatching};
+pub use document::{RequestError, notification_document, reply_result, request_document};
 pub use frame_source::{DynFrameSource, FrameSource, SourceError};
 pub use router::{
     MethodTable, ReplyPayload, RouteError, Routed, RoutedFrame, RoutedMessage, route_frame,

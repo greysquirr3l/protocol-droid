@@ -10,14 +10,26 @@
 //! [`MessageEndpoint`], which refuses a target naming another host, and both
 //! that refusal and the missing handshake are tested rather than asserted.
 
+use core::future::Future;
+use core::pin::Pin;
 use core::str::FromStr;
+use core::sync::atomic::{AtomicI64, Ordering};
 use core::time::Duration;
+use tokio::sync::Mutex;
 
 use serde_json::Value;
 
 use crate::adapters::primary::transport::http::SseEvent;
 use crate::adapters::secondary::transport::http::FrameReader;
-use crate::domain::{MessageEndpoint, names};
+use crate::domain::ir::JsonObject;
+use crate::domain::{MessageEndpoint, RequestId, names};
+use crate::application::jsonrpc::document::{
+    notification_document, reply_result, request_document,
+};
+
+use crate::application::client::{ClientTransport, TransportError};
+use crate::application::jsonrpc::document::RequestError;
+use crate::domain::ir::MethodName;
 
 use super::error::{self, LegacySseError};
 
@@ -199,7 +211,29 @@ pub struct LegacySseClient {
     /// that enum, so an unboxed stream makes every `Detected` as big as the
     /// legacy one. Nothing else changes: the stream is open for the client's
     /// whole life and is never moved.
-    stream: Box<Stream>,
+    ///
+    /// Behind a [`Mutex`] because [`ClientTransport`] sends from `&self`: a
+    /// client that could only be read from `&mut self` could not sit behind
+    /// `Arc<dyn ClientTransport>`, which is the only shape a negotiated
+    /// [`Client`](crate::application::client::Client) can hold.
+    ///
+    /// `tokio`'s rather than `std`'s, and not for convenience: a frame is read
+    /// across an `await`, and `std::sync::MutexGuard` is `!Send`, so the whole
+    /// future would stop being `Send` — and the port requires a `Send` future.
+    /// Held across the read on purpose: a frame cannot be read from two places
+    /// at once, and a lock dropped at the first `await` would let a second call
+    /// interleave into the middle of the first one's read.
+    ///
+    /// [`Mutex`]: tokio::sync::Mutex
+    stream: Mutex<Box<Stream>>,
+
+    /// The id to put on the next request, so replies can be matched to the
+    /// request that asked for them.
+    ///
+    /// This transport carries many requests over one stream, so a reply arrives
+    /// with no request attached — matching the id is the only thing that says
+    /// which of the in-flight asks a given frame answers.
+    next_id: AtomicI64,
 }
 
 impl LegacySseClient {
@@ -261,7 +295,8 @@ impl LegacySseClient {
             inner,
             config,
             post_to,
-            stream: Box::new(stream),
+            stream: Mutex::new(Box::new(stream)),
+            next_id: AtomicI64::new(1),
         })
     }
 
@@ -316,12 +351,14 @@ impl LegacySseClient {
     /// [`LegacySseError::Io`] if the socket failed mid-read, or
     /// [`LegacySseError::Unreadable`] if a frame was neither an `endpoint` event
     /// nor a JSON payload.
-    pub async fn next(&mut self) -> Result<Option<ClientFrame>, LegacySseError> {
-        self.stream
-            .next()
-            .await?
-            .map(|event| ClientFrame::classify(&event))
-            .transpose()
+    pub async fn next(&self) -> Result<Option<ClientFrame>, LegacySseError> {
+        let mut stream = self.stream.lock().await;
+        stream.next().await?.map(|event| ClientFrame::classify(&event)).transpose()
+    }
+
+    /// The id for the next request on this connection.
+    pub(crate) fn next_request_id(&self) -> RequestId {
+        RequestId::Number(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -446,3 +483,122 @@ fn truncate(value: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+impl ClientTransport for LegacySseClient {
+    /// POSTs a request frame and waits for the reply that carries its id.
+    ///
+    /// A `202` on the `POST` is not the answer: on this transport the answer
+    /// goes to the stream the `GET` opened, and it arrives there interleaved
+    /// with anything else the server chooses to send. So this writes the frame,
+    /// then reads until a frame with this request's id turns up.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Unavailable`] naming the refusal. The port is
+    /// protocol-neutral and must not learn that this is a legacy transport, so
+    /// the detail is rendered rather than kept.
+    fn send(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Pin<Box<dyn Future<Output = Result<JsonObject, TransportError>> + Send + '_>> {
+        let prepared = (|| {
+            let id = self.next_request_id();
+            let name = method_name(method)?;
+            let document = request_document(&id, &name, params)
+                .map_err(unavailable)?
+                .to_string();
+            Ok::<_, TransportError>((id, document))
+        })();
+
+        Box::pin(async move {
+            let (id, document) = prepared?;
+            self.send(document.as_bytes()).await.map_err(unavailable)?;
+            self.await_reply(&id).await
+        })
+    }
+
+    /// POSTs a notification frame and returns without reading.
+    ///
+    /// No read, and that is the whole difference from [`send`]. A notification
+    /// has no id, so there is nothing to match a frame against, and reading one
+    /// anyway would consume a frame that belongs to whatever asked next — which
+    /// on this transport is every reply that arrives in between.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Unavailable`] if the frame cannot be built or written.
+    fn notify(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>> {
+        let prepared = (|| {
+            let name = method_name(method)?;
+            let document = notification_document(&name, params)
+                .map_err(unavailable)?
+                .to_string();
+            Ok::<_, TransportError>(document)
+        })();
+
+        Box::pin(async move {
+            let document = prepared?;
+            self.send(document.as_bytes()).await.map_err(unavailable)
+        })
+    }
+}
+
+impl LegacySseClient {
+    /// Reads the stream until the frame answering `id` arrives.
+    ///
+    /// Reads rather than takes the next one. The stream carries the server's
+    /// own traffic as well as answers — a `notifications/message` for a tool
+    /// call, a progress update for a request that is still running — and a
+    /// reader that took the first frame would hand the caller a notification
+    /// where it asked for a result.
+    async fn await_reply(&self, id: &RequestId) -> Result<JsonObject, TransportError> {
+        loop {
+            let Some(frame) = self.next().await.map_err(unavailable)? else {
+                return Err(TransportError::Unavailable(format!(
+                    "the stream closed before answering {:?}",
+                    id.redacted()
+                )));
+            };
+            match frame {
+                ClientFrame::Message(payload) => {
+                    if let Some(answer) = reply_for(&payload, id) {
+                        return answer.map_err(unavailable);
+                    }
+                }
+                // An endpoint frame is the server re-advertising its target. It
+                // has no id, and there is nothing a client can do with a second
+                // one, so it is skipped rather than treated as a failure.
+                ClientFrame::Endpoint(_) => {}
+            }
+        }
+    }
+}
+
+/// The `result` of `payload` when it answers `id`.
+fn reply_for(payload: &Value, id: &RequestId) -> Option<Result<JsonObject, RequestError>> {
+    let members = payload.as_object()?;
+    if members.get("id") != Some(&Value::from(id.to_json())) {
+        return None;
+    }
+    // `reply_result` re-parses what was just walked, which is a second pass over
+    // a small document and buys the one implementation of id matching and error
+    // reporting that the stdio transport already has tested. Matching the id
+    // here rather than inside it is what lets a notification — which has no id
+    // at all — be skipped instead of being reported as a mismatch.
+    Some(reply_result(&payload.to_string(), id))
+}
+
+/// A method name, or the port's own error.
+fn method_name(method: &str) -> Result<MethodName, TransportError> {
+    MethodName::new(method).map_err(unavailable)
+}
+
+/// This transport's failures, as the port's error.
+fn unavailable(error: impl core::fmt::Display) -> TransportError {
+    TransportError::Unavailable(error.to_string())
+}

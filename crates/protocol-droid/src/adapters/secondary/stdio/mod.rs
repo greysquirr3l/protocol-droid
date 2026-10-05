@@ -59,7 +59,6 @@
 
 pub mod child;
 pub mod client;
-pub mod request;
 pub mod spec;
 
 #[cfg(test)]
@@ -67,5 +66,4 @@ mod testing;
 
 pub use child::SpawnError;
 pub use client::{ClientConfig, StdioClient, StdioClientError};
-pub use request::{RequestError, notification_document, reply_result, request_document};
 pub use spec::{ChildSpec, ChildSpecError};

@@ -25,7 +25,10 @@ mod stream;
 mod supported_versions;
 mod transport;
 
-pub use capability::{CAPABILITY_TABLE, Capability, CapabilitySet, Side, defined_in};
+pub use capability::{
+    CAPABILITY_TABLE, CLIENT_CAPABILITY_WIRE, Capability, CapabilitySet, SERVER_CAPABILITY_WIRE,
+    Side, defined_in,
+};
 pub use feature::{
     DegradePolicy, FEATURES, Feature, FeatureProfile, FeatureSpec, Negotiation, resolve,
 };

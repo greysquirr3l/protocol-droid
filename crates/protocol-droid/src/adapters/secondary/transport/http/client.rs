@@ -19,13 +19,21 @@
 //! indistinguishable from a peer that has stopped talking.
 
 use core::fmt;
+use core::future::Future;
+use core::pin::Pin;
 use core::str::FromStr;
+use core::sync::atomic::{AtomicI64, Ordering};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::adapters::primary::transport::http::{SseError, SseEvent};
-use crate::domain::{EventId, McpSessionId};
+use crate::application::jsonrpc::document::{
+    notification_document, reply_result, request_document,
+};
+use crate::application::client::{ClientTransport, TransportError};
+use crate::domain::ir::{JsonObject, MethodName};
+use crate::domain::{EventId, McpSessionId, RequestId};
 
 use super::error::{HttpClientError, preview};
 use super::frames::{FrameError, FrameReader};
@@ -202,6 +210,13 @@ pub struct HttpClient {
     inner: reqwest::Client,
     config: HttpClientConfig,
     session: Mutex<Option<McpSessionId>>,
+    /// The id to put on the next request.
+    ///
+    /// A counter and not a random value, for the reason `StdioClient` uses
+    /// one: the domain does not call a generator, so a client's ids are as
+    /// reproducible as its configuration, and two requests in flight on one
+    /// client can never collide.
+    next_id: AtomicI64,
 }
 
 impl HttpClient {
@@ -243,7 +258,13 @@ impl HttpClient {
             inner,
             config,
             session: Mutex::new(None),
+            next_id: AtomicI64::new(1),
         }
+    }
+
+    /// The id for the next request on this client.
+    pub fn next_request_id(&self) -> RequestId {
+        RequestId::Number(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
     /// A client that already knows the session the peer issued.
@@ -930,4 +951,80 @@ const fn method_of(verb: &str) -> reqwest::Method {
         b"DELETE" => reqwest::Method::DELETE,
         _ => reqwest::Method::GET,
     }
+}
+
+impl ClientTransport for HttpClient {
+    /// POSTs a request frame and returns the `result` it carries.
+    ///
+    /// The id matters here for the same reason it matters on stdio: a reply
+    /// that arrives for a different request must be recognisable as one, and
+    /// this transport carries a session's worth of traffic over one connection.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Unavailable`] naming the refusal — a frame this client
+    /// could not assemble, a status the transport rejects, or a reply whose
+    /// `error` member names a failure.
+    fn send(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Pin<Box<dyn Future<Output = Result<JsonObject, TransportError>> + Send + '_>> {
+        // Assembled before the future is built, because the port elides the
+        // return lifetime to `&self` and a boxed future cannot borrow the
+        // caller's `method` or `params`.
+        let prepared = (|| {
+            let id = self.next_request_id();
+            let name = MethodName::new(method).map_err(unavailable)?;
+            let document = request_document(&id, &name, params)
+                .map_err(unavailable)?
+                .to_string();
+            Ok::<_, TransportError>((id, document))
+        })();
+
+        Box::pin(async move {
+            let (id, document) = prepared?;
+            let response = self
+                .post(document.as_bytes(), false)
+                .await
+                .map_err(unavailable)?;
+            let body = std::str::from_utf8(response.body()).map_err(unavailable)?;
+            reply_result(body, &id).map_err(unavailable)
+        })
+    }
+
+    /// POSTs a notification frame and returns without reading a body.
+    ///
+    /// A notification is answered with a `202` and no content, so there is no
+    /// `result` to read and no id to match — asking for one would turn every
+    /// correctly-answered notification into a malformed-frame error.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Unavailable`] if the frame cannot be assembled or the
+    /// `POST` does not succeed.
+    fn notify(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>> {
+        let prepared = (|| {
+            let name = MethodName::new(method).map_err(unavailable)?;
+            let document = notification_document(&name, params)
+                .map_err(unavailable)?
+                .to_string();
+            Ok::<_, TransportError>(document)
+        })();
+
+        Box::pin(async move {
+            let document = prepared?;
+            self.post(document.as_bytes(), false).await.map_err(unavailable)?;
+            Ok(())
+        })
+    }
+}
+
+/// This transport's failures, as the port's error.
+fn unavailable(error: impl core::fmt::Display) -> TransportError {
+    TransportError::Unavailable(error.to_string())
 }

@@ -77,9 +77,9 @@ use std::time::Duration;
 
 use protocol_droid::adapters::primary::stdio::{Diagnostics, StdioConfig, StdioError};
 use protocol_droid::adapters::secondary::stdio::{
-    ChildSpec, ChildSpecError, ClientConfig, RequestError, SpawnError, StdioClient,
-    StdioClientError, request_document,
+    ChildSpec, ChildSpecError, ClientConfig, SpawnError, StdioClient, StdioClientError,
 };
+use protocol_droid::application::jsonrpc::document::{RequestError, request_document};
 use protocol_droid::application::jsonrpc::SourceError;
 use protocol_droid::domain::ir::{JsonObject, JsonObjectError, MethodName, MethodNameError};
 use protocol_droid::domain::{MaxFrameSize, MaxFrameSizeError};

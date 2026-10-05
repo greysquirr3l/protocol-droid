@@ -650,6 +650,81 @@ fn str_eq(left: &str, right: &str) -> bool {
     true
 }
 
+/// How one server capability appears in a `ServerCapabilities` object.
+///
+/// A *key path* rather than a key and an optional child, because the nesting
+/// is not two deep everywhere: `tasks.requests.tools.call` is three, and a
+/// `(key, child)` row would have to lie about it or leave it unrepresentable.
+///
+/// Rows are only ever walked from the outside in, so a parent with no child of
+/// its own still emits its own object — `tools` is present exactly when the
+/// server has tools, and that presence is the whole signal.
+///
+/// Data rather than a `match` for the same reason [`FEATURES`] is data: a
+/// capability added to the domain without a row here would be dropped
+/// silently, and [`capability_wire_is_total`] is what keeps the two in step.
+///
+/// [`FEATURES`]: crate::domain::FEATURES
+/// [`capability_wire_is_total`]: crate::domain::capability
+pub const SERVER_CAPABILITY_WIRE: &[(Capability, &[&str])] = &[
+    (Capability::Experimental, &["experimental"]),
+    (Capability::Tools, &["tools"]),
+    (Capability::ToolsListChanged, &["tools", "listChanged"]),
+    (Capability::Resources, &["resources"]),
+    (Capability::ResourcesSubscribe, &["resources", "subscribe"]),
+    (Capability::ResourcesListChanged, &["resources", "listChanged"]),
+    (Capability::Prompts, &["prompts"]),
+    (Capability::PromptsListChanged, &["prompts", "listChanged"]),
+    (Capability::Completions, &["completions"]),
+    (Capability::Logging, &["logging"]),
+    (Capability::Tasks, &["tasks"]),
+];
+
+/// How one client capability appears in a `ClientCapabilities` object.
+///
+/// The mirror of [`SERVER_CAPABILITY_WIRE`], and in the same place for the same
+/// reason: a client that advertises a capability the reader cannot recognise
+/// loses it silently, which is a feature that appears to work right up until
+/// the peer uses it.
+///
+/// Deliberately a *separate* table rather than one table with a side column.
+/// The two sides do not have the same shapes — `roots` is client-only,
+/// `tools` is server-only, and `tasks` nests differently under each — and one
+/// table with a side column would carry a discriminator through both the
+/// renderer and the reader to express a difference that the data already has.
+pub const CLIENT_CAPABILITY_WIRE: &[(Capability, &[&str])] = &[
+    (Capability::Experimental, &["experimental"]),
+    (Capability::Extensions, &["extensions"]),
+    (Capability::Roots, &["roots"]),
+    (Capability::RootsListChanged, &["roots", "listChanged"]),
+    (Capability::Sampling, &["sampling"]),
+    (Capability::SamplingContext, &["sampling", "context"]),
+    (Capability::SamplingTools, &["sampling", "tools"]),
+    (Capability::Elicitation, &["elicitation"]),
+    (Capability::ElicitationForm, &["elicitation", "form"]),
+    (Capability::ElicitationUrl, &["elicitation", "url"]),
+    (Capability::Tasks, &["tasks"]),
+    (Capability::TasksCancel, &["tasks", "cancel"]),
+    (Capability::TasksList, &["tasks", "list"]),
+    (Capability::TasksRequests, &["tasks", "requests"]),
+    (
+        Capability::TasksRequestsElicitation,
+        &["tasks", "requests", "elicitation"],
+    ),
+    (
+        Capability::TasksRequestsElicitationCreate,
+        &["tasks", "requests", "elicitation", "create"],
+    ),
+    (
+        Capability::TasksRequestsSampling,
+        &["tasks", "requests", "sampling"],
+    ),
+    (
+        Capability::TasksRequestsSamplingCreateMessage,
+        &["tasks", "requests", "sampling", "createMessage"],
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     // Test code unwraps deliberately: the strict profile exists to keep

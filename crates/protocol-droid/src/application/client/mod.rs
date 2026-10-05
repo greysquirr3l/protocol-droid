@@ -25,6 +25,13 @@ use crate::domain::feature::{Feature, FeatureProfile, Negotiation, resolve};
 use crate::domain::ir::JsonObject;
 use crate::domain::{CapabilitySet, ProtocolVersion, TransportKind};
 
+mod handshake;
+
+pub use handshake::{
+    DISCOVER, HandshakeError, INITIALIZE, INITIALIZED, discover_session, handshake,
+    initialize_params, initialize_session, offer,
+};
+
 /// Sends one request to the peer and returns its answer.
 ///
 /// The port a client needs, and the only one. A transport implements it; the
@@ -46,6 +53,25 @@ pub trait ClientTransport: Send + Sync {
         method: &str,
         params: &JsonObject,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<JsonObject, TransportError>> + Send + '_>>;
+
+    /// Sends `method` with `params` and expects no answer.
+    ///
+    /// Separate from [`send`](Self::send) because a notification is not a
+    /// request that tolerates a missing reply — it has no `id` at all, and a
+    /// transport that waited for one would wait forever, because a conforming
+    /// peer correctly sends nothing. The `notifications/initialized` that ends
+    /// the handshake is one of these, so a client that could not send it had no
+    /// way to finish connecting.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError`] when the notification could not be written. Nothing
+    /// else is possible: there is no reply to be wrong about.
+    fn notify(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>>;
 }
 
 /// Why a request did not complete.
@@ -157,6 +183,17 @@ impl ClientConfig {
         &self.versions
     }
 
+    /// The capabilities this client declared.
+    ///
+    /// Read by the handshake to render the `initialize` request, so it has to
+    /// be the same set the profile will be resolved from — a handshake that
+    /// advertised a different one would produce a session that claims to do
+    /// something it never told the server it could.
+    #[must_use]
+    pub const fn capabilities(&self) -> CapabilitySet {
+        self.capabilities
+    }
+
     /// The transport the client will run over.
     #[must_use]
     pub const fn transport(&self) -> TransportKind {
@@ -200,6 +237,9 @@ impl ClientConfig {
 /// # impl protocol_droid::application::client::ClientTransport for Dead {
 /// #     fn send(&self, _: &str, _: &JsonObject)
 /// #         -> std::pin::Pin<Box<dyn Future<Output = Result<JsonObject, TransportError>> + Send>>
+/// #     { Box::pin(async { Err(TransportError::Unavailable("no route".to_string())) }) }
+/// #     fn notify(&self, _: &str, _: &JsonObject)
+/// #         -> std::pin::Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
 /// #     { Box::pin(async { Err(TransportError::Unavailable("no route".to_string())) }) }
 /// # }
 ///
@@ -478,6 +518,25 @@ mod tests {
                 .clone()
                 .ok_or_else(|| TransportError::Unavailable("nothing listening".to_string()));
             Box::pin(std::future::ready(outcome))
+        }
+
+        /// Records the method and answers nothing, which is the whole
+        /// difference between this and `send`.
+        fn notify(
+            &self,
+            method: &str,
+            _params: &JsonObject,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>>
+        {
+            self.called();
+            {
+                let mut calls = self
+                    .calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                calls.push(method.to_string());
+            }
+            Box::pin(std::future::ready(Ok(())))
         }
     }
 

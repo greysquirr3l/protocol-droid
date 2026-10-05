@@ -54,8 +54,8 @@ use crate::domain::RequestId;
 use crate::domain::ir::{JsonObject, MethodName};
 
 use super::child::{self, SpawnError};
-use super::request::RequestError;
-use super::request::{reply_result, request_document};
+use crate::application::jsonrpc::document::RequestError;
+use crate::application::jsonrpc::document::{notification_document, reply_result, request_document};
 use super::spec::ChildSpec;
 
 /// How long a request waits for its answer before the client calls it a
@@ -467,7 +467,7 @@ where
         method: &MethodName,
         params: &JsonObject,
     ) -> Result<(), StdioClientError> {
-        let document = super::request::notification_document(method, params)
+        let document = crate::application::jsonrpc::document::notification_document(method, params)
             .map_err(StdioClientError::Document)?;
         self.send_document(&document.to_string()).await?;
         Ok(())
@@ -568,6 +568,37 @@ where
                 .map_err(unavailable)
         })
     }
+
+    /// Writes a notification and returns.
+    ///
+    /// Write-only by construction: there is no id to match a reply against, so
+    /// there is nothing to wait for. The document is assembled before the
+    /// future is built, for the same reason [`send`](Self::send) does it — the
+    /// port elides the return lifetime, so a boxed future cannot borrow the
+    /// caller's method name.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Unavailable`] if the document cannot be assembled or
+    /// the pipe refuses the write.
+    fn notify(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>> {
+        let prepared = (|| {
+            let name = MethodName::new(method).map_err(unavailable)?;
+            let document = notification_document(&name, params)
+                .map_err(|error| unavailable(StdioClientError::Document(error)))?
+                .to_string();
+            Ok::<_, TransportError>(document)
+        })();
+
+        Box::pin(async move {
+            let document = prepared?;
+            self.send_document(&document).await.map_err(unavailable)
+        })
+    }
 }
 
 /// Anything this client refuses, as the port's own error.
@@ -592,7 +623,7 @@ pub enum StdioClientError {
     /// wrong. A caller that logged both as "bad request" would be wrong about
     /// one of them.
     #[error("the request document could not be assembled: {0}")]
-    Document(super::request::RequestError),
+    Document(crate::application::jsonrpc::document::RequestError),
 
     /// A frame could not be written to the child.
     #[error("the request could not be written to the child: {0}")]
@@ -624,7 +655,7 @@ pub enum StdioClientError {
 
     /// The peer's answer was not a result.
     #[error("the child's answer was not a result: {0}")]
-    Request(#[from] super::request::RequestError),
+    Request(#[from] crate::application::jsonrpc::document::RequestError),
 
     /// A run of frames arrived that were all somebody else's.
     ///
@@ -661,7 +692,7 @@ mod tests {
     use crate::domain::RequestId;
     use crate::domain::ir::{JsonObject, MethodName, MethodNameError};
 
-    use super::super::request::{RequestError, reply_result, request_document};
+    use crate::application::jsonrpc::document::{RequestError, reply_result, request_document};
     use super::super::spec::{ChildSpec, ChildSpecError};
     use super::super::testing::{Capture, Role, STDERR_MARKER, SpawnFailure, child_spec};
 

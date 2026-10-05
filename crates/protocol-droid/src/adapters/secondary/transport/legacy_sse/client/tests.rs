@@ -128,7 +128,7 @@ impl IdSource for Counting {
 async fn a_request_posted_to_the_advertised_endpoint_is_answered_on_the_stream(
 ) -> Result<(), TestError> {
     let live = Live::start().await?;
-    let mut client = live.client().await?;
+    let client = live.client().await?;
 
     require_eq(
         &client.message_endpoint().path(),
@@ -164,7 +164,7 @@ async fn a_request_posted_to_the_advertised_endpoint_is_answered_on_the_stream(
 #[tokio::test]
 async fn an_unnamed_frame_off_the_wire_arrives_as_a_message() -> Result<(), TestError> {
     let live = Live::start().await?;
-    let mut client = live.client().await?;
+    let client = live.client().await?;
     client.send(br#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#).await?;
     let reply = client.next().await?.ok_or("the stream ended without a reply")?;
     require(
@@ -188,7 +188,7 @@ async fn a_frame_explicitly_named_message_is_also_a_message() -> Result<(), Test
         "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}\n\n".to_owned(),
     ])
     .await?;
-    let mut client = LegacySseClient::connect(LegacySseConfig::new(server.url())?).await?;
+    let client = LegacySseClient::connect(LegacySseConfig::new(server.url())?).await?;
     let frame = client
         .next()
         .await?
