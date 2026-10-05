@@ -36,6 +36,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
+use super::JSON_MEDIA_TYPE;
 use crate::domain::EventId;
 
 /// A request the adapter refuses before or instead of answering it.
@@ -310,7 +311,7 @@ impl IntoResponse for Refusal {
         let body = serde_json::to_vec(&self.body()).unwrap_or_else(|_| Vec::new());
         let mut response = Response::builder()
             .status(status)
-            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_TYPE, JSON_MEDIA_TYPE)
             .body(axum::body::Body::from(body))
             .unwrap_or_else(|_| {
                 // A response that cannot even be built means the status or a

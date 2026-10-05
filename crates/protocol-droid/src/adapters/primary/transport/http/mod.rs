@@ -85,6 +85,16 @@ mod session_store;
 mod sse;
 mod stream;
 
+/// The media type a JSON answer carries, and the only one besides a stream
+/// that this transport speaks.
+///
+/// One name, shared by the two places that write it — the refusal path and the
+/// router's stamping of a handler's answer — so a client cannot be told one
+/// thing about how this header is spelled and another about how it is used.
+/// [`text/event-stream`](sse::KEEP_ALIVE_FRAME) is the other shape, and the
+/// two are what `HttpReply` tells apart on the way back.
+pub const JSON_MEDIA_TYPE: &str = "application/json";
+
 pub use auth::{Anonymous, AuthPolicy, Authenticator, Credentials};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
 pub use refusal::Refusal;

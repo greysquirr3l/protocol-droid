@@ -85,8 +85,8 @@ use futures_core::Stream;
 use serde_json::Value;
 
 use super::{
-    Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
-    ServerConfig, SessionStore,
+    Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, JSON_MEDIA_TYPE, Refusal,
+    SecurityHeaders, ServerConfig, SessionStore,
 };
 use crate::domain::ProtocolVersion;
 use crate::domain::mcp::McpSessionId;
@@ -596,9 +596,48 @@ where
         protocol,
     };
     match state.handler.dispatch(call).await {
-        Ok(response) => response,
+        Ok(response) => stamp_media_type(response),
         Err(refusal) => refuse(refusal),
     }
+}
+
+/// Names the media type of a handler's answer.
+///
+/// The handler produced a *body*; saying how that body is framed is the
+/// transport's job, not the protocol layer's. Leaving it to the handler means
+/// every handler has to remember, and a handler that forgets answers `200`
+/// with no media type at all — which is a response any conformant client is
+/// entitled to refuse, so the bug shows up as a peer that "does not work"
+/// against this server and nowhere else.
+///
+/// Only a `2xx` is stamped. A refusal already carries its own
+/// `application/json` and its own status, and overwriting a refusal's media
+/// type would be a second, quieter version of the same mistake.
+///
+/// A body the handler framed itself is left alone: a handler that deliberately
+/// answers with a stream has set `text/event-stream`, and overwriting that
+/// with JSON would turn a working streaming response into a parse error on the
+/// client.
+fn stamp_media_type(response: Response) -> Response {
+    if !response.status().is_success() {
+        return response;
+    }
+    let already_framed = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|value| {
+            let raw = value.as_bytes();
+            raw.starts_with(b"text/event-stream") || raw.starts_with(b"application/json")
+        });
+    if already_framed {
+        return response;
+    }
+    let mut response = response;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static(JSON_MEDIA_TYPE),
+    );
+    response
 }
 
 /// The `GET` route: open the session's stream, resuming from `Last-Event-ID`.

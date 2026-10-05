@@ -595,6 +595,18 @@ impl HttpStream {
         self.last
     }
 
+    /// The id of the last event handed to the caller, or `None` if none has
+    /// carried an id.
+    ///
+    /// A resume starts here, so a caller driving this stream itself — rather
+    /// than through [`ResumableStream`], which tracks it privately — has no
+    /// other way to learn it. Without this the only way to resume is to give
+    /// up the cursor the client already knows and guess.
+    #[must_use]
+    pub const fn last_delivered(&self) -> Option<EventId> {
+        self.last
+    }
+
     /// Whether bytes of an unfinished event are still held.
     #[must_use]
     pub const fn has_partial(&self) -> bool {
