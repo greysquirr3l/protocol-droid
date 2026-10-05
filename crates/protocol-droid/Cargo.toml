@@ -32,6 +32,18 @@ serde = []
 # channel with it, leaving the domain, the IR and every codec — which is the
 # shape a server that speaks only HTTP, or a tool that only speaks the IR, wants.
 stdio = ["dep:tokio"]
+# T14. The Streamable HTTP server adapter, which is the other half of the same
+# story: `stdio` covers the process-spawning client and this covers the
+# network server, and the two disagree about nearly everything. `http` is
+# **not** a default because the two transports are alternatives, not a set —
+# a `stdio` server has no use for a `Router`, and a `default-features = false`
+# build is how a consumer says "I am linking this as a library, not running a
+# server". Turning it on adds axum, the `net` half of tokio, and the SSE
+# responder; everything protocol-shaped — the session store, the event ring,
+# the idempotency port, the routing headers, negotiation — is already compiled
+# without it, so a consumer that only wants the IR and the codecs pays for none
+# of this.
+http = ["dep:axum", "dep:futures-core", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
@@ -60,6 +72,10 @@ tokio = { workspace = true, optional = true, features = [
     "io-util",
     "process",
 ] }
+# T14. The Streamable HTTP server. `http` turns these on; nothing else does,
+# and a `--no-default-features` build resolves without them at all.
+axum = { workspace = true, optional = true }
+futures-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,
@@ -84,6 +100,10 @@ serde_json = { workspace = true }
 # that test instantaneous and deterministic.
 tokio = { workspace = true }
 trybuild = "1.0.121"
+# Drives a `Router` to a response without binding a socket, which is what lets
+# the security-header test read headers off a real response rather than
+# asserting that a middleware value is `Some`.
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true
