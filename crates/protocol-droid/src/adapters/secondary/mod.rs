@@ -7,6 +7,12 @@
 pub mod codec;
 pub mod idempotency;
 pub mod mcp;
+// T14/T15. The client half of the HTTP transports. Gated because it is the one
+// driven adapter that opens a socket to somewhere that is not this process: a
+// consumer that only embeds the IR and the codecs has no use for a TLS stack,
+// and `default = false` is how it says so.
+#[cfg(feature = "http")]
+pub mod transport;
 
 // T13. The client half of the stdio transport: spawning a child server, killing
 // it on drop, and keeping its stderr off the protocol stream. Gated with the

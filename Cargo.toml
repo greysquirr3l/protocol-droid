@@ -123,6 +123,20 @@ futures-core = "0.3.31"
 # A dev-dependency rather than a real one: nothing in the adapter needs to
 # call a `Service`, only a test does.
 tower = { version = "0.5.2", default-features = false }
+# T14. The Streamable HTTP **client**, the mirror image of the axum server
+# above and gated by the same feature. `default-features = false` because the
+# defaults are a second TLS stack, a blocking pool, cookies, gzip and a system
+# proxy resolver that a JSON-RPC peer has no use for. `rustls-tls` and not
+# `native-tls`: the task says rustls only, and on a crate whose whole point is
+# that the same bytes behave the same on every target, a dependency on the
+# platform's OpenSSL is exactly the portability trap the MSRV rule warns about.
+# `stream` is the one non-obvious choice — it is what turns a response body
+# into a `Stream` of chunks, which is the difference between a resumable read
+# and a `bytes()` that buffers an SSE response that never ends.
+reqwest = { version = "0.12.24", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+] }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 # Provenance manifest parsing and content digests for the vendored spec files.

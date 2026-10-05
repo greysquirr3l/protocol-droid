@@ -93,6 +93,7 @@ deny = []
 skip = [
     { crate = "winnow", versions = ["0.7", "1.0"], reason = "`toml` 0.9 pairs winnow 0.7 and winnow 1.0 (via toml_parser) inside one upstream crate; not resolvable from here" },
     { crate = "windows-sys", versions = ["0.52", "0.61"], reason = "two unrelated upstreams: 0.52 via errno (rustix, under the dev-only insta -> tempfile chain) and 0.61 via mio (tokio). Neither edge is ours to choose, and a version bump in either is the only way this resolves" },
+    { crate = "base64", versions = ["0.22", "0.23"], reason = "two unrelated upstreams: 0.22 via reqwest's own encoding path and 0.23 via hyper-util (axum, and the tls stack reqwest shares with it) plus ureq (xtask). reqwest 0.12 pins its own major, and neither edge is ours to choose" },
 ]
 skip-tree = []
 

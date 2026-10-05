@@ -43,7 +43,7 @@ stdio = ["dep:tokio"]
 # the idempotency port, the routing headers, negotiation — is already compiled
 # without it, so a consumer that only wants the IR and the codecs pays for none
 # of this.
-http = ["dep:axum", "dep:futures-core", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
+http = ["dep:axum", "dep:futures-core", "dep:reqwest", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
@@ -76,6 +76,10 @@ tokio = { workspace = true, optional = true, features = [
 # and a `--no-default-features` build resolves without them at all.
 axum = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
+# T14. The Streamable HTTP client, gated by the same `http` feature as the
+# server above: a consumer that does not run an HTTP server has no use for an
+# HTTP client, and the two are alternatives rather than a set.
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,
