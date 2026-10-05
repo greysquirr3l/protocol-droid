@@ -90,6 +90,13 @@ insta = { workspace = true }
 # fits survives a round trip, and that the gate is exact — so they are generated
 # rather than hand-picked. A hand-picked value proves one case was thought of.
 proptest = { workspace = true }
+# `StreamExt::next` over a response body. Dev-only: nothing in the adapter
+# consumes a `Stream` through these helpers, but a test reading the replayed
+# frames out of an open SSE response has no other way to stop before the
+# stream parks forever waiting for a push that is not coming.
+futures-util = { version = "0.3.31", default-features = false, features = [
+    "std",
+] }
 # The capability table is checked against the vendored `schema.json` files, so
 # the domain's model is verified against the bytes it describes rather than
 # against a second copy of the same assumptions.

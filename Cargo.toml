@@ -96,11 +96,33 @@ insta = { version = "1.43.0", default-features = false }
 # what makes a deadline testable without a real sleep.
 tokio = { version = "1.48.0", default-features = false, features = [
     "macros",
+    "net",
     "rt",
     "sync",
     "time",
     "test-util",
 ] }
+# T14. The Streamable HTTP server. MSRV 1.80 per `cargo info axum`, well under
+# this workspace's 1.98 floor, so the gate does not move the published MSRV.
+# `default-features = false` because the adapter uses none of the extras: the
+# routes take a raw body (the framing layer already decided what a frame is),
+# not a `Form`, and there is no query string, no matched-path, and no
+# `tower-log`. `json` stays on because axum's own `Json` extractor is how a
+# JSON body is read; the alternative is hand-rolling the same
+# `serde_json::from_slice` against a content-type check.
+axum = { version = "0.8.9", default-features = false, features = [
+    "http1",
+    "json",
+    "tokio",
+] }
+# The `Stream` trait the SSE responder consumes. `no_std` and dependency-free,
+# so the whole cost of a streaming response is this one trait — everything
+# else about the stream is ours (`sse::ReplayStream`).
+futures-core = "0.3.31"
+# `ServiceExt::oneshot` drives a `Router` in a test without binding a socket.
+# A dev-dependency rather than a real one: nothing in the adapter needs to
+# call a `Service`, only a test does.
+tower = { version = "0.5.2", default-features = false }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 # Provenance manifest parsing and content digests for the vendored spec files.

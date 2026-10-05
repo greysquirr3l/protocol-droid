@@ -145,7 +145,27 @@ pub enum EndpointError {
 /// server-initiated notifications on the same connection and a resumable
 /// cursor. A server that wants those wants them for *every* request, because a
 /// client cannot know in advance which request will turn out to need a
-/// progress notification.
+/// progress notification.///
+/// # The router does not enforce this, and cannot
+///
+/// This is the one piece of [`ServerConfig`] the router does not read, and the
+/// reason is structural rather than an oversight.
+/// [`RequestHandler::dispatch`](super::RequestHandler::dispatch) returns a
+/// fully framed [`axum::response::Response`], so by the time a `POST` reaches
+/// the protocol layer its `Content-Type` is already decided. The router has
+/// nothing left to apply the mode to.
+///
+/// The consequence is that a handler can frame its answer against the mode or
+/// ignore it, and nothing here will notice — the same shape as T11's
+/// `auth.rs` being reachable from no real path. The transport layer has no
+/// remedy: making `dispatch` return a body and letting the router frame it
+/// would move a transport concern into the protocol layer's signature, and the
+/// protocol layer is the thing that has to stay protocol-neutral.
+///
+/// So it is recorded here and pinned by
+/// `the_streaming_mode_never_changes_the_get_route` rather than enforced. T18
+/// is where the framing is decided, and that is the code that has to honour
+/// this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Streaming {
     /// Answer with one `application/json` document. The default.

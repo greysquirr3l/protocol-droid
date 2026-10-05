@@ -80,6 +80,7 @@ mod auth;
 mod config;
 mod refusal;
 mod resume;
+mod router;
 mod session_store;
 mod sse;
 mod stream;
@@ -88,6 +89,10 @@ pub use auth::{Anonymous, AuthPolicy, Authenticator, Credentials};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
 pub use refusal::Refusal;
 pub use resume::{Resume, decide, plan};
+pub use router::{
+    EventSource, Inbound, InvalidHeaderValue, McpRouter, RequestHandler, SessionHandle,
+    with_security,
+};
 pub use session_store::{SessionStore, SessionStoreError};
 pub use sse::{SseError, SseEvent};
 pub use stream::{

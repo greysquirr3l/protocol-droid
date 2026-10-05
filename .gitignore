@@ -24,3 +24,4 @@ tmp/
 .markdownlintignore
 .mcp.json
 .taplo.toml
+docs/dev/uber-mcp-twitter.md
