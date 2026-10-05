@@ -95,7 +95,7 @@
 //! # Protocol neutrality
 //!
 //! There is no MCP method name, no revision type, and no version check in this
-//! file. The payload is a `T: Borrow<Value>` supplied by the caller, the
+//! file. The payload is a `T: FramePayload` supplied by the caller, the
 //! framing is the transport's, and the decision comes from the protocol-neutral
 //! ring. A2A and ACP bind to the same [`EventTail`] with a different payload
 //! and a different decision function, and need nothing here rewritten.
@@ -128,7 +128,6 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-use core::borrow::Borrow;
 use core::num::NonZeroUsize;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -142,10 +141,10 @@ use axum::body::{Body, Bytes};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use serde_json::Value;
 use thiserror::Error;
 
 use super::resume::{Resume, decide, plan};
+use super::frame_payload::FramePayload;
 use super::sse::SseEvent;
 use crate::domain::{EventId, EventRing};
 
@@ -343,7 +342,7 @@ impl<T> Default for EventTail<T> {
 
 impl<T> EventTail<T>
 where
-    T: Borrow<Value>,
+    T: FramePayload,
 {
     /// Publishes an event and wakes every stream parked on this tail.
     ///
@@ -420,7 +419,7 @@ where
 /// inspects never has to satisfy it.
 impl<T> EventTail<T>
 where
-    T: Borrow<Value> + Send + 'static,
+    T: FramePayload + Send + 'static,
 {
     /// Plans and answers in one call, for a router with nothing to do in
     /// between.
@@ -530,7 +529,7 @@ pub fn planned_refusal<T>(tail: &EventTail<T>, refusal: super::Refusal) -> Plann
 
 impl<T> Planned<T>
 where
-    T: Borrow<Value>,
+    T: FramePayload,
 {
     /// The live body, or the refusal response when there is no stream to open.
     ///
@@ -568,7 +567,7 @@ where
 /// reads from a context that has no reason to have a `Send` payload in hand.
 impl<T> Planned<T>
 where
-    T: Borrow<Value> + Send + 'static,
+    T: FramePayload + Send + 'static,
 {
     /// The response to send, whatever the decision was.
     ///
@@ -657,7 +656,7 @@ impl<T> EventStream<T> {
 
 impl<T> EventStream<T>
 where
-    T: Borrow<Value>,
+    T: FramePayload,
 {
     /// The next decision, and the waker registered under the ring lock when it
     /// is "nothing yet".
@@ -825,7 +824,7 @@ impl Batch {
 
 impl<T> Stream for EventStream<T>
 where
-    T: Borrow<Value>,
+    T: FramePayload,
 {
     type Item = Result<Bytes, StreamError>;
 
@@ -879,7 +878,7 @@ where
 /// [`StreamError::Response`] if the response headers cannot be assembled.
 fn stream_response<T>(stream: EventStream<T>) -> Result<Response, StreamError>
 where
-    T: Borrow<Value> + Send + 'static,
+    T: FramePayload + Send + 'static,
 {
     // Three headers, and each is load-bearing in a way that is invisible from
     // the frame encoder:
@@ -940,7 +939,9 @@ mod tests {
     use futures_core::Stream;
     use serde_json::{Value, json};
 
-    use super::{EventStream, EventTail, KEEP_ALIVE_FRAME, StreamError, parked_streams};
+    use super::{
+        EventStream, EventTail, FramePayload, KEEP_ALIVE_FRAME, StreamError, parked_streams,
+    };
     use crate::adapters::primary::transport::http::{
         Refusal, Resume, SseError, SseEvent, planned_refusal,
     };
@@ -1036,7 +1037,7 @@ mod tests {
     /// Returns the poll rather than a decoded frame, because the properties
     /// under test are about *whether* a poll produced bytes and about the exact
     /// bytes it produced — decoding inside the harness would hide both.
-    fn poll_once<T: core::borrow::Borrow<Value>>(
+    fn poll_once<T: FramePayload>(
         stream: &mut EventStream<T>,
         waker: &Waker,
     ) -> Poll<Option<Result<Bytes, StreamError>>> {

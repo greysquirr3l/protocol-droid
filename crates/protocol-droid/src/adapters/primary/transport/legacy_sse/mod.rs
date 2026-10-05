@@ -64,8 +64,14 @@
 //! domain, ungated, because *describing* the transport costs nothing and
 //! only *speaking* it does.
 
+mod frame;
 mod origin;
+mod router;
 
+pub use frame::{LegacyDispatcher, LegacyFrame, LegacyTail};
 pub use origin::{Origin, OriginError, OriginPolicy};
+pub use router::{
+    DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyRouter, RouteError, SESSION_PARAMETER,
+};
 
 pub use crate::domain::{MessageEndpoint, MessageEndpointError};

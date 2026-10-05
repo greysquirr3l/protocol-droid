@@ -78,6 +78,8 @@
 
 mod auth;
 mod config;
+pub mod precondition;
+mod frame_payload;
 mod refusal;
 mod resume;
 mod router;
@@ -97,12 +99,17 @@ pub const JSON_MEDIA_TYPE: &str = "application/json";
 
 pub use auth::{Anonymous, AuthPolicy, Authenticator, Credentials};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
+pub use frame_payload::FramePayload;
 pub use refusal::Refusal;
 pub use resume::{Resume, decide, plan};
 pub use router::{
     EventSource, Inbound, InvalidHeaderValue, McpRouter, RequestHandler, SessionHandle,
     Unsessioned, with_security,
 };
+// Re-exported for the `2024-11-05` transport rather than duplicated there: a
+// second implementation of "authenticate, then refuse" is a second place to get
+// the ordering wrong, and the ordering is a security property, not a preference.
+
 pub use session_store::{SessionStore, SessionStoreError};
 pub use sse::{SseError, SseEvent};
 pub use stream::{

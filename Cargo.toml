@@ -110,9 +110,13 @@ tokio = { version = "1.48.0", default-features = false, features = [
 # `tower-log`. `json` stays on because axum's own `Json` extractor is how a
 # JSON body is read; the alternative is hand-rolling the same
 # `serde_json::from_slice` against a content-type check.
+# `query` is here for the 2024-11-05 transport, which names the session in the
+# query string of the URI the server itself advertised. There is no header for
+# it on that revision, so there is nothing to extract but the query.
 axum = { version = "0.8.9", default-features = false, features = [
     "http1",
     "json",
+    "query",
     "tokio",
 ] }
 # The `Stream` trait the SSE responder consumes. `no_std` and dependency-free,

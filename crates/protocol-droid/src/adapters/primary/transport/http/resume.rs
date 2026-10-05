@@ -75,11 +75,10 @@
 //! method name: a peer branches on `"resume-gap"` because that is the string
 //! this module writes, not because it is a method in any specification.
 
-use core::borrow::Borrow;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
-use super::{Refusal, SseEvent};
+use super::{FramePayload, Refusal, SseEvent};
 use crate::domain::{EventId, EventRing, Replay, StreamEvent};
 
 /// The notice a client gets when its cursor is behind the drop point, reduced
@@ -200,7 +199,7 @@ impl Resume {
 /// assert_eq!(decision.last().map(|id| id.get()), Some(9));
 /// ```
 #[must_use]
-pub fn plan<T: Borrow<Value>>(ring: &EventRing<T>, header: Option<&str>) -> Resume {
+pub fn plan<T: FramePayload>(ring: &EventRing<T>, header: Option<&str>) -> Resume {
     let Some(header) = header else {
         return decide(&ring.replay_from(None));
     };
@@ -215,7 +214,7 @@ pub fn plan<T: Borrow<Value>>(ring: &EventRing<T>, header: Option<&str>) -> Resu
 /// because a caller that has already asked the ring — to log
 /// [`Replay::is_complete`], say — should not ask it twice.
 #[must_use]
-pub fn decide<T: Borrow<Value>>(replay: &Replay<'_, T>) -> Resume {
+pub fn decide<T: FramePayload>(replay: &Replay<'_, T>) -> Resume {
     match replay {
         Replay::UpToDate { last } => Resume::Live { last: *last },
         Replay::Buffered { events, last } => buffered(events, *last),
@@ -262,10 +261,10 @@ fn parse_cursor(header: &str) -> Option<EventId> {
 }
 
 /// Turns a complete window into frames, keeping every `id:`.
-fn buffered<T: Borrow<Value>>(events: &[StreamEvent<T>], last: EventId) -> Resume {
+fn buffered<T: FramePayload>(events: &[StreamEvent<T>], last: EventId) -> Resume {
     let mut frames = Vec::with_capacity(events.len());
     for event in events {
-        match SseEvent::json(event.id(), event.payload().borrow()) {
+        match event.payload().to_frame(event.id()) {
             Ok(frame) => frames.push(frame),
             // A payload with no JSON form — a non-string map key — has no wire
             // representation, and this is the server's bug rather than the

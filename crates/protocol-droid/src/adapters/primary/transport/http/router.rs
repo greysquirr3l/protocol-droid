@@ -73,19 +73,18 @@
 use std::sync::Arc;
 
 use axum::Router as AxumRouter;
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::State;
-use core::pin::Pin;
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
-use futures_core::Stream;
 use serde_json::Value;
 
+use super::precondition::{authenticate, read_body};
 use super::{
-    Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, JSON_MEDIA_TYPE, Refusal,
+    Anonymous, AuthPolicy, Authenticator, EventTail, JSON_MEDIA_TYPE, Refusal,
     SecurityHeaders, ServerConfig, SessionStore,
 };
 use crate::domain::ProtocolVersion;
@@ -745,15 +744,6 @@ where
 /// Whatever [`AuthPolicy::refuse`] returns: `401` for a caller that presented
 /// nothing usable, `403` for one whose credential proved an identity without
 /// the scope this endpoint names.
-fn authenticate(
-    authenticator: &dyn Authenticator,
-    policy: &AuthPolicy,
-    headers: &HeaderMap,
-) -> Result<AuthContext, Refusal> {
-    let context = authenticator.authenticate(&Credentials::from_headers(headers));
-    policy.refuse(&context).map_or(Ok(context), Err)
-}
-
 /// The `Mcp-Session-Id` the request named, if it named one.
 ///
 /// # Errors
@@ -835,35 +825,6 @@ fn read_protocol(headers: &HeaderMap) -> Result<Option<ProtocolVersion>, Refusal
         .map_err(|_| Refusal::ProtocolHeader {
             reason: raw.to_owned(),
         })
-}
-
-/// The `POST` route's body, bounded by [`ServerConfig::max_body`].
-async fn read_body(body: Body, limit: usize) -> Result<Bytes, Refusal> {
-    let mut chunks = body.into_data_stream();
-    let mut collected: Vec<u8> = Vec::new();
-    while let Some(chunk) = next_item(&mut chunks).await {
-        let chunk = chunk.map_err(|error| {
-            Refusal::Handler(format!("the request body could not be read: {error}"))
-        })?;
-        if collected.len().saturating_add(chunk.len()) > limit {
-            return Err(Refusal::BodyTooLarge);
-        }
-        collected.extend_from_slice(&chunk);
-    }
-    Ok(Bytes::from(collected))
-}
-
-/// The next item from `stream`, waiting for as long as it takes.
-///
-/// `Stream::next` lives on `futures_util::StreamExt`, and this crate depends
-/// on `futures-core` rather than the whole of `futures`. Polling through
-/// `poll_fn` is the same operation written out, and it is the only place in the
-/// adapter that has to spell it.
-async fn next_item<S>(stream: &mut S) -> Option<S::Item>
-where
-    S: Stream + Unpin,
-{
-    std::future::poll_fn(|context| Pin::new(&mut *stream).poll_next(context)).await
 }
 
 /// The one way a refusal becomes a response.

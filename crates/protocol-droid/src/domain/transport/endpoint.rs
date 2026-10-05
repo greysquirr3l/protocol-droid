@@ -92,6 +92,61 @@ impl MessageEndpoint {
     pub fn query(&self) -> Option<&str> {
         self.0.split_once('?').map(|(_path, query)| query)
     }
+
+    /// A path with no query and no fragment, for a server that will append one.
+    ///
+    /// Distinct from [`FromStr`] because a *configured* path and an *advertised*
+    /// endpoint are different shapes, and only one of them may carry a query.
+    /// A path of `/messages?tenant=a` parses fine as a target — a client could
+    /// be told to post there — but a server that then appends `sessionId` to it
+    /// produces `/messages?tenant=a?sessionId=1`, whose second `?` is data
+    /// rather than a delimiter, and a client that splits on it gets a query of
+    /// `a?sessionId=1` and posts with no session at all. A `#` is worse: it
+    /// makes the whole query a fragment, which the client drops silently.
+    ///
+    /// Refusing both here is what lets [`with_query_parameter`](Self::with_query_parameter)
+    /// be infallible.
+    ///
+    /// # Errors
+    ///
+    /// [`MessageEndpointError::NotAbsolutePath`] for an empty value, a
+    /// non-`/`-initial one, one that is a query string, or one that names a
+    /// scheme; [`MessageEndpointError::IllegalCharacter`] for a C0 control,
+    /// DEL, or a space; and [`MessageEndpointError::QueryOrFragment`] for a
+    /// value that already carries a `?` or a `#`.
+    pub fn bare_path(value: &str) -> Result<Self, MessageEndpointError> {
+        // The general parse first, the `?`/`#` rule second, so that each value
+        // is refused for the most specific thing wrong with it. A value of
+        // `?sessionId=1` has no path at all, and `Empty` says that where
+        // `QueryOrFragment` would say something true and less useful.
+        let endpoint = value.parse::<Self>()?;
+        if value.contains(['?', '#']) {
+            return Err(MessageEndpointError::QueryOrFragment);
+        }
+        Ok(endpoint)
+    }
+
+    /// This target with one more query parameter appended.
+    ///
+    /// Infallible, and that is the whole point: the result is a string this
+    /// module assembled from a [`bare_path`](Self::bare_path) it already
+    /// validated and a key and value it is choosing, so there is nothing left
+    /// to parse and no way for the result to be one [`FromStr`] would refuse.
+    ///
+    /// An existing query is preserved rather than replaced — `?tenant=a` plus
+    /// `sessionId=1` is `?tenant=a&sessionId=1` — because the alternative is a
+    /// server that silently discards its own configuration the first time a
+    /// client is added.
+    ///
+    /// `key` and `value` are not validated here, and cannot be: the only
+    /// callers in this crate pass a `&'static str` constant and a hexadecimal
+    /// session id. A caller with an arbitrary string should parse it into a
+    /// [`MessageEndpoint`] instead of reaching for this.
+    #[must_use]
+    pub fn with_query_parameter(&self, key: &str, value: &str) -> Self {
+        let separator = if self.query().is_some() { '&' } else { '?' };
+        Self(format!("{}{separator}{key}={value}", self.0))
+    }
 }
 
 /// Why a string is not a usable message endpoint.
@@ -131,6 +186,11 @@ pub enum MessageEndpointError {
     /// send a second request the user never asked for.
     #[error("a message endpoint may not contain a control character or a space")]
     IllegalCharacter,
+
+    /// The value already carried a `?` or a `#`, so a query appended to it
+    /// would be part of the existing query or of a fragment.
+    #[error("a configured message path must not carry a query or a fragment")]
+    QueryOrFragment,
 
     /// The value did not begin with `/`.
     #[error("a message endpoint must be an absolute path starting with `/`")]
@@ -215,6 +275,64 @@ impl fmt::Display for MessageEndpoint {
 
 #[cfg(test)]
 mod tests {
+    /// A configured path is not a target: it has to be able to *take* a query.
+    ///
+    /// A table rather than a loop over cases with an index, because the cases
+    /// are the documentation here — a reader deciding whether the `?` and `#`
+    /// refusals are over-strict should be able to read the shapes rather than
+    /// the loop that rejects them.
+    ///
+    /// Each case names the *variant*, not merely that something went wrong. A
+    /// test that checks only "it failed" passes when a validator refuses for
+    /// the wrong reason, which is how a good message slowly becomes a
+    /// misleading one.
+    #[test]
+    fn a_configured_path_may_not_already_carry_a_query_or_a_fragment() {
+        use MessageEndpointError as E;
+        let cases = [
+            ("/messages", None),
+            ("/messages?sessionId=1", Some(E::QueryOrFragment)),
+            ("/messages#a", Some(E::QueryOrFragment)),
+            ("/messages#a?b=c", Some(E::QueryOrFragment)),
+            ("?sessionId=1", Some(E::Empty)),
+            ("https://elsewhere.example/x", Some(E::Absolute)),
+            ("//elsewhere.example/x", Some(E::ProtocolRelative)),
+            ("messages", Some(E::NotAbsolutePath)),
+            ("/mess ages", Some(E::IllegalCharacter)),
+        ];
+        for (value, wanted) in cases {
+            assert_eq!(MessageEndpoint::bare_path(value).err(), wanted, "bare_path({value:?})");
+        }
+    }
+
+    /// Appending must not cost the server its own configuration.
+    ///
+    /// A path of `/messages?tenant=a` is refused as a *configured* path — see
+    /// the test above — but a `MessageEndpoint` built some other way can carry
+    /// a query, and then this is the method that has to preserve it. Replacing
+    /// rather than extending would silently drop `tenant`, and the symptom
+    /// would be a client talking to the wrong tenant with no error anywhere.
+    #[test]
+    fn appending_extends_an_existing_query_rather_than_replacing_it() -> Result<(), TestError> {
+        let endpoint = MessageEndpoint::from_str("/messages?tenant=a")?;
+        let with_session = endpoint.with_query_parameter("sessionId", "0000000000000001");
+        assert_eq!(with_session.as_str(), "/messages?tenant=a&sessionId=0000000000000001");
+        assert_eq!(with_session.path(), "/messages");
+        assert_eq!(with_session.query(), Some("tenant=a&sessionId=0000000000000001"));
+        Ok(())
+    }
+
+    /// And with no query, the first parameter is what introduces one.
+    #[test]
+    fn appending_to_a_bare_path_introduces_the_query() -> Result<(), TestError> {
+        let endpoint = MessageEndpoint::from_str("/messages")?;
+        let with_session = endpoint.with_query_parameter("sessionId", "0000000000000001");
+        assert_eq!(with_session.as_str(), "/messages?sessionId=0000000000000001");
+        assert_eq!(with_session.path(), "/messages");
+        assert_eq!(with_session.query(), Some("sessionId=0000000000000001"));
+        Ok(())
+    }
+
     use super::{MessageEndpoint, MessageEndpointError};
     use core::str::FromStr;
 
