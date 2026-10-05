@@ -79,10 +79,14 @@
 mod auth;
 mod config;
 mod refusal;
+mod session_store;
+mod sse;
 
 pub use auth::{Anonymous, AuthPolicy, Authenticator, Credentials};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
 pub use refusal::Refusal;
+pub use session_store::{SessionStore, SessionStoreError};
+pub use sse::{SseError, SseEvent};
 
 /// The default replay window is the domain's, and the security defaults are
 /// [`SecurityHeaders::default`]. This module re-exports nothing else, so a

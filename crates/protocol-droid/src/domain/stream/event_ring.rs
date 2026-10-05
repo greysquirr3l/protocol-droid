@@ -911,13 +911,32 @@ mod tests {
         let reader = {
             let ring = Arc::clone(&ring);
             thread::spawn(move || {
+                // The reader resumes from a watermark rather than from the
+                // beginning, because a reader with no history can *legitimately*
+                // be told "up to date" by an empty ring — that is the writer
+                // not having started yet, not a lost event, and an assertion
+                // that reads it as a loss is a race against thread start-up
+                // rather than a claim about the ring.
+                let mut watermark = EventId::WATERMARK;
                 for _ in 0..1_000 {
                     let held = ring.lock().map_err(|_| Failure::Concurrent)?;
-                    let replay = held.replay_from(None);
-                    // Whatever the interleaving, a replay is never a success
-                    // that has lost an event.
-                    if replay.is_complete() && replay.events().is_empty() {
+                    let replay = held.replay_from(Some(watermark));
+                    // The claim: once the writer has produced something this
+                    // reader has not seen, a complete answer carries at least
+                    // one event. A gap is excluded because the ring is then
+                    // saying it cannot serve the reader contiguously, which is
+                    // a refusal rather than a loss.
+                    if replay.is_complete()
+                        && watermark.get() < held.last().get()
+                        && replay.events().is_empty()
+                    {
                         return Err(Failure::Outcome("a complete replay was empty"));
+                    }
+                    for event in replay.events() {
+                        if event.id().get() <= watermark.get() {
+                            return Err(Failure::Outcome("an event was replayed twice"));
+                        }
+                        watermark = event.id();
                     }
                     // Released here rather than at the end of the body so the
                     // next iteration does not queue behind this lock.

@@ -8,10 +8,12 @@
 //! is shared because it is already below the transport, not because it lives
 //! here.
 //!
-//! T15 adds a `legacy_sse` module beside `http`, not inside it. The 2024-11-05
-//! HTTP+SSE transport is a different wire protocol that happens to run over
-//! HTTP; sharing a router with it would couple two lifecycles that the
-//! specification keeps separate.
+//! T15 adds a `legacy_sse` module beside `http`, not inside it. (Named in prose
+//! rather than as an intra-doc link, because the module does not exist yet and
+//! a link check would fail on a forward reference.) The 2024-11-05 HTTP+SSE
+//! transport is a different wire protocol that happens to run over HTTP;
+//! sharing a router with it would couple two lifecycles that the specification
+//! keeps separate.
 
 #[cfg(feature = "http")]
 pub mod http;
