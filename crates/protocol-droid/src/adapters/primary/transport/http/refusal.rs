@@ -118,6 +118,20 @@ pub enum Refusal {
         last: EventId,
     },
 
+    /// The `Last-Event-ID` header was present but is not a cursor this stream
+    /// can read.
+    ///
+    /// Separate from [`UnknownCursor`](Self::UnknownCursor) because the two
+    /// faults have different fixes and the client has to tell them apart to
+    /// make one: a cursor ahead of the stream is a well-formed id the server
+    /// cannot serve, while a cursor it cannot parse is a malformed header. A
+    /// server that answered a corrupt header by quietly starting the client
+    /// from the top would hand it a stream it believes it has already seen, so
+    /// this refuses rather than guessing — including for the empty string,
+    /// which is a client that quoted a cursor and quoted nothing.
+    #[error("the Last-Event-ID header is not a well-formed event cursor")]
+    MalformedCursor,
+
     /// The protocol layer failed in a way the adapter does not model.
     #[error("{0}")]
     Handler(String),
@@ -131,10 +145,18 @@ impl Refusal {
             // "Servers that require a session ID SHOULD respond to requests
             // without an Mcp-Session-Id header (other than initialization) with
             // HTTP 400 Bad Request." — transports, 2025-06-18.
+            //
+            // The citation covers the first three arms. `MalformedBody` is a
+            // 400 for the same reason without the quote, and `MalformedCursor`
+            // is this adapter's own 400 for the same reason again: a header
+            // the server understood and could not accept. A cursor is not a
+            // session id, and its own slug and code are what tell a client
+            // which header it got wrong.
             Self::MalformedSessionId
             | Self::MissingSession
             | Self::ProtocolHeader { .. }
-            | Self::MalformedBody { .. } => StatusCode::BAD_REQUEST,
+            | Self::MalformedBody { .. }
+            | Self::MalformedCursor => StatusCode::BAD_REQUEST,
 
             // "it MUST respond to requests containing that session ID with HTTP
             // 404 Not Found" — same section.
@@ -196,6 +218,7 @@ impl Refusal {
             Self::Forbidden => -32004,
             Self::StreamGap { .. } => -32005,
             Self::UnknownCursor { .. } => -32006,
+            Self::MalformedCursor => -32007,
         }
     }
 
@@ -269,6 +292,7 @@ const fn slug(refusal: &Refusal) -> &'static str {
         Refusal::MalformedBody { .. } => "malformed_body",
         Refusal::StreamGap { .. } => "stream_gap",
         Refusal::UnknownCursor { .. } => "unknown_cursor",
+        Refusal::MalformedCursor => "malformed_cursor",
         Refusal::Handler(_) => "handler_error",
     }
 }
