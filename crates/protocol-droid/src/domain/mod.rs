@@ -51,8 +51,8 @@ pub use stream::{
 };
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
 pub use transport::{
-    FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, TransportKind, encode_frame,
-    transport_allowed,
+    FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, MessageEndpoint,
+    MessageEndpointError, TransportKind, encode_frame, transport_allowed,
 };
 
 #[cfg(test)]

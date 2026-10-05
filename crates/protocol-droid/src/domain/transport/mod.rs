@@ -30,8 +30,10 @@
 // Private, like this module: the items are re-exported by name rather than the
 // module itself, so `unreachable_pub` does not apply and there is exactly one
 // path to each of them.
+mod endpoint;
 mod framing;
 
+pub use endpoint::{MessageEndpoint, MessageEndpointError};
 pub use framing::{FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, encode_frame};
 
 use core::fmt;
