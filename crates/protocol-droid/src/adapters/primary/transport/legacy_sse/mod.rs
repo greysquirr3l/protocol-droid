@@ -65,11 +65,10 @@
 //! only *speaking* it does.
 
 mod frame;
-mod origin;
 mod router;
 
+pub use crate::adapters::primary::transport::origin::{Origin, OriginError, OriginPolicy};
 pub use frame::{LegacyDispatcher, LegacyFrame, LegacyTail};
-pub use origin::{Origin, OriginError, OriginPolicy};
 pub use router::{
     DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyRouter, RouteError, SESSION_PARAMETER,
 };

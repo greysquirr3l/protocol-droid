@@ -32,6 +32,8 @@
 //! what 409 is for, and the body names the gap rather than reporting a short
 //! read as a success.
 
+use core::num::NonZeroU64;
+
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
@@ -110,6 +112,33 @@ pub enum Refusal {
     /// identity.
     #[error("this request's Origin is not one this server serves")]
     ForeignOrigin,
+
+    /// The subject exceeded the configured request rate.
+    ///
+    /// OWASP API Security Top 10:2023, API4:2023 (Unrestricted Resource
+    /// Consumption). The one refusal here that answers with a *delay* rather
+    /// than a denial, which is why it carries `retry_after`: RFC 9110 §10.2.3
+    /// makes `Retry-After` a `429` SHOULD, and a client told only "429" is a
+    /// client that retries immediately and keeps the rate up.
+    ///
+    /// Distinct from [`Forbidden`](Self::Forbidden), which is about a
+    /// credential, and from [`ForeignOrigin`](Self::ForeignOrigin), which is
+    /// about where the request came from. This is about how often one subject
+    /// asked.
+    #[error("this subject exceeded its request rate; retry after {retry_after}s")]
+    RateLimited {
+        /// Whole seconds the caller should wait. Never zero: a `Retry-After: 0`
+        /// is a client told to retry now, which is the opposite of the point.
+        retry_after: NonZeroU64,
+    },
+
+    /// The handler did not answer inside the configured request deadline.
+    ///
+    /// `503` rather than `504`. A `504` names a gateway that timed out talking
+    /// to an upstream, and this server *is* the thing that timed out — it is
+    /// not forwarding to anything. OWASP API Security Top 10:2023, API4:2023.
+    #[error("this handler did not answer inside the configured request deadline")]
+    Timeout,
 
     /// The body was not a JSON-RPC frame this build can decode.
     #[error("the request body is not a decodable JSON-RPC frame: {reason}")]
@@ -200,6 +229,8 @@ impl Refusal {
             // to authenticate with something that cannot help, because
             // nothing about the caller's identity changes a foreign origin.
             Self::Forbidden | Self::ForeignOrigin => StatusCode::FORBIDDEN,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
 
             // Not the specification's number; see the module docs. Both
             // resume refusals are a conflict between the client's cursor and
@@ -253,6 +284,8 @@ impl Refusal {
             Self::UnknownCursor { .. } => -32006,
             Self::MalformedCursor => -32007,
             Self::ForeignOrigin => -32008,
+            Self::RateLimited { .. } => -32009,
+            Self::Timeout => -32010,
         }
     }
 
@@ -328,6 +361,8 @@ const fn slug(refusal: &Refusal) -> &'static str {
         Refusal::UnknownCursor { .. } => "unknown_cursor",
         Refusal::MalformedCursor => "malformed_cursor",
         Refusal::ForeignOrigin => "foreign_origin",
+        Refusal::RateLimited { .. } => "rate_limited",
+        Refusal::Timeout => "request_timeout",
         Refusal::Handler(_) => "handler_error",
     }
 }
@@ -336,10 +371,10 @@ impl IntoResponse for Refusal {
     /// Renders the refusal, with the security layer still applied on top.
     ///
     /// This impl exists so a handler can `?` a `Refusal` into a `Response`. It
-    /// sets only the status, the content type and — for the one refusal where
-    /// it is meaningful — the `Allow` header; the security headers come from
-    /// the router layer, which is the only place that can guarantee they are on
-    /// *every* response including this one.
+    /// sets only the status, the content type and — for the two refusals where
+    /// a header is meaningful — `Allow` and `Retry-After`; the security headers
+    /// come from the router layer, which is the only place that can guarantee
+    /// they are on *every* response including this one.
     fn into_response(self) -> Response {
         let status = self.status();
         let body = serde_json::to_vec(&self.body()).unwrap_or_else(|_| Vec::new());
@@ -361,6 +396,14 @@ impl IntoResponse for Refusal {
             && let Ok(value) = HeaderValue::from_str(method)
         {
             response.headers_mut().insert(header::ALLOW, value);
+        }
+        // RFC 9110 §10.2.3. The seconds are already a `NonZeroU64`, so the
+        // header can never say `Retry-After: 0` — which a client would read as
+        // "come back immediately", turning the backoff into a hot loop.
+        if let Self::RateLimited { retry_after } = &self
+            && let Ok(value) = HeaderValue::from_str(&retry_after.get().to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         response
     }

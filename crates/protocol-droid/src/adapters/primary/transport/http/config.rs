@@ -21,7 +21,7 @@
 //! transport checks a frame against it and so does this one, and two limits
 //! spelled separately is one of them eventually wrong.
 
-use core::num::NonZeroUsize;
+use core::num::{NonZeroU32, NonZeroUsize};
 use core::str::FromStr;
 use core::time::Duration;
 use std::sync::Arc;
@@ -31,6 +31,7 @@ use thiserror::Error;
 use crate::domain::MaxFrameSize;
 use crate::domain::mcp::ResourceMetadata;
 use crate::domain::registry::ScopeSet;
+use crate::domain::RateLimit;
 
 /// The path a client POSTs, GETs and DELETEs, without a scheme or host.
 ///
@@ -266,6 +267,41 @@ impl SecurityHeaders {
 /// exists separately from the stream.
 const DEFAULT_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// T17. Requests in flight at once before the connection is shed.
+///
+/// Not a queue length: past this the caller gets `503`. Sized for a
+/// single-process server whose handlers are mostly I/O against one
+/// authorization server — well above what a single client can generate, and
+/// well below what exhausts the connection pool.
+const DEFAULT_MAX_CONCURRENCY: NonZeroU32 = match NonZeroU32::new(256) {
+    Some(value) => value,
+    None => unreachable!(),
+};
+
+/// T17. The whole-request deadline.
+///
+/// Thirty seconds is far longer than a healthy tool call and far shorter than
+/// the point at which a caller has given up, so a hung handler is dropped
+/// while the client is still listening.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// T17. Requests per subject per minute.
+///
+/// Applied per `Mcp-Session-Id`, or shared across anonymous callers. The
+/// window is a minute because that is the granularity an operator reasons
+/// about when asked "who is hammering this"; the fixed window's worst case is
+/// documented on [`RateLimit`].
+const DEFAULT_RATE_LIMIT: RateLimit = RateLimit::new(
+    match NonZeroU32::new(600) {
+        Some(value) => value,
+        None => unreachable!(),
+    },
+    DEFAULT_RATE_WINDOW,
+);
+
+/// The width of [`DEFAULT_RATE_LIMIT`].
+const DEFAULT_RATE_WINDOW: Duration = Duration::from_secs(60);
+
 /// How long a stream waits before emitting an SSE comment when it has nothing
 /// to say.
 ///
@@ -287,6 +323,9 @@ pub struct ServerConfig {
     security: SecurityHeaders,
     required_scopes: ScopeSet,
     resource_metadata: Option<Arc<ResourceMetadata>>,
+    max_concurrency: NonZeroU32,
+    request_timeout: Duration,
+    rate_limit: RateLimit,
 }
 
 impl ServerConfig {
@@ -311,7 +350,61 @@ impl ServerConfig {
             security: SecurityHeaders::default(),
             required_scopes: ScopeSet::empty(),
             resource_metadata: None,
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            rate_limit: DEFAULT_RATE_LIMIT,
         })
+    }
+
+    /// How many requests may be in flight at once.
+    ///
+    /// A ceiling rather than a queue: past this the connection is shed with
+    /// `503`, because a request that waits for a slot has already spent the
+    /// caller's timeout doing nothing. OWASP API Security Top 10:2023,
+    /// API4:2023 (Unrestricted Resource Consumption).
+    #[must_use]
+    pub const fn max_concurrency(&self) -> NonZeroU32 {
+        self.max_concurrency
+    }
+
+    /// Sets the in-flight ceiling. A `limit` of zero is rejected by
+    /// [`NonZeroU32`], because a server that accepts nothing is a server that
+    /// is up and useless.
+    #[must_use]
+    pub const fn with_max_concurrency(mut self, limit: NonZeroU32) -> Self {
+        self.max_concurrency = limit;
+        self
+    }
+
+    /// How long one request may take end to end.
+    ///
+    /// Distinct from [`stream_timeout`](Self::stream_timeout), which bounds
+    /// the idle gap *between* events on an already-open stream. This one
+    /// bounds the whole request, so a handler that never answers is dropped
+    /// rather than holding a connection open forever.
+    #[must_use]
+    pub const fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
+    /// Sets the per-request deadline.
+    #[must_use]
+    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
+    /// The per-subject request allowance.
+    #[must_use]
+    pub const fn rate_limit(&self) -> &RateLimit {
+        &self.rate_limit
+    }
+
+    /// Sets the per-subject allowance.
+    #[must_use]
+    pub const fn with_rate_limit(mut self, limit: RateLimit) -> Self {
+        self.rate_limit = limit;
+        self
     }
 
     /// The MCP endpoint path.

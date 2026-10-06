@@ -43,7 +43,7 @@ stdio = ["dep:tokio"]
 # the idempotency port, the routing headers, negotiation — is already compiled
 # without it, so a consumer that only wants the IR and the codecs pays for none
 # of this.
-http = ["dep:axum", "dep:futures-core", "dep:reqwest", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
+http = ["dep:axum", "dep:futures-core", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
 # T15. The deprecated 2024-11-05 HTTP+SSE transport, which `2025-03-26`
 # replaced and which is the only transport that revision speaks. It needs the
 # HTTP stack, so it implies it rather than listing it again — and it is a
@@ -97,6 +97,12 @@ tokio = { workspace = true, optional = true, features = [
 # T14. The Streamable HTTP server. `http` turns these on; nothing else does,
 # and a `--no-default-features` build resolves without them at all.
 axum = { workspace = true, optional = true }
+# T17. `limit` for the concurrency ceiling and `timeout` for the request
+# deadline. Both are service wrappers rather than logic — re-implementing a
+# semaphore-guarded service or a `tokio::time::timeout` wrapper by hand is the
+# kind of "obviously simple" that is subtly wrong about cancellation, and
+# `tower` is already in the workspace so this adds no new resolution.
+tower = { workspace = true, optional = true, features = ["limit", "timeout", "util"] }
 futures-core = { workspace = true, optional = true }
 # T14. The Streamable HTTP client, gated by the same `http` feature as the
 # server above: a consumer that does not run an HTTP server has no use for an

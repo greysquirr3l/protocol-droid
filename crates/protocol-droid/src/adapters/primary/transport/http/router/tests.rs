@@ -12,7 +12,8 @@
 //! binds a socket. A test that binds one is testing the OS as much as the
 //! router, and it is the test that hangs when the code under test hangs.
 
-use core::num::NonZeroUsize;
+use core::num::{NonZeroU32, NonZeroUsize};
+use core::time::Duration;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,7 +36,9 @@ use crate::application::session::IdSource;
 use crate::domain::mcp::{ResourceMetadata, ResourceUri};
 use crate::domain::registry::auth::{AuthContext, Scope, ScopeSet};
 use crate::domain::session::SessionId;
-use crate::domain::{EventId, McpSessionId, ProtocolVersion};
+use crate::domain::{EventId, McpSessionId, ProtocolVersion, RateLimit};
+use crate::adapters::primary::transport::http::limits::RateLimiter;
+use crate::adapters::primary::transport::origin::OriginPolicy;
 
 /// Every fallible call in this module funnels through here, so a failure prints
 /// the engine's own account of what it refused.
@@ -1351,4 +1354,171 @@ impl Authenticator for ReadOnly {
         };
         Box::pin(std::future::ready(context))
     }
+}
+
+// --- T17: the layers that run before a handler -----------------------
+//
+// Driven through `oneshot` like everything else above, so these assert the
+// router as it is actually mounted rather than the middleware in isolation.
+
+/// A router carrying the T17 layers, built so a test can choose the origin
+/// policy and the rate limit.
+fn hardened(origin: OriginPolicy, limiter: RateLimiter) -> Result<Router, TestError> {
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let recorder = Arc::new(Recorder::default());
+    let config = ServerConfig::new()?;
+    Ok(McpRouter::new(
+        config,
+        sessions,
+        Echo {
+            recorder,
+            establish: true,
+            stateless: false,
+        },
+    )
+    .with_origin_policy(origin)
+    .with_rate_limiter(limiter)
+    .into_router()?)
+}
+
+/// A limiter that allows `limit` requests in the hour, so a test cannot race a
+/// window boundary.
+fn limiter(limit: u32) -> Result<RateLimiter, TestError> {
+    Ok(RateLimiter::new(RateLimit::new(
+        NonZeroU32::new(limit).ok_or("a fixture asked for a zero limit")?,
+        Duration::from_secs(3600),
+    )))
+}
+
+fn origin(raw: &str) -> Result<OriginPolicy, TestError> {
+    Ok(OriginPolicy::strict(Some(raw.parse()?)))
+}
+
+const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+
+fn post_with(body: &str, headers: &[(&str, &str)]) -> Result<Request<Body>, TestError> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header(header::CONTENT_TYPE, "application/json");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    Ok(builder.body(Body::from((*body).to_owned()))?)
+}
+
+/// Streamable HTTP had no `Origin` check of its own, so a browser could
+/// rebind onto it and be answered. This is the test that says that is fixed.
+#[tokio::test]
+async fn a_foreign_origin_is_refused_before_the_handler() -> Result<(), TestError> {
+    let router = hardened(origin("http://localhost:3000")?, limiter(10)?)?;
+
+    let response = router
+        .clone()
+        .oneshot(post_with(INITIALIZE, &[("origin", "http://evil.example")])?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    Ok(())
+}
+
+/// An absent `Origin` is not a foreign one: a non-browser client sends none,
+/// and refusing it would break every CLI client in existence.
+#[tokio::test]
+async fn a_request_with_no_origin_is_answered() -> Result<(), TestError> {
+    let router = hardened(origin("http://localhost:3000")?, limiter(10)?)?;
+
+    let response = router.clone().oneshot(post(INITIALIZE)?).await?;
+
+    assert_ne!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "an absent Origin is a non-browser client, not a rebinding page"
+    );
+    Ok(())
+}
+
+/// The origin a policy names must still be answered, or the allow-list is a
+/// denial list wearing a different hat.
+#[tokio::test]
+async fn the_permitted_origin_is_answered() -> Result<(), TestError> {
+    let router = hardened(origin("http://localhost:3000")?, limiter(10)?)?;
+
+    let response = router
+        .clone()
+        .oneshot(post_with(INITIALIZE, &[("origin", "http://localhost:3000")])?)
+        .await?;
+
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    Ok(())
+}
+
+/// `429` and a `Retry-After` that is not zero. The header is the part that
+/// matters: a client told only "429" retries immediately and keeps the rate up.
+#[tokio::test]
+async fn exceeding_the_rate_limit_is_a_429_with_retry_after() -> Result<(), TestError> {
+    let router = hardened(OriginPolicy::strict(None), limiter(1)?)?;
+
+    let first = router
+        .clone()
+        .oneshot(post(INITIALIZE)?)
+        .await?;
+    assert_ne!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let second = router.oneshot(post(INITIALIZE)?).await?;
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let retry_after = second
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("a 429 without Retry-After tells the client to guess")?;
+    assert!(
+        retry_after.parse::<u64>().is_ok_and(|seconds| seconds > 0),
+        "Retry-After was {retry_after:?}; zero means retry now"
+    );
+    Ok(())
+}
+
+/// The allowance is per session. Without this, one client's flood would spend
+/// everybody's budget and the limit would be a denial-of-service amplifier.
+#[tokio::test]
+async fn one_session_does_not_spend_anothers_allowance() -> Result<(), TestError> {
+    let router = hardened(OriginPolicy::strict(None), limiter(1)?)?;
+
+    let _ = router
+        .clone()
+        .oneshot(post_with(INITIALIZE, &[("mcp-session-id", "session-a")])?)
+        .await?;
+    let blocked = router
+        .clone()
+        .oneshot(post_with(INITIALIZE, &[("mcp-session-id", "session-a")])?)
+        .await?;
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let other = router
+        .oneshot(post_with(INITIALIZE, &[("mcp-session-id", "session-b")])?)
+        .await?;
+    assert_ne!(
+        other.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "session-b was charged for session-a's requests"
+    );
+    Ok(())
+}
+
+/// The body limit predates T17 and the new layers must not have displaced it.
+/// A second `DefaultBodyLimit` would make this pass while answering a
+/// different refusal than the one the router documents.
+#[tokio::test]
+async fn an_oversized_body_is_still_a_413() -> Result<(), TestError> {
+    let router = hardened(OriginPolicy::strict(None), limiter(100)?)?;
+    let huge = "x".repeat(8 * 1024 * 1024);
+
+    let response = router
+        .oneshot(post(&format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{huge}\"}}"))?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
 }

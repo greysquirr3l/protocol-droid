@@ -83,6 +83,8 @@ use axum::routing::MethodRouter;
 use serde_json::Value;
 
 use super::precondition::{authenticate, read_body};
+use super::hardening::{self, enforce_deadline, enforce_origin, enforce_rate_limit};
+use super::limits::RateLimiter;
 use super::{
     Anonymous, AuthPolicy, Authenticator, EventTail, JSON_MEDIA_TYPE, Refusal, SecurityHeaders,
     ServerConfig, SessionStore,
@@ -90,6 +92,7 @@ use super::{
 use crate::domain::ProtocolVersion;
 use crate::domain::mcp::McpSessionId;
 use crate::domain::registry::AuthContext;
+use crate::adapters::primary::transport::origin::OriginPolicy;
 
 /// The header naming a session, introduced with the Streamable HTTP transport
 /// in revision **2025-03-26** — the revision that replaced the 2024-11-05
@@ -155,12 +158,31 @@ impl From<axum::http::header::InvalidHeaderValue> for InvalidHeaderValue {
 }
 
 /// Everything a request needs, assembled once and shared by every route.
-struct RouterState<S, H> {
+pub(crate) struct RouterState<S, H> {
     config: ServerConfig,
     sessions: Arc<SessionStore<S>>,
     handler: H,
     policy: AuthPolicy,
     authenticator: Arc<dyn Authenticator + Send + Sync>,
+    origin: OriginPolicy,
+    rate_limiter: RateLimiter,
+}
+
+impl<S, H> RouterState<S, H> {
+    /// The `Origin` allow-list this server answers for.
+    pub(crate) const fn origin(&self) -> &OriginPolicy {
+        &self.origin
+    }
+
+    /// The per-subject request accounting.
+    /// The configuration this router was built with.
+    pub(crate) const fn config(&self) -> &ServerConfig {
+        &self.config
+    }
+
+    pub(crate) const fn rate_limiter(&self) -> &RateLimiter {
+        &self.rate_limiter
+    }
 }
 
 /// What a header said, distinguishing "not there" from "there and not text".
@@ -388,6 +410,8 @@ pub struct McpRouter<S, H> {
     handler: H,
     policy: AuthPolicy,
     authenticator: Arc<dyn Authenticator + Send + Sync>,
+    origin: OriginPolicy,
+    rate_limiter: RateLimiter,
 }
 
 /// Hand-written rather than derived, and for two reasons.
@@ -424,12 +448,39 @@ where
     #[must_use]
     pub fn new(config: ServerConfig, sessions: Arc<SessionStore<S>>, handler: H) -> Self {
         Self {
+            rate_limiter: RateLimiter::new(*config.rate_limit()),
+            origin: OriginPolicy::strict(None),
             config,
             sessions,
             handler,
             policy: AuthPolicy::Public,
             authenticator: Arc::new(Anonymous),
         }
+    }
+
+    /// Sets the `Origin` allow-list.
+    ///
+    /// T17. Streamable HTTP had no origin check of its own — the policy was
+    /// written for the legacy HTTP+SSE transport and left there — which meant
+    /// a browser could rebind onto a Streamable HTTP server and have the
+    /// request answered. The default is [`OriginPolicy::strict`] with no
+    /// origins, which refuses every `Origin` that is sent and allows a request
+    /// that sent none — see `OriginPolicy::check` for why absent is not the
+    /// same as foreign.
+    #[must_use]
+    pub fn with_origin_policy(mut self, origin: OriginPolicy) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Replaces the per-subject request allowance.
+    ///
+    /// Defaults to [`ServerConfig::rate_limit`], so a configuration that set
+    /// one does not have to set it twice.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
+        self.rate_limiter = limiter;
+        self
     }
 
     /// Replaces the anonymous default with a real implementation.
@@ -464,20 +515,39 @@ where
     pub fn into_router(self) -> Result<AxumRouter, InvalidHeaderValue> {
         let endpoint = self.config.endpoint().as_str().to_owned();
         let security = self.config.security().clone();
+        let max_concurrency = self.config.max_concurrency();
         let state = Arc::new(RouterState {
             config: self.config,
             sessions: Arc::clone(&self.sessions),
             handler: self.handler,
             policy: self.policy,
             authenticator: Arc::clone(&self.authenticator),
+            origin: self.origin,
+            rate_limiter: self.rate_limiter,
         });
         let methods: MethodRouter<Arc<RouterState<S, H>>> = axum::routing::post(post_request)
             .get(open_stream)
             .delete(terminate_session);
         let router = AxumRouter::new()
             .route(&endpoint, methods)
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                enforce_deadline,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                enforce_origin,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                enforce_rate_limit,
+            ))
             .with_state(state);
-        with_security(router, &security)
+        // Security headers outermost, so they reach the responses no handler
+        // wrote; load shedding inside them, so a shed request still carries
+        // them. `apply_layers` is last because it is the only layer that
+        // decides not to run the inner ones at all.
+        with_security(hardening::apply_layers(router, max_concurrency), &security)
     }
 }
 

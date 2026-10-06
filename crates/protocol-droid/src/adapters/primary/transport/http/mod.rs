@@ -78,11 +78,13 @@
 
 mod auth;
 mod config;
+pub mod hardening;
+pub mod limits;
 mod frame_payload;
 pub mod precondition;
 mod refusal;
 mod resume;
-mod router;
+pub mod router;
 mod session_store;
 mod sse;
 mod stream;
