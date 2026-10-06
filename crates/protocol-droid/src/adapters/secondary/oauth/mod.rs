@@ -15,3 +15,11 @@
 
 pub mod introspection;
 pub mod jwt;
+
+// T16. The client half's secret source. Gated on `random-ids` as well as on
+// `oauth`, because it needs both the port (which only exists when `oauth` is on)
+// and an entropy source. A consumer that wants its own — a hardware token, a KMS
+// — links `oauth` without `random-ids` and implements the port itself, which is
+// the whole reason the port exists.
+#[cfg(feature = "random-ids")]
+pub mod secrets;

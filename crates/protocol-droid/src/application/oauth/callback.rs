@@ -252,7 +252,7 @@ pub enum CallbackError {
 /// impl AuthorizationSecrets for Fixed {
 ///     fn new_state(&self) -> Result<State, SecretError> { Ok(State::new("state-value")) }
 ///     fn new_code_verifier(&self) -> Result<CodeVerifier, SecretError> {
-///         CodeVerifier::new("a".repeat(43)).map_err(|_| SecretError)
+///         CodeVerifier::new("a".repeat(43)).map_err(|_| SecretError::Rejected)
 ///     }
 /// }
 ///
@@ -400,7 +400,7 @@ mod tests {
             Ok(State::new(STATE))
         }
         fn new_code_verifier(&self) -> Result<CodeVerifier, SecretError> {
-            CodeVerifier::new(VERIFIER).map_err(|_| SecretError)
+            CodeVerifier::new(VERIFIER).map_err(|_| SecretError::Rejected)
         }
     }
 

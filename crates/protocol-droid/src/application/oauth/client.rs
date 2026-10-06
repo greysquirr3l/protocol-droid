@@ -60,9 +60,33 @@ pub trait AuthorizationSecrets {
 }
 
 /// A source of unguessable values could not produce one.
+///
+/// The variants exist to separate the two failures a caller has to tell apart.
+/// A source that cannot reach the operating system's entropy is an environment
+/// problem, fixed by restarting or by moving somewhere the source exists;
+/// [`Rejected`](Self::Rejected) means this crate's own encoder produced a
+/// value its own value object refused, which is an internal invariant and a bug
+/// here. One unit error for both would make the second indistinguishable from
+/// the first, and the second is the one worth a bug report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the authorization secret source could not produce a value")]
-pub struct SecretError;
+pub enum SecretError {
+    /// The operating system's entropy source could not be read.
+    #[error("the operating system's entropy source could not be read")]
+    EntropyUnavailable,
+
+    /// This platform provides no usable entropy source.
+    #[error("this platform provides no usable entropy source")]
+    EntropyUnsupported,
+
+    /// The value drawn was refused by the value object that owns it.
+    ///
+    /// An adapter drawing 32 bytes and encoding them base64url produces 43
+    /// characters drawn from a subset of the unreserved set, so it cannot fail
+    /// the length or charset rule it is checked against. Reaching this variant
+    /// means the encoding and that rule have diverged.
+    #[error("the value drawn was refused by the value object that owns it")]
+    Rejected,
+}
 
 /// An OAuth `state` value: the nonce tying one authorization response to one
 /// request.
@@ -281,7 +305,7 @@ pub enum BeginError {
 ///         Ok(protocol_droid::application::oauth::client::State::new("state-value"))
 ///     }
 ///     fn new_code_verifier(&self) -> Result<CodeVerifier, SecretError> {
-///         CodeVerifier::new("a".repeat(43)).map_err(|_| SecretError)
+///         CodeVerifier::new("a".repeat(43)).map_err(|_| SecretError::Rejected)
 ///     }
 /// }
 ///
@@ -410,7 +434,7 @@ mod tests {
             Ok(State::new(STATE))
         }
         fn new_code_verifier(&self) -> Result<CodeVerifier, SecretError> {
-            CodeVerifier::new(VERIFIER).map_err(|_| SecretError)
+            CodeVerifier::new(VERIFIER).map_err(|_| SecretError::Rejected)
         }
     }
 
@@ -420,10 +444,10 @@ mod tests {
 
     impl AuthorizationSecrets for Unavailable {
         fn new_state(&self) -> Result<State, SecretError> {
-            Err(SecretError)
+            Err(SecretError::EntropyUnavailable)
         }
         fn new_code_verifier(&self) -> Result<CodeVerifier, SecretError> {
-            Err(SecretError)
+            Err(SecretError::EntropyUnavailable)
         }
     }
 
@@ -563,7 +587,10 @@ mod tests {
             resource()?,
             &Unavailable,
         );
-        assert_matches!(outcome.err(), Some(super::BeginError::Secrets(SecretError)));
+        assert_matches!(
+            outcome.err(),
+            Some(super::BeginError::Secrets(SecretError::EntropyUnavailable))
+        );
         Ok(())
     }
 
@@ -625,7 +652,8 @@ mod tests {
         fn new_code_verifier(&self) -> Result<CodeVerifier, SecretError> {
             let next = self.0.get() + 1;
             self.0.set(next);
-            CodeVerifier::new(format!("{next}{}", "a".repeat(42))).map_err(|_| SecretError)
+            CodeVerifier::new(format!("{next}{}", "a".repeat(42)))
+                .map_err(|_| SecretError::Rejected)
         }
     }
 
@@ -667,7 +695,9 @@ mod tests {
                 assert_eq!(endpoint, "not a url");
                 Ok(())
             }
-            Ok(_) | Err(_) => Err(Failure::Begin(super::BeginError::Secrets(SecretError))),
+            Ok(_) | Err(_) => Err(Failure::Begin(super::BeginError::Secrets(
+                SecretError::EntropyUnavailable,
+            ))),
         }
     }
 }
