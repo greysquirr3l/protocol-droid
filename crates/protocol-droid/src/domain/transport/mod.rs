@@ -33,10 +33,12 @@
 mod endpoint;
 mod framing;
 mod rate_limit;
+mod transport_spec;
 
 pub use endpoint::{MessageEndpoint, MessageEndpointError};
 pub use framing::{FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, encode_frame};
 pub use rate_limit::{RateLimit, Verdict, check as check_rate_limit};
+pub use transport_spec::{SpecError, TransportSpec};
 
 use core::fmt;
 

@@ -82,17 +82,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
 use serde_json::Value;
 
-use super::precondition::{authenticate, read_body};
 use super::hardening::{self, enforce_deadline, enforce_origin, enforce_rate_limit};
 use super::limits::RateLimiter;
+use super::precondition::{authenticate, read_body};
 use super::{
     Anonymous, AuthPolicy, Authenticator, EventTail, JSON_MEDIA_TYPE, Refusal, SecurityHeaders,
     ServerConfig, SessionStore,
 };
+use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::domain::ProtocolVersion;
 use crate::domain::mcp::McpSessionId;
 use crate::domain::registry::AuthContext;
-use crate::adapters::primary::transport::origin::OriginPolicy;
 
 /// The header naming a session, introduced with the Streamable HTTP transport
 /// in revision **2025-03-26** — the revision that replaced the 2024-11-05

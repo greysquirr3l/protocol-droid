@@ -57,9 +57,9 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 
-use super::router::RouterState;
 use super::limits::RateLimiter;
 use super::refusal::Refusal;
+use super::router::RouterState;
 use crate::domain::Verdict;
 
 /// The key used when a request carries no session id.
@@ -122,7 +122,9 @@ where
 fn subject_of(request: &Request) -> &str {
     request
         .headers()
-        .get(axum::http::header::HeaderName::from_static("mcp-session-id"))
+        .get(axum::http::header::HeaderName::from_static(
+            "mcp-session-id",
+        ))
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
         .unwrap_or(ANONYMOUS_SUBJECT)
@@ -157,10 +159,7 @@ where
 ///
 /// No type parameters: by the time this runs the router's state has already
 /// been applied, so there is nothing here to infer `S` or `H` from.
-pub fn apply_layers(
-    router: axum::Router,
-    max_concurrency: core::num::NonZeroU32,
-) -> axum::Router {
+pub fn apply_layers(router: axum::Router, max_concurrency: core::num::NonZeroU32) -> axum::Router {
     // `NonZeroU32` because a limit of zero is nonsense; `usize` because that is
     // what tower's layer counts in. The conversion cannot fail on any target
     // with a 32-bit `usize`, and saturating keeps it total on a 16-bit one
