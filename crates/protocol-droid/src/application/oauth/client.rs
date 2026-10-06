@@ -158,6 +158,16 @@ impl PendingAuthorization {
         &self.redirect_uri
     }
 
+    /// The client this request was made as.
+    ///
+    /// The token request has to name the same client, so a caller resuming the
+    /// flow after the redirect needs it back from here rather than keeping a
+    /// second copy alongside the pending value.
+    #[must_use]
+    pub const fn client_id(&self) -> &ClientId {
+        &self.client_id
+    }
+
     /// The issuer this flow is with.
     ///
     /// Carried so the redemption step can check an `iss` response against
