@@ -29,8 +29,12 @@
 //! make the id a capability, and this crate says so at the source:
 //! [`IdSource`](crate::application::session::IdSource) documents that an id "is
 //! not a capability, not a secret, and not something a peer is ever asked to
-//! trust". A deployment that needs unguessable ids seeds the `IdSource` with
-//! more entropy; it cannot get them from the encoding.
+//! trust". A deployment that needs unguessable ids uses
+//! `adapters::secondary::id_source::RandomIds`, behind the `random-ids` feature;
+//! the encoding cannot supply entropy it does not have. That module is
+//! optional, so this is a path rather than an intra-doc link — a link to it
+//! would break the documentation of every lean build, and this file is
+//! compiled in all of them.
 //!
 //! # Why this is a separate newtype rather than a rendering of `SessionId`
 //!

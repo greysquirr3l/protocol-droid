@@ -69,6 +69,10 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 jsonwebtoken = { version = "11.1.0", default-features = false, features = [
     "rust_crypto",
 ] }
+# The OS CSPRNG for `RandomIds`. Already in the graph through `rsa`, declared
+# directly because relying on a transitive dependency is how an upgrade turns
+# into a build break.
+getrandom = { version = "0.2.17", features = ["std"] }
 # Benchmarking. The envelope path is the one perf-critical path in the crate, so
 # its costs are measured on every CI run rather than estimated.
 divan = { version = "0.1.21", default-features = false }

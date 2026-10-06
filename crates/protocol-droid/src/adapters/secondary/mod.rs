@@ -6,6 +6,13 @@
 
 pub mod codec;
 pub mod idempotency;
+// T16. A session id source that does not enumerate. `IdSource` has been a port
+// with no production implementation since T10 — every test writes its own
+// `fetch_add`, which is the obvious thing to copy into production by accident.
+// Gated on its own feature because the only reason to link an entropy source is
+// to ask it for unpredictable session ids.
+#[cfg(feature = "random-ids")]
+pub mod id_source;
 pub mod mcp;
 // T16. The OAuth token sources: RFC 7662 introspection and JWT/JWKS. Gated on
 // `oauth` rather than on `http` even though both open a socket, because the

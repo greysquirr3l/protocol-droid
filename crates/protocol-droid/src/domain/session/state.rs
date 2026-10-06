@@ -25,6 +25,13 @@ use thiserror::Error;
 /// A `u64` behind a newtype rather than a string: it is compared constantly,
 /// and `Copy` is what lets it sit inside every event without a borrow.
 ///
+/// Where the value comes from is [`IdSource`](crate::application::session::IdSource)'s
+/// business, not this type's — a counter is fine for one process, and
+/// `adapters::secondary::id_source::RandomIds` exists for a deployment that
+/// needs them unguessable. Deliberately not an intra-doc link: that module is
+/// behind the `random-ids` feature, and a link to it breaks every lean build's
+/// documentation for a type that is compiled in all of them.
+///
 /// # Redaction
 ///
 /// [`Debug`](fmt::Debug) prints `SessionId(…)` and never the value. `Debug` is

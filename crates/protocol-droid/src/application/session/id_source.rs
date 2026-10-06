@@ -12,9 +12,15 @@
 //!
 //! Uniqueness *within a process*. A session id correlates one process's work
 //! with itself; it is not a capability, not a secret, and not something a peer
-//! is ever asked to trust. A deployment that needs ids unique across processes
-//! seeds its own source with whatever entropy it already has — which is why
-//! this is a port rather than a concrete type the engine constructs for itself.
+//! is ever asked to trust — the vendored revisions never say otherwise, and
+//! 2026-07-28 removes the header outright (SEP-2567).
+//!
+//! A deployment that does want ids a peer cannot enumerate from one it has seen
+//! should use `adapters::secondary::id_source::RandomIds`, behind the
+//! `random-ids` feature. A path rather than an intra-doc link, because that
+//! module is optional and this one is not. It is not the default because a
+//! single-process embedding is better served by a reproducible counter, and this
+//! is a port precisely so it can have one.
 
 use crate::domain::session::SessionId;
 

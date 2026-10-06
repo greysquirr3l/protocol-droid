@@ -62,6 +62,10 @@ legacy-sse = ["http"]
 # pure, and gating them would cost a consumer the authorization model to save
 # nothing.
 oauth = ["http", "dep:jsonwebtoken"]
+# Session ids that do not enumerate. `IdSource` is a port every server must
+# satisfy and this crate shipped no implementation of it, so the only code a
+# consumer could copy was a `fetch_add` counter.
+random-ids = ["dep:getrandom"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
@@ -101,6 +105,11 @@ reqwest = { workspace = true, optional = true }
 # T16. JWS signature verification for the JWKS token source. See the workspace
 # declaration for why `use_pem` and `aws_lc_rs` are both off.
 jsonwebtoken = { workspace = true, optional = true }
+# T16. The OS CSPRNG behind `RandomIds`, so a server can mint session ids that
+# do not enumerate. `getrandom` rather than `rand`: this is one `u64` per
+# session opened, not a stream of draws, and it wants no seeding, no thread-local
+# state and no `Default`.
+getrandom = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,
