@@ -14,5 +14,7 @@
 //! and the codecs.
 
 pub mod pkce;
+pub mod resource;
 
 pub use pkce::{ChallengeMethod, CodeChallenge, CodeVerifier, PkceError};
+pub use resource::{ResourceBinding, ResourceIndicatorError, ResourceParameters};
