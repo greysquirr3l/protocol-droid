@@ -65,7 +65,16 @@ impl RequestId {
     pub fn redacted(&self) -> String {
         match self {
             Self::Number(value) => format!("#{value}"),
-            Self::Text(value) => format!("#{}…{}", &value[..value.len().min(4)], value.len()),
+            // Characters, not bytes. A byte index of 4 lands *inside* the
+            // fourth character of any multi-byte id, and a request id is
+            // whatever UTF-8 the peer put in a JSON string — `["ab€"]` is a
+            // perfectly legal id, and slicing it by byte panics here rather
+            // than redacting. `clippy::indexing_slicing` does not catch it
+            // because the bound is not a literal.
+            Self::Text(value) => {
+                let head: String = value.chars().take(4).collect();
+                format!("#{head}…{}", value.chars().count())
+            }
         }
     }
 }
@@ -117,6 +126,33 @@ mod tests {
         assert_eq!(RequestId::number(7).to_json(), "7");
         assert_eq!(RequestId::number(-1).to_json(), "-1");
         assert_eq!(RequestId::text("abc").to_json(), r#""abc""#);
+    }
+
+    /// Redaction must not panic on an id that is not ASCII.
+    ///
+    /// A request id is whatever UTF-8 the peer put in a JSON string, so
+    /// `["ab€"]` is a legal id — and it is five bytes, with a three-byte
+    /// character straddling byte four. Taking `&value[..len.min(4)]` landed
+    /// inside that character and panicked, which turned "log this id" into a
+    /// crash the peer chose. Every non-ASCII id of length 4 to 6 does it.
+    #[test]
+    fn redacting_a_multi_byte_id_does_not_panic() {
+        for id in ["ab€", "€€€", "工具调用", "café", "🎉ok", "a€b€"] {
+            let redacted = RequestId::text(id).redacted();
+            assert!(redacted.starts_with('#'), "{id:?} redacted to {redacted:?}");
+            assert!(redacted.contains('…'), "{id:?} redacted to {redacted:?}");
+        }
+    }
+
+    /// The length in a redaction is a character count, not a byte count.
+    ///
+    /// Stated because the obvious implementation reports bytes, and the two
+    /// disagree for every id outside ASCII — which is what makes it worth a
+    /// test rather than a comment.
+    #[test]
+    fn the_redacted_length_counts_characters() {
+        assert_eq!(RequestId::text("🎉ok").redacted(), "#🎉ok…3");
+        assert_eq!(RequestId::text("abcdef").redacted(), "#abcd…6");
     }
 
     /// Ids go into logs, so the redacted form has to correlate without
