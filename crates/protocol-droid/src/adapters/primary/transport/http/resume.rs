@@ -75,7 +75,6 @@
 //! method name: a peer branches on `"resume-gap"` because that is the string
 //! this module writes, not because it is a method in any specification.
 
-
 use serde_json::json;
 
 use super::{FramePayload, Refusal, SseEvent};

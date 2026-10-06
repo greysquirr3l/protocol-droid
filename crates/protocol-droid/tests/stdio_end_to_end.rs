@@ -79,8 +79,8 @@ use protocol_droid::adapters::primary::stdio::{Diagnostics, StdioConfig, StdioEr
 use protocol_droid::adapters::secondary::stdio::{
     ChildSpec, ChildSpecError, ClientConfig, SpawnError, StdioClient, StdioClientError,
 };
-use protocol_droid::application::jsonrpc::document::{RequestError, request_document};
 use protocol_droid::application::jsonrpc::SourceError;
+use protocol_droid::application::jsonrpc::document::{RequestError, request_document};
 use protocol_droid::domain::ir::{JsonObject, JsonObjectError, MethodName, MethodNameError};
 use protocol_droid::domain::{MaxFrameSize, MaxFrameSizeError};
 use tokio::io::AsyncWrite;

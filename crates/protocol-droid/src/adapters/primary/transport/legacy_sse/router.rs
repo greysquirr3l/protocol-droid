@@ -134,7 +134,8 @@ impl<D: LegacyDispatcher> LegacyState<D> {
     /// point elsewhere makes that instruction a redirect — so the check is at
     /// assembly rather than left to the client that would act on it.
     fn message_endpoint(&self, id: McpSessionId) -> MessageEndpoint {
-        self.message_path.with_query_parameter(SESSION_PARAMETER, &id.to_string())
+        self.message_path
+            .with_query_parameter(SESSION_PARAMETER, &id.to_string())
     }
 }
 
@@ -313,7 +314,10 @@ impl<D: LegacyDispatcher> LegacyRouter<D> {
         // answer than one route trying to be both.
         let router = AxumRouter::new()
             .route(&stream_path, axum::routing::get(open_stream))
-            .route(&configured_message_path, axum::routing::post(receive_message))
+            .route(
+                &configured_message_path,
+                axum::routing::post(receive_message),
+            )
             .with_state(state);
         Ok(with_security(router, &security)?)
     }
@@ -332,7 +336,7 @@ async fn open_stream<D: LegacyDispatcher>(
     State(state): State<Arc<LegacyState<D>>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = check_common(&state, &headers) {
+    if let Err(response) = check_common(&state, &headers).await {
         return *response;
     }
 
@@ -368,7 +372,7 @@ async fn receive_message<D: LegacyDispatcher>(
     Query(query): Query<HashMap<String, String>>,
     body: Body,
 ) -> Response {
-    if let Err(response) = check_common(&state, &headers) {
+    if let Err(response) = check_common(&state, &headers).await {
         return *response;
     }
 
@@ -435,12 +439,12 @@ async fn receive_message<D: LegacyDispatcher>(
 /// acceptable. Authenticating first would let a hostile page drive the
 /// authenticator, which on a deployment with a token check is a credential
 /// oracle reachable from any page the operator's users visit.
-fn check_common<D: LegacyDispatcher>(state: &LegacyState<D>, headers: &HeaderMap) -> Checked {
+async fn check_common<D: LegacyDispatcher>(state: &LegacyState<D>, headers: &HeaderMap) -> Checked {
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     if let Err(refusal) = state.origins.check(origin) {
         return Err(Box::new(refuse(refusal)));
     }
-    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, headers) {
+    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, headers).await {
         return Err(Box::new(refuse(refusal)));
     }
     Ok(())

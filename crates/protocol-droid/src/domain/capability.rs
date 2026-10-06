@@ -672,7 +672,10 @@ pub const SERVER_CAPABILITY_WIRE: &[(Capability, &[&str])] = &[
     (Capability::ToolsListChanged, &["tools", "listChanged"]),
     (Capability::Resources, &["resources"]),
     (Capability::ResourcesSubscribe, &["resources", "subscribe"]),
-    (Capability::ResourcesListChanged, &["resources", "listChanged"]),
+    (
+        Capability::ResourcesListChanged,
+        &["resources", "listChanged"],
+    ),
     (Capability::Prompts, &["prompts"]),
     (Capability::PromptsListChanged, &["prompts", "listChanged"]),
     (Capability::Completions, &["completions"]),

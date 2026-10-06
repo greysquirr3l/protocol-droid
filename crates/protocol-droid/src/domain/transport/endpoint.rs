@@ -301,7 +301,11 @@ mod tests {
             ("/mess ages", Some(E::IllegalCharacter)),
         ];
         for (value, wanted) in cases {
-            assert_eq!(MessageEndpoint::bare_path(value).err(), wanted, "bare_path({value:?})");
+            assert_eq!(
+                MessageEndpoint::bare_path(value).err(),
+                wanted,
+                "bare_path({value:?})"
+            );
         }
     }
 
@@ -316,9 +320,15 @@ mod tests {
     fn appending_extends_an_existing_query_rather_than_replacing_it() -> Result<(), TestError> {
         let endpoint = MessageEndpoint::from_str("/messages?tenant=a")?;
         let with_session = endpoint.with_query_parameter("sessionId", "0000000000000001");
-        assert_eq!(with_session.as_str(), "/messages?tenant=a&sessionId=0000000000000001");
+        assert_eq!(
+            with_session.as_str(),
+            "/messages?tenant=a&sessionId=0000000000000001"
+        );
         assert_eq!(with_session.path(), "/messages");
-        assert_eq!(with_session.query(), Some("tenant=a&sessionId=0000000000000001"));
+        assert_eq!(
+            with_session.query(),
+            Some("tenant=a&sessionId=0000000000000001")
+        );
         Ok(())
     }
 
@@ -327,7 +337,10 @@ mod tests {
     fn appending_to_a_bare_path_introduces_the_query() -> Result<(), TestError> {
         let endpoint = MessageEndpoint::from_str("/messages")?;
         let with_session = endpoint.with_query_parameter("sessionId", "0000000000000001");
-        assert_eq!(with_session.as_str(), "/messages?sessionId=0000000000000001");
+        assert_eq!(
+            with_session.as_str(),
+            "/messages?sessionId=0000000000000001"
+        );
         assert_eq!(with_session.path(), "/messages");
         assert_eq!(with_session.query(), Some("sessionId=0000000000000001"));
         Ok(())
