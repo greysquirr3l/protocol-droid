@@ -163,7 +163,6 @@ impl ClientMetadata {
     /// that would let a document claim redirects the client never checked.
     ///
     /// [`ClientMetadataError::ReservedField`] names the fields that are typed.
-    #[must_use]
     pub fn with_field(
         mut self,
         name: impl Into<String>,
@@ -179,7 +178,7 @@ impl ClientMetadata {
 
     /// The fields this crate does not name, as they will be serialized.
     #[must_use]
-    pub fn extra(&self) -> &Map<String, Value> {
+    pub const fn extra(&self) -> &Map<String, Value> {
         &self.extra
     }
 }
@@ -218,7 +217,7 @@ impl ClientIdentity {
     /// A client identified by a published metadata document, with nothing to
     /// fall back on.
     #[must_use]
-    pub fn from_document(client_id: ClientId) -> Self {
+    pub const fn from_document(client_id: ClientId) -> Self {
         Self {
             document: Some(client_id),
             metadata: None,
@@ -227,7 +226,7 @@ impl ClientIdentity {
 
     /// A client that will register dynamically, with no document.
     #[must_use]
-    pub fn from_metadata(metadata: ClientMetadata) -> Self {
+    pub const fn from_metadata(metadata: ClientMetadata) -> Self {
         Self {
             document: None,
             metadata: Some(metadata),
@@ -637,8 +636,8 @@ pub async fn acquire_client(
     issuer: &str,
     identity: &ClientIdentity,
     stored: Option<&RegisteredClient>,
-    dynamic: Option<&impl DynamicRegistrar>,
-    documents: Option<&impl MetadataDocumentLoader>,
+    dynamic: Option<&(impl DynamicRegistrar + Sync)>,
+    documents: Option<&(impl MetadataDocumentLoader + Sync)>,
 ) -> Result<RegisteredClient, RegistrationError> {
     let available = match (dynamic.is_some(), documents.is_some()) {
         (true, true) => Available::both(),
@@ -772,17 +771,18 @@ mod tests {
     }
 
     impl DynamicRegistrar for Dynamic {
-        async fn register_dynamic(
+        // Not `async`: this fake resolves on its first poll, so `async` here
+        // would be an async block with no await point in it.
+        fn register_dynamic(
             &self,
             issuer: &str,
             _metadata: &ClientMetadata,
-        ) -> Result<RegisteredClient, RegistrarError> {
+        ) -> impl Future<Output = Result<RegisteredClient, RegistrarError>> + Send {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            Ok(RegisteredClient::dynamic(
-                issuer,
-                ClientId::opaque("dynamic-1"),
-                None,
-            )?)
+            std::future::ready(
+                RegisteredClient::dynamic(issuer, ClientId::opaque("dynamic-1"), None)
+                    .map_err(Into::into),
+            )
         }
     }
 
@@ -809,19 +809,19 @@ mod tests {
     }
 
     impl MetadataDocumentLoader for Loader {
-        async fn fetch_metadata_document(
+        fn fetch_metadata_document(
             &self,
             issuer: &str,
             client_id: &ClientId,
-        ) -> Result<RegisteredClient, RegistrarError> {
+        ) -> impl Future<Output = Result<RegisteredClient, RegistrarError>> + Send {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            match &self.outcome {
+            std::future::ready(match &self.outcome {
                 Ok(()) => Ok(RegisteredClient::from_metadata_document(
                     issuer,
                     client_id.clone(),
                 )),
                 Err(failure) => Err(failure.clone()),
-            }
+            })
         }
     }
 
@@ -969,12 +969,11 @@ mod tests {
     /// implementing only RFC 7591 is not misconfigured and a client must still
     /// be able to use it.
     #[test]
-    fn the_deprecated_mechanism_is_still_available() -> Result<(), Failure> {
+    fn the_deprecated_mechanism_is_still_available() {
         assert!(
             model(DOCUMENT_FIRST).client_registration.supports_dynamic(),
             "2026-07-28 still permits RFC 7591"
         );
-        Ok(())
     }
 
     // --- stored credentials ------------------------------------------------
@@ -1107,16 +1106,15 @@ mod tests {
         let loader = Loader::failing(RegistrarError::Document(ClientIdError::DocumentMismatch));
         let identity = document_identity()?.with_metadata_fallback(metadata()?);
 
-        let outcome = match now(acquire_client(
+        let Some(outcome) = now(acquire_client(
             &model(DOCUMENT_FIRST),
             AS,
             &identity,
             None,
             Some(&dynamic),
             Some(&loader),
-        )) {
-            Some(result) => result,
-            None => return Err(Failure::Pended),
+        )) else {
+            return Err(Failure::Pended);
         };
 
         assert_matches!(outcome, Err(RegistrationError::DocumentUnavailable(_)));
@@ -1137,16 +1135,15 @@ mod tests {
         };
         let loader = Loader::failing(RegistrarError::Unavailable("connection refused".into()));
 
-        let outcome = match now(acquire_client(
+        let Some(outcome) = now(acquire_client(
             &model(DOCUMENT_FIRST),
             AS,
             &document_identity()?,
             None,
             Some(&dynamic),
             Some(&loader),
-        )) {
-            Some(result) => result,
-            None => return Err(Failure::Pended),
+        )) else {
+            return Err(Failure::Pended);
         };
 
         assert_matches!(outcome, Err(RegistrationError::DocumentUnavailable(_)));
@@ -1213,9 +1210,7 @@ mod tests {
         let metadata = metadata()?;
 
         assert_matches!(
-            metadata
-                .clone()
-                .with_field("redirect_uris", serde_json::json!(["https://evil.example.com"])),
+            metadata.with_field("redirect_uris", serde_json::json!(["https://evil.example.com"])),
             Err(ClientMetadataError::ReservedField(ref name)) if name == "redirect_uris"
         );
         Ok(())
@@ -1233,8 +1228,11 @@ mod tests {
         let document = serde_json::to_value(&metadata)
             .map_err(|_| Failure::Registration(RegistrationError::NoMechanism))?;
 
-        assert_eq!(document["client_uri"], "https://client.example.com");
-        assert_eq!(document["title"], "Example Client");
+        assert_eq!(
+            document.get("client_uri"),
+            Some(&serde_json::json!("https://client.example.com"))
+        );
+        assert_eq!(document.get("title"), Some(&serde_json::json!("Example Client")));
         Ok(())
     }
 
@@ -1249,12 +1247,15 @@ mod tests {
         let document = serde_json::to_value(&metadata)
             .map_err(|_| Failure::Registration(RegistrationError::NoMechanism))?;
 
-        assert_eq!(document["application_type"], "native");
-        assert_eq!(document["client_name"], "Example");
-        assert_eq!(document["title"], "Example");
         assert_eq!(
-            document["redirect_uris"],
-            serde_json::json!(["https://client.example.com/callback"])
+            document.get("application_type"),
+            Some(&serde_json::json!("native"))
+        );
+        assert_eq!(document.get("client_name"), Some(&serde_json::json!("Example")));
+        assert_eq!(document.get("title"), Some(&serde_json::json!("Example")));
+        assert_eq!(
+            document.get("redirect_uris"),
+            Some(&serde_json::json!(["https://client.example.com/callback"]))
         );
         Ok(())
     }

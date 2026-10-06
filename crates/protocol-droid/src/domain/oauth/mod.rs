@@ -13,11 +13,13 @@
 //! base64url codec, which is a real cost for a consumer that only embeds the IR
 //! and the codecs.
 
+pub mod issued_token;
 pub mod issuer;
 pub mod pkce;
 pub mod registration;
 pub mod resource;
 
+pub use issued_token::{AccessToken, IssuedToken, RefreshToken, TokenResponseError};
 pub use issuer::{AuthorizationResponseError, check_response_issuer};
 pub use pkce::{ChallengeMethod, CodeChallenge, CodeVerifier, PkceError};
 pub use registration::{

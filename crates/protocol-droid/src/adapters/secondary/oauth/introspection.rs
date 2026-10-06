@@ -33,6 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
+use crate::adapters::secondary::oauth::http_body::{describe, read_capped};
 use crate::application::oauth::{Refusal, SourceError, TokenClaims, TokenSource};
 
 /// Asks an authorization server, over HTTP, what a presented token means.
@@ -120,7 +121,9 @@ impl TokenSource for IntrospectionSource {
             )));
         }
 
-        let body = read_capped(response).await?;
+        let body = read_capped(response)
+            .await
+            .map_err(SourceError::Unavailable)?;
         let parsed: IntrospectionResponse = serde_json::from_slice(&body)
             .map_err(|failure| SourceError::Unavailable(describe(failure)))?;
 
@@ -128,50 +131,9 @@ impl TokenSource for IntrospectionSource {
     }
 }
 
-/// The most this module will read from one introspection response.
-///
-/// An authorization server is not trusted to bound its own answer. One that is
-/// compromised, or merely streaming forever, would otherwise be a way to exhaust
-/// this process's memory from a single request — and the request that does it
-/// is one this process believed was authenticated. 64 KiB is far more than any
-/// legal response: the whole document is a handful of short strings.
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-
-/// Reads a response body, stopping if it grows past [`MAX_RESPONSE_BYTES`].
-///
-/// Enforced while reading rather than after, because `content_length` is a claim
-/// the peer makes about itself and is absent entirely from a chunked response —
-/// checking it and then calling `bytes()` would bound only the responses that
-/// chose to be bounded. `chunk()` needs no `StreamExt`, which keeps this off the
-/// `futures` facade for one loop.
-async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, SourceError> {
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|failure| SourceError::Unavailable(describe(failure)))?
-    {
-        // `saturating_add` because the whole point is that the running total is
-        // attacker-controlled: a length near `usize::MAX` must not wrap into a
-        // small number and slip past the check.
-        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            return Err(SourceError::Unavailable(format!(
-                "introspection response exceeded {MAX_RESPONSE_BYTES} bytes",
-            )));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
-
-/// Why an HTTP call to the authorization server failed, without the token.
-///
-/// `reqwest`'s `Display` for a transport error names the URL and the cause but
-/// never the body, and this crate only ever puts the token in a body — so the
-/// format is safe to surface in a log. Asserted by the redaction test.
-fn describe(failure: impl core::fmt::Display) -> String {
-    failure.to_string()
-}
+// The bounded read and the credential-free failure text now live in
+// `http_body`, shared with the redemption adapter. A size cap copied into two
+// files is a cap that will eventually be fixed in one of them.
 
 /// The RFC 7662 response, as it arrives.
 ///

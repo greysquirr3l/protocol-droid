@@ -10,14 +10,16 @@
 //! strings, so any table would be this crate inventing one and presenting it as
 //! policy — see [`token::ScopePolicy`].
 
-// `client` and `callback` read `domain::oauth`, which is gated on the same
-// feature, so they carry the gate too. `token` does not and stays ungated: it
-// is pure claim logic with no dependency on a SHA-256 implementation or a
+// `client`, `callback` and `redeem` read `domain::oauth`, which is gated on the
+// same feature, so they carry the gate too. `token` does not and stays ungated:
+// it is pure claim logic with no dependency on a SHA-256 implementation or a
 // base64url codec.
 #[cfg(feature = "oauth")]
 pub mod callback;
 #[cfg(feature = "oauth")]
 pub mod client;
+#[cfg(feature = "oauth")]
+pub mod redeem;
 #[cfg(feature = "oauth")]
 pub mod registration;
 mod token;

@@ -15,6 +15,12 @@
 
 pub mod introspection;
 pub mod jwt;
+// T16. Bounded response reads and transport-failure descriptions, shared by
+// the two adapters that call an authorization server. Public because a
+// downstream adapter writing its own token or userinfo call wants the same
+// bounded read rather than its own copy of the cap.
+pub mod http_body;
+pub mod redeem;
 
 // T16. The client half's secret source. Gated on `random-ids` as well as on
 // `oauth`, because it needs both the port (which only exists when `oauth` is on)

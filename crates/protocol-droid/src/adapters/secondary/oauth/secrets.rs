@@ -72,7 +72,7 @@ const ENTROPY_BYTES: usize = 32;
 /// use protocol_droid::adapters::secondary::oauth::secrets::OsSecrets;
 /// use protocol_droid::application::oauth::client::AuthorizationSecrets;
 ///
-/// let secrets = OsSecrets::default();
+/// let secrets = OsSecrets;
 /// let state = secrets.new_state()?;
 /// let verifier = secrets.new_code_verifier()?;
 ///
@@ -131,7 +131,7 @@ mod tests {
     /// a constant is the failure this type exists to prevent.
     #[test]
     fn two_draws_are_not_the_same_value() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
         let first = secrets.new_code_verifier()?;
         let second = secrets.new_code_verifier()?;
 
@@ -144,7 +144,7 @@ mod tests {
     /// counter advances and this does not.
     #[test]
     fn a_sequence_of_draws_does_not_advance() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
         let values: Vec<String> = (0..16)
             .map(|_| {
                 secrets
@@ -166,7 +166,7 @@ mod tests {
     /// module documentation checkable rather than asserted.
     #[test]
     fn a_verifier_decodes_back_to_the_entropy_it_was_drawn_from() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
         let verifier = secrets.new_code_verifier()?;
 
         let decoded = URL_SAFE_NO_PAD
@@ -182,7 +182,7 @@ mod tests {
     /// encodes to with the padding removed.
     #[test]
     fn a_verifier_is_exactly_the_rfc_minimum_length() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
 
         assert_eq!(secrets.new_code_verifier()?.as_str().len(), 43);
         Ok(())
@@ -196,7 +196,7 @@ mod tests {
     /// silently produce a different digest than the server computes.
     #[test]
     fn a_verifier_is_ascii_and_url_safe() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
         let verifier = secrets.new_code_verifier()?;
 
         assert!(
@@ -220,7 +220,7 @@ mod tests {
     /// show the encoding and the challenge derivation agree on the same bytes.
     #[test]
     fn a_drawn_verifier_yields_a_usable_challenge() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
         let verifier = secrets.new_code_verifier()?;
 
         let challenge = verifier.challenge(ChallengeMethod::S256);
@@ -236,7 +236,7 @@ mod tests {
     /// back and fail its own comparison.
     #[test]
     fn a_state_survives_a_url_query_unchanged() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
         let state = secrets.new_state()?;
 
         let encoded =
@@ -249,7 +249,7 @@ mod tests {
     /// flow holds both at once.
     #[test]
     fn a_state_is_not_the_verifier() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
 
         assert_ne!(
             secrets.new_state()?.as_str(),
@@ -264,7 +264,7 @@ mod tests {
     /// rule that failed one value in ninety would fail eventually in production.
     #[test]
     fn ninety_draws_are_all_accepted() -> Result<(), SecretError> {
-        let secrets = OsSecrets::default();
+        let secrets = OsSecrets;
 
         for _ in 0..90 {
             let _ = secrets.new_state()?;

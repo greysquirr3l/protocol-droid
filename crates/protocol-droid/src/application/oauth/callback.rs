@@ -117,7 +117,14 @@ impl AuthorizationCallback {
 ///
 /// Holds the code and everything needed to complete the token request, all of
 /// it recorded before the user left the client.
-#[derive(Clone)]
+///
+/// Deliberately **not** [`Clone`]. RFC 6749 §4.1.2 makes an authorization code
+/// single-use, and the way this crate holds that line is that redeeming
+/// consumes the value: [`redeem`](super::redeem::redeem) takes it by value, so
+/// a second redemption needs a second code and therefore another user-visible
+/// round trip. A `Clone` here would put the guarantee back on the honour system
+/// for exactly the case that matters — a retry after a dropped connection,
+/// where the first attempt may already have been honoured.
 pub struct AuthorizedCode {
     code: Arc<str>,
     verifier: CodeVerifier,
