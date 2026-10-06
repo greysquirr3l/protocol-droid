@@ -15,7 +15,9 @@ type TestError = ResourceUriError;
 
 /// The canonical form of `input`, or `None` when it is not a resource.
 fn canonical(input: &str) -> Option<String> {
-    ResourceUri::new(input).ok().map(|uri| uri.as_str().to_owned())
+    ResourceUri::new(input)
+        .ok()
+        .map(|uri| uri.as_str().to_owned())
 }
 
 #[test]
@@ -121,7 +123,14 @@ fn an_ipv6_literal_survives_intact() {
 fn a_relative_identifier_is_refused() {
     // RFC 9728 §2 requires an absolute URI, and a relative one cannot be
     // compared against a token's `aud` — which is the only thing it is for.
-    for input in ["", "   ", "example.com/mcp", "/mcp", "://example.com", "/ /mcp"] {
+    for input in [
+        "",
+        "   ",
+        "example.com/mcp",
+        "/mcp",
+        "://example.com",
+        "/ /mcp",
+    ] {
         assert!(
             ResourceUri::new(input).is_err(),
             "{input:?} should not parse as a resource identifier",
@@ -134,8 +143,14 @@ fn the_metadata_path_is_the_resource_path_appended() -> Result<(), TestError> {
     // RFC 9728 §3.1, path-inserted form.
     for (resource, expected) in [
         ("https://example.com", WELL_KNOWN),
-        ("https://example.com/mcp", "/.well-known/oauth-protected-resource/mcp"),
-        ("https://example.com/a/b", "/.well-known/oauth-protected-resource/a/b"),
+        (
+            "https://example.com/mcp",
+            "/.well-known/oauth-protected-resource/mcp",
+        ),
+        (
+            "https://example.com/a/b",
+            "/.well-known/oauth-protected-resource/a/b",
+        ),
     ] {
         let uri = ResourceUri::new(resource)?;
         assert_eq!(uri.metadata_path(), expected, "{resource}");
@@ -241,7 +256,11 @@ fn from_parts_joins_without_doubling_slashes() -> Result<(), TestError> {
         ("https://example.com/", "/mcp", "https://example.com/mcp"),
         ("https://example.com", "/mcp", "https://example.com/mcp"),
         ("https://example.com/", "mcp", "https://example.com/mcp"),
-        ("https://example.com:8443", "/a/b", "https://example.com:8443/a/b"),
+        (
+            "https://example.com:8443",
+            "/a/b",
+            "https://example.com:8443/a/b",
+        ),
         ("https://example.com", "/", "https://example.com"),
         ("https://example.com/", "", "https://example.com"),
     ] {

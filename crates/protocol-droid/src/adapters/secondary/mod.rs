@@ -7,11 +7,12 @@
 pub mod codec;
 pub mod idempotency;
 pub mod mcp;
-// T14/T15. The client half of the HTTP transports. Gated because it is the one
-// driven adapter that opens a socket to somewhere that is not this process: a
-// consumer that only embeds the IR and the codecs has no use for a TLS stack,
-// and `default = false` is how it says so.
-#[cfg(feature = "http")]
+// T16. The OAuth token sources: RFC 7662 introspection and JWT/JWKS. Gated on
+// `oauth` rather than on `http` even though both open a socket, because the
+// JWS signature check is a second reason on top of that one — and a consumer
+// that wants an authorization gate over a socket it already has still should
+// not be made to link a JOSE implementation to get it.
+#[cfg(feature = "oauth")]
 pub mod oauth;
 
 #[cfg(feature = "http")]

@@ -52,6 +52,16 @@ http = ["dep:axum", "dep:futures-core", "dep:reqwest", "dep:tokio", "tokio/net",
 # `endpoint` event. `TransportKind::LegacySse` stays ungated in the domain,
 # because describing a transport costs nothing and only speaking it does.
 legacy-sse = ["http"]
+# T16. OAuth 2.1 authorization. It implies `http` because both token sources
+# reach an authorization server that is somewhere else, and it adds the one
+# dependency the rest of the crate has no use for: a JWS signature check.
+#
+# Only the *adapters* are gated. `domain/mcp/authorization` and
+# `application/oauth/token` stay compiled in a lean build for the same reason
+# the session store and the routing headers do — they are protocol-shaped and
+# pure, and gating them would cost a consumer the authorization model to save
+# nothing.
+oauth = ["http", "dep:jsonwebtoken"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
@@ -88,6 +98,9 @@ futures-core = { workspace = true, optional = true }
 # server above: a consumer that does not run an HTTP server has no use for an
 # HTTP client, and the two are alternatives rather than a set.
 reqwest = { workspace = true, optional = true }
+# T16. JWS signature verification for the JWKS token source. See the workspace
+# declaration for why `use_pem` and `aws_lc_rs` are both off.
+jsonwebtoken = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,
@@ -119,6 +132,10 @@ serde_json = { workspace = true }
 # that test instantaneous and deterministic.
 tokio = { workspace = true }
 trybuild = "1.0.121"
+# RFC 7515 base64url, for the one JWT no encoder will produce: an unsecured
+# `alg: none` token. `jsonwebtoken` depends on it too, so this is a dev-only
+# path to a crate already in the graph rather than a new one.
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 # Drives a `Router` to a response without binding a socket, which is what lets
 # the security-header test read headers off a real response rather than
 # asserting that a middleware value is `Some`.

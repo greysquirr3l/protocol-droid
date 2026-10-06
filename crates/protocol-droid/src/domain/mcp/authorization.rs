@@ -325,7 +325,6 @@ pub const fn authorization_model(version: ProtocolVersion) -> AuthorizationModel
             model.credentials_bound_to_issuer = true;
             model.client_registration = ClientRegistration::MetadataDocument;
         }
-
     }
 
     model

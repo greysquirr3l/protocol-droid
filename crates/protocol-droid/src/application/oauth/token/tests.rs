@@ -460,7 +460,10 @@ fn the_policy_still_gets_the_last_word_over_what_a_source_returned() -> Result<(
         now(),
     ));
 
-    assert_matches!(refusal, Err(SourceError::Refused(Refusal::AudienceMismatch)));
+    assert_matches!(
+        refusal,
+        Err(SourceError::Refused(Refusal::AudienceMismatch))
+    );
     Ok(())
 }
 
@@ -488,7 +491,9 @@ fn a_source_that_says_no_is_not_re_written_as_an_unavailable_source() -> Result<
 #[test]
 fn an_unreachable_source_stays_unavailable_and_never_becomes_a_refusal() -> Result<(), Failure> {
     let resource = ResourceUri::new(RESOURCE)?;
-    let source = Fixed(Err(SourceError::Unavailable("introspection responded 503".into())));
+    let source = Fixed(Err(SourceError::Unavailable(
+        "introspection responded 503".into(),
+    )));
 
     let outcome = block_on(authenticate(
         &source,

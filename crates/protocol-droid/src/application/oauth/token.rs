@@ -202,6 +202,34 @@ pub enum Refusal {
     /// are distinguishable in a log even though both answer `401`.
     #[error("the access token carries no recognised scope")]
     Unscoped,
+
+    /// The token was not a well-formed JWS at all.
+    ///
+    /// Added when the JWT source arrived, which is the first
+    /// [`TokenSource`] that can meet a token it cannot even parse. It is a
+    /// refusal rather than [`SourceError::Unavailable`] because nothing was
+    /// unavailable: the bytes arrived, and they were not a token. Filing it
+    /// under `Unavailable` would send a caller to re-authenticate against an
+    /// authorization server that answered perfectly well — and would report a
+    /// client's credentials as bad when the real fault was a middlebox
+    /// mangling a header.
+    #[error("the access token is not a well-formed JWS")]
+    Malformed,
+
+    /// The token parsed, but its signature could not be established as genuine.
+    ///
+    /// Distinct from [`Malformed`] and from every rule in `verify`, and both
+    /// distinctions are load-bearing. A malformed token is the caller's bug and
+    /// can be reported as one; an unverifiable one is either a token this
+    /// server should not accept or a key it could not fetch, and a log that
+    /// collapses the two sends an on-call engineer to the wrong system.
+    ///
+    /// Also the landing place for a bad signature. Folding that into
+    /// `AudienceMismatch` would be tempting and wrong: an expired token and a
+    /// forged one would then look identical in a log, which is the one
+    /// distinction a forgery attack is trying to hide.
+    #[error("the access token's signature could not be verified")]
+    Unverified,
 }
 
 /// What a deployment decides its own OAuth scope strings mean.

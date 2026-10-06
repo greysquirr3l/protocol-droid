@@ -55,6 +55,20 @@ protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.1.
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+# T16. JWT signature verification for the JWKS token source.
+#
+# `default-features = false` drops `use_pem`, which pulls `pem` and
+# `simple_asn1` for reading keys out of PEM files. A JWKS is JSON: an MCP
+# server's public keys arrive over HTTP as a key set, so the PEM path has no
+# caller here and its two dependencies have no reason to be in the graph.
+#
+# `rust_crypto` rather than `aws_lc_rs` because CI builds three OSes and
+# aws-lc-rs needs cmake plus NASM on some of them. The pure-Rust backend is
+# portable by construction, and every algorithm MCP deployments actually use
+# (RS256/384/512, ES256, HS256) is implemented by it.
+jsonwebtoken = { version = "11.1.0", default-features = false, features = [
+    "rust_crypto",
+] }
 # Benchmarking. The envelope path is the one perf-critical path in the crate, so
 # its costs are measured on every CI run rather than estimated.
 divan = { version = "0.1.21", default-features = false }
