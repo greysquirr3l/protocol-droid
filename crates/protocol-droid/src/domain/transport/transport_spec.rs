@@ -213,8 +213,16 @@ mod tests {
     fn a_fully_qualified_spec_parses() -> Result<(), TestError> {
         let cases: [(&str, TransportKind, &str); 4] = [
             ("stdio:./server", TransportKind::Stdio, "./server"),
-            ("http://srv.example/mcp", TransportKind::StreamableHttp, "//srv.example/mcp"),
-            ("sse:http://old.example/sse", TransportKind::LegacySse, "http://old.example/sse"),
+            (
+                "http://srv.example/mcp",
+                TransportKind::StreamableHttp,
+                "//srv.example/mcp",
+            ),
+            (
+                "sse:http://old.example/sse",
+                TransportKind::LegacySse,
+                "http://old.example/sse",
+            ),
             (
                 "http-stateless:http://new.example/mcp",
                 TransportKind::StatelessHttp,
@@ -249,7 +257,9 @@ mod tests {
         let cases: [(&str, Expected); 4] = [
             ("", |e| matches!(e, SpecError::Empty)),
             ("   ", |e| matches!(e, SpecError::Empty)),
-            ("carrier-pigeon", |e| matches!(e, SpecError::UnknownTransport { .. })),
+            ("carrier-pigeon", |e| {
+                matches!(e, SpecError::UnknownTransport { .. })
+            }),
             ("stdio:", |e| matches!(e, SpecError::EmptyTarget)),
         ];
 

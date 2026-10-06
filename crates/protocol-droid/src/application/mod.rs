@@ -9,6 +9,7 @@
 //! (session engine), T11 (dynamic registry), T12 (server and client APIs) and
 //! T14 (the idempotency store a retried `tools/call` is deduplicated through).
 
+pub mod bridge;
 pub mod client;
 pub mod idempotency;
 pub mod jsonrpc;

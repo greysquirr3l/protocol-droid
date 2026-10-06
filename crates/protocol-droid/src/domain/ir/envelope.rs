@@ -102,10 +102,11 @@ pub fn lift(object: &Map<String, Value>) -> Result<IrMessage, EnvelopeError> {
         // A numeric id stays numeric. Routing it through `RequestId::text`
         // would make a peer that matches replies by id type see a string, and
         // the reply would arrive under an id nothing is waiting for.
-        Some(Value::Number(number)) => Some(number.as_i64().map_or_else(
-            || RequestId::text(number.to_string()),
-            RequestId::number,
-        )),
+        Some(Value::Number(number)) => Some(
+            number
+                .as_i64()
+                .map_or_else(|| RequestId::text(number.to_string()), RequestId::number),
+        ),
         Some(other) => {
             return Err(EnvelopeError::IdNotAllowed {
                 found: type_name(other),
@@ -330,7 +331,6 @@ const fn type_name(value: &Value) -> &'static str {
 mod tests {
     use serde_json::{Value, json};
 
-
     use super::{EnvelopeError, lift, lower};
 
     type TestError = Box<dyn std::error::Error>;
@@ -479,7 +479,8 @@ mod tests {
     /// into an unanswerable one.
     #[test]
     fn a_null_id_is_kept() -> Result<(), TestError> {
-        let sent = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse"}});
+        let sent =
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse"}});
 
         assert_eq!(round_trip(sent.clone())?, sent);
         Ok(())

@@ -9,6 +9,7 @@
 //! lifecycle, in-flight requests, cancellation, progress) and T11 (the registry's
 //! pure half: primitives, visibility, snapshots).
 
+mod bridge;
 mod capability;
 pub mod feature;
 pub mod idempotency;
@@ -62,6 +63,7 @@ pub use stream::{
     Replay, StreamEvent, names,
 };
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
+pub use bridge::{Agreement, Leg, RefusedBy, Withheld, agree};
 pub use transport::{
     FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, MessageEndpoint,
     MessageEndpointError, RateLimit, SpecError, TransportKind, TransportSpec, Verdict,
