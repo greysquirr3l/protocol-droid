@@ -61,6 +61,20 @@ fn main() {
     for name in manifest.revision_names() {
         println!("cargo:rerun-if-changed=spec/{name}");
     }
+    let cited_dir = spec_root.join(manifest::CITED_DOCUMENT_DIR);
+    println!("cargo:rerun-if-changed={}", cited_dir.display());
+    // Watch each file individually as well as the directory. A directory entry
+    // is re-stat'd, but appending to or editing a file *inside* it does not
+    // change the directory's own mtime — only creating or deleting an entry
+    // does. Watching the directory alone therefore misses exactly the tampering
+    // the verification exists to catch: someone who edits a vendored document
+    // in place would get a clean `cargo build` and a stale wire type.
+    for document in manifest.rfc_documents.values() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            cited_dir.join(&document.file).display()
+        );
+    }
 
     // A floating revision has no upstream tag, so it must be pinned by commit
     // alone; a tagged one must record the tag it claims. A mismatch means the
@@ -126,10 +140,47 @@ fn main() {
         fail(&format!("{err}"));
     }
 
+    verify_cited_documents(&manifest, &cited_dir);
+
     // Generation runs only after the digests pass. Emitting wire types from an
     // unverified tree would let a tampered schema become a committed type, and
     // the whole point of the check above is that it cannot.
     generate_wire_types(&manifest, spec_root, out_dir);
+}
+
+/// Verify the cited external documents against the manifest.
+///
+/// These get the same treatment as the revision tree, for the same reason: they
+/// are the source the OAuth wire types are written against, so a document that
+/// changed under us must fail the build rather than leave a committed type
+/// disagreeing with the text it claims to implement.
+///
+/// One directory, one flat reconciliation — a document added to `cited/`
+/// without a manifest entry is fatal, exactly as an unrecorded file in a
+/// revision directory is.
+fn verify_cited_documents(manifest: &Manifest, cited_dir: &Path) {
+    if let Err(err) = manifest.verify_rfc_documents(
+        |file| {
+            let path = cited_dir.join(file);
+            fs::read(&path)
+                .map(|bytes| hex_digest(&bytes))
+                .map_err(|err| format!("{}: {err}", path.display()))
+        },
+        || {
+            let Ok(entries) = fs::read_dir(cited_dir) else {
+                return Vec::new();
+            };
+            let mut names: Vec<String> = entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect();
+            names.sort();
+            names
+        },
+    ) {
+        fail(&format!("{err}"));
+    }
 }
 
 /// Emit one module per revision into `OUT_DIR`, plus the module that re-exports
@@ -190,7 +241,8 @@ fn generate_wire_types(manifest: &Manifest, spec_root: &Path, out_dir: &Path) {
 fn fail(message: &str) -> ! {
     eprintln!("error: vendored spec tree is invalid: {message}");
     eprintln!();
-    eprintln!("  Run `cargo xtask refresh-spec <revision>` to re-download the vendored");
-    eprintln!("  files and rewrite the manifest, then review `git diff`.");
+    eprintln!("  A revision is re-downloaded with `cargo xtask refresh-spec <revision>`,");
+    eprintln!("  and a cited document with `cargo xtask refresh-cited <document>`.");
+    eprintln!("  Either rewrites the manifest's digests; review `git diff` afterwards.");
     std::process::exit(1);
 }

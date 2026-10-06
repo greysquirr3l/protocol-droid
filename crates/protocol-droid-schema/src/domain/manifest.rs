@@ -185,6 +185,41 @@ pub struct ManifestMeta {
     pub excluded_tags: BTreeMap<String, String>,
 }
 
+/// One normative document the MCP authorization sections cite, vendored so its
+/// wire shapes can be read rather than remembered.
+///
+/// Not an RFC-only notion — the model is "a cited external document with a
+/// stable URL", which is also how an IETF draft would be pinned. The name is
+/// narrow because every document in the table today is an RFC.
+///
+/// A document lives in one flat directory (`spec/rfc/`) rather than in a
+/// revision directory, because it is cited by *several* revisions and copying
+/// it per revision would mean N copies that could drift.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RfcDocument {
+    /// Human-readable title, used in the README and in error messages.
+    pub title: String,
+    /// Authoritative URL the text is fetched from. Never reconstructed from
+    /// the document name: the IETF serves RFCs from several hosts and a
+    /// derived URL would silently point somewhere unverified.
+    pub url: String,
+    /// File name inside the shared document directory.
+    pub file: String,
+    /// SHA-256 of the vendored file, lowercase hex. Same meaning as
+    /// [`RevisionSpec::files`]: content-addressed, so a re-fetch that changes
+    /// the text is a visible diff rather than a silent upgrade.
+    pub sha256: String,
+    /// Protocol revisions whose authorization section cites this document.
+    ///
+    /// Recorded rather than inferred. The mapping is a judgement about which
+    /// revision's prose requires what, and that judgement belongs in a diff
+    /// that a reviewer reads, not in code that recomputes it from the
+    /// changelog.
+    #[serde(default)]
+    pub cited_by: Vec<String>,
+}
+
 /// The whole of `spec/MANIFEST.toml`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,9 +232,24 @@ pub struct Manifest {
     /// more useful diagnostic than a serde "missing field" error.
     #[serde(default)]
     pub revisions: BTreeMap<String, RevisionSpec>,
+    /// Cited external documents, keyed by a short stable identifier such as
+    /// `rfc7636`. Defaults to empty so a manifest predating this table keeps
+    /// parsing; absence is a claim that nothing external is cited, which the
+    /// same "recorded exclusion rather than silent gap" rule as
+    /// [`ManifestMeta::excluded_tags`] makes worth stating explicitly.
+    #[serde(default)]
+    pub rfc_documents: BTreeMap<String, RfcDocument>,
 }
 
 /// Ways a manifest can fail to parse or to match the tree it describes.
+///
+/// The `revision` field of a tree error carries the owning table's key, so for
+/// a cited document it is the document identifier rather than a protocol
+/// revision. The two trees are different shapes and sharing the variants keeps
+/// one error type for "the vendored tree does not match the manifest" without
+/// a flag for which tree it was; the message is worded to stay true either way,
+/// and remediation is left to the build script, which knows which command
+/// applies.
 #[derive(Debug)]
 pub enum ManifestError {
     /// The manifest is not valid TOML, or does not match the expected shape.
@@ -309,7 +359,7 @@ impl fmt::Display for ManifestError {
                 f,
                 "revision `{revision}`: `{file}` digest mismatch\n  expected {expected}\n  \
                  actual   {actual}\n  the vendored file has changed without the manifest being \
-                 refreshed — run `cargo xtask refresh-spec {revision}`"
+                 refreshed"
             ),
             Self::UnaccountedFile { revision, file } => write!(
                 f,
@@ -328,6 +378,13 @@ impl std::error::Error for ManifestError {}
 
 /// The manifest schema version this build understands.
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+
+/// Directory, relative to the spec root, holding the cited external documents.
+///
+/// One flat directory rather than one per revision: a document like RFC 7636 is
+/// cited by several revisions, and a copy per revision would be N copies free to
+/// drift apart.
+pub const CITED_DOCUMENT_DIR: &str = "cited";
 
 fn is_lower_hex(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len
@@ -454,6 +511,82 @@ impl Manifest {
     pub fn revision_names(&self) -> Vec<&str> {
         self.revisions.keys().map(String::as_str).collect()
     }
+
+    /// Checks the cited-document directory against the manifest.
+    ///
+    /// Separate from [`Manifest::verify`] because the two trees are different
+    /// shapes, not two instances of one: revisions are directories fetched from
+    /// a single git repository at a pinned commit, while cited documents are a
+    /// flat directory fetched from unrelated hosts. Folding them together would
+    /// mean one method carrying a flag for which of the two it was walking.
+    ///
+    /// The contract is the same in both directions. Every recorded document is
+    /// present with the recorded digest, and every file present is recorded —
+    /// the second half is what makes an *added* document fail the build until
+    /// someone has said where it came from.
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestError::Unreadable`] when a digest cannot be produced,
+    /// [`ManifestError::DigestMismatch`] when content does not match,
+    /// [`ManifestError::MissingFile`] when a recorded document is absent, or
+    /// [`ManifestError::UnaccountedFile`] when a file is present but unrecorded.
+    pub fn verify_rfc_documents<F, G>(
+        &self,
+        mut digest_of: F,
+        files_on_disk: G,
+    ) -> Result<(), ManifestError>
+    where
+        F: FnMut(&str) -> Result<String, String>,
+        G: Fn() -> Vec<String>,
+    {
+        for (id, document) in &self.rfc_documents {
+            let actual = digest_of(&document.file).map_err(|reason| ManifestError::Unreadable {
+                revision: id.clone(),
+                file: document.file.clone(),
+                reason,
+            })?;
+            if actual != document.sha256 {
+                return Err(ManifestError::DigestMismatch {
+                    revision: id.clone(),
+                    file: document.file.clone(),
+                    expected: document.sha256.clone(),
+                    actual,
+                });
+            }
+        }
+
+        let on_disk = files_on_disk();
+        let accounted: Vec<&str> = self
+            .rfc_documents
+            .values()
+            .map(|document| document.file.as_str())
+            .collect();
+
+        for file in &on_disk {
+            if !accounted.contains(&file.as_str()) {
+                return Err(ManifestError::UnaccountedFile {
+                    revision: CITED_DOCUMENT_DIR.to_owned(),
+                    file: file.clone(),
+                });
+            }
+        }
+        for file in &accounted {
+            if !on_disk.iter().any(|present| present == file) {
+                return Err(ManifestError::MissingFile {
+                    revision: CITED_DOCUMENT_DIR.to_owned(),
+                    file: (*file).to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Cited-document identifiers in the manifest, sorted.
+    #[must_use]
+    pub fn rfc_document_names(&self) -> Vec<&str> {
+        self.rfc_documents.keys().map(String::as_str).collect()
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +602,7 @@ mod tests {
     )]
 
     use super::{Manifest, ManifestError, RevisionSpec, SUPPORTED_SCHEMA_VERSION, hex_digest};
+    use assert_matches::assert_matches;
 
     /// A manifest for one tagged, fully vendored revision (schema.json and a
     /// changelog, both digest-locked). The `changelog` key is what distinguishes
@@ -509,6 +643,86 @@ mod tests {
     }
 
     const ZERO: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    // ── Cited external documents ───────────────────────────────────────────────
+    //
+    // The revision-tree guard above is only worth anything because it is proven
+    // to fail on each of its three conditions. The cited-document guard is the
+    // same kind of claim about a different directory, so it gets the same
+    // treatment rather than being trusted on inspection.
+
+    /// A manifest citing one document, digest-locked to `body`.
+    fn citing_manifest(body: &str) -> String {
+        format!(
+            "{}\n[rfc_documents.rfc7636]\ntitle = \"PKCE\"\n\
+             url = \"https://example.invalid/rfc7636.txt\"\nfile = \"rfc7636.txt\"\n\
+             sha256 = \"{}\"\ncited_by = [\"2025-03-26\"]\n",
+            sample_manifest("").trim_end(),
+            hex_digest(body.as_bytes()),
+        )
+    }
+
+    /// The on-disk listing for one recorded document, plus whatever extras the
+    /// test smuggles in.
+    fn on_disk(extra: &[&str]) -> Vec<String> {
+        let mut names: Vec<String> = std::iter::once("rfc7636.txt".to_owned())
+            .chain(extra.iter().map(|name| (*name).to_owned()))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_cited_document_verifies_when_the_digest_and_the_tree_agree() {
+        let manifest = Manifest::parse(&citing_manifest("the body")).expect("parses");
+        assert_matches!(
+            manifest.verify_rfc_documents(|_| Ok(hex_digest(b"the body")), || on_disk(&[]),),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_cited_document_whose_text_changed_is_refused() {
+        let manifest = Manifest::parse(&citing_manifest("the body")).expect("parses");
+        let outcome =
+            manifest.verify_rfc_documents(|_| Ok(hex_digest(b"a different body")), || on_disk(&[]));
+        assert_matches!(outcome, Err(ManifestError::DigestMismatch { .. }));
+    }
+
+    /// The half that makes this a guard rather than a formality: a document
+    /// dropped into the directory without a manifest entry is as fatal as one
+    /// whose digest is wrong, because an unrecorded document is one nothing
+    /// vouches for.
+    #[test]
+    fn an_unrecorded_document_in_the_tree_is_refused() {
+        let manifest = Manifest::parse(&citing_manifest("the body")).expect("parses");
+        let outcome = manifest.verify_rfc_documents(
+            |_| Ok(hex_digest(b"the body")),
+            || on_disk(&["rfc9999.txt"]),
+        );
+        assert_matches!(outcome, Err(ManifestError::UnaccountedFile { .. }));
+    }
+
+    #[test]
+    fn a_recorded_document_that_is_absent_is_refused() {
+        let manifest = Manifest::parse(&citing_manifest("the body")).expect("parses");
+        let outcome = manifest.verify_rfc_documents(|_| Ok(hex_digest(b"the body")), Vec::new);
+        assert_matches!(outcome, Err(ManifestError::MissingFile { .. }));
+    }
+
+    /// A manifest predating this table still parses.
+    ///
+    /// The table is `#[serde(default)]`, so "no external documents are cited" is
+    /// a state a manifest can be in rather than a schema error.
+    #[test]
+    fn a_manifest_with_no_cited_documents_still_parses() {
+        let manifest = Manifest::parse(&sample_manifest("")).expect("parses");
+        assert!(manifest.rfc_document_names().is_empty());
+        assert_matches!(
+            manifest.verify_rfc_documents(|_| Ok(ZERO.to_owned()), Vec::new),
+            Ok(())
+        );
+    }
 
     #[test]
     fn hex_digest_matches_the_published_sha256_of_the_empty_string() {
@@ -652,11 +866,20 @@ mod tests {
             matches!(error, ManifestError::DigestMismatch { .. }),
             "unexpected error: {error}"
         );
-        // The message must name the command that fixes it.
+        // The message names the file and both digests, so a reader can act without
+        // opening the manifest. It deliberately does *not* name a refresh
+        // command: the build script prints that, because only it knows whether
+        // it is looking at a revision or a cited document — and when this line
+        // did hardcode `refresh-spec`, it suggested a command that cannot repair
+        // a cited document at all.
         let rendered = error.to_string();
         assert!(
-            rendered.contains("refresh-spec 2025-06-18"),
-            "error should name the refresh command, got: {rendered}"
+            rendered.contains("2025-06-18") && rendered.contains("schema.json"),
+            "error should name what failed, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("expected") && rendered.contains("actual"),
+            "error should show both digests, got: {rendered}"
         );
     }
 

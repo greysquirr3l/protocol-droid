@@ -125,3 +125,69 @@ changelog_is_placeholder = true
 "schema.json"   = "ef70b61f99b6d2e5e3b46863822eab08dff6a45bedc7a08914e0e5b133f40203"
 "schema.ts"     = "b2d3a00d4094e413a48628560fec60652169a3d2b427e8c629238e13f987723f"
 "CHANGELOG.md"  = "09d94d1a4525a5296627636774c7145bd837f736aaa5ea3ed6e4c8474200f77e"
+
+# ─── Cited external documents ─────────────────────────────────────────────────
+# Normative documents the MCP authorization sections cite. These are NOT MCP
+# artifacts: they are fetched from their own publishers at their own URLs, and
+# they live in one shared directory rather than per revision because a single
+# document is cited by several revisions.
+#
+# `cited_by` records which revisions' authorization sections require each
+# document. It is a judgement, recorded here so it appears in a reviewable
+# diff rather than being recomputed by code from the changelog.
+
+[rfc_documents."rfc6749"]
+title = "The OAuth 2.0 Authorization Framework"
+url = "https://www.rfc-editor.org/rfc/rfc6749.txt"
+file = "rfc6749.txt"
+sha256 = "f204fc8661d6c92d2ec6e0b54808f961a9ad26e792f57f312d9528335519bd71"
+cited_by = ["2025-03-26"]
+
+[rfc_documents."rfc7591"]
+title = "OAuth 2.0 Dynamic Client Registration Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc7591.txt"
+file = "rfc7591.txt"
+sha256 = "f9cd8b8eefdb2d1b1bd5734310f246926db0abb4ec1b2f933f358d58327964e3"
+cited_by = ["2025-03-26", "2026-07-28"]
+
+[rfc_documents."rfc7636"]
+title = "Proof Key for Code Exchange by OAuth Public Clients"
+url = "https://www.rfc-editor.org/rfc/rfc7636.txt"
+file = "rfc7636.txt"
+sha256 = "1972e5d81cbaba7066cfd46374207bc2b4546b085ed5dd9b034e79e023e0ca31"
+cited_by = ["2025-03-26"]
+
+[rfc_documents."rfc8414"]
+title = "OAuth 2.0 Authorization Server Metadata"
+url = "https://www.rfc-editor.org/rfc/rfc8414.txt"
+file = "rfc8414.txt"
+sha256 = "16c816e4e0fdbffb7e910ff3017867bf39debe9cb7f52f5cbc508a052ed660e8"
+cited_by = ["2025-03-26"]
+
+[rfc_documents."rfc8707"]
+title = "Resource Indicators for OAuth 2.0"
+url = "https://www.rfc-editor.org/rfc/rfc8707.txt"
+file = "rfc8707.txt"
+sha256 = "3b89844a938b9219571931b664ed4a7b380555a4dda1df4e9445a2f72188e76b"
+cited_by = ["2025-06-18"]
+
+[rfc_documents."rfc9207"]
+title = "OAuth 2.0 Authorization Server Issuer Identification"
+url = "https://www.rfc-editor.org/rfc/rfc9207.txt"
+file = "rfc9207.txt"
+sha256 = "c9c17b9824315aca9bda5c0b5e3627cb24aa28d54324292f3761006209b705fd"
+cited_by = ["2026-07-28"]
+
+[rfc_documents."rfc9728"]
+title = "OAuth 2.0 Protected Resource Metadata"
+url = "https://www.rfc-editor.org/rfc/rfc9728.txt"
+file = "rfc9728.txt"
+sha256 = "b65bcd0d9daf90fd7006a42cf48e0ac3ba24b7f5637d5197f2de41c6b91c8a89"
+cited_by = ["2025-06-18"]
+
+[rfc_documents."draft-parecki-oauth-client-id-metadata-document-03"]
+title = "OAuth Client ID Metadata Document"
+url = "https://www.ietf.org/archive/id/draft-parecki-oauth-client-id-metadata-document-03.txt"
+file = "draft-parecki-oauth-client-id-metadata-document-03.txt"
+sha256 = "23b69586234b7ff17b351e5d448056f10dccb6eeebea82696cf6bfc826a04ced"
+cited_by = ["2025-11-25"]

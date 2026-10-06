@@ -225,9 +225,18 @@ fn a_changed_file_is_reported_as_a_digest_mismatch_naming_the_fix() {
         rendered.contains("digest mismatch"),
         "expected a digest mismatch, got: {rendered}"
     );
+    // The message names what failed and shows both digests, which is what a
+    // reader needs. It does not name a refresh command: the same message type
+    // is used for a cited external document, where `refresh-spec` is not the
+    // command that fixes it, and remediation belongs to the build script that
+    // knows which tree it walked.
     assert!(
-        rendered.contains("refresh-spec 2025-06-18"),
-        "the error should name the command that fixes it, got: {rendered}"
+        rendered.contains("2025-06-18") && rendered.contains("schema.json"),
+        "the error should name the file it is about, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("expected") && rendered.contains("actual"),
+        "the error should show both digests, got: {rendered}"
     );
 }
 

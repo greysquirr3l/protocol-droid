@@ -216,7 +216,7 @@ fn resolve_branch(repository: &str, branch: &str) -> Result<String> {
 /// Fetch a URL, returning its body. Any non-2xx status is an error carrying the
 /// status and a trimmed body, because a 404 here almost always means a wrong
 /// path in the manifest rather than a transient problem.
-fn download(url: &str) -> Result<Vec<u8>> {
+pub(crate) fn download(url: &str) -> Result<Vec<u8>> {
     let mut response = ureq::get(url)
         .call()
         .map_err(|err| anyhow::anyhow!("{url}: {err}"))?;

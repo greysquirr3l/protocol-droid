@@ -18,7 +18,8 @@ spec/
 ├── 2025-06-18/
 ├── 2025-11-25/
 ├── 2026-07-28/
-└── draft/               Tracks upstream `main`; no tag exists yet
+├── draft/               Tracks upstream `main`; no tag exists yet
+└── cited/               Normative documents the authorization sections cite
 ```
 
 Each revision directory holds the same three files:
@@ -33,6 +34,44 @@ Each revision directory holds the same three files:
 describe changes from. Its changelog is ours, not upstream's, and is
 deliberately left unlocked so it can be edited without breaking verification.
 That is the only file in the tree that is not a verbatim copy.
+
+## `cited/` — the documents the authorization sections cite
+
+A revision's schema says what an MCP _message_ looks like. It says nothing about
+what a PKCE challenge looks like, what fields a dynamic client registration
+request carries, or how a resource indicator is encoded — those live in RFCs and
+one IETF draft. Since T16 implements the OAuth client half, "what exactly are we
+coding against?" needs an answer for those too, and it does not belong in
+anyone's memory.
+
+So `cited/` holds the normative documents the authorization sections depend on,
+verified by the same rules as a revision directory: every recorded document is
+present with its recorded digest, and a document present but unrecorded fails
+the build.
+
+Three things make it different from `spec/<version>/`:
+
+- **Not MCP artifacts.** Each file comes from its own publisher at the URL
+  recorded beside it — `rfc-editor.org` for RFCs, the IETF archive for drafts.
+  Nothing here is copied out of the MCP repository.
+- **One directory, not one per revision.** RFC 7636 is cited by several
+  revisions; a copy per revision would be N copies free to drift apart.
+- **Pinned by URL and digest, not by commit.** There is no upstream git commit
+  to pin. The digest is what makes the pin real, and re-fetching is an explicit
+  command rather than something a build does.
+
+The directory is called `cited/` rather than `rfc/` because one of its contents
+is an Internet-Draft, not an RFC.
+
+`cited_by` in the manifest records which revisions' authorization sections
+require each document. It is a judgement about prose that is not vendored, so it
+is recorded here to be read and argued with in review rather than recomputed by
+code.
+
+```bash
+cargo xtask refresh-cited                 # all of them
+cargo xtask refresh-cited rfc7636         # just one
+```
 
 ## Why the manifest exists
 

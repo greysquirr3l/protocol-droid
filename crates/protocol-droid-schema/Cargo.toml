@@ -41,6 +41,9 @@ sha2 = { workspace = true }
 # `jsonschema`, then round-trips them through the generated types.
 proptest = { workspace = true }
 jsonschema = { workspace = true }
+# Prints the Debug of what it was given on failure, which is the whole reason
+# the manifest guard tests use it over `assert!(matches!(..))`.
+assert_matches = { workspace = true }
 
 [lints]
 workspace = true

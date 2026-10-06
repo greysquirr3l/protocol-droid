@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand};
 // root is the maximum, so nothing is actually exported.
 pub mod manifest_edit;
 pub mod refresh;
+pub mod refresh_cited;
 
 // The vendored spec manifest, compiled from the canonical source file.
 //
@@ -53,6 +54,9 @@ enum Command {
     /// This is the ONLY way a vendored file changes. A build never touches the
     /// network, so the schemas in the tree are exactly what the diff shows.
     RefreshSpec(RefreshSpecArgs),
+    /// Re-download a cited external document and update its digest in
+    /// MANIFEST.toml.
+    RefreshCited(RefreshCitedArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -72,6 +76,22 @@ struct RefreshSpecArgs {
     newest: bool,
 }
 
+/// Re-download the external documents the MCP authorization sections cite.
+///
+/// Separate from `refresh-spec` because the pinning differs: a revision is
+/// pinned to an upstream commit, a cited document to a URL. Like `refresh-spec`
+/// it is the only way one of those files changes.
+#[derive(Debug, clap::Args)]
+struct RefreshCitedArgs {
+    /// Documents to refresh. Omit to refresh all of them.
+    ///
+    /// A document must already have an entry in MANIFEST.toml; this command
+    /// fills in digests for entries that exist, it does not invent entries.
+    /// That is where the URL to fetch from is recorded, so a document with no
+    /// entry has nothing to fetch and nothing to verify against.
+    ids: Vec<String>,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
@@ -79,5 +99,6 @@ fn main() -> Result<()> {
             let spec_root = refresh::locate_spec_root()?;
             refresh::refresh(&spec_root, &args.revision, args.newest)
         }
+        Command::RefreshCited(args) => refresh_cited::run(&args.ids),
     }
 }
