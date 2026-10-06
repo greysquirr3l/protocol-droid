@@ -78,8 +78,8 @@
 
 mod auth;
 mod config;
-pub mod precondition;
 mod frame_payload;
+pub mod precondition;
 mod refusal;
 mod resume;
 mod router;
@@ -97,7 +97,9 @@ mod stream;
 /// two are what `HttpReply` tells apart on the way back.
 pub const JSON_MEDIA_TYPE: &str = "application/json";
 
-pub use auth::{Anonymous, AuthPolicy, Authenticator, Credentials};
+pub use auth::{
+    Anonymous, AuthPolicy, Authenticator, Credentials, OAuthAuthenticator, SystemClock, WallClock,
+};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
 pub use frame_payload::FramePayload;
 pub use refusal::Refusal;

@@ -480,23 +480,33 @@ impl RequestHandler<EventTail<Value>> for Framing {
         let status = self.status;
         async move {
             let mut response = axum::response::Response::new(axum::body::Body::from("{}"));
-            *response.status_mut() =
-                axum::http::StatusCode::from_u16(status).map_err(|error| {
-                    Refusal::Handler(format!("{status} is not a status: {error}"))
-                })?;
+            *response.status_mut() = axum::http::StatusCode::from_u16(status)
+                .map_err(|error| Refusal::Handler(format!("{status} is not a status: {error}")))?;
             let value = axum::http::HeaderValue::from_static(content_type);
-            response.headers_mut().insert(axum::http::header::CONTENT_TYPE, value);
+            response
+                .headers_mut()
+                .insert(axum::http::header::CONTENT_TYPE, value);
             Ok(response)
         }
     }
 }
 
 /// A server whose only job is to answer with a chosen framing.
-async fn framed(content_type: &'static str, status: u16) -> Result<(HttpClient, axum::http::StatusCode), TestError> {
+async fn framed(
+    content_type: &'static str,
+    status: u16,
+) -> Result<(HttpClient, axum::http::StatusCode), TestError> {
     let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
     let config = ServerConfig::new()?.with_security(SecurityHeaders::default());
-    let router = McpRouter::new(config, Arc::clone(&sessions), Framing { content_type, status })
-        .into_router()?;
+    let router = McpRouter::new(
+        config,
+        Arc::clone(&sessions),
+        Framing {
+            content_type,
+            status,
+        },
+    )
+    .into_router()?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();

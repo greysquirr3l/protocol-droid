@@ -21,11 +21,11 @@ use serde_json::Value;
 
 use crate::adapters::primary::transport::http::SseEvent;
 use crate::adapters::secondary::transport::http::FrameReader;
-use crate::domain::ir::JsonObject;
-use crate::domain::{MessageEndpoint, RequestId, names};
 use crate::application::jsonrpc::document::{
     notification_document, reply_result, request_document,
 };
+use crate::domain::ir::JsonObject;
+use crate::domain::{MessageEndpoint, RequestId, names};
 
 use crate::application::client::{ClientTransport, TransportError};
 use crate::application::jsonrpc::document::RequestError;
@@ -353,7 +353,11 @@ impl LegacySseClient {
     /// nor a JSON payload.
     pub async fn next(&self) -> Result<Option<ClientFrame>, LegacySseError> {
         let mut stream = self.stream.lock().await;
-        stream.next().await?.map(|event| ClientFrame::classify(&event)).transpose()
+        stream
+            .next()
+            .await?
+            .map(|event| ClientFrame::classify(&event))
+            .transpose()
     }
 
     /// The id for the next request on this connection.

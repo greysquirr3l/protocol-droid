@@ -16,6 +16,8 @@
 //! - A `message` path that is not a usable endpoint fails the `GET` *and*
 //!   leaves no session behind.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -33,8 +35,8 @@ use crate::adapters::primary::transport::http::{
 };
 use crate::adapters::primary::transport::legacy_sse::{LegacyDispatcher, Origin, OriginPolicy};
 use crate::application::session::IdSource;
-use crate::domain::registry::auth::{AuthContext, ScopeSet};
 use crate::domain::McpSessionId;
+use crate::domain::registry::auth::{AuthContext, ScopeSet};
 use crate::domain::session::SessionId;
 
 type TestError = Box<dyn std::error::Error>;
@@ -107,12 +109,16 @@ impl Recorder {
 struct OneToken;
 
 impl Authenticator for OneToken {
-    fn authenticate(&self, presented: &Credentials<'_>) -> AuthContext {
-        if presented.authorization() == Some("Bearer good") {
+    fn authenticate<'a>(
+        &'a self,
+        presented: &'a Credentials<'_>,
+    ) -> Pin<Box<dyn Future<Output = AuthContext> + Send + 'a>> {
+        let context = if presented.authorization() == Some("Bearer good") {
             AuthContext::new("holder", ScopeSet::all())
         } else {
             AuthContext::anonymous()
-        }
+        };
+        Box::pin(std::future::ready(context))
     }
 }
 
@@ -170,7 +176,7 @@ impl Harness {
         )
         .with_origins(OriginPolicy::strict(None))
         .with_auth(AuthPolicy::Require(ScopeSet::all()), Arc::new(OneToken))
-            .into_router()?;
+        .into_router()?;
         Ok(Self {
             router,
             sessions,
@@ -348,7 +354,10 @@ async fn the_advertised_query_is_the_query_that_is_read() -> Result<(), TestErro
         .send(
             Request::builder()
                 .method("POST")
-                .uri(advertised.replace("sessionId=0000000000000001", &format!("sessionId={SESSION_ONE}")))
+                .uri(advertised.replace(
+                    "sessionId=0000000000000001",
+                    &format!("sessionId={SESSION_ONE}"),
+                ))
                 .body(Body::from(r#"{"jsonrpc":"2.0","id":1}"#.to_owned()))?,
         )
         .await?;
@@ -714,7 +723,10 @@ async fn a_request_carrying_the_credential_is_answered() -> Result<(), TestError
     )?;
     require(
         &harness
-            .send(with_token(post(&message_uri(id), r#"{"jsonrpc":"2.0","id":1}"#)?)?)
+            .send(with_token(post(
+                &message_uri(id),
+                r#"{"jsonrpc":"2.0","id":1}"#,
+            )?)?)
             .await?
             .status(),
         &StatusCode::ACCEPTED,

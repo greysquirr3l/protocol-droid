@@ -13,6 +13,8 @@
 //! router, and it is the test that hangs when the code under test hangs.
 
 use core::num::NonZeroUsize;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,7 +32,8 @@ use crate::adapters::primary::transport::http::{
     ServerConfig, SessionStore, Streaming,
 };
 use crate::application::session::IdSource;
-use crate::domain::registry::auth::{AuthContext, ScopeSet};
+use crate::domain::mcp::{ResourceMetadata, ResourceUri};
+use crate::domain::registry::auth::{AuthContext, Scope, ScopeSet};
 use crate::domain::session::SessionId;
 use crate::domain::{EventId, McpSessionId, ProtocolVersion};
 
@@ -163,12 +166,16 @@ impl RequestHandler<EventTail<Value>> for Echo {
 struct OneToken;
 
 impl Authenticator for OneToken {
-    fn authenticate(&self, presented: &Credentials<'_>) -> AuthContext {
-        if presented.authorization() == Some("Bearer good") {
+    fn authenticate<'a>(
+        &'a self,
+        presented: &'a Credentials<'_>,
+    ) -> Pin<Box<dyn Future<Output = AuthContext> + Send + 'a>> {
+        let context = if presented.authorization() == Some("Bearer good") {
             AuthContext::new("holder", ScopeSet::all())
         } else {
             AuthContext::anonymous()
-        }
+        };
+        Box::pin(std::future::ready(context))
     }
 }
 
@@ -989,14 +996,20 @@ async fn the_gate_and_the_lookup_are_independently_usable() -> Result<(), TestEr
     let policy = AuthPolicy::Require(ScopeSet::all());
     let mut headers = HeaderMap::new();
 
-    if authenticate(&authenticator, &policy, &headers).is_ok() {
+    if authenticate(&authenticator, &policy, &headers)
+        .await
+        .is_ok()
+    {
         return Err(fail("an anonymous caller passed a required policy"));
     }
     headers.insert(
         header::AUTHORIZATION,
         header::HeaderValue::from_static("Bearer good"),
     );
-    if authenticate(&authenticator, &policy, &headers).is_err() {
+    if authenticate(&authenticator, &policy, &headers)
+        .await
+        .is_err()
+    {
         return Err(fail("a valid credential was refused by the gate"));
     }
 
@@ -1028,14 +1041,10 @@ async fn the_gate_and_the_lookup_are_independently_usable() -> Result<(), TestEr
 // ---------------------------------------------------------------------------
 
 /// A `POST` carrying an `MCP-Protocol-Version` the build can parse.
-fn post_at_version(
-    version: ProtocolVersion,
-) -> Result<Request<Body>, TestError> {
+fn post_at_version(version: ProtocolVersion) -> Result<Request<Body>, TestError> {
     let mut request = post("{}")?;
     let value = header::HeaderValue::from_str(&version.to_string())?;
-    request
-        .headers_mut()
-        .insert("mcp-protocol-version", value);
+    request.headers_mut().insert("mcp-protocol-version", value);
     Ok(request)
 }
 
@@ -1078,9 +1087,10 @@ async fn a_version_header_this_build_cannot_read_is_a_four_hundred() -> Result<(
     // bad header cannot be read as an absent one.
     let harness = Harness::build(true)?;
     let mut request = post("{}")?;
-    request
-        .headers_mut()
-        .insert("mcp-protocol-version", header::HeaderValue::from_static("not-a-date"));
+    request.headers_mut().insert(
+        "mcp-protocol-version",
+        header::HeaderValue::from_static("not-a-date"),
+    );
     let response = harness.send(request).await?;
     require(
         &response.status(),
@@ -1096,7 +1106,8 @@ async fn a_version_header_this_build_cannot_read_is_a_four_hundred() -> Result<(
 }
 
 #[tokio::test]
-async fn a_version_header_this_build_does_not_know_yet_is_carried_through() -> Result<(), TestError> {
+async fn a_version_header_this_build_does_not_know_yet_is_carried_through() -> Result<(), TestError>
+{
     // A date the build has no wire types for is `Unknown`, not an error. The
     // alternative — refusing what we cannot name — makes this server unusable
     // the day a new revision ships, which is the one outcome the negotiation
@@ -1138,7 +1149,9 @@ async fn a_stateless_request_is_served_without_a_session() -> Result<(), TestErr
     // `_meta` version the request carries the only signal the server ignores.
     let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
     let harness = Harness::stateless(ServerConfig::new()?, Arc::clone(&sessions))?;
-    let _ = harness.send(post_at_version(ProtocolVersion::V2026_07_28)?).await?;
+    let _ = harness
+        .send(post_at_version(ProtocolVersion::V2026_07_28)?)
+        .await?;
     let expected = vec![String::from("stateless")];
     require(
         &harness.recorder.seen(),
@@ -1210,4 +1223,132 @@ async fn a_request_needing_a_session_and_naming_none_is_a_four_hundred() -> Resu
         "a refused request was still dispatched",
     )?;
     Ok(())
+}
+
+// -------------------------------------------------------------------------
+// The challenge a 401 carries, and the one a 403 does not.
+// -------------------------------------------------------------------------
+
+/// The resource the harness publishes metadata for.
+const RESOURCE: &str = "https://mcp.example/mcp";
+
+/// A config that publishes RFC 9728 metadata for [`RESOURCE`].
+fn publishing() -> Result<ServerConfig, TestError> {
+    let metadata = ResourceMetadata::new(ResourceUri::new(RESOURCE)?);
+    Ok(ServerConfig::new()?.with_resource_metadata(metadata))
+}
+
+/// The `WWW-Authenticate` header on a response, if it carries one.
+fn challenge_of(response: &axum::response::Response) -> Option<String> {
+    response
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// A `401` names where the client can discover the authorization server.
+///
+/// Without this header a client that has just been handed an expired token
+/// knows it needs a credential and has no way to learn which issuer issues
+/// them. The challenge is the entire mechanism by which RFC 9728 gets from
+/// "this resource is protected" to "here is the document", so a `401` without
+/// it is a dead end rather than a smaller omission.
+#[tokio::test]
+async fn a_401_carries_the_resource_metadata_challenge() -> Result<(), TestError> {
+    let harness = Harness::from_parts(
+        publishing()?,
+        Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
+        true,
+        AuthPolicy::Require(ScopeSet::all()),
+        Arc::new(OneToken),
+    )?;
+    let id = harness.open()?;
+    // No `Authorization` header, so the policy refuses an anonymous context.
+    let response = harness.send(with_session(post("{}")?, id)?).await?;
+
+    require(&response.status(), &StatusCode::UNAUTHORIZED, "status")?;
+    let challenge = challenge_of(&response)
+        .ok_or_else(|| fail("a 401 carried no WWW-Authenticate challenge"))?;
+    require(
+        &challenge,
+        &"Bearer resource_metadata=\"https://mcp.example/.well-known/oauth-protected-resource/mcp\""
+            .to_owned(),
+        "challenge",
+    )
+}
+
+/// A `403` carries no challenge, because authenticating again cannot help.
+///
+/// RFC 6750 §3.1 attaches a challenge to `401`, not `403`: a `403` says this
+/// credential is valid and will not do here. Sending a challenge on it tells a
+/// correct client to do the one thing that will not help — fetch a new token
+/// carrying exactly the scope it already has.
+#[tokio::test]
+async fn a_403_carries_no_challenge() -> Result<(), TestError> {
+    let harness = Harness::from_parts(
+        publishing()?,
+        Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
+        true,
+        AuthPolicy::Require(ScopeSet::empty().with(Scope::Admin)),
+        Arc::new(ReadOnly),
+    )?;
+    let id = harness.open()?;
+    let mut request = with_session(post("{}")?, id)?;
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        header::HeaderValue::from_static("Bearer good"),
+    );
+    let response = harness.send(request).await?;
+
+    require(&response.status(), &StatusCode::FORBIDDEN, "status")?;
+    require(
+        &challenge_of(&response).is_none(),
+        &true,
+        "a 403 carried a WWW-Authenticate challenge",
+    )
+}
+
+/// A `401` from a server that publishes nothing is unadorned, not `Bearer`.
+///
+/// A challenge naming no metadata tells the client the scheme and nothing
+/// else, and a deployment in that state is misconfigured. Emitting a bare
+/// `Bearer` would look like a working challenge to a client and leave it
+/// searching for a document that was never published.
+#[tokio::test]
+async fn a_401_without_published_metadata_is_unadorned() -> Result<(), TestError> {
+    let harness = Harness::with(
+        true,
+        AuthPolicy::Require(ScopeSet::all()),
+        Arc::new(OneToken),
+    )?;
+    let id = harness.open()?;
+    let response = harness.send(with_session(post("{}")?, id)?).await?;
+
+    require(&response.status(), &StatusCode::UNAUTHORIZED, "status")?;
+    require(
+        &challenge_of(&response).is_none(),
+        &true,
+        "a 401 from a server publishing no metadata carried a challenge",
+    )
+}
+
+/// Authenticates a real token, but with fewer scopes than any policy here
+/// requires. Deliberately a different shape from [`OneToken`], which holds
+/// everything, so a test meaning to exercise the `403` path cannot pass against
+/// a gate that admits everything.
+struct ReadOnly;
+
+impl Authenticator for ReadOnly {
+    fn authenticate<'a>(
+        &'a self,
+        presented: &'a Credentials<'_>,
+    ) -> Pin<Box<dyn Future<Output = AuthContext> + Send + 'a>> {
+        let context = if presented.authorization() == Some("Bearer good") {
+            AuthContext::new("holder", ScopeSet::empty().with(Scope::Read))
+        } else {
+            AuthContext::anonymous()
+        };
+        Box::pin(std::future::ready(context))
+    }
 }

@@ -84,8 +84,8 @@ use serde_json::Value;
 
 use super::precondition::{authenticate, read_body};
 use super::{
-    Anonymous, AuthPolicy, Authenticator, EventTail, JSON_MEDIA_TYPE, Refusal,
-    SecurityHeaders, ServerConfig, SessionStore,
+    Anonymous, AuthPolicy, Authenticator, EventTail, JSON_MEDIA_TYPE, Refusal, SecurityHeaders,
+    ServerConfig, SessionStore,
 };
 use crate::domain::ProtocolVersion;
 use crate::domain::mcp::McpSessionId;
@@ -541,9 +541,9 @@ where
 {
     // Authentication first, before anything else. See the module docs for the
     // oracle the ordering prevents.
-    let context = match authenticate(state.authenticator.as_ref(), &state.policy, &headers) {
+    let context = match authenticate(state.authenticator.as_ref(), &state.policy, &headers).await {
         Ok(context) => context,
-        Err(refusal) => return refuse(refusal),
+        Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     };
 
     // The ceiling is the domain's, read once and converted once. A `u32` that
@@ -554,13 +554,14 @@ where
         // A `u32` that does not fit a `usize` is a target whose `usize` is
         // narrower than 32 bits. Refusing every body is the safe reading
         // there, because the alternative is a limit that silently wraps.
-        return refuse(Refusal::Handler(
-            "the configured body limit does not fit this platform".to_owned(),
-        ));
+        return refuse_with_challenge(
+            state.config.challenge().as_deref(),
+            Refusal::Handler("the configured body limit does not fit this platform".to_owned()),
+        );
     };
     let body = match read_body(body, limit).await {
         Ok(body) => body,
-        Err(refusal) => return refuse(refusal),
+        Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     };
 
     // The version header is parsed before anything is dispatched, so a client
@@ -569,7 +570,7 @@ where
     // session's negotiated revision, and only the protocol layer knows it.
     let protocol = match read_protocol(&headers) {
         Ok(protocol) => protocol,
-        Err(refusal) => return refuse(refusal),
+        Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     };
 
     // The body is read before the header is resolved, because "what does this
@@ -580,11 +581,18 @@ where
         Header::Absent => match state.handler.unsessioned(&body) {
             Unsessioned::Establishing => SessionHandle::Establishing,
             Unsessioned::Stateless => SessionHandle::Stateless,
-            Unsessioned::NeedsSession => return refuse(Refusal::MissingSession),
+            Unsessioned::NeedsSession => {
+                return refuse_with_challenge(
+                    state.config.challenge().as_deref(),
+                    Refusal::MissingSession,
+                );
+            }
         },
         Header::Value(_) | Header::Unreadable => match resolve_session(&state.sessions, &headers) {
             Ok(session) => session,
-            Err(refusal) => return refuse(refusal),
+            Err(refusal) => {
+                return refuse_with_challenge(state.config.challenge().as_deref(), refusal);
+            }
         },
     };
 
@@ -596,7 +604,7 @@ where
     };
     match state.handler.dispatch(call).await {
         Ok(response) => stamp_media_type(response),
-        Err(refusal) => refuse(refusal),
+        Err(refusal) => refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     }
 }
 
@@ -648,23 +656,25 @@ where
     S: EventSource,
     H: RequestHandler<S>,
 {
-    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, &headers) {
-        return refuse(refusal);
+    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, &headers).await
+    {
+        return refuse_with_challenge(state.config.challenge().as_deref(), refusal);
     }
 
     // A `GET` is a stream for a session that already exists. There is no body
     // to inspect, so the header is not optional here.
     let session = match resolve_session(&state.sessions, &headers) {
         Ok(session) => session,
-        Err(refusal) => return refuse(refusal),
+        Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     };
     let SessionHandle::Live { session, .. } = session else {
         // Unreachable: `resolve_session` only ever yields `Live`. Written as a
         // `let ... else` rather than a panic because this file's rules forbid
         // both, and a refusal is the honest answer if it is ever reached.
-        return refuse(Refusal::Handler(
-            "the session lookup produced no session".to_owned(),
-        ));
+        return refuse_with_challenge(
+            state.config.challenge().as_deref(),
+            Refusal::Handler("the session lookup produced no session".to_owned()),
+        );
     };
 
     // The cursor is the header and nothing else. The replay decision — full
@@ -678,7 +688,12 @@ where
     let cursor = match Header::read(&headers, &LAST_EVENT_ID) {
         Header::Absent => None,
         Header::Value(text) => Some(text),
-        Header::Unreadable => return refuse(Refusal::MalformedCursor),
+        Header::Unreadable => {
+            return refuse_with_challenge(
+                state.config.challenge().as_deref(),
+                Refusal::MalformedCursor,
+            );
+        }
     };
 
     // `into_response` is the one conversion from a decision to a response: a
@@ -693,7 +708,10 @@ where
         .into_response(state.config.keep_alive())
     {
         Ok(response) => response,
-        Err(error) => refuse(Refusal::Handler(error.to_string())),
+        Err(error) => refuse_with_challenge(
+            state.config.challenge().as_deref(),
+            Refusal::Handler(error.to_string()),
+        ),
     }
 }
 
@@ -717,14 +735,20 @@ where
     S: EventSource,
     H: RequestHandler<S>,
 {
-    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, &headers) {
-        return refuse(refusal);
+    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, &headers).await
+    {
+        return refuse_with_challenge(state.config.challenge().as_deref(), refusal);
     }
 
     let id = match session_id(&headers) {
         Ok(Some(id)) => id,
-        Ok(None) => return refuse(Refusal::MissingSession),
-        Err(refusal) => return refuse(refusal),
+        Ok(None) => {
+            return refuse_with_challenge(
+                state.config.challenge().as_deref(),
+                Refusal::MissingSession,
+            );
+        }
+        Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     };
 
     // The returned `Arc` is dropped at the end of this match arm, which is what
@@ -732,8 +756,13 @@ where
     // the adapter drops a session, so this is the only path that frees one.
     match state.sessions.terminate(&id) {
         Ok(Some(_terminated)) => StatusCode::OK.into_response(),
-        Ok(None) => refuse(Refusal::UnknownSession),
-        Err(error) => refuse(Refusal::Handler(error.to_string())),
+        Ok(None) => {
+            refuse_with_challenge(state.config.challenge().as_deref(), Refusal::UnknownSession)
+        }
+        Err(error) => refuse_with_challenge(
+            state.config.challenge().as_deref(),
+            Refusal::Handler(error.to_string()),
+        ),
     }
 }
 
@@ -833,8 +862,31 @@ fn read_protocol(headers: &HeaderMap) -> Result<Option<ProtocolVersion>, Refusal
 /// habit repeated at each call site because the alternative is the shape of bug
 /// this adapter is built not to have: a handler that answers a refusal with
 /// `StatusCode::OK` because it was in a hurry, on a path no test walks.
-fn refuse(refusal: Refusal) -> Response {
-    refusal.into_response()
+/// Renders a refusal as the response it is.
+///
+/// A `401` additionally carries the `WWW-Authenticate` challenge, because a
+/// `401` without one is a dead end for the client: it knows it needs a
+/// credential but not where the authorization server is, which is the one thing
+/// a client that has just been handed an expired token cannot work out for
+/// itself. RFC 9728 §5.1.
+///
+/// The `403` arm gets nothing. `insufficient_scope` and `ForeignOrigin` are
+/// both 403s, and RFC 6750 §3.1 attaches a challenge to `401`, not `403` — a
+/// `403` says this credential is fine and will not do, which re-authenticating
+/// cannot change. Sending a challenge there would tell a correct client to do
+/// the one thing that will not help.
+fn refuse_with_challenge(challenge: Option<&str>, refusal: Refusal) -> Response {
+    let status = refusal.status();
+    let mut response = refusal.into_response();
+    if status == StatusCode::UNAUTHORIZED
+        && let Some(challenge) = challenge
+        && let Ok(value) = HeaderValue::from_str(challenge)
+    {
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
+    }
+    response
 }
 
 #[cfg(test)]

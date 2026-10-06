@@ -86,7 +86,9 @@ impl ClientTransport for Recording {
         self.record(method, params);
         let answer = self.answer.clone();
         let failure = self.failure.clone().unwrap_or_default();
-        Box::pin(std::future::ready(answer.ok_or(TransportError::Unavailable(failure))))
+        Box::pin(std::future::ready(
+            answer.ok_or(TransportError::Unavailable(failure)),
+        ))
     }
 
     fn notify(
@@ -143,7 +145,10 @@ async fn the_offer_that_goes_out_names_the_clients_preferred_revision() -> Resul
     // The offer, not the outcome. Sending the *result* here would be a client
     // that already assumed the negotiation it is about to perform.
     let params = transport.params(0)?;
-    assert_eq!(at(&params, "protocolVersion"), Some(&serde_json::json!("2025-11-25")));
+    assert_eq!(
+        at(&params, "protocolVersion"),
+        Some(&serde_json::json!("2025-11-25"))
+    );
     Ok(())
 }
 
@@ -169,7 +174,7 @@ async fn a_negotiation_failure_sends_no_notification() -> Result<(), TestError> 
     )?;
     let config = client_at(ProtocolVersion::V2025_06_18);
 
-    let error = expect_err(handshake(&transport, &config) .await)?;
+    let error = expect_err(handshake(&transport, &config).await)?;
 
     // There is no session to announce, and a server that was told "ready" by a
     // client that then refused to talk is a worse state than one that was told
@@ -184,7 +189,7 @@ async fn a_transport_failure_surfaces_as_a_transport_error() -> Result<(), TestE
     let transport = Recording::failing("connection refused");
     let config = client_at(ProtocolVersion::V2025_06_18);
 
-    let error = expect_err(handshake(&transport, &config) .await)?;
+    let error = expect_err(handshake(&transport, &config).await)?;
 
     let HandshakeError::Transport(TransportError::Unavailable(detail)) = &error else {
         return Err(TestError::WrongShape { got: error });
@@ -206,7 +211,7 @@ async fn a_handshake_that_fails_sends_no_notification() -> Result<(), TestError>
     let transport = Recording::failing("connection reset");
     let config = client_at(ProtocolVersion::V2025_06_18);
 
-    let _error = expect_err(handshake(&transport, &config) .await)?;
+    let _error = expect_err(handshake(&transport, &config).await)?;
 
     assert_eq!(transport.methods(), vec![INITIALIZE]);
     Ok(())

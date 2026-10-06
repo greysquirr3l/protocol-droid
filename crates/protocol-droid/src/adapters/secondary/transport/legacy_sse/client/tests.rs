@@ -9,18 +9,18 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::http::StatusCode;
 use crate::adapters::primary::transport::http::{Refusal, ServerConfig, SessionStore};
 use crate::adapters::primary::transport::legacy_sse::{
     DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyDispatcher, LegacyRouter,
 };
 use crate::application::session::IdSource;
-use crate::domain::session::SessionId;
 use crate::domain::McpSessionId;
+use crate::domain::session::SessionId;
+use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use crate::adapters::secondary::transport::test_support::ScriptedServer;
 use super::{ClientFrame, LegacySseClient, LegacySseConfig, LegacySseError, resolve};
+use crate::adapters::secondary::transport::test_support::ScriptedServer;
 use crate::domain::MessageEndpoint;
 
 type TestError = Box<dyn std::error::Error>;
@@ -125,8 +125,8 @@ impl IdSource for Counting {
 /// wrong place, or a server that writes a path the client's parser cannot take,
 /// both produce a `200` and an `endpoint` that looks right in isolation.
 #[tokio::test]
-async fn a_request_posted_to_the_advertised_endpoint_is_answered_on_the_stream(
-) -> Result<(), TestError> {
+async fn a_request_posted_to_the_advertised_endpoint_is_answered_on_the_stream()
+-> Result<(), TestError> {
     let live = Live::start().await?;
     let client = live.client().await?;
 
@@ -136,8 +136,13 @@ async fn a_request_posted_to_the_advertised_endpoint_is_answered_on_the_stream(
         "the endpoint the server advertised is the path the client posts to",
     )?;
 
-    client.send(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await?;
-    let reply = client.next().await?.ok_or("the stream ended without a reply")?;
+    client
+        .send(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+        .await?;
+    let reply = client
+        .next()
+        .await?
+        .ok_or("the stream ended without a reply")?;
     let ClientFrame::Message(value) = reply else {
         return Err(fail("expected a message frame carrying the result"));
     };
@@ -165,8 +170,13 @@ async fn a_request_posted_to_the_advertised_endpoint_is_answered_on_the_stream(
 async fn an_unnamed_frame_off_the_wire_arrives_as_a_message() -> Result<(), TestError> {
     let live = Live::start().await?;
     let client = live.client().await?;
-    client.send(br#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#).await?;
-    let reply = client.next().await?.ok_or("the stream ended without a reply")?;
+    client
+        .send(br#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
+        .await?;
+    let reply = client
+        .next()
+        .await?
+        .ok_or("the stream ended without a reply")?;
     require(
         matches!(reply, ClientFrame::Message(_)),
         "an unnamed frame is a message, because unnamed IS the standard's default name",
@@ -235,9 +245,7 @@ async fn an_endpoint_naming_another_host_is_refused() -> Result<(), TestError> {
             ScriptedServer::start(vec![format!("event: endpoint\ndata: {hostile}\n\n")]).await?;
         let client = LegacySseClient::connect(LegacySseConfig::new(server.url())?).await;
         let Err(error) = client else {
-            return Err(fail(format!(
-                "{hostile} must not be usable as an endpoint"
-            )));
+            return Err(fail(format!("{hostile} must not be usable as an endpoint")));
         };
         require(
             matches!(error, LegacySseError::Endpoint { .. }),
@@ -278,7 +286,12 @@ fn an_origin_relative_target_never_leaves_the_origin() -> Result<(), TestError> 
         "https://mcp.example/base/sse",
         "https://mcp.example:8443/sse?x=1",
     ] {
-        for target in ["/messages", "/messages?sessionId=abc", "/a/b/c?x=1&y=2", "/"] {
+        for target in [
+            "/messages",
+            "/messages?sessionId=abc",
+            "/a/b/c?x=1&y=2",
+            "/",
+        ] {
             let endpoint = MessageEndpoint::from_str(target)?;
             let resolved = resolve(base, &endpoint)?;
             let want = reqwest::Url::parse(base)?;
@@ -298,7 +311,10 @@ fn an_origin_relative_target_never_leaves_the_origin() -> Result<(), TestError> 
 fn a_target_naming_another_host_never_reaches_the_join() -> Result<(), TestError> {
     use core::str::FromStr;
 
-    for hostile in ["https://elsewhere.example/steal", "//elsewhere.example/steal"] {
+    for hostile in [
+        "https://elsewhere.example/steal",
+        "//elsewhere.example/steal",
+    ] {
         if let Ok(endpoint) = MessageEndpoint::from_str(hostile) {
             return Err(fail(format!("{hostile} parsed as {endpoint}")));
         }

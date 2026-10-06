@@ -44,9 +44,7 @@ fn require_str(got: &str, want: &str, because: &str) -> Result<(), TestError> {
     if got == want {
         Ok(())
     } else {
-        Err(fail(format!(
-            "{because}:\n  got  {got:?}\n  want {want:?}"
-        )))
+        Err(fail(format!("{because}:\n  got  {got:?}\n  want {want:?}")))
     }
 }
 
@@ -90,7 +88,10 @@ fn an_endpoint_uri_is_never_quoted_the_way_a_value_would_be() -> Result<(), Test
 fn a_message_frame_is_unnamed() -> Result<(), TestError> {
     let frame = LegacyFrame::Message(serde_json::json!({"jsonrpc": "2.0", "id": 1}));
     let event = frame.to_frame(first())?;
-    require( &event.name().is_none(), &true, "a message frame carries no event name, so a client reading this transport cannot mistake it for the endpoint event",
+    require(
+        &event.name().is_none(),
+        &true,
+        "a message frame carries no event name, so a client reading this transport cannot mistake it for the endpoint event",
     )?;
     require_str(
         &event.encode(),
@@ -112,11 +113,20 @@ fn both_kinds_share_one_numbered_sequence() -> Result<(), TestError> {
     let tail: LegacyTail = EventTail::new(capacity);
     let endpoint_id = tail.push(LegacyFrame::Endpoint(endpoint("/messages?sessionId=7")?));
     let message_id = tail.push(LegacyFrame::Message(serde_json::json!({"jsonrpc": "2.0"})));
-    require( &tail.len(), &2, "both frames are on the tail, because they share one stream",
+    require(
+        &tail.len(),
+        &2,
+        "both frames are on the tail, because they share one stream",
     )?;
-    require( &(endpoint_id.get(), message_id.get()), &(1, 2), "and the endpoint pushed first is event 1, which is the frame a client reads first",
+    require(
+        &(endpoint_id.get(), message_id.get()),
+        &(1, 2),
+        "and the endpoint pushed first is event 1, which is the frame a client reads first",
     )?;
-    require( &tail.last().get(), &2, "so the tail's cursor is past both, and a client that reconnects asking for event 2 is told there is nothing newer",
+    require(
+        &tail.last().get(),
+        &2,
+        "so the tail's cursor is past both, and a client that reconnects asking for event 2 is told there is nothing newer",
     )
 }
 
@@ -125,13 +135,25 @@ fn a_frame_reports_which_kind_it_is() -> Result<(), TestError> {
     let endpoint = LegacyFrame::Endpoint(endpoint("/messages?sessionId=1")?);
     let message = LegacyFrame::Message(serde_json::json!({}));
 
-    require( &endpoint.endpoint().map(MessageEndpoint::as_str), &Some("/messages?sessionId=1"), "an endpoint frame answers `endpoint` with its URI",
+    require(
+        &endpoint.endpoint().map(MessageEndpoint::as_str),
+        &Some("/messages?sessionId=1"),
+        "an endpoint frame answers `endpoint` with its URI",
     )?;
-    require( &endpoint.message().is_none(), &true, "and `message` with nothing, because it is one or the other",
+    require(
+        &endpoint.message().is_none(),
+        &true,
+        "and `message` with nothing, because it is one or the other",
     )?;
-    require( &message.message().is_some(), &true, "a message frame answers `message` with the object",
+    require(
+        &message.message().is_some(),
+        &true,
+        "a message frame answers `message` with the object",
     )?;
-    require( &message.endpoint().is_none(), &true, "and `endpoint` with nothing",
+    require(
+        &message.endpoint().is_none(),
+        &true,
+        "and `endpoint` with nothing",
     )
 }
 
@@ -139,8 +161,14 @@ fn a_frame_reports_which_kind_it_is() -> Result<(), TestError> {
 /// the encoder writing a name no client recognises.
 #[test]
 fn the_endpoint_event_is_named_by_the_specification() -> Result<(), TestError> {
-    require( &names::ENDPOINT.as_str(), &"endpoint", "the 2024-11-05 specification names this event `endpoint`",
+    require(
+        &names::ENDPOINT.as_str(),
+        &"endpoint",
+        "the 2024-11-05 specification names this event `endpoint`",
     )?;
-    require( &names::MESSAGE.as_str(), &"message", "and the data events it defines are `message`, which this transport leaves unnamed because an unnamed event is what every SSE parser already reads",
+    require(
+        &names::MESSAGE.as_str(),
+        &"message",
+        "and the data events it defines are `message`, which this transport leaves unnamed because an unnamed event is what every SSE parser already reads",
     )
 }

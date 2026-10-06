@@ -29,6 +29,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::domain::MaxFrameSize;
+use crate::domain::mcp::ResourceMetadata;
 use crate::domain::registry::ScopeSet;
 
 /// The path a client POSTs, GETs and DELETEs, without a scheme or host.
@@ -285,6 +286,7 @@ pub struct ServerConfig {
     keep_alive: Duration,
     security: SecurityHeaders,
     required_scopes: ScopeSet,
+    resource_metadata: Option<Arc<ResourceMetadata>>,
 }
 
 impl ServerConfig {
@@ -308,6 +310,7 @@ impl ServerConfig {
             keep_alive: DEFAULT_KEEP_ALIVE,
             security: SecurityHeaders::default(),
             required_scopes: ScopeSet::empty(),
+            resource_metadata: None,
         })
     }
 
@@ -413,6 +416,43 @@ impl ServerConfig {
     pub const fn with_required_scopes(mut self, scopes: ScopeSet) -> Self {
         self.required_scopes = scopes;
         self
+    }
+
+    /// The RFC 9728 metadata this server publishes, if it publishes one.
+    ///
+    /// Only used to build the `WWW-Authenticate` challenge a `401` carries, and
+    /// `None` by default because publishing a document this crate does not
+    /// serve would be a lie. A deployment that wants the challenge points this
+    /// at the document its authorization server setup actually exposes.
+    #[must_use]
+    pub fn resource_metadata(&self) -> Option<&ResourceMetadata> {
+        self.resource_metadata.as_deref()
+    }
+
+    /// Publishes `metadata`, enabling the `WWW-Authenticate` challenge.
+    #[must_use]
+    pub fn with_resource_metadata(mut self, metadata: ResourceMetadata) -> Self {
+        self.resource_metadata = Some(Arc::new(metadata));
+        self
+    }
+
+    /// The `WWW-Authenticate` challenge for a `401`, if this server publishes
+    /// metadata.
+    ///
+    /// RFC 9728 §5.1: a `401` on a protected resource carries a
+    /// `WWW-Authenticate` naming where the client can discover the
+    /// authorization server, and that challenge is the only pointer a client
+    /// gets. Without it a client holding an expired token has no URL to fetch
+    /// authorization-server metadata from, which is the situation the challenge
+    /// exists to solve.
+    ///
+    /// Returns `None` rather than a bare `Bearer` when nothing is published:
+    /// a challenge naming no resource metadata tells the client the scheme and
+    /// nothing else, and a deployment that has not configured a document is
+    /// better served by an unadorned `401` that it can recognise as
+    /// misconfigured.
+    pub fn challenge(&self) -> Option<String> {
+        self.resource_metadata.as_ref()?.challenge().ok()
     }
 }
 

@@ -283,9 +283,9 @@ mod tests {
 
     use tokio::io::AsyncWriteExt;
 
-    use crate::application::jsonrpc::document::{reply_result, request_document};
     use super::{Capture, LineReader, Role, STDERR_MARKER, SpawnFailure, child_spec};
     use crate::application::jsonrpc::document::RequestError;
+    use crate::application::jsonrpc::document::{reply_result, request_document};
     use crate::domain::RequestId;
     use crate::domain::ir::{JsonObject, MethodName, MethodNameError};
 

@@ -29,17 +29,22 @@ use crate::domain::registry::AuthContext;
 /// terms and in the same order. A second implementation would be a second place
 /// to get the ordering wrong, and the ordering is a security property.
 ///
+/// Awaited, because establishing authenticity is network I/O — see
+/// [`Authenticator`](crate::adapters::primary::transport::http::Authenticator).
+///
 /// # Errors
 ///
 /// The first [`Refusal`] the policy returns, if any. The authenticator itself
 /// cannot refuse — it produces a context and lets the policy decide — so there
 /// is no oracle here for a caller to probe.
-pub fn authenticate(
+pub async fn authenticate(
     authenticator: &dyn Authenticator,
     policy: &AuthPolicy,
     headers: &HeaderMap,
 ) -> Result<AuthContext, Refusal> {
-    let context = authenticator.authenticate(&Credentials::from_headers(headers));
+    let context = authenticator
+        .authenticate(&Credentials::from_headers(headers))
+        .await;
     policy.refuse(&context).map_or(Ok(context), Err)
 }
 
@@ -88,4 +93,3 @@ where
 {
     std::future::poll_fn(|context| Pin::new(&mut *stream).poll_next(context)).await
 }
-

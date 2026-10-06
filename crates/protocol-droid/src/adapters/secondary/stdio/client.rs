@@ -54,9 +54,11 @@ use crate::domain::RequestId;
 use crate::domain::ir::{JsonObject, MethodName};
 
 use super::child::{self, SpawnError};
-use crate::application::jsonrpc::document::RequestError;
-use crate::application::jsonrpc::document::{notification_document, reply_result, request_document};
 use super::spec::ChildSpec;
+use crate::application::jsonrpc::document::RequestError;
+use crate::application::jsonrpc::document::{
+    notification_document, reply_result, request_document,
+};
 
 /// How long a request waits for its answer before the client calls it a
 /// failure.
@@ -692,9 +694,9 @@ mod tests {
     use crate::domain::RequestId;
     use crate::domain::ir::{JsonObject, MethodName, MethodNameError};
 
-    use crate::application::jsonrpc::document::{RequestError, reply_result, request_document};
     use super::super::spec::{ChildSpec, ChildSpecError};
     use super::super::testing::{Capture, Role, STDERR_MARKER, SpawnFailure, child_spec};
+    use crate::application::jsonrpc::document::{RequestError, reply_result, request_document};
 
     /// Far larger than any child needs to start, answer, or be killed.
     ///

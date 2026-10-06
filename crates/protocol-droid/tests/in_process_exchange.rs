@@ -144,8 +144,7 @@ impl ClientTransport for InProcess {
         &self,
         _method: &str,
         _params: &JsonObject,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_>>
-    {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 

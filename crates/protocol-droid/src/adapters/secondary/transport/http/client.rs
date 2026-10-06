@@ -28,10 +28,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::adapters::primary::transport::http::{SseError, SseEvent};
+use crate::application::client::{ClientTransport, TransportError};
 use crate::application::jsonrpc::document::{
     notification_document, reply_result, request_document,
 };
-use crate::application::client::{ClientTransport, TransportError};
 use crate::domain::ir::{JsonObject, MethodName};
 use crate::domain::{EventId, McpSessionId, RequestId};
 
@@ -1018,7 +1018,9 @@ impl ClientTransport for HttpClient {
 
         Box::pin(async move {
             let document = prepared?;
-            self.post(document.as_bytes(), false).await.map_err(unavailable)?;
+            self.post(document.as_bytes(), false)
+                .await
+                .map_err(unavailable)?;
             Ok(())
         })
     }

@@ -38,13 +38,14 @@ where
     }
 }
 
-
-
 /// The rule's first branch: the probe worked, so the server is the new one.
 #[tokio::test]
 async fn a_probe_that_succeeds_means_streamable_http() -> Result<(), TestError> {
-    let server = ScriptedServer::start(Vec::new()).await?
-        .with_post_status(StatusCode::OK, "application/json", r#"{"ok":true}"#);
+    let server = ScriptedServer::start(Vec::new()).await?.with_post_status(
+        StatusCode::OK,
+        "application/json",
+        r#"{"ok":true}"#,
+    );
     let detected = detect(
         DetectConfig::new(server.url())?,
         br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
@@ -76,7 +77,8 @@ async fn a_4xx_probe_falls_back_to_the_old_transport() -> Result<(), TestError> 
     for status in [StatusCode::METHOD_NOT_ALLOWED, StatusCode::NOT_FOUND] {
         let server = ScriptedServer::start(vec![format!(
             "event: endpoint\ndata: {DEFAULT_MESSAGE_PATH}?sessionId=1\n\n"
-        )]).await?
+        )])
+        .await?
         .with_post_status(status, "text/plain", "no");
         let detected = detect(
             DetectConfig::new(server.url())?,
@@ -118,7 +120,8 @@ async fn a_5xx_probe_does_not_fall_back() -> Result<(), TestError> {
     ] {
         let server = ScriptedServer::start(vec![format!(
             "event: endpoint\ndata: {DEFAULT_MESSAGE_PATH}\n\n"
-        )]).await?
+        )])
+        .await?
         .with_post_status(status, "text/plain", "broken");
 
         let Err(error) = detect(
@@ -150,7 +153,8 @@ async fn a_5xx_probe_does_not_fall_back() -> Result<(), TestError> {
 /// half that failed rather than left guessing which one.
 #[tokio::test]
 async fn a_refused_probe_followed_by_a_refused_get_names_both() -> Result<(), TestError> {
-    let server = ScriptedServer::start(Vec::new()).await?
+    let server = ScriptedServer::start(Vec::new())
+        .await?
         .with_post_status(StatusCode::METHOD_NOT_ALLOWED, "text/plain", "no")
         .with_get_status(StatusCode::NOT_FOUND, "text/plain");
     let result = detect(
@@ -159,7 +163,9 @@ async fn a_refused_probe_followed_by_a_refused_get_names_both() -> Result<(), Te
     )
     .await;
     let Err(DetectError::Neither { status, .. }) = result else {
-        return Err(fail("neither transport answered; that has to be its own error"));
+        return Err(fail(
+            "neither transport answered; that has to be its own error",
+        ));
     };
     require_eq(
         &status,
@@ -178,7 +184,8 @@ async fn a_refused_probe_followed_by_a_refused_get_names_both() -> Result<(), Te
 async fn the_fallback_gets_the_url_the_caller_gave() -> Result<(), TestError> {
     // An empty body, so the GET happens and produces no transport. What is
     // under test is the URL it went to, not what came back.
-    let server = ScriptedServer::start(Vec::new()).await?
+    let server = ScriptedServer::start(Vec::new())
+        .await?
         .with_post_status(StatusCode::METHOD_NOT_ALLOWED, "text/plain", "no")
         .with_get_status(StatusCode::OK, "text/event-stream");
 
