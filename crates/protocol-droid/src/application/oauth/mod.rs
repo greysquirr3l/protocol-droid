@@ -18,6 +18,8 @@
 pub mod callback;
 #[cfg(feature = "oauth")]
 pub mod client;
+#[cfg(feature = "oauth")]
+pub mod registration;
 mod token;
 
 pub use token::{

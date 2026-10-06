@@ -124,6 +124,20 @@ impl fmt::Display for ClientId {
 pub struct ClientSecret(Arc<str>);
 
 impl ClientSecret {
+    /// A secret an authorization server has just issued.
+    ///
+    /// Named for where the value comes from rather than left as `new`, because
+    /// the one legitimate source is a registration response and an empty or
+    /// placeholder string is not one. Nothing validates the contents: the
+    /// server chose them, and inventing a rule here would refuse a legal
+    /// server's identifier. What is enforced is the type — there is no
+    /// `Default`, and `Debug` redacts, so a secret cannot be conjured by
+    /// omission or land in a log by accident.
+    #[must_use]
+    pub fn issued(value: impl AsRef<str>) -> Self {
+        Self(Arc::from(value.as_ref()))
+    }
+
     /// The secret, as it goes in a `client_secret` form field.
     #[must_use]
     pub fn expose(&self) -> &str {

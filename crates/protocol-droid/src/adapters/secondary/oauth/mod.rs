@@ -23,3 +23,6 @@ pub mod jwt;
 // the whole reason the port exists.
 #[cfg(feature = "random-ids")]
 pub mod secrets;
+// T16. RFC 7591 dynamic registration and Client ID Metadata Document fetch.
+// `oauth` already gates this module, so no second gate here.
+pub mod registration;
