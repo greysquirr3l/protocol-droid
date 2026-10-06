@@ -1471,6 +1471,7 @@ dependencies = [
  "tokio",
  "tower",
  "trybuild",
+ "url",
 ]
 
 [[package]]
