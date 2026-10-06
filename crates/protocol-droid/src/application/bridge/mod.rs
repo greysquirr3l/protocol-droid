@@ -6,4 +6,4 @@
 
 mod forward;
 
-pub use forward::{Bridge, BridgeError, BridgePeer, Forwarded};
+pub use forward::{Bridge, BridgeError, BridgePeer, Forwarded, SendFuture};

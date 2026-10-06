@@ -42,6 +42,14 @@ use crate::domain::ir::{
 };
 use crate::domain::{DegradePolicy, Feature, ProtocolVersion};
 
+/// The future [`BridgePeer::send`] returns.
+///
+/// A type alias because the signature is long and appears three times — in the
+/// trait, in the `Arc` blanket impl, and in every implementor. Writing it out
+/// each time is where the two would drift apart, and a drift here is invisible
+/// until an adapter fails to satisfy the port.
+pub type SendFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// One side of the bridge, at envelope granularity.
 ///
 /// Implementors hold a real transport. A test implementor holds a recorder.
@@ -50,30 +58,46 @@ use crate::domain::{DegradePolicy, Feature, ProtocolVersion};
 ///
 /// ```
 /// use serde_json::{Map, Value};
-/// use protocol_droid::application::bridge::{BridgeError, BridgePeer};
+/// use protocol_droid::application::bridge::{BridgeError, BridgePeer, SendFuture};
 ///
 /// #[derive(Default)]
 /// struct Recorder(std::sync::Mutex<Vec<Map<String, Value>>>);
 ///
 /// impl BridgePeer for Recorder {
-///     fn send(&self, envelope: Map<String, Value>) -> Result<Map<String, Value>, BridgeError> {
-///         // Answer with the request's own id, which is what a peer does.
-///         let mut reply = Map::new();
-///         reply.insert("jsonrpc".into(), Value::String("2.0".into()));
-///         reply.insert("id".into(), envelope.get("id").cloned().unwrap_or(Value::Null));
-///         reply.insert("result".into(), Value::Object(Map::new()));
-///         Ok(reply)
+///     fn send(
+///         &self,
+///         envelope: Map<String, Value>,
+///     ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
+///         Box::pin(async move {
+///             // Answer with the request's own id, which is what a peer does.
+///             let mut reply = Map::new();
+///             reply.insert("jsonrpc".into(), Value::String("2.0".into()));
+///             reply.insert(
+///                 "id".into(),
+///                 envelope.get("id").cloned().unwrap_or(Value::Null),
+///             );
+///             reply.insert("result".into(), Value::Object(Map::new()));
+///             Ok(reply)
+///         })
 ///     }
 ///
-///     fn close(&self) -> Result<(), BridgeError> { Ok(()) }
+///     fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+///         Box::pin(async { Ok(()) })
+///     }
 /// }
 ///
-/// let peer = Recorder::default();
-/// let request: Map<String, Value> = serde_json::from_str(
-///     r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
-/// )?;
-/// peer.send(request)?;
-/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+/// runtime.block_on(async {
+///     let peer = Recorder::default();
+///     let request: Map<String, Value> = serde_json::from_str(
+///         r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+///     )?;
+///     peer.send(request).await?;
+///     Ok::<(), Box<dyn std::error::Error>>(())
+/// })?;
+/// # Ok(())
+/// # }
 /// ```
 pub trait BridgePeer: Send + Sync {
     /// Delivers one envelope and yields the peer's answer.
@@ -85,7 +109,17 @@ pub trait BridgePeer: Send + Sync {
     /// `error` member, not as an `Err`: those are two different things and a
     /// bridge that merged them would report a network fault for a request the
     /// server simply declined.
-    fn send(&self, envelope: Map<String, Value>) -> Result<Map<String, Value>, BridgeError>;
+    ///
+    /// Returns a boxed future rather than being an `async fn`. Native
+    /// `async fn` in a trait is RPITIT and not object-safe, and this port has
+    /// to be usable as `Arc<dyn BridgePeer>` — the adapter holds a live
+    /// connection whose lifetime the bridge does not know. A synchronous
+    /// signature would be worse still: every real peer is an async socket, so
+    /// it would force a blocking wait on the runtime thread.
+    fn send(
+        &self,
+        envelope: Map<String, Value>,
+    ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>>;
 
     /// Ends the conversation, flushing anything in flight.
     ///
@@ -93,7 +127,7 @@ pub trait BridgePeer: Send + Sync {
     ///
     /// A transport failure on shutdown. Nothing is retried: a peer that has
     /// already been told to stop is not going to change its mind.
-    fn close(&self) -> Result<(), BridgeError>;
+    fn close(&self) -> SendFuture<'_, Result<(), BridgeError>>;
 }
 
 /// A shared peer.
@@ -104,11 +138,16 @@ pub trait BridgePeer: Send + Sync {
 /// would otherwise have to write this impl itself, once per adapter, and get it
 /// subtly different each time.
 impl<T: BridgePeer + ?Sized> BridgePeer for std::sync::Arc<T> {
-    fn send(&self, envelope: Map<String, Value>) -> Result<Map<String, Value>, BridgeError> {
+    fn send(
+        &self,
+        envelope: Map<String, Value>,
+    ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
         (**self).send(envelope)
     }
 
-    fn close(&self) -> Result<(), BridgeError> {
+    fn close(
+        &self,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), BridgeError>> + Send + '_>> {
         (**self).close()
     }
 }
@@ -195,7 +234,7 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
     /// feature for the method asked, or the upstream could not be reached. The
     /// method is checked against the agreement *before* anything is sent, so a
     /// doomed call never reaches the wire.
-    pub fn forward(&self, envelope: &Map<String, Value>) -> Result<Forwarded, BridgeError> {
+    pub async fn forward(&self, envelope: &Map<String, Value>) -> Result<Forwarded, BridgeError> {
         let message = lift_envelope(envelope)?;
         self.check_method(&message)?;
 
@@ -208,7 +247,7 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
         let report = TranslationReport::new(self.upstream_version());
         let outbound = lower_envelope(&message);
 
-        let reply = self.upstream.send(outbound.clone())?;
+        let reply = self.upstream.send(outbound.clone()).await?;
 
         // The reply is read for the report but not re-emitted: it is already in
         // the upstream's encoding, and the bridge's job here is to hand back
@@ -260,9 +299,9 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
     /// The first failure from either side. Both are attempted: a downstream
     /// failure must not leave the upstream half-open, which would leak a
     /// connection the caller believes it has already closed.
-    pub fn close(&self) -> Result<(), BridgeError> {
-        let first = self.downstream.close();
-        let second = self.upstream.close();
+    pub async fn close(&self) -> Result<(), BridgeError> {
+        let first = self.downstream.close().await;
+        let second = self.upstream.close().await;
         first.and(second)
     }
 }
@@ -284,6 +323,8 @@ fn feature_for(method: &str) -> Option<Feature> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Mutex;
 
     use serde_json::{Map, Value, json};
@@ -295,7 +336,7 @@ mod tests {
         Negotiation,
     };
 
-    use super::{Bridge, BridgeError, BridgePeer};
+    use super::{Bridge, BridgeError, BridgePeer, SendFuture};
 
     type TestError = Box<dyn std::error::Error>;
 
@@ -319,21 +360,26 @@ mod tests {
     type Shared = std::sync::Arc<Recorder>;
 
     impl BridgePeer for Recorder {
-        fn send(&self, envelope: Map<String, Value>) -> Result<Map<String, Value>, BridgeError> {
-            let id = envelope.get("id").cloned().unwrap_or(Value::Null);
-            let Ok(mut seen) = self.seen.lock() else {
-                return Err(BridgeError::Close("recorder poisoned".to_owned()));
-            };
-            seen.push(envelope);
-            let mut reply = Map::new();
-            reply.insert("jsonrpc".into(), json!("2.0"));
-            reply.insert("id".into(), id);
-            reply.insert("result".into(), json!({"content": []}));
-            Ok(reply)
+        fn send(
+            &self,
+            envelope: Map<String, Value>,
+        ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
+            Box::pin(async move {
+                let id = envelope.get("id").cloned().unwrap_or(Value::Null);
+                let Ok(mut seen) = self.seen.lock() else {
+                    return Err(BridgeError::Close("recorder poisoned".to_owned()));
+                };
+                seen.push(envelope);
+                let mut reply = Map::new();
+                reply.insert("jsonrpc".into(), json!("2.0"));
+                reply.insert("id".into(), id);
+                reply.insert("result".into(), json!({"content": []}));
+                Ok(reply)
+            })
         }
 
-        fn close(&self) -> Result<(), BridgeError> {
-            Ok(())
+        fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -341,14 +387,19 @@ mod tests {
     struct Absent;
 
     impl BridgePeer for Absent {
-        fn send(&self, _envelope: Map<String, Value>) -> Result<Map<String, Value>, BridgeError> {
-            Err(BridgeError::Unreachable {
-                reason: "connection refused".to_owned(),
+        fn send(
+            &self,
+            _envelope: Map<String, Value>,
+        ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
+            Box::pin(async {
+                Err(BridgeError::Unreachable {
+                    reason: "connection refused".to_owned(),
+                })
             })
         }
 
-        fn close(&self) -> Result<(), BridgeError> {
-            Ok(())
+        fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -368,8 +419,8 @@ mod tests {
     /// The task's headline test in miniature: an unmodelled directive on a
     /// `tools/call` must arrive at the upstream peer intact, on the wire, not
     /// merely in the parsed IR.
-    #[test]
-    fn an_unmodelled_directive_reaches_the_upstream_peer() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn an_unmodelled_directive_reaches_the_upstream_peer() -> Result<(), TestError> {
         let upstream: Shared = Recorder::default().into();
         let sent = envelope(
             r#"{"jsonrpc":"2.0","id":7,"method":"tools/call",
@@ -393,7 +444,7 @@ mod tests {
             upstream.clone(),
         );
 
-        bridge.forward(&sent)?;
+        bridge.forward(&sent).await?;
 
         let seen = upstream.seen()?;
         let received = seen.first().ok_or("the upstream peer saw nothing")?;
@@ -414,8 +465,8 @@ mod tests {
 
     /// A feature neither side has must be refused *before* it reaches the wire,
     /// so the failure is attributable rather than looking like a dead server.
-    #[test]
-    fn a_feature_neither_side_has_never_reaches_the_wire() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn a_feature_neither_side_has_never_reaches_the_wire() -> Result<(), TestError> {
         let upstream: Shared = Recorder::default().into();
         let bridge = Bridge::new(
             Agreement::between(
@@ -434,7 +485,7 @@ mod tests {
         );
 
         let refusal = bridge
-             .forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list"}"#)?)
+             .forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list"}"#)?).await
             .map(|_| ());
 
         assert!(
@@ -450,8 +501,8 @@ mod tests {
 
     /// A method this build does not model is forwarded untouched. Refusing it
     /// would break the forward-compatible extensions the passthrough exists for.
-    #[test]
-    fn an_unmodelled_method_is_forwarded_untouched() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn an_unmodelled_method_is_forwarded_untouched() -> Result<(), TestError> {
         let upstream: Shared = Recorder::default().into();
         let bridge = Bridge::new(
             Agreement::between(
@@ -470,8 +521,7 @@ mod tests {
         );
 
         bridge.forward(&envelope(
-            r#"{"jsonrpc":"2.0","id":2,"method":"experimental/quantum"}"#,
-        )?)?;
+            r#"{"jsonrpc":"2.0","id":2,"method":"experimental/quantum"}"#,)?).await?;
 
         let seen = upstream.seen()?;
         let received = seen.first().ok_or("nothing was forwarded")?;
@@ -484,8 +534,8 @@ mod tests {
 
     /// An upstream that cannot be reached is an error carrying the reason, and
     /// is distinct from a peer that answered with a refusal.
-    #[test]
-    fn an_unreachable_peer_is_an_error_not_a_silent_drop() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn an_unreachable_peer_is_an_error_not_a_silent_drop() -> Result<(), TestError> {
         let bridge = Bridge::new(
             Agreement::between(
                 Leg::new(
@@ -502,9 +552,7 @@ mod tests {
             Absent,
         );
 
-        let outcome = bridge.forward(&envelope(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
-        )?);
+        let outcome = bridge.forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,)?).await;
 
         match outcome {
             Err(BridgeError::Unreachable { reason }) => {
@@ -517,23 +565,29 @@ mod tests {
 
     /// A peer's own refusal arrives as a normal envelope, and the bridge hands
     /// it back unchanged rather than re-wrapping it as a transport fault.
-    #[test]
-    fn a_peer_refusal_comes_back_as_an_envelope() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn a_peer_refusal_comes_back_as_an_envelope() -> Result<(), TestError> {
         struct Refusing;
         impl BridgePeer for Refusing {
-            fn send(&self, envelope: Map<String, Value>) -> Result<Map<String, Value>, BridgeError> {
-                let id = envelope.get("id").cloned().unwrap_or(Value::Null);
-                let mut reply = Map::new();
-                reply.insert("jsonrpc".into(), json!("2.0"));
-                reply.insert("id".into(), id);
-                reply.insert(
-                    "error".into(),
-                    json!({"code": -32601, "message": "no such method"}),
-                );
-                Ok(reply)
+            fn send(
+                &self,
+                envelope: Map<String, Value>,
+            ) -> Pin<Box<dyn Future<Output = Result<Map<String, Value>, BridgeError>> + Send + '_>>
+            {
+                Box::pin(async move {
+                    let id = envelope.get("id").cloned().unwrap_or(Value::Null);
+                    let mut reply = Map::new();
+                    reply.insert("jsonrpc".into(), json!("2.0"));
+                    reply.insert("id".into(), id);
+                    reply.insert(
+                        "error".into(),
+                        json!({"code": -32601, "message": "no such method"}),
+                    );
+                    Ok(reply)
+                })
             }
-            fn close(&self) -> Result<(), BridgeError> {
-                Ok(())
+            fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+                Box::pin(async { Ok(()) })
             }
         }
 
@@ -553,9 +607,7 @@ mod tests {
             Refusing,
         );
 
-        let forwarded = bridge.forward(&envelope(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
-        )?)?;
+        let forwarded = bridge.forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,)?).await?;
 
         let error = forwarded
             .reply
@@ -568,8 +620,8 @@ mod tests {
 
     /// A bridge whose peers agree reports no translation loss. The report
     /// exists for the case where they do not, and must not cry wolf otherwise.
-    #[test]
-    fn a_lossless_forward_reports_nothing() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn a_lossless_forward_reports_nothing() -> Result<(), TestError> {
         let bridge = Bridge::new(
             Agreement::between(
                 Leg::new(
@@ -586,9 +638,7 @@ mod tests {
             Recorder::default(),
         );
 
-        let forwarded = bridge.forward(&envelope(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
-        )?)?;
+        let forwarded = bridge.forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,)?).await?;
 
         assert!(
             forwarded.report.is_empty(),
@@ -616,8 +666,8 @@ mod tests {
 
     /// Every forwarded envelope lifts and lowers back to itself, so the
     /// handler cannot quietly mangle one.
-    #[test]
-    fn an_envelope_survives_the_handler_intact() -> Result<(), TestError> {
+    #[tokio::test]
+    async fn an_envelope_survives_the_handler_intact() -> Result<(), TestError> {
         let sent = envelope(
             r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"x"},"tail":1}"#,
         )?;
@@ -638,7 +688,7 @@ mod tests {
             Recorder::default(),
         );
 
-        let forwarded = bridge.forward(&sent)?;
+        let forwarded = bridge.forward(&sent).await?;
         let rebuilt = forwarded.outbound;
         assert!(matches!(lift(&rebuilt)?, IrMessage::Request(_)));
         assert_eq!(rebuilt.get("tail"), Some(&json!(1)), "a member was lost");
