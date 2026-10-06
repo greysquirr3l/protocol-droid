@@ -22,11 +22,40 @@ use thiserror::Error;
 
 /// A session's identity.
 ///
-/// A `u64` behind a newtype rather than a string: it is never logged in full,
-/// it is compared constantly, and `Copy` is what lets it sit inside every event
-/// without a borrow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A `u64` behind a newtype rather than a string: it is compared constantly,
+/// and `Copy` is what lets it sit inside every event without a borrow.
+///
+/// # Redaction
+///
+/// [`Debug`](fmt::Debug) prints `SessionId(…)` and never the value. `Debug` is
+/// what a panic, an `assert_eq!` and a `dbg!` expand to, so leaving it derived
+/// made "we never log session ids" a convention rather than a property of the
+/// type. [`RequestId`](crate::domain::request_id::RequestId) keeps a
+/// four-character prefix so two ids in one line can be told apart; this cannot,
+/// because there is nothing here to keep — the whole value is a counter, so
+/// every digit of it is either the value itself or a leading zero.
+///
+/// [`McpSessionId`](crate::domain::mcp::session_id::McpSessionId) derives its
+/// `Debug` from this one, so it inherits the redaction rather than needing an
+/// impl of its own.
+///
+/// # Why `Display` is not redacted
+///
+/// This is load-bearing, not an oversight.
+/// [`IdempotencyKey::for_request`](crate::domain::idempotency::IdempotencyKey::for_request)
+/// composes `"{session}/{id}"`, so a redacted `Display` would collapse every
+/// session onto one key and let a result recorded for one session answer
+/// another's request. `Display` is the identity and serialisation API here, not
+/// a logging one, and the redaction belongs at `Debug` because that is the
+/// path a value escapes through by accident.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(u64);
+
+impl fmt::Debug for SessionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SessionId(…)")
+    }
+}
 
 impl SessionId {
     /// The identity a source minted.
@@ -648,5 +677,57 @@ mod tests {
         assert!(!SessionState::Closing.admits_ordinary_work());
         assert!(!SessionState::Closed.admits_ordinary_work());
         assert!(SessionState::Stateless.admits_ordinary_work());
+    }
+
+    /// The redaction is the property the type documents, so it is asserted
+    /// against values that would be unmistakable if they leaked: a small one, a
+    /// large one, and the extremes.
+    #[test]
+    fn debug_never_renders_the_value() {
+        for value in [0_u64, 7, 42, u64::from(u32::MAX), u64::MAX] {
+            let rendered = format!("{:?}", SessionId::new(value));
+            assert_eq!(
+                rendered, "SessionId(…)",
+                "value {value} must not reach Debug"
+            );
+            assert!(
+                !rendered.contains(&value.to_string()),
+                "Debug leaked the value {value}: {rendered}"
+            );
+        }
+    }
+
+    /// `Debug` is what a failing `assert_eq!` and a panic expand to, so that is
+    /// the path a session id actually escapes through by accident. Rendered
+    /// explicitly, because the interesting case never appears in a passing suite.
+    #[test]
+    fn two_ids_are_indistinguishable_in_debug() {
+        let rendered = format!("{:?} {:?}", SessionId::new(11), SessionId::new(12));
+        assert_eq!(rendered, "SessionId(…) SessionId(…)");
+        assert!(
+            !rendered.contains('1'),
+            "a digit escaped into Debug: {rendered}"
+        );
+    }
+
+    /// `Display` stays full, and this is the reason the exemption is allowed:
+    /// idempotency keys are composed from it, so a redacted form would make
+    /// every session share one key.
+    #[test]
+    fn display_is_still_the_full_identity() {
+        assert_eq!(SessionId::new(42).to_string(), "session#42");
+    }
+
+    /// `McpSessionId` derives `Debug` from `SessionId` and so inherits the
+    /// redaction. Asserted rather than assumed: the property rests on that
+    /// derive, and deleting it would silently re-expose the internal counter.
+    #[test]
+    fn the_mcp_session_id_inherits_the_redaction() {
+        let mcp = crate::domain::McpSessionId::new(SessionId::new(0xDEAD_BEEF));
+        let rendered = format!("{mcp:?}");
+        assert!(
+            !rendered.contains("deadbeef") && !rendered.contains("3735928559"),
+            "the MCP session id leaked its value through Debug: {rendered}"
+        );
     }
 }
