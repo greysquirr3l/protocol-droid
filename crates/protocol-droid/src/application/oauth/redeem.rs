@@ -19,14 +19,16 @@
 //! # The code is consumed, so it cannot be spent twice
 //!
 //! [`redeem`] takes the [`AuthorizedCode`] by value, and `AuthorizedCode` is
-//! not [`Clone`]. A second redemption needs a second code, which means another
-//! user-visible round trip — so a retry after a dropped connection cannot
-//! silently spend the same code twice, which is precisely the situation in
-//! which the second caller would otherwise win.
+//! not [`Clone`], so one value cannot be redeemed twice. A retry after a
+//! dropped connection — the case where the first attempt may already have been
+//! honoured — therefore cannot silently spend the same code again.
 //!
-//! RFC 6749 §4.1.2 makes the server deny a reused code regardless. This is the
-//! client half of the same rule, and it holds because the type system holds it,
-//! not because a comment asks.
+//! That is the whole of the guarantee, and it is narrower than "a code is used
+//! once". A caller that runs [`authorize_callback`] twice against the same
+//! [`PendingAuthorization`](super::client::PendingAuthorization) holds two
+//! values and may try both; RFC 6749 §4.1.2 requires the authorization server
+//! to deny the second. The type closes the accident, the server closes the
+//! choice.
 
 use std::fmt;
 

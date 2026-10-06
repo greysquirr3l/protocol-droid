@@ -121,10 +121,14 @@ impl AuthorizationCallback {
 /// Deliberately **not** [`Clone`]. RFC 6749 §4.1.2 makes an authorization code
 /// single-use, and the way this crate holds that line is that redeeming
 /// consumes the value: [`redeem`](super::redeem::redeem) takes it by value, so
-/// a second redemption needs a second code and therefore another user-visible
-/// round trip. A `Clone` here would put the guarantee back on the honour system
-/// for exactly the case that matters — a retry after a dropped connection,
-/// where the first attempt may already have been honoured.
+/// one value cannot be spent twice. That is the scope of the guarantee, and it
+/// is worth being exact about what it does *not* cover: a caller that invokes
+/// [`authorize_callback`] twice against the same [`PendingAuthorization`]
+/// still holds two values, and may try both. What stops the second is the
+/// authorization server, which §4.1.2 requires to deny a reused code. The type
+/// closes the accidental double-spend — a retry after a dropped connection,
+/// where the first attempt may already have been honoured — and the server
+/// closes the deliberate one.
 pub struct AuthorizedCode {
     code: Arc<str>,
     verifier: CodeVerifier,

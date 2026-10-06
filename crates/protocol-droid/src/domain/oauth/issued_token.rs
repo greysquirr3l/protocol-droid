@@ -429,6 +429,45 @@ mod tests {
         Ok(())
     }
 
+    /// A member of the wrong JSON *type* must be refused, not coerced. A server
+    /// answering `token_type: true` is broken, and a parser that coerced it
+    /// would be guessing at whether the grant is usable.
+    #[test]
+    fn a_member_of_the_wrong_type_is_refused() {
+        for body in [
+            br#"{"access_token":42,"token_type":"Bearer"}"#.as_slice(),
+            br#"{"access_token":"at","token_type":true}"#.as_slice(),
+            br#"{"access_token":"at","token_type":"Bearer","expires_in":"soon"}"#.as_slice(),
+        ] {
+            assert_matches!(
+                IssuedToken::parse(body),
+                Err(TokenResponseError::Malformed { .. }),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    /// `#[serde(flatten)]` makes the whole body a buffered map, so the shape
+    /// itself has to be checked: an array or a bare string is not a token
+    /// response, whatever serde would otherwise do with it.
+    #[test]
+    fn a_body_that_is_not_an_object_is_refused() {
+        for body in [
+            br#"["access_token","Bearer"]"#.as_slice(),
+            br#""Bearer""#.as_slice(),
+            br"42".as_slice(),
+            br"null".as_slice(),
+        ] {
+            assert_matches!(
+                IssuedToken::parse(body),
+                Err(TokenResponseError::Malformed { .. }),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
     #[test]
     fn a_refresh_token_is_carried_when_issued() -> Result<(), TokenResponseError> {
         let issued = IssuedToken::parse(
