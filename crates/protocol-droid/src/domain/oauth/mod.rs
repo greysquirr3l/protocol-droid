@@ -15,8 +15,13 @@
 
 pub mod issuer;
 pub mod pkce;
+pub mod registration;
 pub mod resource;
 
 pub use issuer::{AuthorizationResponseError, check_response_issuer};
 pub use pkce::{ChallengeMethod, CodeChallenge, CodeVerifier, PkceError};
+pub use registration::{
+    ClientId, ClientIdError, ClientSecret, RegisteredClient, RegistrationDecision,
+    decide_registration,
+};
 pub use resource::{ResourceBinding, ResourceIndicatorError, ResourceParameters};
