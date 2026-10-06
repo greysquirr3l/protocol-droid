@@ -1481,6 +1481,9 @@ dependencies = [
  "anyhow",
  "clap",
  "protocol-droid",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

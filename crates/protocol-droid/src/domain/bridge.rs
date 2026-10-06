@@ -219,9 +219,11 @@ mod tests {
     type TestError = Box<dyn std::error::Error>;
 
     fn profile_with(features: &[Feature]) -> FeatureProfile {
-        features.iter().fold(FeatureProfile::empty(), |profile, feature| {
-            profile.with(*feature)
-        })
+        features
+            .iter()
+            .fold(FeatureProfile::empty(), |profile, feature| {
+                profile.with(*feature)
+            })
     }
 
     /// The whole reason this type exists: a feature the client supports and
@@ -240,7 +242,10 @@ mod tests {
             ),
         );
 
-        assert!(agreement.serves(Feature::Tools), "the shared feature vanished");
+        assert!(
+            agreement.serves(Feature::Tools),
+            "the shared feature vanished"
+        );
         assert!(
             !agreement.serves(Feature::Resources),
             "the bridge advertised a feature the server cannot serve"
@@ -307,16 +312,18 @@ mod tests {
             Leg::new(ProtocolVersion::latest_known(), features),
         );
 
-        assert!(agreement.withheld().is_empty(), "{:?}", agreement.withheld());
+        assert!(
+            agreement.withheld().is_empty(),
+            "{:?}",
+            agreement.withheld()
+        );
     }
 
     /// The two versions are stored apart. Collapsing them would lose the one
     /// fact an operator needs when a message is translated.
     #[test]
     fn the_two_versions_are_kept_apart() -> Result<(), TestError> {
-        let negotiation = |version| {
-            Negotiation::bare(version, TransportKind::StreamableHttp)
-        };
+        let negotiation = |version| Negotiation::bare(version, TransportKind::StreamableHttp);
         let newer = ProtocolVersion::latest_known();
         let older = "2024-11-05".parse()?;
 

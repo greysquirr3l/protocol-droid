@@ -5,7 +5,10 @@
 //! the resulting domain error into an exit code. It contains no protocol logic
 //! of its own.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
+
+use protocol_droid_cli::bridge;
+
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///
@@ -26,29 +29,39 @@ use clap::Parser;
     long_about = None,
     arg_required_else_help = true
 )]
-struct Cli {}
+struct Cli {
+    /// What to do.
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// The subcommands that exist today.
+///
+/// Each is a thin dispatch into its own module. The group is a non-exhaustive
+/// list on purpose — `probe`, `inspect`, `record`, `replay` and `conformance`
+/// are T18 to T21, and naming only what is built keeps `--help` honest about
+/// what the binary can actually do.
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Validate and report a version-translating bridge between two peers.
+    Bridge(bridge::BridgeArgs),
+}
 
 /// Entry point.
 ///
 /// `clap` handles `--help` and `--version` from inside `parse`, exiting the
 /// process before it can return. Combined with `arg_required_else_help`, that
-/// means reaching the end of this function implies the arguments were already
-/// dealt with.
+/// means reaching this function implies the arguments were already dealt with
+/// and `main` has something to dispatch.
 ///
 /// # Errors
 ///
-/// Returns an error only if the entry point itself fails. Argument errors are
-/// reported by `clap`, which exits the process with its own status code.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "Every handler in this binary returns `anyhow::Result` per the project \
-              convention for bin crates, and T18 gives `main` a genuinely fallible \
-              dispatch. The lint clears itself at that point, which is why this is an \
-              `expect` and not an `allow`: the suppression announces its own expiry."
-)]
+/// Propagates whatever the subcommand reports. Argument errors are reported by
+/// `clap`, which exits the process with its own status code.
 fn main() -> anyhow::Result<()> {
-    Cli::parse();
-    Ok(())
+    match Cli::parse().command {
+        Command::Bridge(args) => bridge::run(&args),
+    }
 }
 
 #[cfg(test)]
