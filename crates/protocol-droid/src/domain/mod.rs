@@ -16,6 +16,13 @@ pub mod ir;
 pub mod jsonrpc;
 pub mod mcp;
 mod negotiation;
+// OAuth's own vocabulary, behind the feature that pulls its dependencies. The
+// authorization *model* in `mcp::authorization` is ungated because it is pure
+// data every consumer needs to read a revision's requirements; this is gated
+// because it pulls a SHA-256 implementation and a base64url codec, which a
+// lean build has no other reason to link.
+#[cfg(feature = "oauth")]
+pub mod oauth;
 mod protocol_version;
 pub mod registry;
 mod release_date;

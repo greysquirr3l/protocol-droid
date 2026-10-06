@@ -61,7 +61,7 @@ legacy-sse = ["http"]
 # the session store and the routing headers do — they are protocol-shaped and
 # pure, and gating them would cost a consumer the authorization model to save
 # nothing.
-oauth = ["http", "dep:jsonwebtoken"]
+oauth = ["http", "dep:jsonwebtoken", "dep:sha2", "dep:base64"]
 # Session ids that do not enumerate. `IdSource` is a port every server must
 # satisfy and this crate shipped no implementation of it, so the only code a
 # consumer could copy was a `fetch_add` counter.
@@ -110,6 +110,16 @@ jsonwebtoken = { workspace = true, optional = true }
 # session opened, not a stream of draws, and it wants no seeding, no thread-local
 # state and no `Default`.
 getrandom = { workspace = true, optional = true }
+# T16 stage 7. PKCE. `sha2` for the S256 derivation and `base64` for its
+# base64url encoding — both are pulled by `jsonwebtoken` already, and both are
+# declared here because the client half needs them directly rather than through
+# somebody else's re-export. The `base64` line repeats the dev-dependency below
+# rather than hoisting it to `[workspace.dependencies]`: one crate uses it, and
+# a workspace table entry would invite a second one.
+sha2 = { workspace = true, optional = true }
+base64 = { version = "0.22.1", default-features = false, features = [
+    "alloc",
+], optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,
