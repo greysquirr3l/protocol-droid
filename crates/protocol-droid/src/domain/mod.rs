@@ -33,6 +33,7 @@ mod stream;
 mod supported_versions;
 mod transport;
 
+pub use bridge::{Agreement, Leg, RefusedBy, Withheld, agree};
 pub use capability::{
     CAPABILITY_TABLE, CLIENT_CAPABILITY_WIRE, Capability, CapabilitySet, SERVER_CAPABILITY_WIRE,
     Side, defined_in,
@@ -63,7 +64,6 @@ pub use stream::{
     Replay, StreamEvent, names,
 };
 pub use supported_versions::{SupportedVersions, SupportedVersionsError};
-pub use bridge::{Agreement, Leg, RefusedBy, Withheld, agree};
 pub use transport::{
     FrameDecoder, FramingError, MaxFrameSize, MaxFrameSizeError, MessageEndpoint,
     MessageEndpointError, RateLimit, SpecError, TransportKind, TransportSpec, Verdict,

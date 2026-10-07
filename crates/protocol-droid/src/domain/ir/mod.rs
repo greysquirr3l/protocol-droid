@@ -56,11 +56,11 @@ mod tool;
 mod envelope;
 
 pub use codec::Codec;
-pub use envelope::{EnvelopeError, lift as lift_envelope, lower as lower_envelope};
 pub use content::{
     Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceIcon,
     ResourceLinkContent, Role, TextContent, UnknownContent, UnknownRole,
 };
+pub use envelope::{EnvelopeError, lift as lift_envelope, lower as lower_envelope};
 pub use extensions::{ExtensionValue, Extensions};
 pub use features::FeatureSet;
 pub use json::{JsonObject, JsonObjectError};

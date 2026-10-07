@@ -1232,7 +1232,10 @@ mod tests {
             document.get("client_uri"),
             Some(&serde_json::json!("https://client.example.com"))
         );
-        assert_eq!(document.get("title"), Some(&serde_json::json!("Example Client")));
+        assert_eq!(
+            document.get("title"),
+            Some(&serde_json::json!("Example Client"))
+        );
         Ok(())
     }
 
@@ -1251,7 +1254,10 @@ mod tests {
             document.get("application_type"),
             Some(&serde_json::json!("native"))
         );
-        assert_eq!(document.get("client_name"), Some(&serde_json::json!("Example")));
+        assert_eq!(
+            document.get("client_name"),
+            Some(&serde_json::json!("Example"))
+        );
         assert_eq!(document.get("title"), Some(&serde_json::json!("Example")));
         assert_eq!(
             document.get("redirect_uris"),
