@@ -22,7 +22,7 @@ pub mod http;
 // reaching a loopback server, and it does not stop applying when the transport
 // changes. It sat under `legacy_sse` for the whole of T15, which is how
 // Streamable HTTP ended up answering a foreign `Origin` with 200.
-#[cfg(feature = "http")]
-pub mod origin;
 #[cfg(feature = "legacy-sse")]
 pub mod legacy_sse;
+#[cfg(feature = "http")]
+pub mod origin;
