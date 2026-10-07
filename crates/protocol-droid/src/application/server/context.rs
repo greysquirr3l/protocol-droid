@@ -35,7 +35,7 @@ use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::AuthContext;
 use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
-use crate::domain::{ProtocolVersion, RequestId};
+use crate::domain::{ProtocolVersion, RequestId, TransportKind};
 
 /// Why a server-initiated request could not complete.
 ///
@@ -157,7 +157,7 @@ impl<T: CallbackExchange + Send + Sync> DynExchange for T {
 /// use protocol_droid::domain::feature::{Feature, FeatureProfile};
 /// use protocol_droid::domain::ir::JsonObject;
 /// use protocol_droid::domain::session::SessionId;
-/// use protocol_droid::domain::ProtocolVersion;
+/// use protocol_droid::domain::{ProtocolVersion, TransportKind};
 ///
 /// struct NoExchange;
 /// # impl CallbackExchange for NoExchange {
@@ -174,6 +174,7 @@ impl<T: CallbackExchange + Send + Sync> DynExchange for T {
 ///     ProtocolVersion::V2025_03_26,
 ///     FeatureProfile::empty().with(Feature::Sampling),
 ///     SessionId::new(1),
+///     TransportKind::Stdio,
 ///     Arc::new(NoExchange),
 ///     Arc::new(NullSink),
 /// );
@@ -188,6 +189,7 @@ pub struct PeerSession {
     negotiated: ProtocolVersion,
     profile: FeatureProfile,
     session: SessionId,
+    transport: TransportKind,
     auth: AuthContext,
     exchange: Arc<dyn DynExchange>,
     sink: Arc<dyn DynFrameSink>,
@@ -224,6 +226,7 @@ impl PeerSession {
         negotiated: ProtocolVersion,
         profile: FeatureProfile,
         session: SessionId,
+        transport: TransportKind,
         exchange: Arc<dyn DynExchange>,
         sink: Arc<dyn DynFrameSink>,
     ) -> Self {
@@ -231,10 +234,23 @@ impl PeerSession {
             negotiated,
             profile,
             session,
+            transport,
             auth: AuthContext::anonymous(),
             exchange,
             sink,
         }
+    }
+
+    /// The transport this session runs over.
+    ///
+    /// Part of the session rather than of the caller because a profile is not
+    /// resolvable without one: [`resolve`] consults `transport_allowed` for
+    /// every transport-gated feature row, so a handshake that needed the
+    /// negotiated profile had nowhere to get the transport from until this
+    /// carried it.
+    #[must_use]
+    pub const fn transport(&self) -> TransportKind {
+        self.transport
     }
 
     /// The caller, for the visibility gate.
@@ -523,7 +539,7 @@ mod tests {
     use crate::domain::feature::{Feature, FeatureProfile};
     use crate::domain::ir::{JsonObject, JsonObjectError};
     use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
-    use crate::domain::{ProtocolVersion, RequestId};
+    use crate::domain::{ProtocolVersion, RequestId, TransportKind};
 
     /// What a test here can fail with.
     ///
@@ -716,6 +732,7 @@ mod tests {
             version,
             features,
             SessionId::new(7),
+            TransportKind::Stdio,
             exchange.clone(),
             sink.clone(),
         )

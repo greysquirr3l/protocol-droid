@@ -35,26 +35,32 @@
 //!   | cargo run -q -p protocol-droid --example stdio_server
 //! ```
 //!
-//! # `initialize` is not answered yet, and that is a gap in the crate
+//! # `initialize` is answered, and this file does not implement it
 //!
-//! Sending this server an `initialize` returns:
+//! `Dispatcher` has an `initialize` arm. It reads the peer's offer, settles a
+//! revision, resolves a profile from that revision and from the capabilities
+//! the peer actually sent, and narrows the session to it — so every request
+//! after the handshake is gated on the revision *this peer* asked for, not on
+//! one this file picked at startup.
 //!
 //! ```text
-//! {"error":{"code":-32601,"message":"no such method"},"id":1,"jsonrpc":"2.0"}
+//! $ echo '{"jsonrpc":"2.0","id":1,"method":"initialize",
+//!         "params":{"protocolVersion":"2024-11-05","capabilities":{},
+//!                   "clientInfo":{"name":"probe","version":"1"}}}' \
+//!   | cargo run -q -p protocol-droid --example stdio_server
+//! {"id":1,"jsonrpc":"2.0","result":{"protocolVersion":"2024-11-05",
+//!  "capabilities":{"logging":{},"prompts":{"listChanged":true},
+//!  "resources":{"listChanged":true,"subscribe":true},
+//!  "tools":{"listChanged":true}},
+//!  "serverInfo":{"name":"stdio_server::Greeter","version":"0.1.0"}}}
 //! ```
 //!
-//! That is not a mistake in this file. `Dispatcher::dispatch` matches the
-//! method name against a closed set — `ping`, the four `*/list` methods, and
-//! `tools/call` — and has no `initialize` arm, so the request is refused as an
-//! unknown method. `ServeLoop` takes a concrete `Arc<Dispatcher>` rather than
-//! a port trait, so an example cannot wrap the dispatch table to intercept the
-//! handshake either.
-//!
-//! Every other method works, and `tools/call` in particular returns a real
-//! result; see the module's closing notes. Until the crate gains a handshake
-//! responder, the revision cannot be read from a peer, which is why it is the
-//! constant [`NEGOTIATED`].
-//!
+//! Note what is *absent*: no `completions`, no `elicitation`. Neither exists on
+//! `2024-11-05`, and asking for one over that session is refused with
+//! `-32601` rather than answered. A peer newer than this build is not refused
+//! at all — it is counter-offered the newest revision whose handshake exists,
+//! which is `2025-11-25` and not `2026-07-28`, because SEP-2575 removed
+//! `initialize` from that one.
 //! # What does work, verified
 //!
 //! ```text
@@ -67,11 +73,11 @@
 //! ```
 //!
 //! `ping`, `tools/list`, `tools/call`, `resources/list`,
-//! `resources/templates/list` and `prompts/list` all answer, and the batch
-//! policy is [`ProfileBatching`], so a batch frame is accepted only at a
-//! revision whose profile carries `Feature::JsonRpcBatching` — which
-//! [`NEGOTIATED`] does not, and which is why a `2025-06-18` client is told
-//! `-32600` for one.
+//! `resources/templates/list` and `prompts/list` all answer. The batch policy
+//! is [`ProfileBatching`], so a batch frame is accepted only at a revision
+//! whose profile carries `Feature::JsonRpcBatching` — which is why a
+//! `2024-11-05` client, having negotiated that revision, is told `-32600` for
+//! one.
 //!
 //! # Errors
 //!
@@ -91,37 +97,13 @@
               handler is still an `async fn` with nothing to await"
 )]
 
-use std::sync::Arc;
-
-use protocol_droid::adapters::primary::stdio::{Diagnostics, ServeLoop, StdioConfig};
-use protocol_droid::application::jsonrpc::ProfileBatching;
-use protocol_droid::application::server::{
-    CallbackExchange, Dispatcher, ExchangeError, PeerSession, RequestContext,
-};
-use protocol_droid::application::session::{FrameSink, SinkError};
-use protocol_droid::domain::feature::{Negotiation, resolve};
-use protocol_droid::domain::ir::JsonObject;
-use protocol_droid::domain::session::SessionId;
-use protocol_droid::domain::{CapabilitySet, ProtocolVersion, TransportKind};
-
-/// The revision this server answers on.
-///
-/// A real handshake settles this from the client's `initialize`. It cannot here:
-/// nothing in the crate routes `initialize` to a handler, so the revision is a
-/// constant this file chose rather than one a peer negotiated. Change it, and
-/// everything gated behind the [`FeatureProfile`] moves with it — the profile is
-/// derived from this value rather than asserted beside it.
-///
-/// `2025-06-18` because it is the newest revision this crate serves without
-/// the example having to choose a codec and say so.
-const NEGOTIATED: ProtocolVersion = ProtocolVersion::V2025_06_18;
+use protocol_droid::application::server::RequestContext;
 
 /// The name this file calls itself by, in the run's closing line on stderr.
 ///
-/// Not a protocol value: `initialize` is the only method that reports a server
-/// name, and the crate does not answer it (see the module docs), so the only
-/// place this string reaches a human is the summary written after the peer
-/// closes stdin.
+/// Not a protocol value: `initialize` already reports it to the peer, so this
+/// constant exists only so the same string reaches a human in the summary
+/// written after the peer closes stdin.
 const SERVER_NAME: &str = "stdio_server";
 
 // ---------------------------------------------------------------------------
@@ -170,94 +152,6 @@ struct Shout {
     length: usize,
 }
 
-// ---------------------------------------------------------------------------
-// The two ports a PeerSession needs
-// ---------------------------------------------------------------------------
-
-/// The callback port, wired to refuse.
-///
-/// A [`PeerSession`] needs somewhere to put a server-initiated round trip —
-/// a sampling request, an elicitation. This server starts none, so the honest
-/// implementation is the one that says so rather than a channel with no reader.
-/// Refusing is not a stand-in for a timeout: a tool that cannot service a
-/// callback fails, and an agent loop that hangs is worse than one that fails.
-///
-/// # Errors
-///
-/// Always [`ExchangeError`]. There is no path on which this returns `Ok`.
-struct NoCallbacks;
-
-impl CallbackExchange for NoCallbacks {
-    fn exchange(
-        &self,
-        method: &str,
-        _params: &JsonObject,
-    ) -> impl std::future::Future<Output = Result<JsonObject, ExchangeError>> + Send {
-        // The method name is this server's own, not a peer's, so naming it in
-        // the error is safe — but it is deliberately not logged anywhere.
-        let reason = format!("this server cannot service a {method} callback");
-        std::future::ready(Err(ExchangeError::new(reason)))
-    }
-}
-
-/// The notification port, wired to discard.
-///
-/// A [`PeerSession`] also needs somewhere to put a one-way notification such as
-/// a `notifications/tools/list_changed`. This server registers nothing at
-/// runtime, so it emits none, and a sink that counts what it was handed would
-/// only prove that it was handed nothing.
-///
-/// # Errors
-///
-/// Never. Discarding a frame cannot fail, and reporting that it can would be a
-/// failure mode this sink does not have.
-struct NullSink;
-
-impl FrameSink for NullSink {
-    fn send(
-        &self,
-        _frame: &str,
-    ) -> impl std::future::Future<Output = Result<(), SinkError>> + Send {
-        std::future::ready(Ok(()))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Wiring
-// ---------------------------------------------------------------------------
-
-/// The negotiation this session settled on.
-///
-/// `server_caps` is every capability [`NEGOTIATED`] defines, which is what a
-/// server that genuinely serves them would advertise. `client_caps` is empty
-/// because a stdio peer that sent no capability block has advertised nothing,
-/// and a profile resolved from a set the peer never sent would be stricter than
-/// the session it is gating.
-fn negotiation() -> Negotiation {
-    Negotiation {
-        version: NEGOTIATED,
-        client_caps: CapabilitySet::empty(),
-        server_caps: CapabilitySet::all_for(NEGOTIATED),
-        transport: TransportKind::Stdio,
-    }
-}
-
-/// The session every request on this connection is gated by.
-///
-/// Infallible by construction: [`resolve`] is a pure function over a
-/// [`Negotiation`] this file builds itself, and [`PeerSession::new`] records
-/// what it is given.
-fn peer_session() -> PeerSession {
-    let profile = resolve(negotiation());
-    PeerSession::new(
-        NEGOTIATED,
-        profile,
-        SessionId::new(1),
-        Arc::new(NoCallbacks),
-        Arc::new(NullSink),
-    )
-}
-
 /// Serves MCP on stdin/stdout until the peer closes stdin.
 ///
 /// The current-thread runtime is deliberate. The loop is one task that reads a
@@ -288,24 +182,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// # Errors
 ///
-/// As [`main`]: a read, write, or diagnostics failure from [`ServeLoop`], or
+/// As [`main`]: a read, write, or diagnostics failure from the serve loop, or
 /// a [`JsonObjectError`] from a tool schema that would not parse.
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let server = Greeter.into_server()?;
-    let dispatcher = Arc::new(Dispatcher::new(Arc::new(server)));
-    let peer = peer_session();
-
-    let loop_ = ServeLoop::new(
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-        Diagnostics::stderr(),
-        StdioConfig::default(),
-        dispatcher,
-        peer,
-        ProfileBatching,
-    );
-
-    let report = loop_.serve().await?;
+    // One line, and no version. Everything a consumer would otherwise have to
+    // assemble — a dispatcher, a session, a profile resolved for some
+    // revision, a batch policy, a framing ceiling — is behind `serve_stdio`,
+    // and the revision comes from the peer's own `initialize`.
+    let report = Greeter.into_server()?.serve_stdio().await?;
 
     // stderr, never stdout. The report is the one place a human looks for what
     // the run did, and stdout is the wire.

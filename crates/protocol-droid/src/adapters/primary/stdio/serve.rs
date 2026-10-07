@@ -129,6 +129,17 @@ impl<R, W, DW, P> core::fmt::Debug for ServeLoop<R, W, DW, P> {
 }
 
 impl<R, W, DW, P> ServeLoop<R, W, DW, P> {
+    /// The session every request on this connection is gated by.
+    ///
+    /// Read-only, and the only way to see it: the handshake *replaces* the
+    /// session's profile with the one resolved for the revision the peer
+    /// negotiated, so a caller who read the session before serving began would
+    /// be holding the ceiling rather than the answer.
+    #[must_use]
+    pub const fn peer(&self) -> &PeerSession {
+        &self.peer
+    }
+
     /// Binds a peer's streams, a routing table, and a diagnostics channel.
     ///
     /// Both halves of the transport are built here from one [`StdioConfig`],
@@ -234,6 +245,7 @@ where
     ///     policy,
     /// );
     ///
+    /// let mut server = server;
     /// let report = server.serve().await?;
     /// // The report is returned rather than logged. This transport's stdout
     /// // carries MCP messages and nothing else, so a caller that wants the
@@ -241,7 +253,7 @@ where
     /// # Ok(report)
     /// # }
     /// ```
-    pub async fn serve(&self) -> Result<ServeReport, ServeError> {
+    pub async fn serve(&mut self) -> Result<ServeReport, ServeError> {
         let mut report = ServeReport::default();
         loop {
             // `Ok(None)` here is the peer closing, and nothing else. The
@@ -259,7 +271,11 @@ where
     }
 
     /// Serves one whole frame, and writes at most one document back.
-    async fn serve_frame(&self, frame: &str, report: &mut ServeReport) -> Result<(), ServeError> {
+    async fn serve_frame(
+        &mut self,
+        frame: &str,
+        report: &mut ServeReport,
+    ) -> Result<(), ServeError> {
         let decoded = match decode(frame.as_bytes()) {
             Ok(decoded) => decoded,
             // Answered, not fatal. The frame was complete — the framing layer
@@ -315,7 +331,7 @@ where
     /// request to answer, and writing an empty array would be a message the
     /// peer never asked for.
     async fn answer_batch(
-        &self,
+        &mut self,
         envelopes: &[Envelope<'_>],
         report: &mut ServeReport,
     ) -> Result<Option<Value>, ServeError> {
@@ -346,7 +362,7 @@ where
     /// shape, or — for a batch — a message inside a batch that turned out not
     /// to be a request.
     async fn answer(
-        &self,
+        &mut self,
         envelope: &Envelope<'_>,
         report: &mut ServeReport,
     ) -> Result<Option<Value>, ServeError> {
@@ -387,6 +403,38 @@ where
             None,
         );
         let method: &str = envelope.method_str().unwrap_or_default();
+
+        // `initialize` is the one method that changes the session rather than
+        // being answered from it. The handshake resolves a profile for the
+        // revision the client offered, and every gate after this point has to
+        // read *that* one — a peer that negotiated `2024-11-05` must not be
+        // gated on a profile resolved for whatever the process was built with.
+        if method == "initialize" {
+            let outcome = self.dispatcher.handshake(&context, &params);
+
+            // A notification is served and never answered, exactly as below.
+            let Some(id) = envelope.id() else {
+                return Ok(None);
+            };
+            return Ok(Some(match outcome {
+                Ok((reply, narrowed)) => {
+                    self.peer = narrowed;
+                    match reply::result_reply(id, &reply) {
+                        Ok(document) => document,
+                        Err(ReplyError::UnreadableResult) => {
+                            reply::error_reply(id, IrErrorCode::InternalError, RESULT_UNREADABLE)
+                        }
+                    }
+                }
+                Err(error) => {
+                    let (code, message) = describe_dispatch_error(&error);
+                    self.note(&format!("refused a handshake: {message}"))
+                        .await?;
+                    reply::error_reply(id, code, &message)
+                }
+            }));
+        }
+
         let outcome = self.dispatcher.dispatch(&context, method, &params).await;
 
         // A notification is served and never answered — not even with an
@@ -569,6 +617,7 @@ mod tests {
         CallbackExchange, Dispatcher, ExchangeError, PeerSession, Server, ToolHandler,
     };
     use crate::application::session::{FrameSink, SinkError};
+    use crate::domain::Feature;
     use crate::domain::feature::{Negotiation, resolve};
     use crate::domain::ir::{JsonObject, JsonObjectError};
     use crate::domain::registry::Tool;
@@ -748,6 +797,7 @@ mod tests {
                 transport: TransportKind::Stdio,
             }),
             SessionId::new(1),
+            TransportKind::Stdio,
             Arc::new(NoExchange),
             Arc::new(NoSink),
         )
@@ -793,7 +843,7 @@ mod tests {
     where
         P: BatchPolicy + Send + Sync,
     {
-        let (server, stdout, stderr) = harness(chunks, policy, limit)?;
+        let (mut server, stdout, stderr) = harness(chunks, policy, limit)?;
         let report = server.serve().await;
         Ok((report, stdout, stderr))
     }
@@ -1054,7 +1104,7 @@ mod tests {
     #[tokio::test]
     async fn a_broken_stream_is_not_a_clean_close() -> Result<(), Failure> {
         let stdout = Capture::shared();
-        let broken = ServeLoop::new(
+        let mut broken = ServeLoop::new(
             Rupture,
             stdout.clone(),
             Diagnostics::new(Capture::shared()),
@@ -1136,6 +1186,35 @@ mod tests {
             .and_then(Value::as_array)
             .ok_or(Failure::Missing("an array of answers"))?;
         assert_eq!(answers.len(), 2);
+        Ok(())
+    }
+
+    /// A peer is gated on the revision it negotiated, not the one the loop was
+    /// constructed with.
+    ///
+    /// The loop here starts on a session whose profile carries `2025-06-18`
+    /// features. The peer offers `2024-11-05`, and `completions/complete` did
+    /// not exist until `2025-03-26`. If the handshake did not narrow the
+    /// session, the call would be served — a peer on a revision whose schema
+    /// has nowhere to put the answer.
+    #[tokio::test]
+    async fn the_session_is_narrowed_to_the_negotiated_revision() -> Result<(), Failure> {
+        let (mut server, _stdout, _stderr) = harness(&[], AllowBatching, ROOMY)?;
+
+        let handshake = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}"#;
+        let completion = r#"{"jsonrpc":"2.0","id":2,"method":"completions/complete","params":{"ref":{"type":"ref/prompt","name":"p"},"argument":{"name":"a","value":""}}}"#;
+        let mut report = ServeReport::default();
+        server
+            .serve_frame(&format!("{handshake}\n"), &mut report)
+            .await?;
+        server
+            .serve_frame(&format!("{completion}\n"), &mut report)
+            .await?;
+
+        assert!(
+            !server.peer.profile().allows(Feature::Completions),
+            "a 2024-11-05 peer must not keep a 2025-03-26 feature"
+        );
         Ok(())
     }
 

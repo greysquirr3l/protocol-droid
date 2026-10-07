@@ -146,6 +146,50 @@ impl core::fmt::Debug for Server {
 }
 
 impl Server {
+    /// Serves this server on stdin and stdout until the peer closes stdin.
+    ///
+    /// The shortest complete serving path in the crate, and the one the
+    /// documentation elsewhere assumes exists. The revision is settled from the
+    /// peer's own `initialize`, so this neither takes a version nor forces the
+    /// caller to pick one — which is the whole reason the crate exists.
+    ///
+    /// The caller does not have to know that a [`Dispatcher`] and a
+    /// [`PeerSession`] are involved, or that the session's profile is resolved
+    /// before the loop starts. Both stay reachable: this is a façade over the
+    /// types above, not a replacement for them.
+    ///
+    /// [`Dispatcher`]: crate::application::server::dispatch::Dispatcher
+    /// [`PeerSession`]: crate::application::server::context::PeerSession
+    ///
+    /// # Errors
+    ///
+    /// Propagates a [`ServeError`] for a read, write, or diagnostics failure.
+    /// A protocol error is not one of those: a peer whose frame this server
+    /// cannot serve is answered on the wire rather than raised here.
+    ///
+    /// [`ServeError`]: crate::adapters::primary::stdio::ServeError
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use protocol_droid::application::server::Server;
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let server = Server::builder("greeter").build();
+    /// let report = server.serve_stdio().await?;
+    /// eprintln!("{report:?}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn serve_stdio(
+        self,
+    ) -> Result<
+        crate::adapters::primary::stdio::ServeReport,
+        crate::adapters::primary::stdio::ServeError,
+    > {
+        let mut loop_ = crate::application::server::serve::StdioBuilder::new(self).build();
+        loop_.serve().await
+    }
+
     /// Starts a server with a name and nothing else.
     ///
     /// Every method on the returned [`ServerBuilder`] is optional, so this
@@ -565,7 +609,7 @@ mod tests {
     use crate::domain::ir::{JsonObject, JsonObjectError};
     use crate::domain::registry::PrimitiveKind;
     use crate::domain::session::{CancellationToken, SessionId};
-    use crate::domain::{ProtocolVersion, RequestId};
+    use crate::domain::{ProtocolVersion, RequestId, TransportKind};
 
     /// What a test here can fail with.
     #[derive(Debug)]
@@ -650,6 +694,7 @@ mod tests {
             ProtocolVersion::V2025_06_18,
             profile,
             SessionId::new(1),
+            TransportKind::Stdio,
             Arc::new(Inert),
             Arc::new(Inert),
         )
