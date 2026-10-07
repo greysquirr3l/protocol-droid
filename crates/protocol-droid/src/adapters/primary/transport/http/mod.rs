@@ -78,9 +78,9 @@
 
 mod auth;
 mod config;
+mod frame_payload;
 pub mod hardening;
 pub mod limits;
-mod frame_payload;
 pub mod precondition;
 mod refusal;
 mod resume;

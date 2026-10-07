@@ -261,6 +261,7 @@ fn dispatcher(server: Server) -> Arc<Dispatcher> {
             transport: TransportKind::StreamableHttp,
         }),
         SessionId::new(1),
+        TransportKind::Stdio,
         Arc::new(NoExchange),
         Arc::new(NoSink),
     )
@@ -793,6 +794,7 @@ fn context() -> RequestContext {
             transport: TransportKind::StreamableHttp,
         }),
         SessionId::new(1),
+        TransportKind::Stdio,
         Arc::new(NoExchange),
         Arc::new(NoSink),
     )

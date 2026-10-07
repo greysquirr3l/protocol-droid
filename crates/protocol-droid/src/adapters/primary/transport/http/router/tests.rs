@@ -28,17 +28,17 @@ use tower::ServiceExt;
 use super::{
     Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned, authenticate, resolve_session,
 };
+use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::{
     Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
     ServerConfig, SessionStore, Streaming,
 };
+use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::application::session::IdSource;
 use crate::domain::mcp::{ResourceMetadata, ResourceUri};
 use crate::domain::registry::auth::{AuthContext, Scope, ScopeSet};
 use crate::domain::session::SessionId;
 use crate::domain::{EventId, McpSessionId, ProtocolVersion, RateLimit};
-use crate::adapters::primary::transport::http::limits::RateLimiter;
-use crate::adapters::primary::transport::origin::OriginPolicy;
 
 /// Every fallible call in this module funnels through here, so a failure prints
 /// the engine's own account of what it refused.
@@ -1446,7 +1446,10 @@ async fn the_permitted_origin_is_answered() -> Result<(), TestError> {
 
     let response = router
         .clone()
-        .oneshot(post_with(INITIALIZE, &[("origin", "http://localhost:3000")])?)
+        .oneshot(post_with(
+            INITIALIZE,
+            &[("origin", "http://localhost:3000")],
+        )?)
         .await?;
 
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
@@ -1459,10 +1462,7 @@ async fn the_permitted_origin_is_answered() -> Result<(), TestError> {
 async fn exceeding_the_rate_limit_is_a_429_with_retry_after() -> Result<(), TestError> {
     let router = hardened(OriginPolicy::strict(None), limiter(1)?)?;
 
-    let first = router
-        .clone()
-        .oneshot(post(INITIALIZE)?)
-        .await?;
+    let first = router.clone().oneshot(post(INITIALIZE)?).await?;
     assert_ne!(first.status(), StatusCode::TOO_MANY_REQUESTS);
 
     let second = router.oneshot(post(INITIALIZE)?).await?;
@@ -1516,7 +1516,9 @@ async fn an_oversized_body_is_still_a_413() -> Result<(), TestError> {
     let huge = "x".repeat(8 * 1024 * 1024);
 
     let response = router
-        .oneshot(post(&format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{huge}\"}}"))?)
+        .oneshot(post(&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{huge}\"}}"
+        ))?)
         .await?;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);

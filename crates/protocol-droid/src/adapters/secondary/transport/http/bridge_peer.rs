@@ -70,7 +70,9 @@ impl BridgePeer for HttpClient {
     /// [`BridgeError::Unreachable`] when the request could not be completed.
     fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async move {
-            self.notify_envelope(&envelope).await.map_err(|error| unreachable(&error))?;
+            self.notify_envelope(&envelope)
+                .await
+                .map_err(|error| unreachable(&error))?;
             Ok(())
         })
     }

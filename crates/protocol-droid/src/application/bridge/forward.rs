@@ -33,12 +33,13 @@
 //! where the cause is still known, which is the whole reason
 //! [`Agreement`] exists.
 
-
 use serde_json::{Map, Value};
 
+use crate::application::bridge::content::{ToolResultCodec, Translator};
 use crate::domain::Agreement;
+use crate::domain::ir::lower::LowerError;
 use crate::domain::ir::{
-    EnvelopeError, IrMessage, TranslationReport, lift_envelope, lower_envelope,
+    EnvelopeError, IrMessage, MethodName, TranslationReport, lift_envelope, lower_envelope,
 };
 use crate::domain::{DegradePolicy, Feature, ProtocolVersion};
 
@@ -141,10 +142,7 @@ pub trait BridgePeer: Send + Sync {
     ///
     /// [`BridgeError::Unreachable`] when the request could not be delivered.
     /// Nothing else is possible: there is no reply to be wrong about.
-    fn notify(
-        &self,
-        envelope: Map<String, Value>,
-    ) -> SendFuture<'_, Result<(), BridgeError>>;
+    fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>>;
 
     /// Ends the conversation, flushing anything in flight.
     ///
@@ -173,10 +171,7 @@ impl<T: BridgePeer + ?Sized> BridgePeer for std::sync::Arc<T> {
     /// # Errors
     ///
     /// Whatever the inner peer reports.
-    fn notify(
-        &self,
-        envelope: Map<String, Value>,
-    ) -> SendFuture<'_, Result<(), BridgeError>> {
+    fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         (**self).notify(envelope)
     }
 
@@ -213,6 +208,16 @@ pub enum BridgeError {
     /// Shutting the connection down failed.
     #[error("the connection did not close cleanly: {0}")]
     Close(String),
+
+    /// The reply could not be expressed at the downstream client's revision.
+    ///
+    /// Not a transport failure and not the upstream's refusal — the upstream
+    /// answered, and the answer is in a dialect the client did not negotiate.
+    /// Under a strict policy the bridge refuses rather than hand over something
+    /// the client cannot read; the cause names the feature and the revision so
+    /// the operator can tell a missing capability from a bug.
+    #[error("the downstream client cannot read the reply: {0}")]
+    NotReadable(#[from] LowerError),
 }
 
 /// What one forward produced.
@@ -220,30 +225,46 @@ pub enum BridgeError {
 pub struct Forwarded {
     /// The envelope the upstream peer received.
     pub outbound: Map<String, Value>,
-    /// The envelope that came back.
+    /// The envelope that came back, in the client's revision.
+    ///
+    /// The upstream's own bytes unless its result needed translating, which is
+    /// the case [`Translator::translate`] decides for itself.
     pub reply: Map<String, Value>,
     /// What the translation changed, if anything.
     pub report: TranslationReport,
 }
 
 /// Carries envelopes from `downstream` to `upstream` under one agreement.
+///
+/// The third parameter is the codec the reply path translates through, injected
+/// like the two peers. It is not defaulted: a default would have to name the
+/// crate's own adapter, and application code must not know which adapter it is
+/// wired to.
 #[derive(Debug)]
-pub struct Bridge<H: BridgePeer, U: BridgePeer> {
+pub struct Bridge<H: BridgePeer, U: BridgePeer, C> {
     agreement: Agreement,
     policy: DegradePolicy,
     downstream: H,
     upstream: U,
+    translator: Translator<C>,
 }
 
-impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
+impl<H: BridgePeer, U: BridgePeer, C: ToolResultCodec> Bridge<H, U, C> {
     /// A bridge over two peers that have already agreed.
     #[must_use]
-    pub const fn new(agreement: Agreement, policy: DegradePolicy, downstream: H, upstream: U) -> Self {
+    pub const fn new(
+        agreement: Agreement,
+        policy: DegradePolicy,
+        downstream: H,
+        upstream: U,
+        codec: C,
+    ) -> Self {
         Self {
             agreement,
             policy,
             downstream,
             upstream,
+            translator: Translator::new(codec),
         }
     }
 
@@ -261,24 +282,33 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
 
     /// Forwards one envelope and brings the answer back.
     ///
+    /// A `tools/call` reply is translated into the client's revision on the way
+    /// back, and only if the client's revision cannot read what the server
+    /// said. Every other reply, and every reply that needs no translation, comes
+    /// back as the upstream wrote it — see
+    /// [`content`](crate::application::bridge::content) for why rebuilding a
+    /// reply that was not asking to be rebuilt is a bug.
+    ///
     /// # Errors
     ///
     /// [`BridgeError`] — the envelope was unreadable, the two peers share no
-    /// feature for the method asked, or the upstream could not be reached. The
-    /// method is checked against the agreement *before* anything is sent, so a
-    /// doomed call never reaches the wire.
+    /// feature for the method asked, the upstream could not be reached, or the
+    /// reply could not be expressed at the client's revision. The method is
+    /// checked against the agreement *before* anything is sent, so a doomed
+    /// call never reaches the wire.
     pub async fn forward(&self, envelope: &Map<String, Value>) -> Result<Forwarded, BridgeError> {
         let message = lift_envelope(envelope)?;
         self.check_method(&message)?;
         let outbound = lower_envelope(&message);
 
-        // Empty by construction, and that is the finding rather than an
-        // omission: the six envelope members mean the same thing in every
-        // revision of JSON-RPC, so moving an envelope between two peers loses
-        // nothing and there is no downgrade to record. The report earns its
-        // keep once *content* translation lands, where the revisions really do
-        // disagree about `CallToolResult`.
-        let report = TranslationReport::new(self.upstream_version());
+        // Whether the reply will need translating, decided on the parsed message
+        // rather than guessed from the envelope. `ToolResult` is the only typed
+        // content in the IR, so a reply to anything but `tools/call` has
+        // nothing to translate — and asking the codec about one anyway is how a
+        // `tools/list` reply gets rebuilt into something the client never sent.
+        let tool_call = message.method().map(MethodName::as_str) == Some(TOOL_CALL);
+
+        let mut report = TranslationReport::new(self.upstream_version());
 
         // A notification has no id and gets no answer. Routing it through
         // `send` would either wait forever or invent a reply, so it takes its
@@ -293,13 +323,25 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
             });
         }
 
-        let reply = self.upstream.send(outbound.clone()).await?;
+        let sent = self.upstream.send(outbound.clone()).await?;
 
-        // The reply is read for the report but not re-emitted: it is already in
-        // the upstream's encoding, and the bridge's job here is to hand back
-        // what the peer actually said rather than a reconstruction of it.
-        let _ = lift_envelope(&reply);
-        let _ = self.policy;
+        // The reply arrives in the upstream's encoding. Handing it back as it is
+        // would be right whenever the client can read it, and it is only not
+        // right when the revisions disagree about the result — so that is the
+        // one case the translator is asked about, and it answers "nothing to do"
+        // for everything else.
+        let reply = if tool_call {
+            let translated = self.translator.translate(
+                sent,
+                self.upstream_version(),
+                self.agreement.downstream(),
+                self.policy,
+            )?;
+            report.absorb(&translated.report);
+            translated.reply
+        } else {
+            sent
+        };
 
         Ok(Forwarded {
             outbound,
@@ -352,11 +394,19 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
     }
 }
 
+/// The one method whose reply carries typed content.
+///
+/// A constant rather than a literal in two places, because the reply path and
+/// the feature check have to agree on the spelling: if they ever disagreed, the
+/// bridge would either translate a reply that had nothing to translate or miss
+/// a reply that did — and neither failure looks like a typo at the call site.
+const TOOL_CALL: &str = "tools/call";
+
 /// The feature a well-known method needs, if any.
 fn feature_for(method: &str) -> Option<Feature> {
     let (feature, name) = match method {
         name if name == "tools/list" => (Feature::Tools, name),
-        name if name == "tools/call" => (Feature::Tools, name),
+        name if name == TOOL_CALL => (Feature::Tools, name),
         name if name == "resources/list" => (Feature::Resources, name),
         name if name == "resources/read" => (Feature::Resources, name),
         name if name == "prompts/list" => (Feature::Prompts, name),
@@ -371,20 +421,31 @@ fn feature_for(method: &str) -> Option<Feature> {
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use serde_json::{Map, Value, json};
 
-    use crate::domain::{Agreement, Leg};
+    use crate::application::bridge::content::doubles::Counting;
     use crate::domain::ir::{IrMessage, TranslationReport};
+    use crate::domain::{Agreement, Leg};
     use crate::domain::{
-        DegradePolicy, Feature, FeatureProfile, ProtocolVersion, TransportKind, resolve,
-        Negotiation,
+        DegradePolicy, Feature, FeatureProfile, Negotiation, ProtocolVersion, TransportKind,
+        resolve,
     };
 
     use super::{Bridge, BridgeError, BridgePeer, SendFuture};
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// A codec for the tests that are not about translation.
+    ///
+    /// Reads nothing, so every reply passes through untouched. That is not a
+    /// dodge: most of these tests' replies are `{"ok": true}` or a bare list,
+    /// neither of which is a `CallToolResult`, so their assertions never
+    /// depended on the contents and still do not.
+    fn codec() -> Arc<Counting> {
+        Arc::new(Counting::reading_nothing())
+    }
 
     /// A peer that records what it was sent and answers with a canned reply.
     #[derive(Default)]
@@ -427,10 +488,7 @@ mod tests {
         /// Records the notification too, and that is the whole point: without
         /// it a test cannot tell "delivered to the peer's notify" from "dropped
         /// on the floor", and both look like a successful send.
-        fn notify(
-            &self,
-            envelope: Map<String, Value>,
-        ) -> SendFuture<'_, Result<(), BridgeError>> {
+        fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
             Box::pin(async move {
                 let Ok(mut seen) = self.seen.lock() else {
                     return Err(BridgeError::Close("recorder poisoned".to_owned()));
@@ -460,10 +518,7 @@ mod tests {
             })
         }
 
-        fn notify(
-            &self,
-            _envelope: Map<String, Value>,
-        ) -> SendFuture<'_, Result<(), BridgeError>> {
+        fn notify(&self, _envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
             Box::pin(async {
                 Err(BridgeError::Unreachable {
                     reason: "connection refused".to_owned(),
@@ -481,7 +536,9 @@ mod tests {
     }
 
     fn serving(features: &[Feature]) -> FeatureProfile {
-        features.iter().fold(FeatureProfile::empty(), |p, f| p.with(*f))
+        features
+            .iter()
+            .fold(FeatureProfile::empty(), |p, f| p.with(*f))
     }
 
     fn envelope(text: &str) -> Result<Map<String, Value>, TestError> {
@@ -503,28 +560,28 @@ mod tests {
 
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             upstream.clone(),
+            codec(),
         );
 
         bridge.forward(&sent).await?;
 
         let seen = upstream.seen()?;
         let received = seen.first().ok_or("the upstream peer saw nothing")?;
-        let params = received.get("params").and_then(Value::as_object).ok_or("no params")?;
+        let params = received
+            .get("params")
+            .and_then(Value::as_object)
+            .ok_or("no params")?;
 
         assert_eq!(
-            params.get("_meta").and_then(|meta| meta.get("com.example/trace")),
+            params
+                .get("_meta")
+                .and_then(|meta| meta.get("com.example/trace")),
             Some(&json!({"span": 12})),
             "the _meta directive was stripped"
         );
@@ -543,26 +600,29 @@ mod tests {
         let upstream: Shared = Recorder::default().into();
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             upstream.clone(),
+            codec(),
         );
 
         let refusal = bridge
-             .forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list"}"#)?).await
+            .forward(&envelope(
+                r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list"}"#,
+            )?)
+            .await
             .map(|_| ());
 
         assert!(
-            matches!(refusal, Err(BridgeError::FeatureUnavailable { feature: Feature::Prompts })),
+            matches!(
+                refusal,
+                Err(BridgeError::FeatureUnavailable {
+                    feature: Feature::Prompts
+                })
+            ),
             "expected FeatureUnavailable(Prompts), got {refusal:?}"
         );
         assert!(
@@ -579,29 +639,24 @@ mod tests {
         let upstream: Shared = Recorder::default().into();
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             upstream.clone(),
+            codec(),
         );
 
-        bridge.forward(&envelope(
-            r#"{"jsonrpc":"2.0","id":2,"method":"experimental/quantum"}"#,)?).await?;
+        bridge
+            .forward(&envelope(
+                r#"{"jsonrpc":"2.0","id":2,"method":"experimental/quantum"}"#,
+            )?)
+            .await?;
 
         let seen = upstream.seen()?;
         let received = seen.first().ok_or("nothing was forwarded")?;
-        assert_eq!(
-            received.get("method"),
-            Some(&json!("experimental/quantum"))
-        );
+        assert_eq!(received.get("method"), Some(&json!("experimental/quantum")));
         Ok(())
     }
 
@@ -621,6 +676,7 @@ mod tests {
             DegradePolicy::default(),
             Recorder::default(),
             upstream.clone(),
+            codec(),
         );
 
         let sent = envelope(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
@@ -648,6 +704,7 @@ mod tests {
             DegradePolicy::default(),
             Recorder::default(),
             Recorder::default(),
+            codec(),
         );
 
         let sent = envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)?;
@@ -665,21 +722,20 @@ mod tests {
     async fn an_unreachable_peer_is_an_error_not_a_silent_drop() -> Result<(), TestError> {
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             Absent,
+            codec(),
         );
 
-        let outcome = bridge.forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,)?).await;
+        let outcome = bridge
+            .forward(&envelope(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )?)
+            .await;
 
         match outcome {
             Err(BridgeError::Unreachable { reason }) => {
@@ -726,21 +782,20 @@ mod tests {
 
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             Refusing,
+            codec(),
         );
 
-        let forwarded = bridge.forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,)?).await?;
+        let forwarded = bridge
+            .forward(&envelope(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )?)
+            .await?;
 
         let error = forwarded
             .reply
@@ -757,21 +812,20 @@ mod tests {
     async fn a_lossless_forward_reports_nothing() -> Result<(), TestError> {
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             Recorder::default(),
+            codec(),
         );
 
-        let forwarded = bridge.forward(&envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,)?).await?;
+        let forwarded = bridge
+            .forward(&envelope(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )?)
+            .await?;
 
         assert!(
             forwarded.report.is_empty(),
@@ -807,18 +861,13 @@ mod tests {
 
         let bridge = Bridge::new(
             Agreement::between(
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
-                Leg::new(
-                    ProtocolVersion::latest_known(),
-                    serving(&[Feature::Tools]),
-                ),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
             Recorder::default(),
             Recorder::default(),
+            codec(),
         );
 
         let forwarded = bridge.forward(&sent).await?;

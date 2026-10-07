@@ -109,9 +109,10 @@ impl RateLimiter {
             self.sweep(&mut windows, now);
         }
 
-        let entry = windows
-            .entry(Arc::from(subject))
-            .or_insert(Window { opened: now, seen: 0 });
+        let entry = windows.entry(Arc::from(subject)).or_insert(Window {
+            opened: now,
+            seen: 0,
+        });
 
         // A window that has elapsed starts again, and the elapsed time is
         // measured from the new opening rather than from the old one.
@@ -121,7 +122,11 @@ impl RateLimiter {
             entry.seen = 0;
         }
 
-        let verdict = check(&self.policy, entry.seen, now.saturating_duration_since(entry.opened));
+        let verdict = check(
+            &self.policy,
+            entry.seen,
+            now.saturating_duration_since(entry.opened),
+        );
 
         // `seen` counts *including* this request. Only an allowed request
         // consumes allowance: a refusal must not count the caller twice for
@@ -137,7 +142,9 @@ impl RateLimiter {
     /// Drops subjects whose window has elapsed, and the lot if that is not
     /// enough room.
     fn sweep(&self, windows: &mut HashMap<Arc<str>, Window>, now: Instant) {
-        windows.retain(|_, window| now.saturating_duration_since(window.opened) < self.policy.window());
+        windows.retain(|_, window| {
+            now.saturating_duration_since(window.opened) < self.policy.window()
+        });
         if windows.len() >= self.capacity {
             windows.clear();
         }
@@ -191,10 +198,7 @@ mod tests {
                 "alice should be within her own allowance"
             );
         }
-        assert_matches::assert_matches!(
-            limiter.check_at("alice", now),
-            Verdict::Limited { .. }
-        );
+        assert_matches::assert_matches!(limiter.check_at("alice", now), Verdict::Limited { .. });
 
         assert!(
             matches!(limiter.check_at("bob", now), Verdict::Allowed { .. }),
@@ -210,10 +214,7 @@ mod tests {
         let limiter = limiter(1, Duration::from_secs(60))?;
         let now = Instant::now();
 
-        assert_matches::assert_matches!(
-            limiter.check_at("alice", now),
-            Verdict::Allowed { .. }
-        );
+        assert_matches::assert_matches!(limiter.check_at("alice", now), Verdict::Allowed { .. });
         // Three refusals in a row must not deepen the hole.
         for _ in 0..3 {
             assert_matches::assert_matches!(
@@ -231,10 +232,7 @@ mod tests {
         let limiter = limiter(1, Duration::from_secs(60))?;
         let start = Instant::now();
 
-        assert_matches::assert_matches!(
-            limiter.check_at("alice", start),
-            Verdict::Allowed { .. }
-        );
+        assert_matches::assert_matches!(limiter.check_at("alice", start), Verdict::Allowed { .. });
         assert_matches::assert_matches!(
             limiter.check_at("alice", start + Duration::from_secs(30)),
             Verdict::Limited { .. }
@@ -253,7 +251,8 @@ mod tests {
     /// remote-triggered leak. This is the test that says the bound is real.
     #[test]
     fn the_table_stays_bounded_under_distinct_subjects() -> Result<(), TestError> {
-        let limiter = RateLimiter::with_capacity(limiter_policy(10, Duration::from_secs(3600))?, 16);
+        let limiter =
+            RateLimiter::with_capacity(limiter_policy(10, Duration::from_secs(3600))?, 16);
         let now = Instant::now();
 
         for index in 0..5000u32 {

@@ -18,3 +18,4 @@
 //! 500-line file the project's own file-structure rules disallow.
 
 pub mod bridge;
+pub mod check;

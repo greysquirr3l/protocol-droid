@@ -260,6 +260,7 @@ fn server_side(
         version,
         resolve(negotiation(version)),
         SessionId::new(1),
+        TransportKind::Stdio,
         Arc::new(RefusingExchange),
         sink.clone(),
     )

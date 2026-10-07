@@ -37,6 +37,7 @@
 
 use serde_json::{Map, Value};
 
+use crate::application::bridge::content::ToolResultCodec;
 use crate::application::bridge::forward::{Bridge, BridgeError, BridgePeer};
 use crate::application::jsonrpc::{DynFrameSource, SourceError};
 use crate::application::session::{DynFrameSink, SinkError};
@@ -101,13 +102,14 @@ enum Outcome {
 /// ```
 /// use protocol_droid::application::bridge::BridgeLoop;
 ///
-/// # fn documented<H, U, S, K>(
-/// #     bridge: protocol_droid::application::bridge::Bridge<H, U>,
+/// # fn documented<H, U, C, S, K>(
+/// #     bridge: protocol_droid::application::bridge::Bridge<H, U, C>,
 /// #     source: S,
 /// #     sink: K,
 /// # ) where
 /// #     H: protocol_droid::application::bridge::BridgePeer,
 /// #     U: protocol_droid::application::bridge::BridgePeer,
+/// #     C: protocol_droid::application::bridge::ToolResultCodec,
 /// #     S: protocol_droid::application::jsonrpc::DynFrameSource,
 /// #     K: protocol_droid::application::session::DynFrameSink,
 /// # {
@@ -116,28 +118,30 @@ enum Outcome {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct BridgeLoop<H, U, S, K>
+pub struct BridgeLoop<H, U, C, S, K>
 where
     H: BridgePeer,
     U: BridgePeer,
+    C: ToolResultCodec,
     S: DynFrameSource,
     K: DynFrameSink,
 {
-    bridge: Bridge<H, U>,
+    bridge: Bridge<H, U, C>,
     source: S,
     sink: K,
 }
 
-impl<H, U, S, K> BridgeLoop<H, U, S, K>
+impl<H, U, C, S, K> BridgeLoop<H, U, C, S, K>
 where
     H: BridgePeer,
     U: BridgePeer,
+    C: ToolResultCodec,
     S: DynFrameSource,
     K: DynFrameSink,
 {
     /// A loop over a bridge and the two framed peers around it.
     #[must_use]
-    pub const fn new(bridge: Bridge<H, U>, source: S, sink: K) -> Self {
+    pub const fn new(bridge: Bridge<H, U, C>, source: S, sink: K) -> Self {
         Self {
             bridge,
             source,
@@ -303,6 +307,14 @@ const fn refusal(error: &BridgeError) -> (i64, &'static str) {
         }
         BridgeError::Unreadable(_) => (INVALID_REQUEST, "the envelope is not a JSON-RPC message"),
         BridgeError::Close(_) => (SERVER_ERROR, "the connection did not close cleanly"),
+        // The same code as a withheld feature, and for the same reason: the
+        // only thing the client can do about either is negotiate a different
+        // revision. A dedicated code would be inventing protocol to express a
+        // distinction no client acts on.
+        BridgeError::NotReadable(_) => (
+            METHOD_NOT_FOUND,
+            "the bridge cannot deliver this result at the revision you negotiated",
+        ),
     }
 }
 
@@ -493,6 +505,7 @@ mod tests {
             DegradePolicy::default(),
             Upstream::default(),
             Upstream::default(),
+            crate::application::bridge::content::doubles::Counting::reading_nothing(),
         );
         let loop_ = BridgeLoop::new(
             bridge,

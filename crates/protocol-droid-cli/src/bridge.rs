@@ -33,9 +33,14 @@
 //! works. It is kept, because the grammar still accepts transports a future
 //! build might not implement, but it now refuses nothing that exists.
 
+use anyhow::Context as _;
 use clap::Args;
-use protocol_droid::domain::{SpecError, TransportKind, TransportSpec};
+use protocol_droid::domain::{
+    DegradePolicy, ProtocolVersion, SpecError, TransportKind, TransportSpec,
+};
 use serde::Serialize;
+
+use crate::check;
 
 /// What a bridge command was asked to do.
 #[derive(Debug, Args)]
@@ -52,6 +57,35 @@ pub struct BridgeArgs {
     /// Where the bridge forwards to, same grammar.
     #[arg(long, value_name = "SPEC")]
     pub upstream: String,
+
+    /// Report what the bridge would do with a reply, and exit.
+    ///
+    /// Reads a JSON-RPC reply envelope from this path (`-` for stdin) and
+    /// answers one question: forwarded untouched, downgraded, or refused. No
+    /// socket is opened and no peer is contacted, so this is safe to run in a
+    /// check that never wants to start a server.
+    #[arg(long, value_name = "FILE")]
+    pub check_result: Option<String>,
+
+    /// The revision the downstream client negotiated.
+    ///
+    /// Required with `--check-result`, and meaningless without it: a probe has
+    /// to know who is reading the reply to know what it can read.
+    #[arg(long, value_name = "VERSION", requires = "check_result")]
+    pub client_version: Option<String>,
+
+    /// The revision the upstream server speaks.
+    #[arg(long, value_name = "VERSION", requires = "check_result")]
+    pub server_version: Option<String>,
+
+    /// Authorise downgrades instead of refusing them.
+    ///
+    /// Off by default, because a downgrade is a loss and the operator is the
+    /// one who should be choosing to take it. Some losses have no rule at all
+    /// and stay refused regardless — `--allow-downgrade` cannot authorise a
+    /// fallback the specification does not define.
+    #[arg(long, requires = "check_result")]
+    pub allow_downgrade: bool,
 
     /// Machine-readable JSON on stdout, with the human summary on stderr.
     #[arg(long)]
@@ -100,6 +134,10 @@ struct SpecFailure {
 /// Both name the argument or the transport at fault, so the caller knows which
 /// one to change.
 pub fn run(args: &BridgeArgs) -> anyhow::Result<()> {
+    if let Some(path) = args.check_result.as_deref() {
+        return probe(args, path);
+    }
+
     let listen = parse(&args.listen, "--listen")?;
     let upstream = parse(&args.upstream, "--upstream")?;
 
@@ -114,6 +152,35 @@ pub fn run(args: &BridgeArgs) -> anyhow::Result<()> {
         anyhow::bail!("{}", plan.note);
     }
     Ok(())
+}
+
+/// Runs `--check-result`, and fails the command if the bridge would refuse.
+///
+/// The transport check stays out of this path on purpose: the probe asks what
+/// the bridge would do with a reply, and refusing to open a socket is not part
+/// of that answer. It also means the probe works against pairings this build
+/// cannot actually serve, which is when an operator most wants to know.
+fn probe(args: &BridgeArgs, path: &str) -> anyhow::Result<()> {
+    let client = version(args.client_version.as_deref(), "--client-version")?;
+    let server = version(args.server_version.as_deref(), "--server-version")?;
+    let policy = if args.allow_downgrade {
+        DegradePolicy::permissive()
+    } else {
+        DegradePolicy::strict()
+    };
+
+    let check = check::run(path, client, server, policy, args.json)?;
+    if check::refused(check.outcome) {
+        anyhow::bail!("{}", check.note);
+    }
+    Ok(())
+}
+
+/// Parses a `--client-version` / `--server-version`, naming the argument.
+fn version(text: Option<&str>, field: &'static str) -> anyhow::Result<ProtocolVersion> {
+    let text = text.with_context(|| format!("{field} is required alongside --check-result"))?;
+    text.parse::<ProtocolVersion>()
+        .with_context(|| format!("{field} is not a revision this build knows: {text}"))
 }
 
 /// Parses one spec, naming the argument on the way out.
@@ -222,6 +289,10 @@ mod tests {
         BridgeArgs {
             listen: listen.to_owned(),
             upstream: upstream.to_owned(),
+            check_result: None,
+            client_version: None,
+            server_version: None,
+            allow_downgrade: false,
             json: false,
         }
     }

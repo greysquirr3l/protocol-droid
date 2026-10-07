@@ -6,9 +6,7 @@
 //! of its own.
 
 use clap::{Parser, Subcommand};
-
 use protocol_droid_cli::bridge;
-
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///

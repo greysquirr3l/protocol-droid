@@ -29,9 +29,9 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::domain::MaxFrameSize;
+use crate::domain::RateLimit;
 use crate::domain::mcp::ResourceMetadata;
 use crate::domain::registry::ScopeSet;
-use crate::domain::RateLimit;
 
 /// The path a client POSTs, GETs and DELETEs, without a scheme or host.
 ///
