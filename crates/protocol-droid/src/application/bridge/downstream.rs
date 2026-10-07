@@ -253,41 +253,50 @@ pub enum DownstreamError {
 /// a server cannot disagree about what a client is allowed to say, then
 /// reconciles the two legs through [`Agreement::between`].
 ///
-/// The two things returned are not two views of one value. The
-/// [`Agreement`] is what the bridge may forward; the body is the wire form of
-/// the agreement. A caller that forwarded against the downstream [`Leg`] alone
-/// would be forwarding features it had just told the client it does not have.
+/// The two things returned are not two views of one value. The [`Agreement`] is
+/// what the bridge may forward; the body is the wire form of it. A caller that
+/// forwarded against the downstream [`Leg`] alone would be forwarding features it
+/// had just told the client it does not have.
+///
+/// Takes the upstream as a [`Leg`] rather than an [`Agreement`] because that is
+/// all it is: the upstream negotiated with the server when the bridge connected,
+/// and the client that will supply the other leg has not arrived yet. Accepting
+/// an `Agreement` would have asked the caller to invent a downstream leg they do
+/// not have, and every invented leg is one more place the served profile can
+/// disagree with the advertised one.
 ///
 /// # Errors
 ///
 /// [`DownstreamError::Malformed`] for an `initialize` that is not an offer, and
-/// [`DownstreamError::NoHandshake`] if the negotiated revision defines no
-/// `InitializeResult` to answer with.
+/// [`DownstreamError::NoHandshake`] if there is no revision with a handshake to
+/// answer with.
 ///
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::application::bridge::{DownstreamConfig, negotiate_downstream as negotiate};
+/// use protocol_droid::application::bridge::{negotiate_downstream, DownstreamConfig};
 /// use protocol_droid::domain::ir::JsonObject;
-/// use protocol_droid::domain::{Agreement, TransportKind};
+/// use protocol_droid::domain::{FeatureProfile, Leg, ProtocolVersion, TransportKind};
 ///
-/// # fn example(upstream: &Agreement) -> Result<(), Box<dyn std::error::Error>> {
+/// # fn example(upstream: Leg) -> Result<(), Box<dyn std::error::Error>> {
 /// let config = DownstreamConfig::new("bridge", "0.1.0", TransportKind::Stdio)?;
 /// let params = JsonObject::new(
 ///     r#"{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe"}}"#,
 /// )?;
 ///
-/// let downstream = negotiate(&params, upstream, &config)?;
+/// let downstream = negotiate_downstream(&params, &upstream, &config)?;
 ///
 /// // The advertisement is the agreement, never the client's own leg.
 /// assert_eq!(downstream.served(), downstream.agreement().served());
 /// # let _reply = downstream.body().as_str();
+/// # let _ = FeatureProfile::empty();
+/// # let _ = ProtocolVersion::V2025_06_18;
 /// # Ok(())
 /// # }
 /// ```
 pub fn negotiate(
     params: &JsonObject,
-    upstream: &Agreement,
+    upstream: &Leg,
     config: &DownstreamConfig,
 ) -> Result<Downstream, DownstreamError> {
     let offer = read_offer(params).map_err(|_| DownstreamError::Malformed)?;
@@ -314,12 +323,12 @@ pub fn negotiate(
     let profile = resolve(Negotiation {
         version,
         client_caps: offer.capabilities,
-        server_caps: upstream.upstream().profile.advertised_by_server(),
+        server_caps: upstream.profile.advertised_by_server(),
         transport: config.transport,
     });
 
     let leg = Leg::new(version, profile);
-    let agreement = Agreement::between(leg, *upstream.upstream());
+    let agreement = Agreement::between(leg, *upstream);
 
     let body = serde_json::json!({
         "protocolVersion": version.as_wire(),
@@ -342,8 +351,8 @@ mod tests {
     use super::{DownstreamConfig, DownstreamError, Identity, negotiate};
     use crate::domain::ir::JsonObject;
     use crate::domain::{
-        Agreement, Capability, CapabilitySet, Feature, Leg, Negotiation, ProtocolVersion,
-        TransportKind, resolve,
+        Capability, CapabilitySet, Feature, Leg, Negotiation, ProtocolVersion, TransportKind,
+        resolve,
     };
 
     /// What a test here can fail with.
@@ -388,27 +397,17 @@ mod tests {
         JsonObject::new(text).map_err(Failure::from)
     }
 
-    /// An upstream that agreed everything at `version`.
-    fn upstream_agreeing(version: ProtocolVersion, server_caps: CapabilitySet) -> Agreement {
-        Agreement::between(
-            Leg::new(
+    /// The upstream leg a bridge has before any client arrives: everything this
+    /// process can do, narrowed by what the server behind it agreed to.
+    fn upstream_agreeing(version: ProtocolVersion, server_caps: CapabilitySet) -> Leg {
+        Leg::new(
+            version,
+            resolve(Negotiation {
                 version,
-                resolve(Negotiation {
-                    version,
-                    client_caps: CapabilitySet::all_for(version),
-                    server_caps: CapabilitySet::all_for(version),
-                    transport: TransportKind::StreamableHttp,
-                }),
-            ),
-            Leg::new(
-                version,
-                resolve(Negotiation {
-                    version,
-                    client_caps: CapabilitySet::all_for(version),
-                    server_caps,
-                    transport: TransportKind::StreamableHttp,
-                }),
-            ),
+                client_caps: CapabilitySet::all_for(version),
+                server_caps,
+                transport: TransportKind::StreamableHttp,
+            }),
         )
     }
 

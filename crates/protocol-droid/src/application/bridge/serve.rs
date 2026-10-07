@@ -43,7 +43,7 @@ use crate::application::bridge::{DownstreamConfig, negotiate_downstream};
 use crate::application::jsonrpc::{DynFrameSource, SourceError};
 use crate::application::session::{DynFrameSink, SinkError};
 use crate::domain::ir::JsonObject;
-use crate::domain::{Agreement, DegradePolicy};
+use crate::domain::{Agreement, DegradePolicy, Leg};
 
 /// A frame the bridge could not parse at all.
 const PARSE_ERROR: i64 = -32_700;
@@ -125,7 +125,7 @@ enum Outcome {
 /// moving between the two is not a re-reading exercise.
 #[derive(Debug)]
 pub struct Wiring<H, U, C> {
-    upstream: Agreement,
+    upstream: Leg,
     policy: DegradePolicy,
     downstream: H,
     peer: U,
@@ -133,10 +133,10 @@ pub struct Wiring<H, U, C> {
 }
 
 impl<H, U, C> Wiring<H, U, C> {
-    /// Wires a bridge to the upstream it already negotiated with.
+    /// Wires a bridge to the upstream leg it negotiated when it connected.
     #[must_use]
     pub const fn new(
-        upstream: Agreement,
+        upstream: Leg,
         policy: DegradePolicy,
         downstream: H,
         peer: U,
@@ -171,13 +171,22 @@ impl<H, U, C> Wiring<H, U, C> {
 /// client existed; forwarding this one would tell the upstream a second client
 /// had arrived, describing a session it already considers open.
 ///
+/// ## What a loop knows before a client arrives
+///
+/// Only one leg. The upstream negotiated with its server when the bridge
+/// connected; the client that supplies the other leg has not shown up yet, and
+/// inventing one would put a second opinion next to the real one. So
+/// [`agreement`](Self::agreement) is `None` until a handshake completes, and a
+/// caller reporting on a bridge can tell "these two sides share nothing" from
+/// "no client ever arrived" — a distinction a placeholder leg would erase.
+///
 /// # Examples
 ///
 /// ```
 /// use protocol_droid::application::bridge::{BridgeLoop, ToolResultCodec, Wiring};
 ///
 /// # fn documented<H, U, C, S, K>(
-/// #     upstream: protocol_droid::domain::Agreement,
+/// #     upstream: protocol_droid::domain::Leg,
 /// #     config: protocol_droid::application::bridge::DownstreamConfig,
 /// #     policy: protocol_droid::domain::DegradePolicy,
 /// #     client: H,
@@ -240,16 +249,12 @@ where
 
     /// What this bridge knows about its two sides.
     ///
-    /// `None` until a handshake completes. That is the useful part: a caller
-    /// reporting on a bridge can tell "these two sides share nothing" from "no
-    /// client ever arrived", and only the reconciled answer knows about a
-    /// client at all.
+    /// `None` until a handshake completes: there is one leg until then, and an
+    /// agreement needs two. Inventing the missing one would put a second,
+    /// fabricated opinion next to the real one.
     #[must_use]
     pub fn agreement(&self) -> Option<&Agreement> {
-        self.live
-            .as_deref()
-            .map(Bridge::agreement)
-            .or_else(|| self.wiring.as_ref().map(|wiring| &wiring.upstream))
+        self.live.as_deref().map(Bridge::agreement)
     }
 
     /// Whether a client has completed a handshake.
@@ -859,7 +864,7 @@ mod tests {
 
         let mut loop_ = BridgeLoop::new(
             Wiring::new(
-                agreement.clone(),
+                *agreement.upstream(),
                 DegradePolicy::default(),
                 Upstream::default(),
                 upstream,
