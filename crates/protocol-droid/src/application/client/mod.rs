@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crate::domain::feature::{Feature, FeatureProfile, Negotiation, resolve};
 use crate::domain::ir::JsonObject;
-use crate::domain::{CapabilitySet, ProtocolVersion, TransportKind};
+use crate::domain::{CapabilitySet, NegotiatedSession, ProtocolVersion, TransportKind};
 
 mod handshake;
 
@@ -295,11 +295,65 @@ impl Client {
     /// server's capabilities empty turns a feature nobody declared into a
     /// feature nobody may use. The transport did the handshake and has the
     /// real answer, so it passes the real answer.
+    ///
+    /// Prefer [`from_session`](Self::from_session) when a
+    /// [`NegotiatedSession`] is to hand: it is this constructor minus the copy,
+    /// and without the copy's chance of being wrong. This one exists for a
+    /// caller assembling a [`Negotiation`] directly, where re-deriving is the
+    /// only way to get a profile at all.
     #[must_use]
     pub fn connect(negotiation: Negotiation, transport: Arc<dyn ClientTransport>) -> Self {
         Self {
             negotiated: negotiation.version,
             profile: resolve(negotiation),
+            transport,
+        }
+    }
+
+    /// Binds a transport to a session that has already negotiated.
+    ///
+    /// The one to reach for. [`connect`](Self::connect) takes the four inputs
+    /// [`resolve`] needs and re-derives a profile from them — but a
+    /// [`NegotiatedSession`] has _already_ resolved one, from those same four
+    /// fields, so a caller going through `connect` rebuilds a struct literal
+    /// and re-runs a pure function to arrive back where it started.
+    ///
+    /// That is worse than redundant. Nothing obliges the four fields a caller
+    /// copies to be the four the session was built from, so a caller who
+    /// transposes one — or leaves `client_caps` empty because the transport
+    /// made it awkward — gets a client whose profile disagrees with the session
+    /// it just negotiated, and the disagreement surfaces much later as a
+    /// feature that was advertised and then refused. Reading the profile off
+    /// the session removes the copy, and with it the possibility of copying it
+    /// wrong.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use protocol_droid::application::client::{Client, ClientConfig, ClientTransport, handshake};
+    /// use protocol_droid::domain::{ProtocolVersion, TransportKind};
+    ///
+    /// async fn connect(transport: Arc<dyn ClientTransport>) -> Result<(), String> {
+    ///     let config = ClientConfig::speaking(
+    ///         [ProtocolVersion::V2025_06_18].into_iter(),
+    ///         TransportKind::Stdio,
+    ///     )
+    ///     .map_err(|e| e.to_string())?;
+    ///     let session = handshake(transport.as_ref(), &config)
+    ///         .await
+    ///         .map_err(|e| e.to_string())?;
+    ///     let client = Client::from_session(&session, transport);
+    ///     assert!(client.supports(protocol_droid::domain::Feature::Tools));
+    ///     Ok(())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn from_session(session: &NegotiatedSession, transport: Arc<dyn ClientTransport>) -> Self {
+        Self {
+            negotiated: session.version,
+            profile: session.profile,
             transport,
         }
     }
@@ -686,5 +740,39 @@ mod tests {
             !stingy.supports(Feature::Resources),
             "a server that declared nothing offers no resources"
         );
+    }
+
+    /// A client built from a session keeps the session's own profile.
+    ///
+    /// This is the property `from_session` exists to guarantee, and the reason
+    /// it is tested rather than assumed: the client's profile is only equal to
+    /// the session's because `from_session` moves the one across instead of
+    /// re-deriving it from a copied struct literal. Nothing in the types
+    /// stops someone from changing that back, and the symptom would be a
+    /// client that refuses a feature the session it came from allowed.
+    ///
+    /// The comparison is against the session's profile read off the session
+    /// itself. Comparing against another `resolve` call would be a third
+    /// derivation, which could agree with both by accident and prove nothing
+    /// about the path being tested.
+    #[test]
+    fn a_client_from_a_session_keeps_the_sessions_profile() {
+        let version = ProtocolVersion::V2025_06_18;
+        let session = crate::domain::NegotiatedSession::new(
+            version,
+            TransportKind::Stdio,
+            CapabilitySet::all_for(version),
+            CapabilitySet::all_for(version),
+        );
+        let expected = session.profile;
+        let client = Client::from_session(&session, Arc::new(Recorder::dead()));
+
+        assert_eq!(client.negotiated(), version);
+        assert_eq!(
+            client.profile(),
+            expected,
+            "the client's profile must be the session's, not a second derivation of it"
+        );
+        assert!(client.supports(Feature::Resources));
     }
 }

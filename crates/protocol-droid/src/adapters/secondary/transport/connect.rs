@@ -28,8 +28,8 @@ use crate::application::client::{
     Client, ClientConfig, ClientTransport, HandshakeError, INITIALIZED, initialize_params,
     initialize_session, offer,
 };
+use crate::domain::NegotiatedSession;
 use crate::domain::ir::JsonObject;
-use crate::domain::{NegotiatedSession, Negotiation};
 
 /// Why a connection could not be established.
 #[derive(Debug, thiserror::Error)]
@@ -162,15 +162,7 @@ where
         source: error,
     })?;
     transport.notify(INITIALIZED, &params).await?;
-    Ok(Client::connect(
-        Negotiation {
-            version: session.version,
-            client_caps: session.client_caps,
-            server_caps: session.server_caps,
-            transport: session.transport,
-        },
-        Arc::new(transport),
-    ))
+    Ok(Client::from_session(&session, Arc::new(transport)))
 }
 
 #[cfg(all(test, feature = "http"))]

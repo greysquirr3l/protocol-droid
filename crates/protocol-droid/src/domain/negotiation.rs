@@ -176,6 +176,27 @@ impl NegotiatedSession {
         self
     }
 
+    /// The four inputs [`profile`](Self::profile) was resolved from.
+    ///
+    /// [`Client::from_session`](crate::application::client::Client::from_session)
+    /// reads the profile off a session and needs nothing else, so this is here
+    /// for the callers that genuinely hold a bare [`Negotiation`] and want to
+    /// make one. [`new`](Self::new) already resolved from exactly these four
+    /// fields, so re-resolving the value this returns reproduces `profile`
+    /// rather than recomputing anything new — which is why it is a convenience
+    /// and not the way to build a client.
+    ///
+    /// [`Negotiation`]: crate::domain::Negotiation
+    #[must_use]
+    pub const fn negotiation(&self) -> crate::domain::Negotiation {
+        crate::domain::Negotiation {
+            version: self.version,
+            client_caps: self.client_caps,
+            server_caps: self.server_caps,
+            transport: self.transport,
+        }
+    }
+
     /// Whether the session may do `feature`.
     #[must_use]
     pub fn allows(&self, feature: crate::domain::Feature) -> bool {

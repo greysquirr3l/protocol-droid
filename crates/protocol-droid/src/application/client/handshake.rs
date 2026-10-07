@@ -111,6 +111,13 @@ pub enum HandshakeError {
 
 /// Establishes a session over `transport`.
 ///
+/// `?Sized` because [`Client`] holds an `Arc<dyn ClientTransport>`, and a
+/// caller who has one of those could not otherwise use the handshake that
+/// produces the session the `Client` wants. Requiring a concrete transport
+/// here would mean the caller keeps the concrete type alive solely to call
+/// this, then boxes it immediately afterwards — a step with no purpose beyond
+/// satisfying a bound.
+///
 /// Sends [`INITIALIZE`] on every revision that has it and `server/discover` on
 /// `2026-07-28`, then — on the revisions that have one — the [`INITIALIZED`]
 /// notification. The notification is not optional: a server that has not been
@@ -124,7 +131,7 @@ pub enum HandshakeError {
 /// answer is missing, and [`NegotiationError`] through
 /// [`HandshakeError::Negotiation`] if the two sides have no revision in common.
 pub async fn handshake(
-    transport: &impl ClientTransport,
+    transport: &(impl ClientTransport + ?Sized),
     config: &ClientConfig,
 ) -> Result<NegotiatedSession, HandshakeError> {
     let (preferred, supported) = offer(config).ok_or(HandshakeError::NothingOffered)?;
