@@ -6,8 +6,10 @@
 //! [`crate::adapters::secondary::transport::detect`] for the rule that decides
 //! whether to use it.
 
+mod bridge_peer;
 mod client;
 mod error;
 
+pub use bridge_peer::LegacySsePeer;
 pub use client::{ClientFrame, LegacySseClient, LegacySseConfig};
 pub use error::LegacySseError;
