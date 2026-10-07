@@ -40,8 +40,12 @@ use serde::Serialize;
 /// What a bridge command was asked to do.
 #[derive(Debug, Args)]
 pub struct BridgeArgs {
-    /// Where clients connect, as `kind:target` — `http://127.0.0.1:8080/mcp`,
-    /// `stdio:./server`.
+    /// Where clients connect, as `kind:target` — `stdio:./bridge`.
+    ///
+    /// The target is **unused** for `stdio`. The grammar requires one because a
+    /// stdio *upstream* needs a program to run, and `FromStr` cannot know which
+    /// role a spec is playing. A bridge listening on stdio is talking to its own
+    /// stdin and stdout, so there is nothing to name; pass anything.
     #[arg(long, value_name = "SPEC")]
     pub listen: String,
 
@@ -136,25 +140,39 @@ const fn upstream_supported(_kind: TransportKind) -> bool {
     true
 }
 
-/// Whether this build can *accept* a transport on the listen side.
+/// Whether this build can back the bridge's *listen* side with a frame source.
 ///
-/// Every transport. Listening is the server role, and every one of them has a
-/// server adapter; applying the upstream check to both ends would refuse a
-/// direction that works.
-const fn listen_supported(_kind: TransportKind) -> bool {
-    true
+/// Only `stdio`, and the reason is narrower than "only stdio has a server
+/// adapter" — every transport has one of those. It is that a bridge's loop pulls
+/// frames from a [`FrameSource`](protocol_droid::application::jsonrpc::FrameSource),
+/// and `StdioSource` is the only thing in the crate that implements it. The
+/// HTTP router is request-and-response shaped: a POST arrives, a response goes
+/// back, and the long-lived part is an SSE stream the router itself owns. There
+/// is no pull source behind it, and building one is a different piece of work
+/// from having a server.
+///
+/// Checking the upstream and not the listen side would let an `http` listen
+/// pass validation and then fail on the first frame.
+const fn listen_supported(kind: TransportKind) -> bool {
+    matches!(kind, TransportKind::Stdio)
 }
 
 fn plan(listen: &TransportSpec, upstream: &TransportSpec) -> Plan {
     let listen_ok = listen_supported(listen.kind());
     let upstream_ok = upstream_supported(upstream.kind());
-    let note = if upstream_ok {
-        "validated; every transport has a BridgePeer adapter in both directions".to_owned()
-    } else {
+    let note = if !listen_ok {
+        format!(
+            "a bridge needs a frame source to accept {}; this build pulls frames from stdio only",
+            listen.target()
+        )
+    } else if !upstream_ok {
         format!(
             "this build cannot forward to {}; pick a transport with a client adapter",
             upstream.target()
         )
+    } else {
+        "validated; stdio listen and every client transport have the adapters a loop needs"
+            .to_owned()
     };
 
     Plan {
@@ -211,12 +229,12 @@ mod tests {
     /// Both specs parse and the plan reports both ends.
     #[test]
     fn a_well_formed_pair_produces_a_plan() -> Result<(), TestError> {
-        let listen = parse("http://127.0.0.1:8080/mcp", "--listen")?;
+        let listen = parse("stdio:./bridge", "--listen")?;
         let upstream = parse("http://backend:3000/mcp", "--upstream")?;
         let plan = plan(&listen, &upstream);
 
         assert!(plan.serve);
-        assert_eq!(plan.listen.transport, "http");
+        assert_eq!(plan.listen.transport, "stdio");
         assert_eq!(plan.upstream.target, "//backend:3000/mcp");
         assert!(plan.listen.implemented && plan.upstream.implemented);
         Ok(())
@@ -231,7 +249,7 @@ mod tests {
     /// not just the code that states it.
     #[test]
     fn a_stdio_upstream_is_served() -> Result<(), TestError> {
-        let listen = parse("http://127.0.0.1:8080/mcp", "--listen")?;
+        let listen = parse("stdio:./bridge", "--listen")?;
         let upstream = parse("stdio:./server", "--upstream")?;
         let plan = plan(&listen, &upstream);
 
@@ -272,11 +290,43 @@ mod tests {
         assert_eq!(failure.field, "--listen");
     }
 
-    /// A servable pair does not fail.
+    /// A pair the bridge can actually run passes validation.
+    ///
+    /// `stdio` listen, because `StdioSource` is the only pull frame source in
+    /// the crate, and an `http` upstream, because `HttpClient` has a peer.
     #[test]
     fn a_servable_pair_succeeds() -> Result<(), TestError> {
-        run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp"))?;
+        run(&args("stdio:./bridge", "http://backend:3000/mcp"))?;
         Ok(())
+    }
+
+    /// An `http` listen is refused, because there is nothing to pull frames
+    /// from.
+    ///
+    /// The router exists and speaks Streamable HTTP perfectly well, which is
+    /// what makes this the dangerous direction to get wrong: validation passes
+    /// on "does a server adapter exist", and then the loop has no source to
+    /// read. This pins the narrower claim the check actually makes.
+    #[test]
+    fn an_http_listen_is_refused_for_want_of_a_frame_source() -> Result<(), TestError> {
+        let listen = parse("http://127.0.0.1:8080/mcp", "--listen")?;
+        let upstream = parse("http://backend:3000/mcp", "--upstream")?;
+        let plan = plan(&listen, &upstream);
+
+        assert!(!plan.serve, "an http listen was reported as servable");
+        assert!(
+            plan.note.contains("frame source"),
+            "the note did not say why: {note}",
+            note = plan.note
+        );
+        Ok(())
+    }
+
+    /// The same reason, from the outside: the command exits non-zero rather
+    /// than printing a plan and claiming success.
+    #[test]
+    fn an_unservable_pair_exits_non_zero() {
+        assert!(run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp")).is_err());
     }
 
     /// A bad spec fails before anything is printed, so an agent parsing stdout
