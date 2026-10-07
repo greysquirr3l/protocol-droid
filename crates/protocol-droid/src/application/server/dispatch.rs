@@ -28,17 +28,17 @@
 
 use std::sync::Arc;
 
+use crate::application::mcp::initialize::{read_offer, server_capabilities_json};
 use crate::application::registry::listing::Listing;
 use crate::application::server::builder::{DispatchError, Server};
 use crate::application::server::context::{PeerSession, RequestContext};
-use crate::domain::SERVER_CAPABILITY_WIRE;
 use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::idempotency::{Claim, IdempotencyKey};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::{
-    CLIENT_CAPABILITY_WIRE, CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions,
-    handshake_defined_in, negotiate_server, resolve,
+    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, handshake_defined_in,
+    negotiate_server, resolve,
 };
 
 /// Routes methods to a server's handlers.
@@ -379,169 +379,6 @@ impl Dispatcher {
 ///
 /// # Errors
 ///
-/// [`DispatchError::MalformedInitialize`] when the body is not an object,
-/// when `protocolVersion` is absent, is not a string, or does not parse as a
-/// protocol version; when `capabilities` is absent or is not an object; or
-/// when `clientInfo` is absent, is not an object, or has no `name`.
-///
-/// `clientInfo.version` is the one required field not enforced. It is
-/// free-form, nothing in this crate's answer depends on it, and refusing a
-/// handshake over a missing version string would buy a stricter reading of one
-/// schema at the cost of every client that omits it.
-/// Checks the shape of an `initialize` body and returns what it carries.
-///
-/// The return value is the client's **offered** revision. It was checked for
-/// shape and discarded until this returned it, which left the caller negotiating
-/// against the session's pre-set version instead — see the `initialize` handler
-/// for what that cost.
-///
-/// # Errors
-///
-/// [`DispatchError::MalformedInitialize`] when the body is not an object,
-/// when `protocolVersion` is absent, is not a string, or does not parse as a
-/// protocol version; when `capabilities` is absent or is not an object; or
-/// when `clientInfo` is absent, is not an object, or has no `name`.
-///
-/// `clientInfo.version` is the one required field not enforced. It is
-/// free-form, nothing in this crate's answer depends on it, and refusing a
-/// handshake over a missing version string would buy a stricter reading of one
-/// schema at the cost of every client that omits it.
-fn check_initialize_params(
-    params: &JsonObject,
-) -> Result<(ProtocolVersion, CapabilitySet), DispatchError> {
-    let parsed: serde_json::Value =
-        serde_json::from_str(params.as_str()).map_err(|_| DispatchError::MalformedInitialize)?;
-    let object = parsed
-        .as_object()
-        .ok_or(DispatchError::MalformedInitialize)?;
-
-    let offered = object
-        .get("protocolVersion")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(DispatchError::MalformedInitialize)?
-        .parse::<ProtocolVersion>()
-        .map_err(|_| DispatchError::MalformedInitialize)?;
-
-    let capabilities = object
-        .get("capabilities")
-        .and_then(serde_json::Value::as_object)
-        .ok_or(DispatchError::MalformedInitialize)?;
-
-    object
-        .get("clientInfo")
-        .filter(|value| value.is_object())
-        .and_then(|client| client.get("name"))
-        .filter(|name| name.is_string())
-        .ok_or(DispatchError::MalformedInitialize)?;
-
-    Ok((offered, client_capabilities(capabilities)))
-}
-
-/// Reads a `ClientCapabilities` object as a [`CapabilitySet`].
-///
-/// The inverse of the client's own renderer, and table-driven for the same
-/// reason: `Capability::as_str` is a dot in a Rust name and two levels in JSON,
-/// so a capability advertised under the wrong key is one this cannot see. A
-/// peer that sent nothing is not an error — it advertised nothing, and an empty
-/// set is what that means.
-///
-/// An unrecognised key is ignored rather than refused. The specification's
-/// extensibility point is `experimental`, and a client built against a later
-/// revision may name capabilities this build has never heard of; refusing the
-/// handshake over one would make every future client unconnectable.
-fn client_capabilities(object: &serde_json::Map<String, serde_json::Value>) -> CapabilitySet {
-    let mut set = CapabilitySet::empty();
-    for (capability, path) in CLIENT_CAPABILITY_WIRE {
-        if path_present(object, path) {
-            set.insert(*capability);
-        }
-    }
-    set
-}
-
-/// Whether every key on `path` is present, as an object where the schema gives
-/// one and a terminal key at the end.
-///
-/// The mirror of the client's `insert_path`: a parent capability's presence is
-/// the claim, and the schema gives `roots` an object rather than a boolean, so
-/// `roots: {}` is the wire form and `roots: true` is not one any schema admits.
-fn path_present(root: &serde_json::Map<String, serde_json::Value>, path: &[&str]) -> bool {
-    let Some((last, parents)) = path.split_last() else {
-        return false;
-    };
-    let mut cursor = root;
-    for key in parents {
-        let Some(value) = cursor.get(*key) else {
-            return false;
-        };
-        let serde_json::Value::Object(next) = value else {
-            return false;
-        };
-        cursor = next;
-    }
-    cursor.contains_key(*last)
-}
-
-/// Renders the session's server capabilities as a `ServerCapabilities` object.
-///
-/// Reads [`FeatureProfile::advertised_by_server`] rather than being handed a
-/// set, so there is no way to reach this function with a capability set that
-/// did not come from the profile. That is the drift this exists to prevent: a
-/// caller that passed in its own set would be free to advertise a flag the
-/// gates behind it would refuse, and the peer would have been told otherwise
-/// at connect time.
-///
-/// A capability in the derived set with no row in [`SERVER_CAPABILITY_WIRE`]
-/// is not emitted. Two are in that position and neither is reachable: the
-/// client-side ones, which [`advertised_by_server`] cannot produce because
-/// their feature rows are `Side::Client`, and
-/// [`Capability::Extensions`][extensions], which only `2026-07-28` defines —
-/// a revision the handler has already refused before getting here, because
-/// that revision has no `InitializeResult` to put it in.
-/// Asserts `path` on `root`, creating every object on the way.
-///
-/// A path of one key leaves an **empty object** rather than a boolean, because
-/// a parent capability's presence is the claim and the schema gives it an
-/// object: `ClientCapabilities.roots` is an object, so `"roots": {}` is the
-/// wire form and `"roots": true` is not one any schema admits. A longer path
-/// ends in `true`, because a sub-capability like `listChanged` genuinely is a
-/// boolean.
-fn insert_path(root: &mut serde_json::Map<String, serde_json::Value>, path: &[&str]) {
-    let Some((last, parents)) = path.split_last() else {
-        return;
-    };
-    let mut cursor = root;
-    for key in parents {
-        let entry = cursor
-            .entry((*key).to_string())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        let serde_json::Value::Object(parent) = entry else {
-            return;
-        };
-        cursor = parent;
-    }
-    let leaf = if parents.is_empty() {
-        serde_json::Value::Object(serde_json::Map::new())
-    } else {
-        serde_json::Value::Bool(true)
-    };
-    cursor.insert((*last).to_string(), leaf);
-}
-
-fn server_capabilities_json(profile: FeatureProfile) -> serde_json::Value {
-    let advertised = profile.advertised_by_server();
-    let mut root = serde_json::Map::new();
-
-    for (capability, path) in SERVER_CAPABILITY_WIRE {
-        if !advertised.contains(*capability) {
-            continue;
-        }
-        insert_path(&mut root, path);
-    }
-
-    serde_json::Value::Object(root)
-}
-
 /// Reads `name` and `arguments` out of a `tools/call` params object.
 ///
 /// A missing `name` is a malformed request rather than an unknown tool: the
@@ -670,11 +507,11 @@ fn negotiate(
     params: &JsonObject,
 ) -> Result<(ProtocolVersion, FeatureProfile), DispatchError> {
     let supported = SupportedVersions::all().map_err(|_| DispatchError::UnnegotiableVersion)?;
-    let (offer, client_caps) = check_initialize_params(params)?;
-    let version = negotiate_server(offer, &supported).version();
+    let offer = read_offer(params).map_err(|_| DispatchError::MalformedInitialize)?;
+    let version = negotiate_server(offer.version, &supported).version();
     let profile = resolve(Negotiation {
         version,
-        client_caps,
+        client_caps: offer.capabilities,
         server_caps: CapabilitySet::all_for(version),
         transport: ctx.peer().transport(),
     });

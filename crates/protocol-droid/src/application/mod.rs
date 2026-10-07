@@ -13,6 +13,7 @@ pub mod bridge;
 pub mod client;
 pub mod idempotency;
 pub mod jsonrpc;
+pub mod mcp;
 pub mod oauth;
 pub mod registry;
 pub mod server;
