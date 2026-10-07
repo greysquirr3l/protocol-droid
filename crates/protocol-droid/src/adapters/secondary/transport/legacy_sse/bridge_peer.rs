@@ -29,12 +29,11 @@
 //! [`take_pending`](Self::take_pending) instead, and the caller decides where it
 //! goes next.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::application::bridge::{BridgeError, BridgePeer, SendFuture};
+use crate::application::bridge::{BridgeError, BridgePeer, SendFuture, Unsolicited};
 
 use super::{ClientFrame, LegacySseClient, LegacySseError};
 
@@ -42,7 +41,7 @@ use super::{ClientFrame, LegacySseClient, LegacySseError};
 #[derive(Debug)]
 pub struct LegacySsePeer {
     inner: Arc<LegacySseClient>,
-    unsolicited: Mutex<VecDeque<Map<String, Value>>>,
+    unsolicited: Unsolicited,
 }
 
 impl LegacySsePeer {
@@ -51,7 +50,7 @@ impl LegacySsePeer {
     pub const fn new(inner: Arc<LegacySseClient>) -> Self {
         Self {
             inner,
-            unsolicited: Mutex::new(VecDeque::new()),
+            unsolicited: Unsolicited::new(),
         }
     }
 
@@ -62,17 +61,8 @@ impl LegacySsePeer {
     }
 
     /// Takes every frame that arrived while some other call was in flight.
-    ///
-    /// Draining rather than cloning: the frames are the peer's, and a caller
-    /// that polls this in a loop gets each one exactly once. A poisoned lock
-    /// yields an empty list rather than an error, because a frame still in here
-    /// is already past the point where losing it is recoverable — it was
-    /// captured, and the only honest report is that the read did not happen.
     pub fn take_pending(&self) -> Vec<Map<String, Value>> {
-        let Ok(mut queued) = self.unsolicited.lock() else {
-            return Vec::new();
-        };
-        queued.drain(..).collect()
+        self.unsolicited.take()
     }
 }
 
@@ -133,9 +123,7 @@ impl BridgePeer for LegacySsePeer {
                         }
                         // Someone else's frame, or an unsolicited notification.
                         // Held rather than dropped — see the module docs.
-                        if let Ok(mut queued) = self.unsolicited.lock() {
-                            queued.push_back(answer);
-                        }
+                        self.unsolicited.hold(answer);
                     }
                 }
             }

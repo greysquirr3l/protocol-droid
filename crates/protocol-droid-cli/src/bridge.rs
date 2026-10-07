@@ -23,10 +23,15 @@
 //!
 //! ## Failing loudly rather than serving blind
 //!
-//! If either side names a transport this build cannot yet serve as an upstream
-//! — `stdio` has no *client* adapter — the command exits non-zero and says so.
-//! A bridge that started and then failed on the first message would look, from
-//! the client's side, like a server that had hung.
+//! If either side names a transport this build cannot serve, the command exits
+//! non-zero and says so. A bridge that started and then failed on the first
+//! message would look, from the client's side, like a server that had hung.
+//!
+//! That check used to refuse `stdio` on the upstream side, on the stated
+//! grounds that stdio had no *client* adapter. It does — `StdioClient` landed in
+//! T13 and `StdioPeer` wraps it — so the check was refusing a pairing that
+//! works. It is kept, because the grammar still accepts transports a future
+//! build might not implement, but it now refuses nothing that exists.
 
 use clap::Args;
 use protocol_droid::domain::{SpecError, TransportKind, TransportSpec};
@@ -118,24 +123,25 @@ fn parse(spec: &str, field: &'static str) -> Result<TransportSpec, SpecFailure> 
 
 /// Whether this build can serve a transport on the *upstream* side.
 ///
-/// The gap is one-sided and that asymmetry is the whole reason the check
-/// lives here. `stdio` has a *server* adapter — a bridge can accept a client
-/// over stdio — but no *client* adapter, so a bridge cannot yet forward to one.
-/// Checking both ends identically would refuse the working direction; checking
-/// only the upstream would let the broken direction start and fail on the first
-/// message.
-fn upstream_supported(kind: TransportKind) -> bool {
-    kind != TransportKind::Stdio
+/// An upstream is the side the bridge *calls*, so it needs a `BridgePeer`
+/// adapter. All three of `http`, `legacy-sse` and `stdio` have one.
+///
+/// This was once `kind != TransportKind::Stdio`, on the grounds that stdio had
+/// a *server* adapter but no *client* adapter. That was true once and stopped
+/// being true twice: `StdioClient` shipped in T13, and `StdioPeer` now wraps it.
+/// A check that refuses a pairing that works is worse than no check at all,
+/// because it reports a limitation that does not exist and sends the user
+/// looking for one instead of running the thing.
+const fn upstream_supported(_kind: TransportKind) -> bool {
+    true
 }
 
 /// Whether this build can *accept* a transport on the listen side.
 ///
-/// Every transport, unlike the upstream check. Listening is the server role,
-/// and the stdio server adapter exists — it is only the client role that stdio
-/// is missing. Applying the upstream check to both ends would refuse the one
-/// direction that actually works.
-const fn listen_supported(kind: TransportKind) -> bool {
-    let _ = kind;
+/// Every transport. Listening is the server role, and every one of them has a
+/// server adapter; applying the upstream check to both ends would refuse a
+/// direction that works.
+const fn listen_supported(_kind: TransportKind) -> bool {
     true
 }
 
@@ -143,11 +149,10 @@ fn plan(listen: &TransportSpec, upstream: &TransportSpec) -> Plan {
     let listen_ok = listen_supported(listen.kind());
     let upstream_ok = upstream_supported(upstream.kind());
     let note = if upstream_ok {
-        "validated; the serving loop lands with the BridgePeer adapters".to_owned()
+        "validated; every transport has a BridgePeer adapter in both directions".to_owned()
     } else {
         format!(
-            "this build has no stdio *client* adapter, so a bridge cannot forward to {}; \
-             pick an http upstream",
+            "this build cannot forward to {}; pick a transport with a client adapter",
             upstream.target()
         )
     };
@@ -217,19 +222,23 @@ mod tests {
         Ok(())
     }
 
-    /// The gap is one-sided: a bridge may *accept* stdio but cannot yet
-    /// *forward to* it. Refusing both directions would reject the working one;
-    /// accepting both would fail on the first message instead.
+    /// A `stdio` upstream is served, because there is a `StdioPeer` for it.
+    ///
+    /// This assertion once read `assert!(!plan.serve)` and pinned the claim
+    /// that stdio had no client adapter. That claim stopped being true when
+    /// `StdioClient` shipped in T13, and the test kept it alive afterwards —
+    /// which is the argument for auditing tests that pin a stated limitation,
+    /// not just the code that states it.
     #[test]
-    fn a_stdio_upstream_is_the_one_refused_pairing() -> Result<(), TestError> {
+    fn a_stdio_upstream_is_served() -> Result<(), TestError> {
         let listen = parse("http://127.0.0.1:8080/mcp", "--listen")?;
         let upstream = parse("stdio:./server", "--upstream")?;
         let plan = plan(&listen, &upstream);
 
-        assert!(!plan.serve, "a stdio upstream was reported as servable");
+        assert!(plan.serve, "a stdio upstream was refused");
         assert!(
             plan.upstream.target.contains("./server"),
-            "the note lost the target it names"
+            "the plan lost the target it names"
         );
         Ok(())
     }
@@ -261,13 +270,6 @@ mod tests {
             return;
         };
         assert_eq!(failure.field, "--listen");
-    }
-
-    /// An unservable pair exits non-zero rather than printing a plan and
-    /// claiming success.
-    #[test]
-    fn an_unservable_pair_is_an_error() {
-        assert!(run(&args("http://127.0.0.1:1/mcp", "stdio:./server")).is_err());
     }
 
     /// A servable pair does not fail.

@@ -6,6 +6,8 @@
 
 mod forward;
 mod serve;
+mod unsolicited;
 
 pub use forward::{Bridge, BridgeError, BridgePeer, Forwarded, SendFuture};
 pub use serve::{BridgeLoop, LoopError, LoopReport};
+pub use unsolicited::Unsolicited;

@@ -57,6 +57,7 @@
 //! [`request`], which are the client's mirror of the server's
 //! [`reply`](crate::adapters::primary::stdio::reply) module.
 
+pub mod bridge_peer;
 pub mod child;
 pub mod client;
 pub mod spec;
@@ -64,6 +65,7 @@ pub mod spec;
 #[cfg(test)]
 mod testing;
 
+pub use bridge_peer::StdioPeer;
 pub use child::SpawnError;
 pub use client::{ClientConfig, StdioClient, StdioClientError};
 pub use spec::{ChildSpec, ChildSpecError};
