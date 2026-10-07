@@ -320,7 +320,7 @@ pub fn negotiate_server(offered: ProtocolVersion, supported: &SupportedVersions)
     } else {
         ServerDecision::CounterOffered {
             offered,
-            answer: supported.latest(),
+            answer: supported.latest_handshake(),
         }
     }
 }
@@ -667,7 +667,11 @@ mod tests {
             negotiate_server(future, &supported),
             ServerDecision::CounterOffered {
                 offered: future,
-                answer: ProtocolVersion::V2026_07_28,
+                // Not `2026-07-28`: SEP-2575 removed `initialize` from that
+                // revision, so counter-offering it would send the peer to a
+                // protocol on which the handshake it just attempted does not
+                // exist.
+                answer: ProtocolVersion::V2025_11_25,
             },
         );
     }
@@ -711,7 +715,7 @@ mod tests {
             };
             let decision = negotiate_server(offered, &supported);
             assert!(decision.is_counter_offer(), "{raw} should counter-offer");
-            assert_eq!(decision.version(), ProtocolVersion::V2026_07_28);
+            assert_eq!(decision.version(), ProtocolVersion::V2025_11_25);
         }
     }
 
@@ -834,7 +838,7 @@ mod tests {
                 let answer = decision.version();
                 assert!(supported.contains(&answer), "{offered_version} -> {answer}");
                 if !expected_echo {
-                    assert_eq!(answer, supported.latest());
+                    assert_eq!(answer, supported.latest_handshake());
                 }
             }
         }

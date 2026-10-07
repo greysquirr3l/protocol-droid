@@ -18,6 +18,7 @@
 use core::fmt;
 
 use crate::domain::ProtocolVersion;
+use crate::domain::negotiation::handshake_defined_in;
 
 /// Why a set of supported versions was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -147,6 +148,26 @@ impl SupportedVersions {
         self.versions
             .last()
             .map_or_else(ProtocolVersion::latest_known, |latest| *latest)
+    }
+
+    /// The newest revision here that still defines a handshake.
+    ///
+    /// Not [`latest`](Self::latest). SEP-2575 removed `initialize` from
+    /// `2026-07-28`, and that revision is currently the newest the crate
+    /// knows — so a ceiling taken from `latest` would be a revision no peer can
+    /// complete a handshake on, and a server gating its whole life on one can
+    /// never finish talking to anybody.
+    ///
+    /// Infallible for the same reason [`latest`](Self::latest) is: the set is
+    /// non-empty and sorted, and the earliest-known revision still has a
+    /// handshake, so the scan has something to return.
+    #[must_use]
+    pub fn latest_handshake(&self) -> ProtocolVersion {
+        self.versions
+            .iter()
+            .copied()
+            .rfind(|version| handshake_defined_in(*version))
+            .unwrap_or_else(ProtocolVersion::earliest_known)
     }
 
     /// The oldest revision the peer supports.
