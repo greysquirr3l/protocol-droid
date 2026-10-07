@@ -87,6 +87,33 @@ pub enum HttpClientError {
     #[error("the peer answered 2xx with no content type")]
     MissingMediaType,
 
+    /// The peer answered `2xx` with a body that is not a JSON object.
+    ///
+    /// Its own variant, not [`HttpClientError::MediaType`]: that one means "not
+    /// JSON *or* not an event stream" and leaves the caller to pick which. Here
+    /// the peer committed to JSON and then sent something that is not a
+    /// JSON-RPC message, which is a different fault with a different fix.
+    #[error("the peer answered 2xx with a JSON body that is not an object: {got:?}")]
+    NotAMessage {
+        /// What came back, truncated to something loggable.
+        got: String,
+    },
+    /// A body could not be encoded for sending, or a reply body could not be
+    /// read back as JSON.
+    ///
+    /// Separate from [`HttpClientError::Io`] because that one carries a
+    /// `reqwest::Error` and means the request never reached the peer. This is
+    /// the opposite: the bytes arrived and could not be understood. Folding
+    /// both into `Io` would report a marshalling fault as a network fault.
+    #[error("the {method} body could not be {what}: {detail}")]
+    Body {
+        /// The HTTP method that was in flight.
+        method: &'static str,
+        /// What was being attempted, in a form that reads as a verb.
+        what: &'static str,
+        /// The decoder's own account.
+        detail: String,
+    },
     /// The event stream produced bytes that are not a valid SSE frame.
     #[error("the event stream produced a frame this client cannot read: {source}")]
     Frame {

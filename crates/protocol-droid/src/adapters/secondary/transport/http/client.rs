@@ -23,6 +23,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::str::FromStr;
 use core::sync::atomic::{AtomicI64, Ordering};
+use serde_json::{Map, Value};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -322,6 +323,106 @@ impl HttpClient {
     ) -> Result<HttpResponse, HttpClientError> {
         let response = self.send(POST, body, require_session).await?;
         self.read_document(response, POST).await
+    }
+
+    /// POSTs a whole JSON-RPC envelope and returns the peer's answer envelope.
+    ///
+    /// The envelope-granularity entry point, for a caller that already holds a
+    /// parsed message — a bridge, chiefly. [`ClientTransport::send`] cannot
+    /// serve that, and the difference is not cosmetic:
+    ///
+    /// - `send` *mints* an id from this client's counter. A proxy must carry
+    ///   the downstream id through instead, or the reply cannot be matched to
+    ///   the request the client is still waiting on.
+    /// - `send` returns `reply_result`, which pulls the `result` member out and
+    ///   turns an `error` member into a [`TransportError`]. A proxy needs the
+    ///   whole reply: a peer that declines a request has sent a well-formed
+    ///   message, and re-wrapping it as a transport fault reports a network
+    ///   error for a request the server answered on purpose.
+    ///
+    /// The session lifecycle is this client's, not a second one — the
+    /// `Mcp-Session-Id` this client obtained at handshake is the one every
+    /// forwarded request carries, which is what lets a bridge reuse an
+    /// established upstream session instead of re-handshaking per request.
+    ///
+    /// `require_session` is `false` because a bridge forwards the handshake
+    /// itself, and the first message it forwards is the one that has no session
+    /// yet.
+    ///
+    /// # Errors
+    ///
+    /// Any [`HttpClientError`] a request can produce, plus
+    /// [`HttpClientError::NotAMessage`] when the peer answers `2xx` with a JSON
+    /// body that is not an object.
+    ///
+    /// # Panics
+    ///
+    /// Never. Serialisation and parsing failures are [`HttpClientError`]s.
+    pub async fn post_envelope(
+        &self,
+        envelope: &Map<String, Value>,
+    ) -> Result<Option<Map<String, Value>>, HttpClientError> {
+        let body = serde_json::to_vec(envelope).map_err(|error| HttpClientError::Body {
+            method: "POST",
+            what: "encoded",
+            detail: error.to_string(),
+        })?;
+        let response = self.post(&body, false).await?;
+        let raw = response.body();
+
+        // A notification is answered with a `202` and no body. `None` is the
+        // honest reading: the peer said "received" and sent nothing back.
+        // Synthesising an empty envelope here would hand the caller a reply
+        // that does not exist, and a proxy that echoed one downstream would
+        // invent a response the server never sent.
+        if raw.is_empty() {
+            return Ok(None);
+        }
+
+        let text = std::str::from_utf8(raw).map_err(|error| HttpClientError::Body {
+            method: "POST",
+            what: "decoded as UTF-8",
+            detail: error.to_string(),
+        })?;
+        let value: Value = serde_json::from_str(text).map_err(|error| HttpClientError::Body {
+            method: "POST",
+            what: "parsed as JSON",
+            detail: error.to_string(),
+        })?;
+
+        value
+            .as_object()
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| HttpClientError::NotAMessage {
+                got: value.to_string(),
+            })
+    }
+
+    /// Sends an already-assembled notification envelope.
+    ///
+    /// The envelope-granularity counterpart to
+    /// [`ClientTransport::notify`], for a caller that already holds a parsed
+    /// message. A notification is answered with a `202` and no body, so there
+    /// is nothing to read back — this is [`HttpClient::post_envelope`] with
+    /// the reply discarded, which is why it is a method rather than a call the
+    /// adapter has to remember to write correctly itself.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpClientError`] when the envelope cannot be encoded or the `POST`
+    /// does not succeed.
+    pub async fn notify_envelope(
+        &self,
+        envelope: &Map<String, Value>,
+    ) -> Result<(), HttpClientError> {
+        let body = serde_json::to_vec(envelope).map_err(|error| HttpClientError::Body {
+            method: "POST",
+            what: "encoded",
+            detail: error.to_string(),
+        })?;
+        self.post(&body, false).await?;
+        Ok(())
     }
 
     /// POSTs a body and accepts either response shape.

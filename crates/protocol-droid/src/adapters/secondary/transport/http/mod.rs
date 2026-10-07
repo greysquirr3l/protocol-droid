@@ -44,6 +44,7 @@
 //! # }
 //! ```
 
+mod bridge_peer;
 mod client;
 mod error;
 mod frames;

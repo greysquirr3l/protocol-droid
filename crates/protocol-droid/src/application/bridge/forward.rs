@@ -81,6 +81,13 @@ pub type SendFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + '
 ///         })
 ///     }
 ///
+///     fn notify(
+///         &self,
+///         _envelope: Map<String, Value>,
+///     ) -> SendFuture<'_, Result<(), BridgeError>> {
+///         Box::pin(async { Ok(()) })
+///     }
+///
 ///     fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
 ///         Box::pin(async { Ok(()) })
 ///     }
@@ -121,6 +128,24 @@ pub trait BridgePeer: Send + Sync {
         envelope: Map<String, Value>,
     ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>>;
 
+    /// Delivers one envelope that expects no answer.
+    ///
+    /// Separate from [`send`](Self::send) because a notification has no `id`
+    /// and a conforming peer answers one with `202` and no body. A `send` that
+    /// waited for a reply would wait forever, and a `send` that did not wait
+    /// would have to invent the empty envelope it handed back — which is a
+    /// response the server never sent. `notifications/initialized` is one of
+    /// these, so a peer that could not notify had no way to finish connecting.
+    ///
+    /// # Errors
+    ///
+    /// [`BridgeError::Unreachable`] when the request could not be delivered.
+    /// Nothing else is possible: there is no reply to be wrong about.
+    fn notify(
+        &self,
+        envelope: Map<String, Value>,
+    ) -> SendFuture<'_, Result<(), BridgeError>>;
+
     /// Ends the conversation, flushing anything in flight.
     ///
     /// # Errors
@@ -145,9 +170,17 @@ impl<T: BridgePeer + ?Sized> BridgePeer for std::sync::Arc<T> {
         (**self).send(envelope)
     }
 
-    fn close(
+    /// # Errors
+    ///
+    /// Whatever the inner peer reports.
+    fn notify(
         &self,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), BridgeError>> + Send + '_>> {
+        envelope: Map<String, Value>,
+    ) -> SendFuture<'_, Result<(), BridgeError>> {
+        (**self).notify(envelope)
+    }
+
+    fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
         (**self).close()
     }
 }
@@ -237,6 +270,7 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
     pub async fn forward(&self, envelope: &Map<String, Value>) -> Result<Forwarded, BridgeError> {
         let message = lift_envelope(envelope)?;
         self.check_method(&message)?;
+        let outbound = lower_envelope(&message);
 
         // Empty by construction, and that is the finding rather than an
         // omission: the six envelope members mean the same thing in every
@@ -245,7 +279,19 @@ impl<H: BridgePeer, U: BridgePeer> Bridge<H, U> {
         // keep once *content* translation lands, where the revisions really do
         // disagree about `CallToolResult`.
         let report = TranslationReport::new(self.upstream_version());
-        let outbound = lower_envelope(&message);
+
+        // A notification has no id and gets no answer. Routing it through
+        // `send` would either wait forever or invent a reply, so it takes its
+        // own path — decided here on the parsed message, rather than by
+        // guessing from the envelope.
+        if matches!(message, IrMessage::Notification(_)) {
+            self.upstream.notify(outbound).await?;
+            return Ok(Forwarded {
+                outbound: lower_envelope(&message),
+                reply: Map::new(),
+                report,
+            });
+        }
 
         let reply = self.upstream.send(outbound.clone()).await?;
 
@@ -378,6 +424,22 @@ mod tests {
             })
         }
 
+        /// Records the notification too, and that is the whole point: without
+        /// it a test cannot tell "delivered to the peer's notify" from "dropped
+        /// on the floor", and both look like a successful send.
+        fn notify(
+            &self,
+            envelope: Map<String, Value>,
+        ) -> SendFuture<'_, Result<(), BridgeError>> {
+            Box::pin(async move {
+                let Ok(mut seen) = self.seen.lock() else {
+                    return Err(BridgeError::Close("recorder poisoned".to_owned()));
+                };
+                seen.push(envelope);
+                Ok(())
+            })
+        }
+
         fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
             Box::pin(async { Ok(()) })
         }
@@ -391,6 +453,17 @@ mod tests {
             &self,
             _envelope: Map<String, Value>,
         ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
+            Box::pin(async {
+                Err(BridgeError::Unreachable {
+                    reason: "connection refused".to_owned(),
+                })
+            })
+        }
+
+        fn notify(
+            &self,
+            _envelope: Map<String, Value>,
+        ) -> SendFuture<'_, Result<(), BridgeError>> {
             Box::pin(async {
                 Err(BridgeError::Unreachable {
                     reason: "connection refused".to_owned(),
@@ -534,6 +607,60 @@ mod tests {
 
     /// An upstream that cannot be reached is an error carrying the reason, and
     /// is distinct from a peer that answered with a refusal.
+    /// A notification has no id and gets no answer. Routing it through `send`
+    /// would either wait forever or invent an envelope the server never sent,
+    /// so it must reach the peer's `notify` and come back with no reply.
+    #[tokio::test]
+    async fn a_notification_is_delivered_without_inventing_a_reply() -> Result<(), TestError> {
+        let upstream: Shared = Recorder::default().into();
+        let bridge = Bridge::new(
+            Agreement::between(
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+            ),
+            DegradePolicy::default(),
+            Recorder::default(),
+            upstream.clone(),
+        );
+
+        let sent = envelope(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
+        let forwarded = bridge.forward(&sent).await?;
+
+        assert!(
+            forwarded.reply.is_empty(),
+            "a notification came back with a reply envelope: {:?}",
+            forwarded.reply
+        );
+        let seen = upstream.seen()?;
+        assert_eq!(seen.len(), 1, "the notification did not reach the peer");
+        Ok(())
+    }
+
+    /// A *request* still comes back with the peer's real answer, so the
+    /// notification path did not swallow the other case.
+    #[tokio::test]
+    async fn a_request_still_brings_an_answer_back() -> Result<(), TestError> {
+        let bridge = Bridge::new(
+            Agreement::between(
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+                Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
+            ),
+            DegradePolicy::default(),
+            Recorder::default(),
+            Recorder::default(),
+        );
+
+        let sent = envelope(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)?;
+        let forwarded = bridge.forward(&sent).await?;
+
+        assert!(
+            forwarded.reply.get("result").is_some(),
+            "a request came back with no result: {:?}",
+            forwarded.reply
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn an_unreachable_peer_is_an_error_not_a_silent_drop() -> Result<(), TestError> {
         let bridge = Bridge::new(
@@ -585,6 +712,12 @@ mod tests {
                     );
                     Ok(reply)
                 })
+            }
+            fn notify(
+                &self,
+                _envelope: Map<String, Value>,
+            ) -> SendFuture<'_, Result<(), BridgeError>> {
+                Box::pin(async { Ok(()) })
             }
             fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
                 Box::pin(async { Ok(()) })
