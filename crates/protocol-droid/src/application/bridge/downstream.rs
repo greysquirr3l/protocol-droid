@@ -93,7 +93,7 @@ impl DownstreamConfig {
     /// supports — an operator who knows a client is broken at a revision and
     /// would rather see a counter-offer than a mis-negotiation.
     #[must_use]
-    pub fn with(
+    pub const fn with(
         supported: SupportedVersions,
         identity: Identity,
         transport: TransportKind,
@@ -224,11 +224,12 @@ pub enum DownstreamError {
     /// The negotiation settled on a revision with no handshake.
     ///
     /// SEP-2575 removed `initialize` from `2026-07-28`, and
-    /// [`negotiate_server`] answers only with revisions this build supports —
-    /// so this cannot happen on the path below. It is in the signature because
-    /// a revision can be added to [`SupportedVersions`] without anyone
-    /// re-reading this module, and a bridge that sent an `InitializeResult` for
-    /// a revision defining none would be inventing wire format.
+    /// [`negotiate_server`] echoes a revision it supports — so a client asking
+    /// for exactly that one reaches here. It cannot on the path below, because
+    /// such a client is walked back to the newest revision that has a
+    /// handshake. It stays in the signature for the one case that walk-back
+    /// cannot cover: a bridge restricted to revisions with no handshake at all,
+    /// where there is nothing to walk back to.
     #[error("{0} has no initialize handshake to answer")]
     NoHandshake(ProtocolVersion),
 
@@ -290,8 +291,19 @@ pub fn negotiate(
     config: &DownstreamConfig,
 ) -> Result<Downstream, DownstreamError> {
     let offer = read_offer(params).map_err(|_| DownstreamError::Malformed)?;
-    let version = negotiate_server(offer.version, &config.supported).version();
+    let negotiated = negotiate_server(offer.version, &config.supported).version();
 
+    // `negotiate_server` echoes a revision it supports, including the one that
+    // removed `initialize` — but the fact that this request arrived at all is
+    // proof the client speaks the handshake. A client is therefore walked back
+    // to the newest revision that has one rather than refused: it asked a
+    // question it can only be answered in one shape, and the answer exists at
+    // a revision it demonstrably speaks.
+    let version = if handshake_defined_in(negotiated) {
+        negotiated
+    } else {
+        config.supported.latest_handshake()
+    };
     if !handshake_defined_in(version) {
         return Err(DownstreamError::NoHandshake(version));
     }

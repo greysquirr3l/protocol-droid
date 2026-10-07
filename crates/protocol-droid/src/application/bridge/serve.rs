@@ -39,8 +39,11 @@ use serde_json::{Map, Value};
 
 use crate::application::bridge::content::ToolResultCodec;
 use crate::application::bridge::forward::{Bridge, BridgeError, BridgePeer};
+use crate::application::bridge::{DownstreamConfig, negotiate_downstream};
 use crate::application::jsonrpc::{DynFrameSource, SourceError};
 use crate::application::session::{DynFrameSink, SinkError};
+use crate::domain::ir::JsonObject;
+use crate::domain::{Agreement, DegradePolicy};
 
 /// A frame the bridge could not parse at all.
 const PARSE_ERROR: i64 = -32_700;
@@ -51,6 +54,17 @@ const METHOD_NOT_FOUND: i64 = -32_601;
 /// A transport or upstream fault.
 const SERVER_ERROR: i64 = -32_000;
 
+/// The handshake request a client opens a connection with.
+///
+/// A constant rather than a literal, because the loop branches on it in two
+/// places — before and after the handshake — and a bridge that answered the
+/// first and forwarded the second would be handing an `InitializeResult` to an
+/// upstream that has no use for it.
+const INITIALIZE: &str = "initialize";
+
+/// The notification that closes a handshake.
+const INITIALIZED: &str = "notifications/initialized";
+
 /// What one pass of the loop moved.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LoopReport {
@@ -60,6 +74,13 @@ pub struct LoopReport {
     pub notified: u64,
     /// Envelopes the bridge refused or could not read, each answered to the client.
     pub failed: u64,
+    /// Whether a client completed a handshake.
+    ///
+    /// Separate from the counters because it is the one number that says the
+    /// bridge ever did anything: a run that forwarded nothing and failed
+    /// nothing is either a client that connected and stayed quiet, or a client
+    /// that never arrived, and the report has to tell those apart.
+    pub handshaken: bool,
 }
 
 /// Why the loop stopped.
@@ -95,26 +116,85 @@ enum Outcome {
     Silent,
 }
 
+/// The two peers a loop forwards between, and the policy it degrades under.
+///
+/// Not a half-built [`Bridge`] and not a way to make one: it is everything
+/// true of a bridge before a client has said anything, gathered so
+/// [`BridgeLoop::new`] takes four arguments rather than eight. The field order
+/// matches [`Bridge::new`] — the same five facts, in the same sequence — so
+/// moving between the two is not a re-reading exercise.
+#[derive(Debug)]
+pub struct Wiring<H, U, C> {
+    upstream: Agreement,
+    policy: DegradePolicy,
+    downstream: H,
+    peer: U,
+    codec: C,
+}
+
+impl<H, U, C> Wiring<H, U, C> {
+    /// Wires a bridge to the upstream it already negotiated with.
+    #[must_use]
+    pub const fn new(
+        upstream: Agreement,
+        policy: DegradePolicy,
+        downstream: H,
+        peer: U,
+        codec: C,
+    ) -> Self {
+        Self {
+            upstream,
+            policy,
+            downstream,
+            peer,
+            codec,
+        }
+    }
+}
+
 /// Carries frames from a downstream peer, through a [`Bridge`], back to it.
+///
+/// ## The handshake happens here, not upstream
+///
+/// A bridge is a server to the client in front of it, so the loop answers
+/// `initialize` itself rather than letting the request reach the upstream. That
+/// is what keeps the client on the revision the bridge chose and tells it only
+/// the capabilities the bridge can actually serve; forwarding the handshake
+/// would hand the client the upstream's own answers to both questions.
+///
+/// Before a handshake completes, a request is refused rather than forwarded —
+/// the specification requires it, and a bridge that forwarded one would speak
+/// for a client the upstream had never accepted.
+///
+/// `notifications/initialized` is answered locally and **not** forwarded. The
+/// upstream session was initialised when the bridge connected, before any
+/// client existed; forwarding this one would tell the upstream a second client
+/// had arrived, describing a session it already considers open.
 ///
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::application::bridge::BridgeLoop;
+/// use protocol_droid::application::bridge::{BridgeLoop, ToolResultCodec, Wiring};
 ///
 /// # fn documented<H, U, C, S, K>(
-/// #     bridge: protocol_droid::application::bridge::Bridge<H, U, C>,
+/// #     upstream: protocol_droid::domain::Agreement,
+/// #     config: protocol_droid::application::bridge::DownstreamConfig,
+/// #     policy: protocol_droid::domain::DegradePolicy,
+/// #     client: H,
+/// #     server: U,
+/// #     codec: C,
 /// #     source: S,
 /// #     sink: K,
 /// # ) where
 /// #     H: protocol_droid::application::bridge::BridgePeer,
 /// #     U: protocol_droid::application::bridge::BridgePeer,
-/// #     C: protocol_droid::application::bridge::ToolResultCodec,
+/// #     C: ToolResultCodec,
 /// #     S: protocol_droid::application::jsonrpc::DynFrameSource,
 /// #     K: protocol_droid::application::session::DynFrameSink,
 /// # {
-/// let bridge_loop = BridgeLoop::new(bridge, source, sink);
-/// # let _ = bridge_loop;
+/// let wiring = Wiring::new(upstream, policy, client, server, codec);
+/// let mut bridge_loop = BridgeLoop::new(wiring, config, source, sink);
+/// # let _ = &mut bridge_loop;
 /// # }
 /// ```
 #[derive(Debug)]
@@ -126,7 +206,9 @@ where
     S: DynFrameSource,
     K: DynFrameSink,
 {
-    bridge: Bridge<H, U, C>,
+    config: DownstreamConfig,
+    wiring: Option<Wiring<H, U, C>>,
+    live: Option<Box<Bridge<H, U, C>>>,
     source: S,
     sink: K,
 }
@@ -139,17 +221,138 @@ where
     S: DynFrameSource,
     K: DynFrameSink,
 {
-    /// A loop over a bridge and the two framed peers around it.
+    /// A loop waiting for a client's handshake.
     #[must_use]
-    pub const fn new(bridge: Bridge<H, U, C>, source: S, sink: K) -> Self {
+    pub const fn new(
+        wiring: Wiring<H, U, C>,
+        config: DownstreamConfig,
+        source: S,
+        sink: K,
+    ) -> Self {
         Self {
-            bridge,
+            config,
+            wiring: Some(wiring),
+            live: None,
             source,
             sink,
         }
     }
 
+    /// What this bridge knows about its two sides.
+    ///
+    /// `None` until a handshake completes. That is the useful part: a caller
+    /// reporting on a bridge can tell "these two sides share nothing" from "no
+    /// client ever arrived", and only the reconciled answer knows about a
+    /// client at all.
+    #[must_use]
+    pub fn agreement(&self) -> Option<&Agreement> {
+        self.live
+            .as_deref()
+            .map(Bridge::agreement)
+            .or_else(|| self.wiring.as_ref().map(|wiring| &wiring.upstream))
+    }
+
+    /// Whether a client has completed a handshake.
+    #[must_use]
+    pub const fn connected(&self) -> bool {
+        self.live.is_some()
+    }
+
+    /// The bridge to forward through, once one exists.
+    fn bridge(&self) -> Option<&Bridge<H, U, C>> {
+        self.live.as_deref()
+    }
+
+    /// Answers one frame that arrived before any handshake completed.
+    ///
+    /// Two answers, both the specification's: `initialize` settles the leg and
+    /// turns this loop into a live one, and everything else is refused with
+    /// `-32600`. Nothing reaches the upstream, because the upstream has not
+    /// agreed to speak to this client — the one refusal here that is not really
+    /// about the bridge at all.
+    fn handshake(
+        &mut self,
+        envelope: &Map<String, Value>,
+        method: Option<&str>,
+        report: &mut LoopReport,
+    ) -> Outcome {
+        match method {
+            Some(name) if name == INITIALIZE => {}
+            _ => {
+                report.failed = report.failed.saturating_add(1);
+                let id = envelope.get("id").cloned();
+                return Outcome::Reply(error_envelope(
+                    id,
+                    INVALID_REQUEST,
+                    "a client must complete the initialize handshake before sending anything else",
+                ));
+            }
+        }
+
+        // No wiring means the peers were moved into a bridge that this frame
+        // cannot reach, which the dispatch above rules out. Refusing is the
+        // honest answer to a state the loop should never be in, and it keeps a
+        // synthetic agreement out of the code — a made-up upstream would let
+        // this path answer with capabilities no peer ever agreed to.
+        let Some(wiring) = self.wiring.as_ref() else {
+            report.failed = report.failed.saturating_add(1);
+            let id = envelope.get("id").cloned();
+            return Outcome::Reply(error_envelope(
+                id,
+                SERVER_ERROR,
+                "the bridge has no upstream peer to connect a client to",
+            ));
+        };
+
+        let settled = envelope
+            .get("params")
+            .and_then(|value| JsonObject::from_value(value.clone()).ok());
+        let downstream = match settled {
+            Some(params) => negotiate_downstream(&params, &wiring.upstream, &self.config),
+            None => Err(crate::application::bridge::DownstreamError::Malformed),
+        };
+
+        match downstream {
+            Ok(downstream) => {
+                let id = envelope.get("id").cloned();
+                let reply = result_envelope(id, downstream.body().as_str());
+                self.establish(&downstream);
+                report.handshaken = true;
+                Outcome::Reply(reply)
+            }
+            Err(error) => {
+                report.failed = report.failed.saturating_add(1);
+                let id = envelope.get("id").cloned();
+                Outcome::Reply(error_envelope(id, INVALID_REQUEST, &error.to_string()))
+            }
+        }
+    }
+
+    /// Turns a settled downstream leg into the bridge this loop forwards through.
+    ///
+    /// The wiring is taken rather than borrowed: `Bridge` owns both peers, and
+    /// a bridge that could forward while its wiring was still held would be two
+    /// owners of one connection. A `None` means a handshake already established
+    /// one, which the caller prevents by routing only un-handshaken frames here
+    /// — so there is nothing to do and nothing to report.
+    fn establish(&mut self, downstream: &crate::application::bridge::Downstream) {
+        let Some(wiring) = self.wiring.take() else {
+            return;
+        };
+        self.live = Some(Box::new(Bridge::new(
+            downstream.agreement().clone(),
+            wiring.policy,
+            wiring.downstream,
+            wiring.peer,
+            wiring.codec,
+        )));
+    }
+
     /// Runs until the downstream peer's stream ends.
+    ///
+    /// The handshake is part of this, not a separate step the caller has to
+    /// remember: a caller that forgot it would forward a client's `initialize`
+    /// upstream and answer them with someone else's capabilities.
     ///
     /// # Errors
     ///
@@ -157,7 +360,7 @@ where
     /// bridge built cannot be written. A refusal from the upstream peer is not
     /// an error here — it is answered to the client and counted in
     /// [`LoopReport::failed`].
-    pub async fn run(&self) -> Result<LoopReport, LoopError> {
+    pub async fn run(&mut self) -> Result<LoopReport, LoopError> {
         let mut report = LoopReport::default();
         while let Some(frame) = self.source.next_frame().await? {
             self.step(&frame, &mut report).await?;
@@ -166,7 +369,7 @@ where
     }
 
     /// Routes one inbound frame to whatever shape it turned out to have.
-    async fn step(&self, frame: &str, report: &mut LoopReport) -> Result<(), LoopError> {
+    async fn step(&mut self, frame: &str, report: &mut LoopReport) -> Result<(), LoopError> {
         let value: Value = match serde_json::from_str(frame) {
             Ok(value) => value,
             Err(error) => {
@@ -205,7 +408,7 @@ where
     /// requirement is "an Array with at least one value", so `[]` is a single
     /// invalid-request object rather than an array back — an empty array would
     /// read to a client as "a batch of zero successful calls".
-    async fn batch(&self, members: &[Value], report: &mut LoopReport) -> Result<(), LoopError> {
+    async fn batch(&mut self, members: &[Value], report: &mut LoopReport) -> Result<(), LoopError> {
         if members.is_empty() {
             report.failed = report.failed.saturating_add(1);
             return self
@@ -248,8 +451,58 @@ where
     }
 
     /// Moves one envelope to the upstream peer and renders what came back.
-    async fn dispatch(&self, envelope: &Map<String, Value>, report: &mut LoopReport) -> Outcome {
-        match self.bridge.forward(envelope).await {
+    async fn dispatch(
+        &mut self,
+        envelope: &Map<String, Value>,
+        report: &mut LoopReport,
+    ) -> Outcome {
+        let method = envelope.get("method").and_then(Value::as_str);
+
+        // The client's half of a handshake this bridge answered itself. The
+        // upstream session was initialised when the bridge connected, before
+        // any client existed, so forwarding this would tell it a second client
+        // had arrived describing a session it already considers open. Handled
+        // here rather than in the pre-handshake path because this is the order
+        // a conforming client actually sends it in.
+        if method == Some(INITIALIZED) {
+            report.notified = report.notified.saturating_add(1);
+            return Outcome::Silent;
+        }
+
+        if self.live.is_none() {
+            return self.handshake(envelope, method, report);
+        }
+
+        // A second `initialize` is a client that has forgotten it connected,
+        // not a message with anywhere to go. Answering it would renegotiate a
+        // session the bridge has already built a `Bridge` for, and the reply
+        // would promise a profile the running bridge is not using.
+        if method == Some(INITIALIZE) {
+            report.failed = report.failed.saturating_add(1);
+            let id = envelope.get("id").cloned();
+            return Outcome::Reply(error_envelope(
+                id,
+                INVALID_REQUEST,
+                "this connection has already completed its handshake",
+            ));
+        }
+
+        // The only bridge to forward through. `expect`-free: the stage was
+        // matched above and nothing between can have changed it, but a `None`
+        // here is a bug in this function rather than in a peer's bytes, and a
+        // panic in a proxy's own control flow is the least defensible place to
+        // put one.
+        let Some(bridge) = self.bridge() else {
+            report.failed = report.failed.saturating_add(1);
+            let id = envelope.get("id").cloned();
+            return Outcome::Reply(error_envelope(
+                id,
+                SERVER_ERROR,
+                "the bridge is not connected to an upstream peer",
+            ));
+        };
+
+        match bridge.forward(envelope).await {
             Ok(forwarded) => {
                 if forwarded.reply.is_empty() {
                     report.notified = report.notified.saturating_add(1);
@@ -318,6 +571,22 @@ const fn refusal(error: &BridgeError) -> (i64, &'static str) {
     }
 }
 
+/// Builds the result envelope a handshake is answered in.
+///
+/// The counterpart to [`error_envelope`], and deliberately built the same way:
+/// the reply carries the request's own `id`, and `null` where there is none.
+/// `result` is inserted as pre-parsed text rather than as a `Value` so the
+/// negotiated body travels to the client byte-for-byte as the negotiation
+/// built it, instead of through a second serialisation.
+fn result_envelope(id: Option<Value>, body: &str) -> Value {
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let mut envelope = Map::new();
+    envelope.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
+    envelope.insert("id".to_owned(), id.unwrap_or(Value::Null));
+    envelope.insert("result".to_owned(), parsed);
+    Value::Object(envelope)
+}
+
 /// Builds the error envelope a refusal is delivered in.
 ///
 /// The `id` is the request's own where there is one, and `null` where there is
@@ -359,9 +628,11 @@ mod tests {
     use crate::application::bridge::forward::SendFuture;
     use crate::application::jsonrpc::FrameSource;
     use crate::application::session::{FrameSink, SinkError};
-    use crate::domain::{Agreement, DegradePolicy, Feature, FeatureProfile, Leg, ProtocolVersion};
+    use crate::domain::{
+        Agreement, DegradePolicy, Feature, FeatureProfile, Leg, ProtocolVersion, TransportKind,
+    };
 
-    use super::{Bridge, BridgeLoop, LoopError, LoopReport, SourceError, kind};
+    use super::{BridgeLoop, DownstreamConfig, LoopError, LoopReport, SourceError, Wiring, kind};
 
     /// Every failure a test can hit, in one type, so `?` works throughout.
     #[derive(Debug, thiserror::Error)]
@@ -378,12 +649,57 @@ mod tests {
         /// A frame did not parse.
         #[error(transparent)]
         Json(#[from] serde_json::Error),
+        /// A downstream leg could not be settled.
+        #[error(transparent)]
+        Downstream(#[from] crate::application::bridge::DownstreamError),
+        /// A test's own complaint.
+        #[error("{0}")]
+        Claim(String),
     }
 
     /// An upstream that answers with the request's own id.
-    #[derive(Default)]
+    ///
+    /// The recording is shared rather than owned so a test can read it after the
+    /// loop has dropped the peer into the [`Bridge`]. "What did the upstream
+    /// see" is the whole question several tests here ask, and a double that can
+    /// only be inspected while alive would answer it for nobody.
+    #[derive(Clone, Default)]
     struct Upstream {
-        seen: Mutex<Vec<Map<String, Value>>>,
+        seen: Arc<Mutex<Vec<Map<String, Value>>>>,
+    }
+
+    impl Upstream {
+        /// An upstream and the recording a test keeps hold of.
+        fn recording() -> (Self, Seen) {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    seen: Arc::clone(&seen),
+                },
+                Seen(seen),
+            )
+        }
+    }
+
+    /// A handle on what an upstream peer was sent.
+    #[derive(Clone)]
+    struct Seen(Arc<Mutex<Vec<Map<String, Value>>>>);
+
+    impl Seen {
+        fn methods(&self) -> Result<Vec<String>, Failure> {
+            let seen = self.0.lock().map_err(|_| Failure::Poisoned)?;
+            Ok(seen
+                .iter()
+                .filter_map(|envelope| envelope.get("method")?.as_str().map(String::from))
+                .collect())
+        }
+
+        fn count(&self) -> Result<usize, Failure> {
+            self.0
+                .lock()
+                .map(|seen| seen.len())
+                .map_err(|_| Failure::Poisoned)
+        }
     }
 
     impl crate::application::bridge::BridgePeer for Upstream {
@@ -427,8 +743,11 @@ mod tests {
     }
 
     impl Scripted {
-        fn of(frames: &[&str]) -> Self {
-            let queue = frames.iter().map(|frame| (*frame).to_owned()).collect();
+        fn of<S: AsRef<str>>(frames: &[S]) -> Self {
+            let queue = frames
+                .iter()
+                .map(|frame| frame.as_ref().to_owned())
+                .collect();
             Self {
                 frames: Mutex::new(queue),
             }
@@ -478,8 +797,13 @@ mod tests {
     }
 
     /// An agreement where both peers offer exactly `features`.
+    ///
+    /// At the newest revision that still has an `initialize` handshake. The
+    /// build's newest revision has none — SEP-2575 removed it — so an
+    /// agreement there could never be settled with a client, and every test
+    /// built on one would be exercising a path no client can take.
     fn agreeing(features: &[Feature]) -> Agreement {
-        let version = ProtocolVersion::latest_known();
+        let version = ProtocolVersion::V2025_11_25;
         Agreement::between(
             Leg::new(version, serving(features)),
             Leg::new(version, serving(features)),
@@ -494,28 +818,85 @@ mod tests {
             .collect()
     }
 
-    /// Runs one loop over `frames`, handing back the report and what was written.
-    async fn run(
+    /// The `initialize` a scripted client opens with.
+    fn handshake_frame(version: ProtocolVersion) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}","capabilities":{{}},"clientInfo":{{"name":"scripted"}}}}}}"#
+        )
+    }
+
+    /// Everything one scripted run produced.
+    struct Session {
+        report: LoopReport,
+        /// Every frame written, the handshake reply first when one happened.
+        written: Vec<Value>,
+        /// What the upstream peer was sent.
+        seen: Seen,
+    }
+
+    impl Session {
+        /// The replies to the test's own frames, without the handshake's.
+        fn after_handshake(self) -> Vec<Value> {
+            self.written.into_iter().skip(1).collect()
+        }
+    }
+
+    /// Runs one loop over `frames`, behind an opening handshake unless
+    /// `handshake` says otherwise.
+    async fn serve(
         agreement: &Agreement,
         frames: &[&str],
-    ) -> Result<(LoopReport, Vec<Value>), Failure> {
+        handshake: bool,
+    ) -> Result<Session, Failure> {
         let recording: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let bridge = Bridge::new(
-            agreement.clone(),
-            DegradePolicy::default(),
-            Upstream::default(),
-            Upstream::default(),
-            crate::application::bridge::content::doubles::Counting::reading_nothing(),
-        );
-        let loop_ = BridgeLoop::new(
-            bridge,
-            Scripted::of(frames),
+        let (upstream, seen) = Upstream::recording();
+
+        let mut script = Vec::new();
+        if handshake {
+            script.push(handshake_frame(agreement.upstream().version));
+        }
+        script.extend(frames.iter().map(|frame| (*frame).to_owned()));
+
+        let mut loop_ = BridgeLoop::new(
+            Wiring::new(
+                agreement.clone(),
+                DegradePolicy::default(),
+                Upstream::default(),
+                upstream,
+                crate::application::bridge::content::doubles::Counting::reading_nothing(),
+            ),
+            DownstreamConfig::new("bridge", "0.1.0", TransportKind::Stdio)?,
+            Scripted::of(&script),
             Written {
                 frames: recording.clone(),
             },
         );
+
         let report = loop_.run().await?;
-        Ok((report, written(&recording)?))
+        if handshake && !report.handshaken {
+            return Err(Failure::Claim(
+                "the loop never completed a handshake".to_owned(),
+            ));
+        }
+        Ok(Session {
+            report,
+            written: written(&recording)?,
+            seen,
+        })
+    }
+
+    /// Runs one loop: a handshake, then `frames`.
+    ///
+    /// Returns the report and everything written *after* the handshake reply,
+    /// which is what a test about forwarding cares about. The handshake itself
+    /// is asserted rather than trusted — a loop that never connected would
+    /// otherwise leave every such assertion passing for the wrong reason.
+    async fn run(
+        agreement: &Agreement,
+        frames: &[&str],
+    ) -> Result<(LoopReport, Vec<Value>), Failure> {
+        let session = serve(agreement, frames, true).await?;
+        Ok((session.report, session.after_handshake()))
     }
 
     /// A request is answered, with the id the client used.
@@ -688,8 +1069,249 @@ mod tests {
     async fn end_of_stream_ends_the_loop() -> Result<(), Failure> {
         let (report, replies) = run(&agreeing(&[Feature::Tools]), &[]).await?;
 
-        assert_eq!(report, LoopReport::default());
+        assert!(report.handshaken, "the client connected and said nothing");
+        assert_eq!(report.forwarded, 0);
+        assert_eq!(report.notified, 0);
+        assert_eq!(report.failed, 0);
         assert!(replies.is_empty());
+        Ok(())
+    }
+
+    /// The whole reason the loop grew a handshake: the bridge answers
+    /// `initialize` itself, and the upstream never sees one.
+    ///
+    /// A bridge that forwarded the handshake would answer the client with the
+    /// upstream's revision and the upstream's capabilities — which is a
+    /// pass-through wearing a proxy's name, and tells the client nothing about
+    /// whether *this* bridge can serve them.
+    #[tokio::test]
+    async fn the_bridge_answers_initialize_itself() -> Result<(), Failure> {
+        let session = serve(&agreeing(&[Feature::Tools]), &[], true).await?;
+
+        assert!(session.report.handshaken, "no handshake was recorded");
+        assert_eq!(
+            session.seen.count()?,
+            0,
+            "the upstream saw the handshake: {:?}",
+            session.seen.methods()?
+        );
+
+        let name = session
+            .written
+            .first()
+            .and_then(|reply| reply.get("result"))
+            .and_then(|result| result.get("serverInfo"))
+            .and_then(|info| info.get("name"))
+            .and_then(Value::as_str);
+        assert_eq!(name, Some("bridge"), "{:?}", session.written);
+        Ok(())
+    }
+
+    /// The reply carries the id the client used, like every other reply.
+    #[tokio::test]
+    async fn the_handshake_reply_carries_the_requests_own_id() -> Result<(), Failure> {
+        let session = serve(&agreeing(&[Feature::Tools]), &[], true).await?;
+        let id = session
+            .written
+            .first()
+            .and_then(|reply| reply.get("id"))
+            .cloned();
+        assert_eq!(id, Some(json!(1)), "{:?}", session.written);
+        Ok(())
+    }
+
+    /// A request that arrives before any handshake is refused, not forwarded.
+    ///
+    /// The specification requires it, and the reason is the one that matters:
+    /// the upstream has never accepted this client, so forwarding would speak
+    /// for somebody it has not met.
+    #[tokio::test]
+    async fn a_request_before_the_handshake_is_refused() -> Result<(), Failure> {
+        let session = serve(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#],
+            false,
+        )
+        .await?;
+
+        assert!(!session.report.handshaken);
+        assert_eq!(
+            session.seen.count()?,
+            0,
+            "a pre-handshake request reached the upstream"
+        );
+        let code = session
+            .written
+            .first()
+            .and_then(|reply| reply.get("error"))
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_i64);
+        assert_eq!(code, Some(-32_600), "{:?}", session.written);
+        Ok(())
+    }
+
+    /// The loop still accepts a handshake after a refusal.
+    ///
+    /// A client whose first frame was malformed, or which sent a request too
+    /// early, is not poisoned for it — a proxy that killed the connection on a
+    /// recoverable mistake would fail the one client most likely to make one.
+    #[tokio::test]
+    async fn a_handshake_after_a_refusal_still_connects() -> Result<(), Failure> {
+        let session = serve(
+            &agreeing(&[Feature::Tools]),
+            &[
+                r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#,
+                &handshake_frame(ProtocolVersion::latest_known()),
+            ],
+            false,
+        )
+        .await?;
+
+        assert!(session.report.handshaken, "the second frame was ignored");
+        Ok(())
+    }
+
+    /// `notifications/initialized` is consumed by the bridge, not forwarded.
+    ///
+    /// The upstream session was initialised when the bridge connected, before
+    /// any client existed. Forwarding this one would tell the upstream a second
+    /// client had arrived, describing a session it already considers open.
+    #[tokio::test]
+    async fn the_initialized_notification_is_not_forwarded() -> Result<(), Failure> {
+        let session = serve(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#],
+            true,
+        )
+        .await?;
+
+        assert_eq!(
+            session.seen.methods()?,
+            Vec::<String>::new(),
+            "the bridge forwarded a notification about a session it owns"
+        );
+        assert_eq!(session.written.len(), 1, "a notification was answered");
+        Ok(())
+    }
+
+    /// A client that handshakes twice is refused the second time.
+    ///
+    /// The first handshake is what the running bridge was built from. Answering
+    /// a second would renegotiate a session the forwarding path is already
+    /// committed to, and the reply would promise a profile that path is not
+    /// using.
+    #[tokio::test]
+    async fn a_second_handshake_is_refused() -> Result<(), Failure> {
+        let session = serve(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":9,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"p"}}}"#],
+            true,
+        )
+        .await?;
+
+        let second = session.written.get(1);
+        let code = second
+            .and_then(|reply| reply.get("error"))
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_i64);
+        assert_eq!(code, Some(-32_600), "{:?}", session.written);
+        assert_eq!(
+            session.report.forwarded, 0,
+            "a renegotiating client put something on the wire"
+        );
+        Ok(())
+    }
+
+    /// A client offering a revision the build cannot speak is walked back.
+    ///
+    /// `2026-07-28` removed `initialize` entirely (SEP-2575), so answering it
+    /// is impossible; the client gets the newest revision that still has a
+    /// handshake instead, which is what the negotiation is for.
+    #[tokio::test]
+    async fn a_client_offering_a_handshakeless_revision_is_walked_back() -> Result<(), Failure> {
+        let session = serve(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"p"}}}"#],
+            false,
+        )
+        .await?;
+
+        let answered = session
+            .written
+            .first()
+            .and_then(|reply| reply.get("result"))
+            .and_then(|result| result.get("protocolVersion"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(answered) = answered else {
+            return Err(Failure::Claim("the reply named no revision".to_owned()));
+        };
+        let parsed = answered
+            .parse::<ProtocolVersion>()
+            .map_err(|e| Failure::Claim(format!("the bridge answered {answered:?}: {e}")))?;
+        assert!(
+            crate::domain::handshake_defined_in(parsed),
+            "the bridge answered with {answered:?}, which has no initialize to answer"
+        );
+        assert_ne!(
+            parsed,
+            ProtocolVersion::V2026_07_28,
+            "the client was walked forward to the revision that removed the handshake"
+        );
+        Ok(())
+    }
+
+    /// A client offering an older revision gets that revision, not the newest.
+    ///
+    /// The bridge is the version-translating half of this project; answering a
+    /// `2024-11-05` client with a newer revision would be the one thing it
+    /// must never do.
+    #[tokio::test]
+    async fn an_older_client_keeps_its_revision() -> Result<(), Failure> {
+        let session = serve(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"p"}}}"#],
+            false,
+        )
+        .await?;
+
+        let answered = session
+            .written
+            .first()
+            .and_then(|reply| reply.get("result"))
+            .and_then(|result| result.get("protocolVersion"))
+            .and_then(Value::as_str);
+        assert_eq!(answered, Some("2024-11-05"), "{:?}", session.written);
+        Ok(())
+    }
+
+    /// The advertisement is the agreement, not the revision's full capability
+    /// list.
+    ///
+    /// `agreeing(&[Feature::Tools])` is an upstream that offered tools and
+    /// nothing else, so a reply advertising anything more is a bridge promising
+    /// to forward something its upstream never agreed to.
+    #[tokio::test]
+    async fn the_advertisement_is_the_upstreams_not_the_revisions() -> Result<(), Failure> {
+        let session = serve(&agreeing(&[Feature::Tools]), &[], true).await?;
+
+        let capabilities = session
+            .written
+            .first()
+            .and_then(|reply| reply.get("result"))
+            .and_then(|result| result.get("capabilities"));
+        let Some(capabilities) = capabilities else {
+            return Err(Failure::Claim("the reply advertised nothing".to_owned()));
+        };
+        assert!(
+            capabilities.get("tools").is_some(),
+            "the one agreed feature is missing: {capabilities}"
+        );
+        assert_eq!(
+            capabilities.get("resources"),
+            None,
+            "the bridge advertised a feature the upstream never agreed to: {capabilities}"
+        );
         Ok(())
     }
 
