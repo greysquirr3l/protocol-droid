@@ -18,7 +18,7 @@
 //! did not terminate is dropped rather than reported — and a second
 //! implementation would be a second set of those properties to get right. The
 //! request and reply *documents* in [`request`] are the exception, and they are
-//! documents rather than framing: the shapes [`reply`](crate::adapters::primary::stdio::reply)
+//! documents rather than framing: the shapes [`reply`](crate::domain::jsonrpc::reply)
 //! writes and this reads are one wire format with one serialiser, not two.
 //!
 //! # The two things that are easy to get wrong
@@ -55,7 +55,7 @@
 //! [`spec::ChildSpec`] for the program, [`child`] for the process, and
 //! [`client::StdioClient`] for the exchange — plus the request documents in
 //! [`request`], which are the client's mirror of the server's
-//! [`reply`](crate::adapters::primary::stdio::reply) module.
+//! [`reply`](crate::domain::jsonrpc::reply) module.
 
 pub mod bridge_peer;
 pub mod child;

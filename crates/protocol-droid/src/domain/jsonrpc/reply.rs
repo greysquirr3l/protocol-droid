@@ -118,7 +118,7 @@ fn read_back(result: &JsonObject) -> Result<Value, ReplyError> {
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::adapters::primary::stdio::reply::result_reply;
+/// use protocol_droid::domain::jsonrpc::reply::result_reply;
 /// use protocol_droid::domain::ir::JsonObject;
 /// use protocol_droid::domain::jsonrpc::WireId;
 ///
@@ -145,7 +145,7 @@ pub fn result_reply(id: &WireId<'_>, result: &JsonObject) -> Result<Value, Reply
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::adapters::primary::stdio::reply::error_reply;
+/// use protocol_droid::domain::jsonrpc::reply::error_reply;
 /// use protocol_droid::domain::ir::IrErrorCode;
 /// use protocol_droid::domain::jsonrpc::WireId;
 ///
@@ -169,7 +169,7 @@ pub fn error_reply(id: &WireId<'_>, code: IrErrorCode, message: &str) -> Value {
 /// # Examples
 ///
 /// ```
-/// use protocol_droid::adapters::primary::stdio::reply::unidentified_error_reply;
+/// use protocol_droid::domain::jsonrpc::reply::unidentified_error_reply;
 /// use protocol_droid::domain::ir::IrErrorCode;
 ///
 /// let document =

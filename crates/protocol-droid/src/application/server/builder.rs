@@ -180,6 +180,7 @@ impl Server {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(feature = "stdio")]
     pub async fn serve_stdio(
         self,
     ) -> Result<

@@ -21,11 +21,17 @@
 
 use std::sync::Arc;
 
+use crate::domain::TransportSpec;
 use crate::domain::feature::{Feature, FeatureProfile, Negotiation, resolve};
 use crate::domain::ir::JsonObject;
-use crate::domain::{CapabilitySet, NegotiatedSession, ProtocolVersion, TransportKind};
+use crate::domain::{
+    CapabilitySet, NegotiatedSession, ProtocolVersion, SupportedVersions, TransportKind,
+};
 
+mod connect;
 mod handshake;
+
+pub use connect::{ConnectError, default_versions, open};
 
 pub use handshake::{
     DISCOVER, HandshakeError, INITIALIZE, INITIALIZED, discover_session, handshake,
@@ -356,6 +362,64 @@ impl Client {
             profile: session.profile,
             transport,
         }
+    }
+
+    /// Connects to `spec`, negotiates, and returns a bound client.
+    ///
+    /// The one-call form, for the common case where the caller has a URL and no
+    /// opinion about revisions. The four steps it replaces — pick the adapter,
+    /// choose what to offer, run the handshake, bind the result — are all
+    /// decisions the crate can make from the spec, and a caller who has to make
+    /// them is doing the crate's work.
+    ///
+    /// Offers every revision this build has wire types for. Narrow that with
+    /// [`connect_to_speaking`](Self::connect_to_speaking) when the server is
+    /// known to be older, or when a build is expected to run against something
+    /// that answers a narrow offer badly.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError`] naming the stage that failed. A transport this build
+    /// has no adapter for is [`ConnectError::Unsupported`] rather than a
+    /// handshake error, so "this crate cannot speak that" is never reported as
+    /// "that server would not talk".
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use protocol_droid::application::client::Client;
+    /// # use protocol_droid::domain::TransportSpec;
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let spec = TransportSpec::new(
+    ///     protocol_droid::domain::TransportKind::StreamableHttp,
+    ///     "http://127.0.0.1:3000/mcp",
+    /// )?;
+    /// let client = Client::connect_to(&spec).await?;
+    /// let tools = client.list_tools().await?;
+    /// # let _ = tools;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn connect_to(spec: &TransportSpec) -> Result<Self, ConnectError> {
+        Ok(connect::open(spec, &default_versions()?).await?.0)
+    }
+
+    /// Connects to `spec`, offering exactly `versions`.
+    ///
+    /// [`connect_to`](Self::connect_to) for a caller who has an opinion about
+    /// what to offer. The narrowing is deliberate: offering a revision a server
+    /// does not speak gets the *next* one it does, so a set that excludes the
+    /// right revision is refused by servers that would otherwise have worked.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_to`](Self::connect_to), plus
+    /// [`ConnectError::Config`] when `versions` is empty.
+    pub async fn connect_to_speaking(
+        spec: &TransportSpec,
+        versions: &SupportedVersions,
+    ) -> Result<Self, ConnectError> {
+        Ok(connect::open(spec, versions).await?.0)
     }
 
     /// The revision this client and its server agreed on.

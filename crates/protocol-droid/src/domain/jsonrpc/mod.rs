@@ -28,6 +28,7 @@
 //! use, because those keep messages past the life of the read buffer.
 
 pub mod envelope;
+pub mod reply;
 
 pub use envelope::{
     DecodeError, Envelope, Frame, MessageKind, Method, Outcome, WireError, WireId, WireIdError,

@@ -4,7 +4,7 @@
 //!
 //! A stdio client and a stdio server speak the same wire format, and the
 //! server's half of it is
-//! [`reply`](crate::adapters::primary::stdio::reply). The two modules cannot be
+//! [`reply`](crate::domain::jsonrpc::reply). The two modules cannot be
 //! merged — one is a driving adapter, one is a driven one, and a client crate
 //! that cannot build a reply has no business knowing how — but they are one
 //! format with one shape, and this one is kept deliberately beside its
@@ -189,7 +189,7 @@ fn base_members() -> Map<String, Value> {
 /// digits.
 ///
 /// The four lines are deliberately identical to the ones in
-/// [`reply`](crate::adapters::primary::stdio::reply). They could be shared and
+/// [`reply`](crate::domain::jsonrpc::reply). They could be shared and
 /// are not, because the two modules sit on opposite sides of the hexagonal
 /// boundary and a shared helper between a primary and a secondary adapter would
 /// be a module with no owner. The duplication is small, it is documented on

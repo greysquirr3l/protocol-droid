@@ -71,12 +71,12 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::reply::{self, ReplyError};
 use super::{Diagnostics, StdioConfig, StdioError, StdioSink, StdioSource};
 use crate::application::jsonrpc::{BatchPolicy, SourceError};
 use crate::application::server::{Dispatcher, PeerSession, RequestContext};
 use crate::domain::RequestId;
 use crate::domain::ir::{IrErrorCode, JsonObject};
+use crate::domain::jsonrpc::reply::{self, ReplyError};
 use crate::domain::jsonrpc::{DecodeError, Envelope, Frame, WireId, decode};
 use crate::domain::session::CancellationToken;
 

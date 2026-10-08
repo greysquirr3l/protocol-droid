@@ -34,7 +34,6 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::adapters::primary::stdio::{ReplyError, reply};
 use crate::adapters::primary::transport::http::config::ServerConfig;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::router::{
@@ -51,6 +50,7 @@ use crate::application::session::IdSource;
 use crate::application::session::frame_sink::{FrameSink, SinkError};
 use crate::domain::feature::resolve;
 use crate::domain::ir::JsonObject;
+use crate::domain::jsonrpc::reply::{self, ReplyError};
 use crate::domain::jsonrpc::{Envelope, Frame, WireId, decode};
 use crate::domain::mcp::McpSessionId;
 use crate::domain::session::{CancellationToken, SessionId};

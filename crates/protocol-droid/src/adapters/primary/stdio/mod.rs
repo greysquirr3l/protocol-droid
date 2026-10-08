@@ -49,7 +49,6 @@
 //! the peer is mid-message or has gone away.
 
 mod diagnostics;
-pub mod reply;
 mod serve;
 mod sink;
 mod source;
@@ -57,8 +56,8 @@ mod source;
 #[cfg(test)]
 mod testing;
 
+pub use crate::domain::jsonrpc::reply::ReplyError;
 pub use diagnostics::{Diagnostics, DiagnosticsWriter};
-pub use reply::ReplyError;
 pub use serve::{ServeError, ServeLoop, ServeReport};
 pub use sink::StdioSink;
 pub use source::StdioSource;
