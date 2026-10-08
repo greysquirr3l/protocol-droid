@@ -12,9 +12,14 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-# No `[features]` table yet. The subcommand groups (bridge, probe and inspect,
-# record and replay, conformance) are added as optional features by T18-T21 so
-# that a `--no-default-features` build stays a lean core.
+[features]
+# T18. `bridge` is the subcommand that *serves*, so it needs both transports the
+# library can speak as a client: `stdio` for this process's own channel and `http`
+# for the upstream it forwards to. The `--check-result` probe deliberately stays
+# outside it — that path opens no socket, and a build that cannot open one should
+# still be able to answer "what would this bridge do with this reply".
+default = ["bridge"]
+bridge = ["protocol-droid/http", "protocol-droid/stdio", "protocol-droid/legacy-sse"]
 
 [[bin]]
 name = "protocol-droid"
@@ -30,6 +35,11 @@ serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
+# Not optional: `main` builds a runtime so the serving path can be `.await`ed
+# from a plain `fn main`. The lean-core property belongs to the *library*; a
+# binary that cannot drive its own subcommands is not a smaller binary, it is a
+# broken one.
+tokio = { workspace = true, features = ["io-std", "rt", "macros"] }
 protocol-droid = { workspace = true }
 
 [lints]

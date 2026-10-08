@@ -57,8 +57,23 @@ enum Command {
 /// Propagates whatever the subcommand reports. Argument errors are reported by
 /// `clap`, which exits the process with its own status code.
 fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
-        Command::Bridge(args) => bridge::run(&args),
+    // The runtime exists so the serving path can be `.await`ed from a plain
+    // `fn main`. It is built once and used for whichever subcommand ran; a
+    // subcommand with nothing to await never touches it.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?;
+    runtime.block_on(dispatch(Cli::parse().command))
+}
+
+/// Runs the subcommand the arguments selected.
+///
+/// # Errors
+///
+/// Propagates whatever the subcommand reports.
+async fn dispatch(command: Command) -> anyhow::Result<()> {
+    match command {
+        Command::Bridge(args) => bridge::run(&args).await,
     }
 }
 

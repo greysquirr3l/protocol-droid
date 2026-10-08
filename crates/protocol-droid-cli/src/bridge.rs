@@ -35,6 +35,8 @@
 
 use anyhow::Context as _;
 use clap::Args;
+#[cfg(feature = "bridge")]
+use protocol_droid::domain::SupportedVersions;
 use protocol_droid::domain::{
     DegradePolicy, ProtocolVersion, SpecError, TransportKind, TransportSpec,
 };
@@ -133,7 +135,7 @@ struct SpecFailure {
 /// `anyhow` error when the pair is well-formed but not servable by this build.
 /// Both name the argument or the transport at fault, so the caller knows which
 /// one to change.
-pub fn run(args: &BridgeArgs) -> anyhow::Result<()> {
+pub async fn run(args: &BridgeArgs) -> anyhow::Result<()> {
     if let Some(path) = args.check_result.as_deref() {
         return probe(args, path);
     }
@@ -151,7 +153,90 @@ pub fn run(args: &BridgeArgs) -> anyhow::Result<()> {
     if !plan.serve {
         anyhow::bail!("{}", plan.note);
     }
+
+    // A build without the `bridge` feature validated the pair and then has
+    // nowhere to send it. Saying so beats exiting zero having printed a plan
+    // that implies a bridge is now running.
+    #[cfg(feature = "bridge")]
+    {
+        serve(&upstream, args).await
+    }
+    #[cfg(not(feature = "bridge"))]
+    {
+        anyhow::bail!(
+            "this build validated the pair but has no serving path; rebuild with --features bridge"
+        )
+    }
+}
+
+/// Opens the upstream and runs the bridge until the downstream stream ends.
+///
+/// Split out so the only thing behind the `bridge` feature gate is the part
+/// that needs a transport. The probe above stays reachable in a lean build.
+///
+/// # Errors
+///
+/// Whatever the upstream raised opening or negotiating, and
+/// [`LoopError`](protocol_droid::application::bridge::LoopError) for a
+/// downstream pipe that fails mid-run.
+#[cfg(feature = "bridge")]
+async fn serve(upstream: &TransportSpec, args: &BridgeArgs) -> anyhow::Result<()> {
+    let policy = if args.allow_downgrade {
+        DegradePolicy::permissive()
+    } else {
+        DegradePolicy::default()
+    };
+
+    let report = crate::serve::run(upstream, &SupportedVersions::all()?, policy).await?;
+    let summary = Summary {
+        handshaken: report.handshaken,
+        forwarded: report.forwarded,
+        notified: report.notified,
+        failed: report.failed,
+    };
+
+    // Two sinks, one value: the JSON an agent reads and the line a person
+    // watches are the same serialisation, so they cannot drift.
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        eprintln!("{summary}");
+    }
     Ok(())
+}
+
+#[cfg(feature = "bridge")]
+/// What a finished run moved.
+///
+/// The counters are the loop's own, named. "Forwarded nothing and failed
+/// nothing" is otherwise indistinguishable from "no client ever connected",
+/// which is the one thing an operator watching a bridge most needs told.
+#[derive(Debug, Serialize)]
+struct Summary {
+    /// Whether a client completed a handshake.
+    handshaken: bool,
+    /// Envelopes forwarded to the upstream peer.
+    forwarded: u64,
+    /// Notifications forwarded upstream.
+    notified: u64,
+    /// Frames refused, each answered to the client.
+    failed: u64,
+}
+
+#[cfg(feature = "bridge")]
+impl std::fmt::Display for Summary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let client = if self.handshaken {
+            "a client connected"
+        } else {
+            "no client ever connected"
+        };
+        write!(
+            formatter,
+            "{client}; forwarded {}, notified {}, failed {}",
+            self.forwarded, self.notified, self.failed
+        )
+    }
 }
 
 /// Runs `--check-result`, and fails the command if the bridge would refuse.
@@ -195,16 +280,25 @@ fn parse(spec: &str, field: &'static str) -> Result<TransportSpec, SpecFailure> 
 /// Whether this build can serve a transport on the *upstream* side.
 ///
 /// An upstream is the side the bridge *calls*, so it needs a `BridgePeer`
-/// adapter. All three of `http`, `legacy-sse` and `stdio` have one.
+/// adapter that this build can also open a session with. `http` and
+/// `legacy-sse` have both. `stdio` has a client adapter but no way to *name* a
+/// program to run — `--upstream` carries `kind:target`, which has no room for a
+/// command line — and `stateless-http` has no client adapter at all.
 ///
-/// This was once `kind != TransportKind::Stdio`, on the grounds that stdio had
-/// a *server* adapter but no *client* adapter. That was true once and stopped
-/// being true twice: `StdioClient` shipped in T13, and `StdioPeer` now wraps it.
-/// A check that refuses a pairing that works is worse than no check at all,
-/// because it reports a limitation that does not exist and sends the user
-/// looking for one instead of running the thing.
-const fn upstream_supported(_kind: TransportKind) -> bool {
-    true
+/// This check once read `kind != TransportKind::Stdio`, refusing stdio on the
+/// grounds that it had a server adapter but no client one. That was true once
+/// and stopped being true twice, but flipping it to "everything is supported"
+/// was the wrong repair: it makes the plan promise a pairing that
+/// [`serve::connect`] then refuses, and a plan that says yes and fails is worse
+/// than a plan that says no.
+///
+/// The rule this follows: a predicate answers what the code below it can
+/// actually do. It is not there to be reassuring.
+const fn upstream_supported(kind: TransportKind) -> bool {
+    matches!(
+        kind,
+        TransportKind::StreamableHttp | TransportKind::LegacySse
+    )
 }
 
 /// Whether this build can back the bridge's *listen* side with a frame source.
@@ -297,6 +391,15 @@ mod tests {
         }
     }
 
+    /// Parses a literal spec, propagating a failure rather than asserting.
+    ///
+    /// These tests exercise `plan`, which takes specs the CLI already parsed. A
+    /// literal that stopped parsing would be a bug in the grammar, and this
+    /// reports it as one instead of hiding it behind a panic.
+    fn spec(literal: &str) -> Result<TransportSpec, TestError> {
+        Ok(TransportSpec::from_str(literal)?)
+    }
+
     /// Both specs parse and the plan reports both ends.
     #[test]
     fn a_well_formed_pair_produces_a_plan() -> Result<(), TestError> {
@@ -313,21 +416,27 @@ mod tests {
 
     /// A `stdio` upstream is served, because there is a `StdioPeer` for it.
     ///
-    /// This assertion once read `assert!(!plan.serve)` and pinned the claim
-    /// that stdio had no client adapter. That claim stopped being true when
-    /// `StdioClient` shipped in T13, and the test kept it alive afterwards —
-    /// which is the argument for auditing tests that pin a stated limitation,
-    /// not just the code that states it.
+    /// This assertion once read `assert!(plan.serve)` and pinned the claim that
+    /// stdio had no client adapter. That claim stopped being true when
+    /// `StdioClient` shipped in T13, so the test flipped — and then the bridge
+    /// grew a serving path, which exposed that the *adapter* was never the
+    /// blocker.
+    ///
+    /// It is the grammar. `--upstream` carries `kind:target`, and there is no
+    /// room in that for a program and its arguments, so a stdio upstream has
+    /// nothing to spawn. Supporting one means changing the argument shape, not
+    /// relaxing this check.
     #[test]
-    fn a_stdio_upstream_is_served() -> Result<(), TestError> {
+    fn a_stdio_upstream_is_refused_for_its_grammar() -> Result<(), TestError> {
         let listen = parse("stdio:./bridge", "--listen")?;
         let upstream = parse("stdio:./server", "--upstream")?;
         let plan = plan(&listen, &upstream);
 
-        assert!(plan.serve, "a stdio upstream was refused");
+        assert!(!plan.serve, "a stdio upstream has no program to spawn");
         assert!(
-            plan.upstream.target.contains("./server"),
-            "the plan lost the target it names"
+            plan.note.contains("client adapter"),
+            "the note blames the wrong thing: {}",
+            plan.note
         );
         Ok(())
     }
@@ -365,9 +474,31 @@ mod tests {
     ///
     /// `stdio` listen, because `StdioSource` is the only pull frame source in
     /// the crate, and an `http` upstream, because `HttpClient` has a peer.
+    ///
+    /// This asserts on the plan and not on `run`, and the split is deliberate:
+    /// `run` now opens the upstream, so a test through it would dial a real
+    /// address to check a pure predicate. `serve` has its own tests; this one
+    /// answers the question the predicate answers.
     #[test]
-    fn a_servable_pair_succeeds() -> Result<(), TestError> {
-        run(&args("stdio:./bridge", "http://backend:3000/mcp"))?;
+    fn a_servable_pair_is_servable() -> Result<(), TestError> {
+        assert!(plan(&spec("stdio:./bridge")?, &spec("http://backend:3000/mcp")?).serve);
+        Ok(())
+    }
+
+    /// An upstream with no client adapter is refused before any socket opens.
+    ///
+    /// The refusal has to happen here rather than in `serve::connect`: a plan
+    /// that says yes and then fails is worse than a plan that says no, because
+    /// the operator has already started reading the run's output.
+    #[test]
+    fn an_unsupported_upstream_is_not_servable() -> Result<(), TestError> {
+        assert!(
+            !plan(
+                &spec("stdio:./bridge")?,
+                &spec("http-stateless://backend:3000/mcp")?
+            )
+            .serve
+        );
         Ok(())
     }
 
@@ -395,16 +526,24 @@ mod tests {
 
     /// The same reason, from the outside: the command exits non-zero rather
     /// than printing a plan and claiming success.
-    #[test]
-    fn an_unservable_pair_exits_non_zero() {
-        assert!(run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp")).is_err());
+    #[tokio::test]
+    async fn an_unservable_pair_exits_non_zero() {
+        assert!(
+            run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp"))
+                .await
+                .is_err()
+        );
     }
 
     /// A bad spec fails before anything is printed, so an agent parsing stdout
     /// never sees a partial plan.
-    #[test]
-    fn a_bad_spec_fails_before_reporting() {
-        assert!(run(&args("nonsense", "http://backend:3000/mcp")).is_err());
+    #[tokio::test]
+    async fn a_bad_spec_fails_before_reporting() {
+        assert!(
+            run(&args("nonsense", "http://backend:3000/mcp"))
+                .await
+                .is_err()
+        );
     }
 
     /// `Display` is the human rendering of the same value `--json` serialises,
