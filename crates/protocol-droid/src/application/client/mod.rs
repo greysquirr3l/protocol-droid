@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use crate::domain::TransportSpec;
-use crate::domain::feature::{Feature, FeatureProfile, Negotiation, resolve};
+use crate::domain::feature::{Feature, FeatureProfile, Negotiation};
 use crate::domain::ir::JsonObject;
 use crate::domain::{
     CapabilitySet, NegotiatedSession, ProtocolVersion, SupportedVersions, TransportKind,
@@ -273,8 +273,7 @@ impl ClientConfig {
 /// ```
 #[derive(Clone)]
 pub struct Client {
-    negotiated: ProtocolVersion,
-    profile: FeatureProfile,
+    session: Arc<NegotiatedSession>,
     transport: Arc<dyn ClientTransport>,
 }
 
@@ -283,10 +282,15 @@ impl core::fmt::Debug for Client {
     ///
     /// For the same reason `PeerSession` does: a transport is a socket and a
     /// vtable pointer, and neither survives being printed at a call site.
+    ///
+    /// The session is printed as its version and feature count rather than in
+    /// full because it carries both peers' `PeerInfo`, which is caller-supplied
+    /// text and does not belong in a log line nobody asked for.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Client")
-            .field("negotiated", &self.negotiated)
-            .field("feature_count", &self.profile.len())
+            .field("negotiated", &self.session.version)
+            .field("transport", &self.session.transport)
+            .field("feature_count", &self.session.profile.len())
             .finish_non_exhaustive()
     }
 }
@@ -310,8 +314,12 @@ impl Client {
     #[must_use]
     pub fn connect(negotiation: Negotiation, transport: Arc<dyn ClientTransport>) -> Self {
         Self {
-            negotiated: negotiation.version,
-            profile: resolve(negotiation),
+            session: Arc::new(NegotiatedSession::new(
+                negotiation.version,
+                negotiation.transport,
+                negotiation.client_caps,
+                negotiation.server_caps,
+            )),
             transport,
         }
     }
@@ -358,8 +366,7 @@ impl Client {
     #[must_use]
     pub fn from_session(session: &NegotiatedSession, transport: Arc<dyn ClientTransport>) -> Self {
         Self {
-            negotiated: session.version,
-            profile: session.profile,
+            session: Arc::new(session.clone()),
             transport,
         }
     }
@@ -424,20 +431,41 @@ impl Client {
 
     /// The revision this client and its server agreed on.
     #[must_use]
-    pub const fn negotiated(&self) -> ProtocolVersion {
-        self.negotiated
+    pub fn negotiated(&self) -> ProtocolVersion {
+        self.session.version
     }
 
     /// The profile that revision produced.
     #[must_use]
-    pub const fn profile(&self) -> FeatureProfile {
-        self.profile
+    pub fn profile(&self) -> FeatureProfile {
+        self.session.profile
+    }
+
+    /// The negotiated session behind this client.
+    ///
+    /// Everything the handshake agreed on, including the parts a caller
+    /// usually wants for reporting rather than for gating: what the server
+    /// called itself and which revision it answered with, what each side
+    /// advertised, which transport this is, and whether the profile is
+    /// recomputed per request with nothing retained.
+    ///
+    /// The accessors above answer the two questions a caller asks before every
+    /// call. This answers the one asked once, usually by a log line or a
+    /// `/healthz` body — and it answers it from the session rather than from a
+    /// second copy of the parts a caller remembered to keep.
+    ///
+    /// Not `const`: the session is behind an `Arc`, and reading through one is
+    /// not a constant expression. A caller who needs the version in a `const`
+    /// should negotiate in a function it can run, not reach for one here.
+    #[must_use]
+    pub fn session(&self) -> &NegotiatedSession {
+        &self.session
     }
 
     /// Whether `feature` may be used on this session.
     #[must_use]
     pub fn supports(&self, feature: Feature) -> bool {
-        self.profile.allows(feature)
+        self.session.profile.allows(feature)
     }
 
     /// Lists the server's tools.
@@ -511,12 +539,12 @@ impl Client {
 
     /// The gate, in one place, called by every typed method.
     fn require(&self, feature: Feature) -> Result<(), ClientError> {
-        if self.profile.allows(feature) {
+        if self.session.profile.allows(feature) {
             return Ok(());
         }
         Err(ClientError::FeatureUnavailable {
             feature,
-            negotiated: self.negotiated,
+            negotiated: self.session.version,
         })
     }
 
@@ -838,5 +866,85 @@ mod tests {
             "the client's profile must be the session's, not a second derivation of it"
         );
         assert!(client.supports(Feature::Resources));
+    }
+
+    /// The half of the handshake a caller reports rather than gates on.
+    ///
+    /// `a_client_from_a_session_keeps_the_sessions_profile` covers the two
+    /// fields the typed methods read, which is why `Client` was able to keep
+    /// only those two and pass. This one covers the five the profile says
+    /// nothing about, and it is the test that would have caught a client
+    /// which answered "which transport is this?" by guessing from the URL.
+    ///
+    /// Deliberately built on `with_server_info` rather than on the bare
+    /// constructor: an `Arc::new(NegotiatedSession::new(..))` would satisfy
+    /// every version and capability assertion here while silently dropping the
+    /// peer names, and the symptom a consumer hits is a log line that says
+    /// "server: unknown" against a server that announced itself twice.
+    #[test]
+    fn a_client_reports_what_the_handshake_agreed() {
+        let version = ProtocolVersion::V2025_06_18;
+        let caps = CapabilitySet::all_for(version);
+        let session =
+            crate::domain::NegotiatedSession::new(version, TransportKind::LegacySse, caps, caps)
+                .with_client_info(crate::domain::PeerInfo::new("droid-cli", "0.4.1"))
+                .with_server_info(crate::domain::PeerInfo::new("weather", "2.11.0"));
+
+        let client = Client::from_session(&session, Arc::new(Recorder::dead()));
+        let seen = client.session();
+
+        assert_eq!(seen.version, version);
+        assert_eq!(
+            seen.transport,
+            TransportKind::LegacySse,
+            "the transport comes off the session, not off the URL the caller passed"
+        );
+        assert_eq!(seen.client_caps, caps);
+        assert_eq!(seen.server_caps, caps);
+        assert_eq!(
+            seen.server_info.as_ref().map(|i| i.name.as_str()),
+            Some("weather"),
+            "a peer that announced itself must still be able to say so"
+        );
+        assert_eq!(
+            seen.client_info.as_ref().map(|i| i.version.as_str()),
+            Some("0.4.1"),
+            "our own identity is as reportable as the server's"
+        );
+        assert!(
+            !seen.is_stateless,
+            "a 2025-06-18 session retains state; only 2026-07-28 does not"
+        );
+        assert_eq!(client.profile(), session.profile);
+    }
+
+    /// A connection built from a spec knows which transport it dialled.
+    ///
+    /// The narrow assertion, on its own: [`connect`](Client::connect) takes a
+    /// bare [`Negotiation`] where the caller supplies the four inputs by hand,
+    /// and it is the one path that can record a transport the caller got
+    /// wrong. Asserting it here means the two constructors are both covered
+    /// for the field neither used to keep.
+    #[test]
+    fn a_client_built_by_hand_keeps_the_transport_it_was_given() {
+        let version = ProtocolVersion::V2025_03_26;
+        let caps = CapabilitySet::all_for(version);
+        let client = Client::connect(
+            crate::domain::Negotiation {
+                version,
+                client_caps: caps,
+                server_caps: caps,
+                transport: TransportKind::Stdio,
+            },
+            Arc::new(Recorder::dead()),
+        );
+
+        assert_eq!(client.session().transport, TransportKind::Stdio);
+        assert_eq!(client.session().client_caps, caps);
+        assert_eq!(
+            client.session().server_info,
+            None,
+            "a bare Negotiation carries no peer names, and inventing them is worse than none"
+        );
     }
 }
