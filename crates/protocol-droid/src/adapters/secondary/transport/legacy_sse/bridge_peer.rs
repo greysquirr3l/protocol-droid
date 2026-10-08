@@ -154,6 +154,15 @@ impl BridgePeer for LegacySsePeer {
     fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// The frames the stream carried while another call was in flight.
+    ///
+    /// Overrides the trait's empty answer because `send` walks past every frame
+    /// that is not its own answer and holds it here rather than discarding it —
+    /// see [`send`](Self::send).
+    fn take_pending(&self) -> Vec<Map<String, Value>> {
+        Self::take_pending(self)
+    }
 }
 
 /// Serialises an envelope for the POST body.

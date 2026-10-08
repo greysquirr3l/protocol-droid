@@ -148,6 +148,14 @@ where
             Ok(())
         })
     }
+
+    /// The frames the child pushed while another call was in flight.
+    ///
+    /// Overrides the trait's empty answer because a `stdio` child is free to
+    /// write at any moment and this is where those writes land.
+    fn take_pending(&self) -> Vec<Map<String, Value>> {
+        Self::take_pending(self)
+    }
 }
 
 /// Reads one frame the child wrote, if it is a JSON-RPC message at all.

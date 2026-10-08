@@ -151,6 +151,33 @@ pub trait BridgePeer: Send + Sync {
     /// A transport failure on shutdown. Nothing is retried: a peer that has
     /// already been told to stop is not going to change its mind.
     fn close(&self) -> SendFuture<'_, Result<(), BridgeError>>;
+
+    /// Frames the peer received that are the answer to nothing the bridge asked.
+    ///
+    /// A server pushes. `notifications/tools/list_changed`,
+    /// `notifications/message`, `notifications/progress` and the rest arrive on
+    /// a stream the bridge is already reading, with no request of its own behind
+    /// them, and they belong to the client as much as a reply does — a client
+    /// whose server registers a tool mid-session learns about it through this,
+    /// or not at all. A bridge that forwards requests and drops these does not
+    /// translate versions; it silently deletes half the protocol.
+    ///
+    /// Draining rather than subscribing, because the peers that hold frames
+    /// already hold them in the read loop they were written for and a second
+    /// consumer would have to fight that loop for the socket. `StdioPeer` and
+    /// `LegacySsePeer` are the two that have anywhere to put them.
+    ///
+    /// ## The default is a true answer, not a shrug
+    ///
+    /// Empty is what a peer that only ever hears the answer to its own request
+    /// has, and [`HttpClient`](crate::adapters::secondary::transport::http::HttpClient)
+    /// is exactly that: it opens no standing stream, so a frame the server
+    /// volunteers has nowhere to arrive. An adapter that *does* buffer must
+    /// override this, and the symptom of forgetting is a client watching a tool
+    /// appear upstream and never hearing about it.
+    fn take_pending(&self) -> Vec<Map<String, Value>> {
+        Vec::new()
+    }
 }
 
 /// A shared peer.
@@ -285,6 +312,18 @@ impl<U: BridgePeer, C: ToolResultCodec> Bridge<U, C> {
     #[must_use]
     pub const fn upstream_version(&self) -> ProtocolVersion {
         self.agreement.upstream().version
+    }
+
+    /// The peer this bridge forwards through.
+    ///
+    /// The owner of the upstream connection, not a handle opened for
+    /// convenience: a bridge that could talk to the server by a second path
+    /// would have two owners of one session. Exposed because the frames a peer
+    /// receives unasked for belong to it and nobody else — see
+    /// [`BridgePeer::take_pending`].
+    #[must_use]
+    pub const fn upstream(&self) -> &U {
+        &self.upstream
     }
 
     /// Forwards one envelope and brings the answer back.

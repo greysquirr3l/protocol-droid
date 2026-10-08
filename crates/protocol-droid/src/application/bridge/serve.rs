@@ -72,6 +72,16 @@ pub struct LoopReport {
     pub forwarded: u64,
     /// Envelopes the upstream peer was told about and correctly sent nothing back for.
     pub notified: u64,
+    /// Envelopes the upstream peer volunteered and the client was told about.
+    ///
+    /// Separate from [`forwarded`](Self::forwarded) and
+    /// [`notified`](Self::notified) because they mean opposite things:
+    /// `forwarded` counts what the bridge carried up and brought back,
+    /// `notified` counts what it carried up and correctly got nothing for, and
+    /// this counts what came *down* with no request behind it at all. A run
+    /// that reports `relayed: 0` against a live session is a bridge that is
+    /// losing half the protocol — the half that is not a request.
+    pub relayed: u64,
     /// Envelopes the bridge refused or could not read, each answered to the client.
     pub failed: u64,
     /// Whether a client completed a handshake.
@@ -353,8 +363,49 @@ where
         let mut report = LoopReport::default();
         while let Some(frame) = self.source.next_frame().await? {
             self.step(&frame, &mut report).await?;
+            self.drain(&mut report).await?;
         }
+        // The client stopped sending, which says nothing about whether the
+        // server had finished pushing. Whatever arrived between the last
+        // forward and the end of the stream still belongs to the client.
+        self.drain(&mut report).await?;
         Ok(report)
+    }
+
+    /// Hands the client whatever the upstream pushed on its own.
+    ///
+    /// After each frame rather than alongside it, because the loop reads the
+    /// client on one stream and the peer holds its own — there is no second
+    /// source to select over. The consequence is stated rather than hidden: a
+    /// notification that arrives while the client says nothing waits for the
+    /// client's next frame. Pushing immediately would need the peer's read
+    /// loop to be interruptible, and the two peers that buffer both hold a
+    /// lock across a request for exactly the reason this cannot borrow one
+    /// mid-call.
+    async fn drain(&self, report: &mut LoopReport) -> Result<(), LoopError> {
+        let Some(peer) = self.peer() else {
+            return Ok(());
+        };
+        for envelope in peer.take_pending() {
+            self.write(&Value::Object(envelope)).await?;
+            report.relayed = report.relayed.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// The upstream peer, once a client has connected to it.
+    ///
+    /// Through the live [`Bridge`] and not the wiring, which is where the peer
+    /// sits before a handshake completes. That is a deliberate refusal to
+    /// deliver early rather than a convenience: the only drain that runs before
+    /// `establish` is the one after a frame that was *refused* for arriving
+    /// pre-handshake, and handing that client a server notification would push
+    /// a frame at it over a session it has not negotiated — the mirror of the
+    /// rule the loop already applies to requests. A notification the server
+    /// sent before any client arrived is held, not discarded, and goes out as
+    /// soon as one has.
+    fn peer(&self) -> Option<&U> {
+        self.live.as_ref().map(|bridge| bridge.upstream())
     }
 
     /// Routes one inbound frame to whatever shape it turned out to have.
@@ -655,6 +706,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct Upstream {
         seen: Arc<Mutex<Vec<Map<String, Value>>>>,
+        pending: Arc<Mutex<VecDeque<Map<String, Value>>>>,
+        push_on_send: Option<Map<String, Value>>,
     }
 
     impl Upstream {
@@ -664,9 +717,56 @@ mod tests {
             (
                 Self {
                     seen: Arc::clone(&seen),
+                    pending: Arc::new(Mutex::new(VecDeque::new())),
+                    push_on_send: None,
                 },
                 Seen(seen),
             )
+        }
+
+        /// A handle on what this upstream was sent.
+        ///
+        /// The loop moves the peer into the live [`Bridge`] and the test still
+        /// needs to read the recording afterwards, so the handle has to outlive
+        /// the value it came from.
+        fn seen(&self) -> Seen {
+            Seen(Arc::clone(&self.seen))
+        }
+
+        /// An upstream already holding `frame`, before the loop starts.
+        ///
+        /// For the frames a server volunteers rather than answers. Holding one
+        /// before the client has spoken anything is the case only the
+        /// pre-handshake half of the drain can reach, and it is why the drain
+        /// runs after the handshake frame rather than only once a request has
+        /// been forwarded.
+        fn holding(frame: &Map<String, Value>) -> Result<Self, Failure> {
+            let (upstream, _) = Self::recording();
+            upstream.hold(frame)?;
+            Ok(upstream)
+        }
+
+        /// An upstream that holds `frame` every time it answers something.
+        ///
+        /// The mirror image: the frame is pending only once a request has
+        /// already moved the peer out of the wiring and into the live
+        /// [`Bridge`], so draining it proves the loop can still find the peer
+        /// after the handshake moved it.
+        fn pushing_on_send(frame: Map<String, Value>) -> Self {
+            let (upstream, _) = Self::recording();
+            Self {
+                push_on_send: Some(frame),
+                ..upstream
+            }
+        }
+
+        /// Holds `frame` until something drains it.
+        fn hold(&self, frame: &Map<String, Value>) -> Result<(), Failure> {
+            let Ok(mut pending) = self.pending.lock() else {
+                return Err(Failure::Poisoned);
+            };
+            pending.push_back(frame.clone());
+            Ok(())
         }
     }
 
@@ -702,6 +802,15 @@ mod tests {
                     return Err(BridgeError::Close("upstream poisoned".to_owned()));
                 };
                 seen.push(envelope);
+                drop(seen);
+                // A server pushing mid-call is why the queue exists: the frame
+                // is held *while* this call is in flight, which is exactly
+                // where the real peers hold theirs.
+                if let Some(frame) = self.push_on_send.clone()
+                    && let Ok(mut pending) = self.pending.lock()
+                {
+                    pending.push_back(frame);
+                }
                 let mut reply = Map::new();
                 reply.insert("jsonrpc".into(), json!("2.0"));
                 reply.insert("id".into(), id);
@@ -723,12 +832,26 @@ mod tests {
         fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
             Box::pin(async { Ok(()) })
         }
+
+        /// The frames the server volunteered, which the trait default drops.
+        ///
+        /// Without this the double would agree with the default, and a test
+        /// would pass against a loop that never drained anything — proving
+        /// only that a queue nobody reads is a queue nobody reads.
+        fn take_pending(&self) -> Vec<Map<String, Value>> {
+            let Ok(mut pending) = self.pending.lock() else {
+                return Vec::new();
+            };
+            pending.drain(..).collect()
+        }
     }
 
     /// Hands over a fixed list of frames, then reports end-of-stream.
     #[derive(Default)]
     struct Scripted {
         frames: Mutex<VecDeque<String>>,
+        witness: Option<Arc<Mutex<Vec<Vec<String>>>>>,
+        sink: Option<Arc<Mutex<Vec<String>>>>,
     }
 
     impl Scripted {
@@ -739,7 +862,48 @@ mod tests {
                 .collect();
             Self {
                 frames: Mutex::new(queue),
+                witness: None,
+                sink: None,
             }
+        }
+
+        /// [`of`](Self::of), recording what the client had been sent each time
+        /// it asked for another frame.
+        ///
+        /// The point of the witness is timing. A loop that drains at the very
+        /// end and one that drains after every frame deliver the same frames in
+        /// the same order, so any assertion about the final sink contents calls
+        /// them identical — and a bridge that only drained at the end would
+        /// relay nothing at all for a client that never closes its stream,
+        /// which is every client that stays connected. Reading the sink at the
+        /// moment the client asks its next question is the only way to tell
+        /// them apart.
+        fn witnessed<S: AsRef<str>>(
+            frames: &[S],
+            sink: &Arc<Mutex<Vec<String>>>,
+        ) -> (Self, Arc<Mutex<Vec<Vec<String>>>>) {
+            let witness = Arc::new(Mutex::new(Vec::new()));
+            let mut scripted = Self::of(frames);
+            scripted.witness = Some(Arc::clone(&witness));
+            scripted.sink = Some(Arc::clone(sink));
+            (scripted, witness)
+        }
+
+        /// Records what the client had been sent, as of right now.
+        ///
+        /// Its own function so the guards are dropped before it returns —
+        /// `next_frame` hands back a `Ready`, not a `Result`, so it cannot use
+        /// `?` and must not hold two locks across the record.
+        fn mark(
+            witness: &Mutex<Vec<Vec<String>>>,
+            sink: &Mutex<Vec<String>>,
+        ) -> Result<(), SourceError> {
+            let written = sink.lock().map_err(|_| SourceError::Transport)?.clone();
+            witness
+                .lock()
+                .map_err(|_| SourceError::Transport)?
+                .push(written);
+            Ok(())
         }
     }
 
@@ -754,7 +918,15 @@ mod tests {
                 .lock()
                 .map(|mut frames| frames.pop_front())
                 .map_err(|_| SourceError::Transport);
-            std::future::ready(next)
+            // After the guard above, so a poisoned witness never leaves the
+            // sink locked. A failure to record is treated as a failure to read:
+            // a test that cannot witness the wire cannot be trusted when it
+            // asserts what the wire carried.
+            let witnessed = match (&self.witness, &self.sink) {
+                (Some(witness), Some(sink)) => Self::mark(witness, sink),
+                _ => Ok(()),
+            };
+            std::future::ready(witnessed.and(next))
         }
     }
 
@@ -837,14 +1009,52 @@ mod tests {
         frames: &[&str],
         handshake: bool,
     ) -> Result<Session, Failure> {
+        let (upstream, _) = Upstream::recording();
+        serve_with(agreement, frames, handshake, upstream).await
+    }
+
+    /// [`serve`], with the upstream supplied rather than built.
+    ///
+    /// The peer a test needs to reason about is not always a plain recorder: a
+    /// test about frames the server pushes needs one that holds them, and
+    /// building that into `serve` would mean every test opting out of a
+    /// default it has no use for.
+    async fn serve_with(
+        agreement: &Agreement,
+        frames: &[&str],
+        handshake: bool,
+        upstream: Upstream,
+    ) -> Result<Session, Failure> {
+        serve_witnessed(agreement, frames, handshake, upstream)
+            .await
+            .map(|(session, _)| session)
+    }
+
+    /// [`serve_with`], also handing back what the client had been sent each
+    /// time it asked for another frame.
+    ///
+    /// The witness is a record of *timing*, not of contents: it says what was
+    /// already on the wire each time the client came back for more. A test
+    /// about what a bridge delivers should read the session; a test about
+    /// *when* should read this, because only it can tell a loop that relays as
+    /// it goes from one that relays everything at the end — the two produce
+    /// identical sink contents and differ in every way a client would notice.
+    async fn serve_witnessed(
+        agreement: &Agreement,
+        frames: &[&str],
+        handshake: bool,
+        upstream: Upstream,
+    ) -> Result<(Session, Arc<Mutex<Vec<Vec<String>>>>), Failure> {
         let recording: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let (upstream, seen) = Upstream::recording();
+        let seen = upstream.seen();
 
         let mut script = Vec::new();
         if handshake {
             script.push(handshake_frame(agreement.upstream().version));
         }
         script.extend(frames.iter().map(|frame| (*frame).to_owned()));
+
+        let (source, witness) = Scripted::witnessed(&script, &recording);
 
         let mut loop_ = BridgeLoop::new(
             Wiring::new(
@@ -854,7 +1064,7 @@ mod tests {
                 crate::application::bridge::content::doubles::Counting::reading_nothing(),
             ),
             DownstreamConfig::new("bridge", "0.1.0", TransportKind::Stdio)?,
-            Scripted::of(&script),
+            source,
             Written {
                 frames: recording.clone(),
             },
@@ -866,11 +1076,12 @@ mod tests {
                 "the loop never completed a handshake".to_owned(),
             ));
         }
-        Ok(Session {
+        let session = Session {
             report,
             written: written(&recording)?,
             seen,
-        })
+        };
+        Ok((session, witness))
     }
 
     /// Runs one loop: a handshake, then `frames`.
@@ -922,6 +1133,149 @@ mod tests {
         assert_eq!(report.forwarded, 0);
         assert!(replies.is_empty(), "a notification produced a frame");
         Ok(())
+    }
+
+    /// A frame the server volunteered reaches the client *while it is still
+    /// connected*.
+    ///
+    /// The sharp test here, and the one that took a second attempt to write.
+    /// Asserting that the notification is in the sink at the end is not enough:
+    /// a loop that drained only after the client's stream ended would pass that,
+    /// and would relay nothing at all for a client that never closes — which is
+    /// every client that stays connected, and the only kind a bridge is run
+    /// for. So this reads the sink at the moment the client asks its *next*
+    /// question, and requires the notification to be there already.
+    ///
+    /// `notifications/tools/list_changed` because that is the one a client acts
+    /// on: a tool registered upstream mid-session is invisible to it otherwise,
+    /// which is half of what the project calls DYNAMIC.
+    #[tokio::test]
+    async fn a_frame_pushed_before_any_forward_reaches_a_still_connected_client()
+    -> Result<(), Failure> {
+        let (session, witness) = serve_witnessed(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#],
+            true,
+            Upstream::holding(&pushed_frame("notifications/tools/list_changed")?)?,
+        )
+        .await?;
+
+        assert_eq!(session.report.relayed, 1);
+        assert_eq!(session.report.forwarded, 1);
+        assert_eq!(
+            relayed_method(&session.written)?,
+            Some("notifications/tools/list_changed"),
+            "the frame that reached the client was not the one the server pushed, and one \
+             that was not pushed is not there at all"
+        );
+        // The client's second frame is the `ping`. By the time it asked for it,
+        // the notification had to be on the wire — not queued behind the end of
+        // the stream.
+        let marks = witness.lock().map_err(|_| Failure::Poisoned)?.clone();
+        let before_ping = marks
+            .iter()
+            .rev()
+            .find(|mark| !mark.is_empty())
+            .ok_or_else(|| {
+                Failure::Claim("the client was never sent anything at all".to_owned())
+            })?;
+        assert!(
+            before_ping
+                .iter()
+                .any(|frame| frame.contains("notifications/tools/list_changed")),
+            "the notification was still queued when the client asked its next question, so a \
+             client that stayed connected would never have seen it: the loop relays only at \
+             the end of the stream"
+        );
+        Ok(())
+    }
+
+    /// The same frame still arrives once the handshake has moved the peer.
+    ///
+    /// [`establish`](crate::application::bridge::BridgeLoop) takes the wiring's
+    /// peer and drops it into the live [`Bridge`], so a drain that consulted
+    /// only the wiring would look for a peer that is no longer there and relay
+    /// nothing. This is the test for that: the notification is held during the
+    /// very forward that causes the move.
+    #[tokio::test]
+    async fn a_frame_pushed_during_a_forward_reaches_the_client() -> Result<(), Failure> {
+        let session = serve_with(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#],
+            true,
+            Upstream::pushing_on_send(pushed_frame("notifications/message")?),
+        )
+        .await?;
+
+        assert_eq!(
+            session.report.relayed, 1,
+            "the peer had moved into the live bridge and the drain could not find it there"
+        );
+        assert_eq!(session.report.forwarded, 1);
+        assert_eq!(
+            relayed_method(&session.written)?,
+            Some("notifications/message"),
+            "the frame that arrived was not the one the server volunteered"
+        );
+        Ok(())
+    }
+
+    /// A server's notification reaches only a client that has handshaken.
+    ///
+    /// The first frame here is a request, which the loop refuses because no
+    /// handshake has completed — and the server has a notification waiting the
+    /// whole time. Delivering it would push a frame at a client over a session
+    /// it has not negotiated, the mirror of the rule the loop already applies
+    /// to requests in the other direction. It is held rather than discarded, and
+    /// a later drain would still send it.
+    #[tokio::test]
+    async fn a_frame_pushed_before_any_handshake_waits_for_one() -> Result<(), Failure> {
+        let session = serve_with(
+            &agreeing(&[Feature::Tools]),
+            &[r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#],
+            false,
+            Upstream::holding(&pushed_frame("notifications/tools/list_changed")?)?,
+        )
+        .await?;
+
+        assert!(
+            !session.report.handshaken,
+            "the loop connected without a handshake"
+        );
+        assert_eq!(
+            session.report.relayed, 0,
+            "a server notification reached a client that had never completed an initialize"
+        );
+        assert_eq!(
+            session.report.failed, 1,
+            "the pre-handshake request should have been refused, not forwarded"
+        );
+        Ok(())
+    }
+
+    /// A server's notification, as the envelope the peers exchange it.
+    fn pushed_frame(method: &str) -> Result<Map<String, Value>, Failure> {
+        json!({"jsonrpc": "2.0", "method": method})
+            .as_object()
+            .cloned()
+            .ok_or_else(|| Failure::Claim("the pushed fixture is not an object".to_owned()))
+    }
+
+    /// The method of the one frame in `written` that carries one.
+    ///
+    /// Returns `Ok(None)` when there is none, so a test can say "nothing was
+    /// relayed" without the assertion itself being the thing that fails on an
+    /// unrelated index.
+    fn relayed_method(written: &[Value]) -> Result<Option<&str>, Failure> {
+        let mut found = written
+            .iter()
+            .filter_map(|frame| frame.get("method").and_then(Value::as_str));
+        match (found.next(), found.next()) {
+            (Some(method), None) => Ok(Some(method)),
+            _ => Err(Failure::Claim(
+                "expected exactly one relayed frame, found a different number".to_owned(),
+            )),
+        }
     }
 
     /// A feature the peers do not share is refused in an answer, not a dead loop.
