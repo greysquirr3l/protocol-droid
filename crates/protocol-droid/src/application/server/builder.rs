@@ -190,6 +190,53 @@ impl Server {
         loop_.serve().await
     }
 
+    /// Serves this server over Streamable HTTP, on loopback, until it stops.
+    ///
+    /// The same one-call shape as [`serve_stdio`](Self::serve_stdio), for the
+    /// same reason. The alternative — building an `McpRouter`, an
+    /// `axum::Router`, and a listener — moves the work onto the consumer
+    /// rather than removing it, and the pieces a consumer would have to reach
+    /// for are a `SessionStore` with no production `IdSource` in it and a
+    /// `RequestHandler` with no implementation for this `Dispatcher` anywhere
+    /// but the tests.
+    ///
+    /// Binds `127.0.0.1:3000` and serves plain HTTP. That is a development
+    /// shape, not a deployment one: a non-loopback address and TLS in front of
+    /// it are the caller's to arrange, and [`HttpBuilder`] is how.
+    ///
+    /// # Errors
+    ///
+    /// [`ServeError`] from building the route table, from binding, or from the
+    /// accept loop. A protocol error is not one of those: a peer whose request
+    /// this server cannot serve is answered on the wire rather than raised
+    /// here.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use protocol_droid::application::server::Server;
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let server = Server::builder("greeter").build();
+    /// let report = server.serve_http().await?;
+    /// eprintln!("listening on {}", report.addr);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`HttpBuilder`]: crate::adapters::primary::transport::http::HttpBuilder
+    /// [`ServeError`]: crate::adapters::primary::transport::http::ServeError
+    #[cfg(feature = "http")]
+    pub async fn serve_http(
+        self,
+    ) -> Result<
+        crate::adapters::primary::transport::http::ServeReport,
+        crate::adapters::primary::transport::http::ServeError,
+    > {
+        crate::adapters::primary::transport::http::HttpBuilder::new(self)
+            .serve()
+            .await
+    }
+
     /// Starts a server with a name and nothing else.
     ///
     /// Every method on the returned [`ServerBuilder`] is optional, so this

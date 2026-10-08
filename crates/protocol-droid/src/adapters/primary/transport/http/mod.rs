@@ -85,6 +85,7 @@ pub mod precondition;
 mod refusal;
 mod resume;
 pub mod router;
+mod serve;
 mod session_store;
 mod sse;
 mod stream;
@@ -114,6 +115,7 @@ pub use router::{
 // second implementation of "authenticate, then refuse" is a second place to get
 // the ordering wrong, and the ordering is a security property, not a preference.
 
+pub use serve::{HttpBuilder, HttpHandler, HttpSession, ServeError, ServeReport};
 pub use session_store::{SessionStore, SessionStoreError};
 pub use sse::{SseError, SseEvent};
 pub use stream::{
