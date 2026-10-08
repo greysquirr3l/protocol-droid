@@ -414,7 +414,12 @@ mod tests {
 
         assert!(plan.serve);
         assert_eq!(plan.listen.transport, "stdio");
-        assert_eq!(plan.upstream.target, "//backend:3000/mcp");
+        // The scheme is part of the target. It used to be stripped here and in
+        // `TransportSpec`, so a plan reported `//backend:3000/mcp` — a string
+        // no request can be built against, and the reason `--upstream
+        // http://…` failed at connect rather than at parse.
+        assert_eq!(plan.upstream.target, "http://backend:3000/mcp");
+        assert_eq!(plan.upstream.spelling, "http://backend:3000/mcp");
         assert!(plan.listen.implemented && plan.upstream.implemented);
         Ok(())
     }

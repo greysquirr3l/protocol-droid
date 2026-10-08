@@ -137,9 +137,12 @@ impl FromStr for TransportSpec {
         // This is deliberately keyed on `//` and not on the kind, so
         // `sse:http://old.example/sse` — where the remainder already carries a
         // full scheme and is left alone — still parses exactly as before.
-        let target = target.map(|rest| match rest.starts_with("//") {
-            true => format!("{name}:{rest}"),
-            false => rest.to_owned(),
+        let target = target.map(|rest| {
+            if rest.starts_with("//") {
+                format!("{name}:{rest}")
+            } else {
+                rest.to_owned()
+            }
         });
 
         match target.as_deref() {
@@ -160,9 +163,10 @@ impl fmt::Display for TransportSpec {
         // `kind:` in front of it produces `http:http://…`. The spec is the
         // thing a user copies into a shell, so it has to read back as the one
         // line that parses to this same spec.
-        match self.target.starts_with(&format!("{kind}:")) {
-            true => formatter.write_str(&self.target),
-            false => write!(formatter, "{kind}:{}", self.target),
+        if self.target.starts_with(&format!("{kind}:")) {
+            formatter.write_str(&self.target)
+        } else {
+            write!(formatter, "{kind}:{}", self.target)
         }
     }
 }
