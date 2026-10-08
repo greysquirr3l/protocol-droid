@@ -79,28 +79,6 @@ impl BridgePeer for Upstream {
     }
 }
 
-/// A downstream that does nothing. The reply is what these tests read, so the
-/// bridge has to carry it whether or not anyone here wants it.
-#[derive(Default)]
-struct Downstream;
-
-impl BridgePeer for Downstream {
-    fn send(
-        &self,
-        envelope: Map<String, Value>,
-    ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
-        Box::pin(async move { Ok(envelope) })
-    }
-
-    fn notify(&self, _envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 /// A leg that can express everything its own revision defines.
 fn full(version: ProtocolVersion) -> Leg {
     let caps = CapabilitySet::all_for(version);
@@ -134,12 +112,11 @@ fn bridge_over(
     server: Leg,
     policy: DegradePolicy,
     reply: &str,
-) -> Result<(Bridge<Downstream, Upstream, WireToolResults>, Upstream), TestError> {
+) -> Result<(Bridge<Upstream, WireToolResults>, Upstream), TestError> {
     let upstream = Upstream::answering(reply)?;
     let bridge = Bridge::new(
         Agreement::between(client, server),
         policy,
-        Downstream,
         upstream.clone(),
         WireToolResults,
     );

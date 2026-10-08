@@ -124,28 +124,20 @@ enum Outcome {
 /// matches [`Bridge::new`] — the same five facts, in the same sequence — so
 /// moving between the two is not a re-reading exercise.
 #[derive(Debug)]
-pub struct Wiring<H, U, C> {
+pub struct Wiring<U, C> {
     upstream: Leg,
     policy: DegradePolicy,
-    downstream: H,
     peer: U,
     codec: C,
 }
 
-impl<H, U, C> Wiring<H, U, C> {
+impl<U, C> Wiring<U, C> {
     /// Wires a bridge to the upstream leg it negotiated when it connected.
     #[must_use]
-    pub const fn new(
-        upstream: Leg,
-        policy: DegradePolicy,
-        downstream: H,
-        peer: U,
-        codec: C,
-    ) -> Self {
+    pub const fn new(upstream: Leg, policy: DegradePolicy, peer: U, codec: C) -> Self {
         Self {
             upstream,
             policy,
-            downstream,
             peer,
             codec,
         }
@@ -201,30 +193,28 @@ impl<H, U, C> Wiring<H, U, C> {
 /// #     S: protocol_droid::application::jsonrpc::DynFrameSource,
 /// #     K: protocol_droid::application::session::DynFrameSink,
 /// # {
-/// let wiring = Wiring::new(upstream, policy, client, server, codec);
+/// let wiring = Wiring::new(upstream, policy, server, codec);
 /// let mut bridge_loop = BridgeLoop::new(wiring, config, source, sink);
 /// # let _ = &mut bridge_loop;
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct BridgeLoop<H, U, C, S, K>
+pub struct BridgeLoop<U, C, S, K>
 where
-    H: BridgePeer,
     U: BridgePeer,
     C: ToolResultCodec,
     S: DynFrameSource,
     K: DynFrameSink,
 {
     config: DownstreamConfig,
-    wiring: Option<Wiring<H, U, C>>,
-    live: Option<Box<Bridge<H, U, C>>>,
+    wiring: Option<Wiring<U, C>>,
+    live: Option<Box<Bridge<U, C>>>,
     source: S,
     sink: K,
 }
 
-impl<H, U, C, S, K> BridgeLoop<H, U, C, S, K>
+impl<U, C, S, K> BridgeLoop<U, C, S, K>
 where
-    H: BridgePeer,
     U: BridgePeer,
     C: ToolResultCodec,
     S: DynFrameSource,
@@ -232,12 +222,7 @@ where
 {
     /// A loop waiting for a client's handshake.
     #[must_use]
-    pub const fn new(
-        wiring: Wiring<H, U, C>,
-        config: DownstreamConfig,
-        source: S,
-        sink: K,
-    ) -> Self {
+    pub const fn new(wiring: Wiring<U, C>, config: DownstreamConfig, source: S, sink: K) -> Self {
         Self {
             config,
             wiring: Some(wiring),
@@ -264,7 +249,7 @@ where
     }
 
     /// The bridge to forward through, once one exists.
-    fn bridge(&self) -> Option<&Bridge<H, U, C>> {
+    fn bridge(&self) -> Option<&Bridge<U, C>> {
         self.live.as_deref()
     }
 
@@ -347,7 +332,6 @@ where
         self.live = Some(Box::new(Bridge::new(
             downstream.agreement().clone(),
             wiring.policy,
-            wiring.downstream,
             wiring.peer,
             wiring.codec,
         )));
@@ -866,7 +850,6 @@ mod tests {
             Wiring::new(
                 *agreement.upstream(),
                 DegradePolicy::default(),
-                Upstream::default(),
                 upstream,
                 crate::application::bridge::content::doubles::Counting::reading_nothing(),
             ),

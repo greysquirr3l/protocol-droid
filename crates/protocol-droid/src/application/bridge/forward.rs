@@ -234,35 +234,42 @@ pub struct Forwarded {
     pub report: TranslationReport,
 }
 
-/// Carries envelopes from `downstream` to `upstream` under one agreement.
+/// Carries envelopes to `upstream` under one agreement and brings the answers
+/// back.
 ///
-/// The third parameter is the codec the reply path translates through, injected
-/// like the two peers. It is not defaulted: a default would have to name the
-/// crate's own adapter, and application code must not know which adapter it is
-/// wired to.
+/// The second parameter is the codec the reply path translates through, injected
+/// like the peer. It is not defaulted: a default would have to name the crate's
+/// own adapter, and application code must not know which adapter it is wired
+/// to.
+///
+/// ## Why there is no downstream peer
+///
+/// A bridge used to take one, and the type said "carries envelopes from
+/// `downstream` to `upstream`". It never did: [`forward`](Self::forward) takes
+/// the envelope as an argument and returns the answer, which is what a call
+/// from a loop that already reads the client wants. The peer was reachable only
+/// through [`client`](Self::client) — which nothing called — and `close`, so
+/// every caller passed a second handle on the client's connection that was
+/// never used to talk to the client and closed at the end on a guess.
+///
+/// The client channel belongs to whoever owns the client's connection, which is
+/// the loop: it reads frames from a source and writes replies to a sink. This
+/// type is the part that does not care.
 #[derive(Debug)]
-pub struct Bridge<H: BridgePeer, U: BridgePeer, C> {
+pub struct Bridge<U: BridgePeer, C> {
     agreement: Agreement,
     policy: DegradePolicy,
-    downstream: H,
     upstream: U,
     translator: Translator<C>,
 }
 
-impl<H: BridgePeer, U: BridgePeer, C: ToolResultCodec> Bridge<H, U, C> {
-    /// A bridge over two peers that have already agreed.
+impl<U: BridgePeer, C: ToolResultCodec> Bridge<U, C> {
+    /// A bridge over a peer that has already agreed.
     #[must_use]
-    pub const fn new(
-        agreement: Agreement,
-        policy: DegradePolicy,
-        downstream: H,
-        upstream: U,
-        codec: C,
-    ) -> Self {
+    pub const fn new(agreement: Agreement, policy: DegradePolicy, upstream: U, codec: C) -> Self {
         Self {
             agreement,
             policy,
-            downstream,
             upstream,
             translator: Translator::new(codec),
         }
@@ -374,23 +381,16 @@ impl<H: BridgePeer, U: BridgePeer, C: ToolResultCodec> Bridge<H, U, C> {
         }
     }
 
-    /// The client end of the bridge.
-    #[must_use]
-    pub const fn client(&self) -> &H {
-        &self.downstream
-    }
-
-    /// Ends both conversations.
+    /// Ends the conversation with the upstream peer.
+    ///
+    /// The client's connection is not this type's to close: the loop that read
+    /// the frames opened it, and it ends when the client's stream does.
     ///
     /// # Errors
     ///
-    /// The first failure from either side. Both are attempted: a downstream
-    /// failure must not leave the upstream half-open, which would leak a
-    /// connection the caller believes it has already closed.
+    /// [`BridgeError`] when the upstream refused to close.
     pub async fn close(&self) -> Result<(), BridgeError> {
-        let first = self.downstream.close().await;
-        let second = self.upstream.close().await;
-        first.and(second)
+        self.upstream.close().await
     }
 }
 
@@ -564,7 +564,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             upstream.clone(),
             codec(),
         );
@@ -604,7 +603,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             upstream.clone(),
             codec(),
         );
@@ -643,7 +641,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             upstream.clone(),
             codec(),
         );
@@ -674,7 +671,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             upstream.clone(),
             codec(),
         );
@@ -703,7 +699,6 @@ mod tests {
             ),
             DegradePolicy::default(),
             Recorder::default(),
-            Recorder::default(),
             codec(),
         );
 
@@ -726,7 +721,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             Absent,
             codec(),
         );
@@ -786,7 +780,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             Refusing,
             codec(),
         );
@@ -816,7 +809,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             Recorder::default(),
             codec(),
         );
@@ -865,7 +857,6 @@ mod tests {
                 Leg::new(ProtocolVersion::latest_known(), serving(&[Feature::Tools])),
             ),
             DegradePolicy::default(),
-            Recorder::default(),
             Recorder::default(),
             codec(),
         );
