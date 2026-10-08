@@ -11,12 +11,14 @@ mod downstream;
 mod forward;
 mod serve;
 mod unsolicited;
+mod upstream;
 
 pub use content::{ToolResultCodec, Translated, Translator};
 pub use downstream::{Downstream, DownstreamConfig, DownstreamError, Identity};
 pub use forward::{Bridge, BridgeError, BridgePeer, Forwarded, SendFuture};
 pub use serve::{BridgeLoop, LoopError, LoopReport, Wiring};
 pub use unsolicited::Unsolicited;
+pub use upstream::{BridgeClientError, OpenedUpstream, Upstream, UpstreamError, run_client};
 
 /// Settles the downstream leg of a handshake.
 ///

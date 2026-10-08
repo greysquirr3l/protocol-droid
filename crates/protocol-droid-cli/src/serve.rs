@@ -38,7 +38,7 @@ use protocol_droid::adapters::secondary::codec::result::WireToolResults;
 use protocol_droid::adapters::secondary::transport::http::{HttpClient, HttpClientConfig};
 use protocol_droid::adapters::secondary::transport::legacy_sse::{LegacySseConfig, LegacySsePeer};
 use protocol_droid::application::bridge::{
-    BridgeLoop, BridgePeer, DownstreamConfig, LoopReport, Wiring,
+    BridgePeer, DownstreamConfig, LoopReport, OpenedUpstream, Upstream, UpstreamError, run_client,
 };
 use protocol_droid::application::client::{ClientConfig, ClientTransport, handshake};
 use protocol_droid::domain::{
@@ -113,31 +113,61 @@ async fn negotiate(
     Ok(Leg::new(session.version, session.profile))
 }
 
+/// The server a client is proxied to, opened once per client.
+///
+/// A `stdio` downstream is one process and so one client, which means this
+/// struct is opened exactly once here. It exists anyway because the shape is
+/// the point: a bridge that opens its upstream at startup and shares it would
+/// be correct only for as long as `stdio` stays single-client, and the moment a
+/// client arrives on a network transport one connection would have to serve
+/// them all — with a `tools/list_changed` naming no client to go to, and a
+/// sampling request no way to reach the client it asked.
+struct ConfiguredUpstream {
+    spec: TransportSpec,
+    versions: SupportedVersions,
+}
+
+impl Upstream for ConfiguredUpstream {
+    async fn open(&self) -> Result<OpenedUpstream, UpstreamError> {
+        connect(&self.spec, &self.versions)
+            .await
+            .map(|(leg, peer)| OpenedUpstream::new(leg, peer))
+            // The transports name their own failures and the application layer
+            // has no business enumerating them; `connect` already said which
+            // one, and the note survives the crossing.
+            .map_err(|error| UpstreamError::Unreachable(format!("{error:#}")))
+    }
+}
+
 /// Runs a bridge until the downstream stream ends.
 ///
 /// The client's channel is this process's own stdio, which is why there is no
-/// peer to construct for it: [`BridgeLoop`] reads frames from a source and
-/// writes replies to a sink, and both are stdio.
+/// peer to construct for it: [`BridgeLoop`](protocol_droid::application::bridge::BridgeLoop)
+/// reads frames from a source and writes replies to a sink, and both are stdio.
 ///
 /// # Errors
 ///
 /// Whatever the upstream raised while opening or negotiating, and
 /// [`LoopError`](protocol_droid::application::bridge::LoopError) for a
 /// downstream pipe that fails. A bridge that cannot reach its server has nothing
-/// to report per-client, because there are no clients.
+/// to report per-client, because there is only the one client.
 pub async fn run(
     upstream: &TransportSpec,
     versions: &SupportedVersions,
     policy: DegradePolicy,
 ) -> anyhow::Result<LoopReport> {
-    let (leg, peer) = connect(upstream, versions).await?;
-
     // One frame ceiling for both directions. They are the same stream pair, and
     // two ceilings would mean a frame the source accepts being refused by the
     // sink for being large — after the reply had already been built.
     let framing = StdioConfig::new(MaxFrameSize::DEFAULT);
-    let mut bridge_loop = BridgeLoop::new(
-        Wiring::new(leg, policy, peer, WireToolResults),
+    let opened = ConfiguredUpstream {
+        spec: upstream.clone(),
+        versions: versions.clone(),
+    };
+
+    Ok(run_client(
+        &opened,
+        policy,
         DownstreamConfig::with(
             versions.clone(),
             protocol_droid::application::bridge::Identity::new(
@@ -146,9 +176,9 @@ pub async fn run(
             ),
             TransportKind::Stdio,
         ),
+        WireToolResults,
         StdioSource::new(tokio::io::stdin(), framing),
         StdioSink::new(tokio::io::stdout(), framing),
-    );
-
-    Ok(bridge_loop.run().await?)
+    )
+    .await?)
 }
