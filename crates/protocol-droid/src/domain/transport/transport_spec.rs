@@ -126,7 +126,23 @@ impl FromStr for TransportSpec {
         };
 
         let kind = parse_kind(name)?;
-        match target {
+
+        // A remainder beginning `//` is the user writing a URL, not a target
+        // that happens to start with two slashes. `split_once` above split on
+        // the *scheme's* colon, so the scheme has to go back on — otherwise
+        // `http://host:3000/mcp` yields `//host:3000/mcp`, which is a
+        // protocol-relative URL, and every adapter that tries to build a
+        // request against it fails on a string the caller never wrote.
+        //
+        // This is deliberately keyed on `//` and not on the kind, so
+        // `sse:http://old.example/sse` — where the remainder already carries a
+        // full scheme and is left alone — still parses exactly as before.
+        let target = target.map(|rest| match rest.starts_with("//") {
+            true => format!("{name}:{rest}"),
+            false => rest.to_owned(),
+        });
+
+        match target.as_deref() {
             Some(target) if !target.is_empty() => Self::new(kind, target),
             Some(_) => Err(SpecError::EmptyTarget),
             None if is_process(name) => Err(SpecError::MissingTarget {
@@ -139,7 +155,15 @@ impl FromStr for TransportSpec {
 
 impl fmt::Display for TransportSpec {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}", self.kind.as_str(), self.target)
+        let kind = self.kind.as_str();
+        // A URL-shaped target already carries its own scheme, so writing
+        // `kind:` in front of it produces `http:http://…`. The spec is the
+        // thing a user copies into a shell, so it has to read back as the one
+        // line that parses to this same spec.
+        match self.target.starts_with(&format!("{kind}:")) {
+            true => formatter.write_str(&self.target),
+            false => write!(formatter, "{kind}:{}", self.target),
+        }
     }
 }
 
@@ -216,7 +240,7 @@ mod tests {
             (
                 "http://srv.example/mcp",
                 TransportKind::StreamableHttp,
-                "//srv.example/mcp",
+                "http://srv.example/mcp",
             ),
             (
                 "sse:http://old.example/sse",
@@ -240,12 +264,64 @@ mod tests {
 
     /// `http` and `streamable` are two spellings of one transport, and the
     /// target split on the *first* colon keeps a URL intact.
+    /// The port colon in a URL is part of the target, not another separator.
+    ///
+    /// This used to assert the target was `//example.com:8443/mcp`, which kept the
+    /// port and dropped the scheme. The port is the half of that claim that was
+    /// worth making; the scheme is what made the result unusable, and an adapter
+    /// building a request against it failed on a string the caller never wrote. The
+    /// caller wrote `http://example.com:8443/mcp`, and that is what is kept.
     #[test]
     fn a_url_target_keeps_its_own_colons() -> Result<(), TestError> {
         let spec = TransportSpec::from_str("http://example.com:8443/mcp")?;
 
         assert_eq!(spec.kind(), TransportKind::StreamableHttp);
-        assert_eq!(spec.target(), "//example.com:8443/mcp");
+        assert_eq!(spec.target(), "http://example.com:8443/mcp");
+        Ok(())
+    }
+
+    /// The target a caller wrote is the target an adapter gets.
+    ///
+    /// `split_once(':')` finds the *scheme's* colon in `http://host/mcp`, so a
+    /// parser that stops there hands the adapter `//host/mcp` — a
+    /// protocol-relative URL, which `HttpClientConfig` rejects. This is the
+    /// test that would have caught it, and it asserts on the whole string for
+    /// the reason that matters: what leaves the parser is what the user wrote.
+    #[test]
+    fn a_url_target_survives_parsing_whole() -> Result<(), TestError> {
+        for input in [
+            "http://srv.example/mcp",
+            "http-stateless://srv.example/mcp",
+            "sse://old.example/sse",
+        ] {
+            let spec = TransportSpec::from_str(input)?;
+            assert_eq!(spec.target(), input, "{input} did not survive parsing");
+        }
+        Ok(())
+    }
+
+    /// Displayed as one line that parses back to the same spec.
+    ///
+    /// The round trip is the claim, not the string: a user copies this into a
+    /// shell, so a `Display` that differs from the accepted spelling is a
+    /// display that sends them somewhere else.
+    #[test]
+    fn a_spec_displays_as_something_that_parses_back() -> Result<(), TestError> {
+        for input in [
+            "stdio:./server",
+            "http://srv.example:8443/mcp",
+            "sse:http://old.example/sse",
+            "http-stateless:http://new.example/mcp",
+        ] {
+            let spec = TransportSpec::from_str(input)?;
+            let shown = spec.to_string();
+            assert_eq!(shown, input, "{input} displayed as {shown}");
+            assert_eq!(
+                TransportSpec::from_str(&shown)?,
+                spec,
+                "{shown} did not parse back to the same spec"
+            );
+        }
         Ok(())
     }
 

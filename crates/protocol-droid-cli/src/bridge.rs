@@ -114,6 +114,13 @@ struct Endpoint {
     target: String,
     /// Whether this build has the adapter for it.
     implemented: bool,
+    /// The spec as the user wrote it, for the human line.
+    ///
+    /// Rebuilt from `transport` and `target` this would read
+    /// `http:http://host/mcp` for a URL target, because the target already
+    /// carries its scheme. [`TransportSpec`] already knows how to print itself
+    /// without doubling it, so this stores that rather than a second opinion.
+    spelling: String,
 }
 
 /// Why a spec could not be used, in the shape `anyhow` prints.
@@ -349,6 +356,7 @@ fn endpoint(spec: &TransportSpec, implemented: bool) -> Endpoint {
         transport: spec.kind().as_str(),
         target: spec.target().to_owned(),
         implemented,
+        spelling: spec.to_string(),
     }
 }
 
@@ -356,11 +364,8 @@ impl std::fmt::Display for Plan {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "listen {}:{}  <-  upstream {}:{}",
-            self.listen.transport,
-            self.listen.target,
-            self.upstream.transport,
-            self.upstream.target
+            "listen {}  <-  upstream {}",
+            self.listen.spelling, self.upstream.spelling
         )?;
         if !self.serve {
             write!(formatter, "\nnot servable: {}", self.note)?;
