@@ -21,18 +21,94 @@ Three ideas set it apart:
 
 3. **Every transport the spec has ever defined.** stdio, legacy HTTP+SSE
    (`2024-11-05`), Streamable HTTP (stateful), and the `2026-07-28` stateless
-   lifecycle. A CLI on top makes it a Swiss-army knife: a version-translating
-   bridge, a server prober, an interactive inspector, record/replay, and a
-   conformance runner.
+   lifecycle — each with both a server and a client half. The CLI on top is
+   being built to a Swiss-army knife; today it has one of its five blades, the
+   version-translating `bridge` (see [Status](#status)).
 
 ## Status
 
-Phases 1–3 are in progress. The specification schemas for every revision are
-vendored and provenance-verified, the per-revision wire types are generated from
-them at build time — `protocol_droid_schema::wire::v2024_11_05` through
-`wire::draft` all compile together, with no version selection at build time —
-and the domain layer carries the protocol-version value objects negotiation is
-built on. The feature matrix, version codecs, and transports follow.
+Seventeen of twenty-nine tasks are complete, preflight green at **1,584 tests**
+across the workspace.
+
+| Done    | What it built                                                                                           |
+| ------- | ------------------------------------------------------------------------------------------------------- |
+| T01–T03 | Workspace, vendored schemas at pinned commits, per-revision wire types generated at build time          |
+| T04–T06 | `ProtocolVersion`, the 37-feature catalogue, `FeatureProfile` resolution, negotiation as pure functions |
+| T07–T08 | The canonical IR, and six lift/lower codecs with `DegradePolicy` and `TranslationReport`                |
+| T09–T12 | Single-pass JSON-RPC router, session engine, lock-free dynamic registry, `#[server]`/`#[tool]` macros   |
+| T13–T15 | stdio, Streamable HTTP, stateless HTTP, and legacy HTTP+SSE — server **and** client halves              |
+| T16     | OAuth 2.1: resource server, PKCE client, RFC 7591 + CIMD registration, RFC 7662 introspection, JWT/JWKS |
+| T17     | HTTP hardening: `Origin`/DNS-rebinding, rate limiting, request deadline, concurrency ceiling            |
+
+**In progress — `protocol-droid bridge` (T18).** The version-translating proxy
+is built and serving: a `bridge` subcommand opens an upstream, negotiates with it
+by reference, and forwards a client's frames translated between revisions. Two
+gaps keep it open, both documented in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#known-gaps):
+
+- The listen side is **stdio-only**. `BridgeLoop` pulls frames from a
+  `FrameSource`, and `StdioSource` is the crate's only implementation — the axum
+  router is request/response shaped, so an HTTP listen side needs a
+  _subscription-shaped source_, not a router change.
+- Frames the upstream pushes **out of band are dropped**. `take_pending` is
+  called nowhere outside the adapters, so `notifications/tools/list_changed` and
+  friends never reach the client.
+
+**Not started.** `probe` / `inspect` (T19), `record` / `replay` (T20), the
+official conformance suite (T21), differential interop against rmcp and the
+TypeScript SDK (T22), the performance and fuzzing campaign (T23), and the
+security and integration audits (T24–T25). A2A and ACP (T27–T29) are post-MVP
+and gated behind MVP sign-off.
+
+The three ideas above describe the finished design. Where the code does not yet
+match the design, the architecture document says so rather than rounding up.
+
+## Using it
+
+Serving a server is a struct, an impl block, and one call:
+
+```rust
+/// A greeter: one tool, no state.
+struct Greeter;
+
+#[protocol_droid::server(name = "greeter")]
+impl Greeter {
+    /// Greets someone by name.
+    #[protocol_droid::tool]
+    async fn greet(name: String) -> String {
+        format!("hello, {name}")
+    }
+}
+
+Greeter.into_server()?.serve_stdio().await?
+```
+
+`#[protocol_droid::server]` goes on the impl block and generates the one method
+that matters — `into_server`. The marks inside it (`#[tool]`, `#[resource]`,
+`#[prompt]`) register as it goes: each parameter becomes a property in the tool's
+`inputSchema`, which is why nothing above declares a schema, and the doc comment
+becomes the `description` a peer reads. A `#[tool]` handler is `async` even when
+it awaits nothing, because the call the macro generates has to produce a future.
+
+Two lines are missing from the snippet above because they are not the library's
+business: a `struct Greeter;` declaration, and the runtime. `serve_stdio` is
+`async`, so `main` needs one — and the crate does not enable `rt-multi-thread`,
+so it is built by hand rather than by `#[tokio::main]`. The full version is
+[`examples/stdio_server.rs`](crates/protocol-droid/examples/stdio_server.rs),
+and it compiles.
+
+Bridging a client on one revision to a server on another:
+
+```bash
+protocol-droid bridge \
+  --listen stdio:. \
+  --upstream http://backend:3000/mcp
+```
+
+`--json` puts the plan or the run report on stdout and the human summary on
+stderr, so an agent parses the machine-readable half and a person watches the
+other. `cargo l` is the lint profile; `cargo test --workspace --all-features` is
+the suite.
 
 ## The generated wire types
 
@@ -135,12 +211,14 @@ are in [`crates/protocol-droid-schema/spec/README.md`](crates/protocol-droid-sch
 
 ## Architecture
 
+Full treatment, with diagrams, in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 Hexagonal, collapsed to `src/{domain,application,adapters/{primary,secondary}}`.
 Domain code has no I/O dependencies and no traits; adapters implement port traits
 declared by the application-layer handler that consumes them. Dependencies point
 inward: adapters → ports ← domain.
 
-Two rules are worth knowing before reading the code:
+Three rules are worth knowing before reading the code:
 
 - **The protocol-neutral core stays neutral.** The JSON-RPC envelope, session
   tracking, and all transports know nothing about MCP. MCP lives in `mcp/`
@@ -149,6 +227,10 @@ Two rules are worth knowing before reading the code:
 - **All schema revisions are always compiled.** They are data, not features. A
   `--no-default-features` build sheds transports and heavy integrations, never
   spec revisions.
+- **There is no `ports` module, and that is deliberate.** Port traits belong to
+  the consumer, so each handler declares its own beside the code that calls it.
+  A shared ports module is how a method added for one use case ends up on every
+  other one's interface.
 
 ## Branch protection
 
