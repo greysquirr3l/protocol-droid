@@ -74,7 +74,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::reply::{self, ReplyError};
 use super::{Diagnostics, StdioConfig, StdioError, StdioSink, StdioSource};
 use crate::application::jsonrpc::{BatchPolicy, SourceError};
-use crate::application::server::{DispatchError, Dispatcher, PeerSession, RequestContext};
+use crate::application::server::{Dispatcher, PeerSession, RequestContext};
 use crate::domain::RequestId;
 use crate::domain::ir::{IrErrorCode, JsonObject};
 use crate::domain::jsonrpc::{DecodeError, Envelope, Frame, WireId, decode};
@@ -398,7 +398,7 @@ where
         // the handler's `RequestId` and is written back from the same value.
         let context = RequestContext::for_request(
             &self.peer,
-            request_id(envelope.id()),
+            RequestId::from_wire(envelope.id()),
             CancellationToken::new(),
             None,
         );
@@ -427,7 +427,7 @@ where
                     }
                 }
                 Err(error) => {
-                    let (code, message) = describe_dispatch_error(&error);
+                    let (code, message) = error.as_wire();
                     self.note(&format!("refused a handshake: {message}"))
                         .await?;
                     reply::error_reply(id, code, &message)
@@ -453,7 +453,7 @@ where
                 }
             },
             Err(error) => {
-                let (code, message) = describe_dispatch_error(&error);
+                let (code, message) = error.as_wire();
                 // The message is the dispatcher's own text, never the method
                 // name the peer chose — see `note`.
                 self.note(&format!("refused a request: {message}")).await?;
@@ -497,49 +497,12 @@ fn refusal(id: Option<&WireId<'_>>, code: IrErrorCode, message: &str) -> Option<
 /// something to correlate against. A notification can be given neither, so
 /// nothing it does can reach the peer and the value is unobservable — it
 /// exists only so the context can be built at all.
-fn request_id(id: Option<&WireId<'_>>) -> RequestId {
-    match id {
-        Some(WireId::Number(value)) => RequestId::number(*value),
-        Some(WireId::Text(text)) => RequestId::text(text.as_ref()),
-        None => RequestId::number(0),
-    }
-}
-
-/// The JSON-RPC code and message a refusal is reported as.
 ///
-/// Every refusal gets an answer. The alternative is to drop it, which leaves
-/// the peer waiting on a response that is never coming — and a loop that hangs
-/// is worse than one that says no. The codes are the closest the standard
-/// offers: a method nobody serves is `-32601`, a call that does not name
-/// something callable is `-32602`, and a session that did not negotiate a
-/// feature — or one settled on a revision this build cannot serve — is a
-/// server-side condition rather than either, so it takes the server-side code.
+/// The mapping itself is [`RequestId::from_wire`], in the domain, and the
+/// refusal mapping is [`DispatchError::as_wire`], in the application layer:
+/// both are properties of a value rather than of the way this loop writes it
+/// down, and the HTTP router needs them for the same reasons this loop does.
 ///
-/// A malformed `initialize` is `-32602` like any other malformed params: the
-/// peer sent a request whose body it could not have meant, which is the same
-/// condition whatever the method was.
-fn describe_dispatch_error(error: &DispatchError) -> (IrErrorCode, String) {
-    let code = match error {
-        DispatchError::UnknownMethod => IrErrorCode::MethodNotFound,
-        DispatchError::MalformedParams
-        | DispatchError::MalformedInitialize
-        | DispatchError::UnknownTool => IrErrorCode::InvalidParams,
-        // A request that names an id this session is already working on is a
-        // frame that violates JSON-RPC, so it takes the code for a frame the
-        // specification does not permit — not the code for a tool it cannot
-        // run, which is a different failure with a different fix.
-        DispatchError::DuplicateInFlight(_) => IrErrorCode::InvalidRequest,
-        // A store that cannot be reached is this server's problem, whatever
-        // the peer sent, so it is a server-side code. Reporting it as the
-        // caller's fault would send a client looking for a bug in its own
-        // request when the recording of results is what failed.
-        DispatchError::NotCallable
-        | DispatchError::UnnegotiableVersion
-        | DispatchError::IdempotencyUnavailable(_) => IrErrorCode::InternalError,
-    };
-    (code, error.to_string())
-}
-
 /// What a finished session did.
 ///
 /// Counted, not merely logged, so that "the loop ran once and served nothing"

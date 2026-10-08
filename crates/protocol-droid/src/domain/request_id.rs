@@ -20,6 +20,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::domain::jsonrpc::WireId;
+
 /// A JSON-RPC request id: a number or a string.
 ///
 /// Deliberately *not* `Copy` — see the module docs.
@@ -42,6 +44,46 @@ impl RequestId {
     #[must_use]
     pub fn text(value: impl AsRef<str>) -> Self {
         Self::Text(Arc::from(value.as_ref()))
+    }
+
+    /// This id from the wire form, where a message with no id has none.
+    ///
+    /// Lives here rather than in a transport adapter because it is a mapping
+    /// between the two representations of one value, and the stdio loop and the
+    /// HTTP router both need it. When it lived in the stdio adapter the HTTP
+    /// path had two options and both were wrong: copy it, and the two copies
+    /// drift; or reach into another adapter, and the layering breaks.
+    ///
+    /// `None` — a notification — becomes id `0`. That is not a claim the peer
+    /// made; it exists because [`RequestContext`] insists on an id to
+    /// correlate against, and a notification is given neither a progress token
+    /// nor a cancellation token, so nothing it does can reach the peer and the
+    /// value is unobservable. It is written back only if something is
+    /// genuinely broken.
+    ///
+    /// [`RequestContext`]: crate::application::server::context::RequestContext
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use protocol_droid::domain::RequestId;
+    /// # use protocol_droid::domain::jsonrpc::WireId;
+    /// let numeric = RequestId::from_wire(Some(&WireId::Number(7)));
+    /// let text = RequestId::from_wire(Some(&WireId::Text(std::borrow::Cow::Borrowed("a-1"))));
+    /// // A notification has no id, and gets the unobservable placeholder.
+    /// let none = RequestId::from_wire(None);
+    ///
+    /// assert_eq!(numeric, RequestId::number(7));
+    /// assert_eq!(text, RequestId::text("a-1"));
+    /// assert_eq!(none, RequestId::number(0));
+    /// ```
+    #[must_use]
+    pub fn from_wire(id: Option<&WireId<'_>>) -> Self {
+        match id {
+            Some(WireId::Number(value)) => Self::Number(*value),
+            Some(WireId::Text(text)) => Self::text(text.as_ref()),
+            None => Self::Number(0),
+        }
     }
 
     /// The id as it appears on the wire, as JSON.

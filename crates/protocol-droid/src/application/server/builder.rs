@@ -24,7 +24,7 @@ use crate::application::idempotency::IdempotencyStore;
 use crate::application::registry::store::RegistryStore;
 use crate::application::server::context::RequestContext;
 use crate::domain::idempotency::IdempotencyError;
-use crate::domain::ir::JsonObject;
+use crate::domain::ir::{IrErrorCode, JsonObject};
 use crate::domain::registry::{
     Primitive, PrimitiveId, PrimitiveKind, Prompt, Registered, Resource, ResourceTemplate, Tool,
 };
@@ -406,6 +406,75 @@ pub enum DispatchError {
     /// behind its back.
     #[error("recorded results are unavailable: {0}")]
     IdempotencyUnavailable(String),
+}
+
+impl DispatchError {
+    /// The JSON-RPC code this refusal is reported as.
+    ///
+    /// Lives here rather than in a transport adapter because it is a property
+    /// of the error, not of the way it is written down. It sat in the stdio
+    /// adapter until the HTTP router needed the same mapping, and the two
+    /// options at that point were both wrong: copy it and let the copies drift
+    /// apart, or reach into another adapter and break the layering.
+    ///
+    /// Every refusal gets an answer. The alternative is to drop it, which
+    /// leaves the peer waiting on a response that is never coming — and a
+    /// server that hangs is worse than one that says no. The codes are the
+    /// closest the standard offers: a method nobody serves is `-32601`, a call
+    /// that does not name something callable is `-32602`, and a session that
+    /// did not negotiate a feature — or one settled on a revision this build
+    /// cannot serve — is a server-side condition rather than either.
+    ///
+    /// A malformed `initialize` is `-32602` like any other malformed params:
+    /// the peer sent a request whose body it could not have meant, which is the
+    /// same condition whatever the method was.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use protocol_droid::application::server::DispatchError;
+    /// # use protocol_droid::domain::ir::IrErrorCode;
+    /// assert_eq!(
+    ///     DispatchError::UnknownMethod.jsonrpc_code(),
+    ///     IrErrorCode::MethodNotFound,
+    /// );
+    /// assert_eq!(
+    ///     DispatchError::MalformedParams.jsonrpc_code(),
+    ///     IrErrorCode::InvalidParams,
+    /// );
+    /// ```
+    #[must_use]
+    pub const fn jsonrpc_code(&self) -> IrErrorCode {
+        match self {
+            Self::UnknownMethod => IrErrorCode::MethodNotFound,
+            Self::MalformedParams | Self::MalformedInitialize | Self::UnknownTool => {
+                IrErrorCode::InvalidParams
+            }
+            // A request that names an id this session is already working on is
+            // a frame that violates JSON-RPC, so it takes the code for a frame
+            // the specification does not permit — not the code for a tool it
+            // cannot run, which is a different failure with a different fix.
+            Self::DuplicateInFlight(_) => IrErrorCode::InvalidRequest,
+            // A store that cannot be reached is this server's problem, whatever
+            // the peer sent, so it is a server-side code. Reporting it as the
+            // caller's fault would send a client looking for a bug in its own
+            // request when the recording of results is what failed.
+            Self::NotCallable | Self::UnnegotiableVersion | Self::IdempotencyUnavailable(_) => {
+                IrErrorCode::InternalError
+            }
+        }
+    }
+
+    /// The code and message pair a transport writes to the wire.
+    ///
+    /// The message is [`thiserror`]'s own for the variant, never the method
+    /// name the peer chose: a method name is a JSON string a peer controls, and
+    /// JSON permits a newline inside one, so echoing it into a log line would
+    /// let a peer close that line and open one of its own.
+    #[must_use]
+    pub fn as_wire(&self) -> (IrErrorCode, String) {
+        (self.jsonrpc_code(), self.to_string())
+    }
 }
 
 impl From<IdempotencyError> for DispatchError {
