@@ -31,6 +31,7 @@
 //! [`TransportKind`] in each arm — two copies of the loop's call sequence to
 //! save an indirection the peer's own network I/O already dwarfs.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use protocol_droid::adapters::primary::stdio::{StdioConfig, StdioSink, StdioSource};
@@ -137,6 +138,76 @@ impl Upstream for ConfiguredUpstream {
             // one, and the note survives the crossing.
             .map_err(|error| UpstreamError::Unreachable(format!("{error:#}")))
     }
+}
+
+/// Serves a bridge on a socket, one upstream per client.
+///
+/// The HTTP listen side, and the reason [`ConfiguredUpstream`] is a factory
+/// rather than a connection: a server outlives the clients that connect to it,
+/// so `Upstream::open` is called once per session and each client gets an
+/// upstream of its own. The `stdio` path below opens once because there is one
+/// client — which is a property of `stdio`, not of bridges.
+///
+/// # Errors
+///
+/// Propagates what the session store, the router, or the socket reported. A
+/// client that cannot be reached upstream is reported on that client's own
+/// stream and does not stop the server.
+pub async fn listen(
+    upstream: &TransportSpec,
+    addr: SocketAddr,
+    versions: &SupportedVersions,
+    policy: DegradePolicy,
+) -> anyhow::Result<()> {
+    use protocol_droid::adapters::primary::transport::http::{
+        BridgeSession, HttpBridge, SecurityHeaders, ServerConfig, SessionStore,
+    };
+    use protocol_droid::adapters::secondary::id_source::RandomIds;
+
+    let config = ServerConfig::new()?.with_security(SecurityHeaders::default());
+    let sessions: Arc<SessionStore<BridgeSession>> =
+        Arc::new(SessionStore::new(Arc::new(RandomIds::new()?)));
+
+    let bridge = HttpBridge::new(
+        config,
+        sessions,
+        ConfiguredUpstream {
+            spec: upstream.clone(),
+            versions: versions.clone(),
+        },
+        protocol_droid::application::bridge::Identity::new(
+            "protocol-droid-bridge",
+            env!("CARGO_PKG_VERSION"),
+        ),
+        policy,
+        WireToolResults,
+    )?;
+
+    // Bound before anything is announced, because port `0` is legal and the
+    // address printed has to be the one a client can actually reach.
+    let (bound, actual) = bridge.bind(addr).await?;
+    eprintln!("bridge listening on http://{actual}/mcp");
+    bound.serve().await?;
+    Ok(())
+}
+
+/// The address a `--listen` target names, or why it does not.
+///
+/// A target is a URL — `http://127.0.0.1:3000/mcp` — and a `SocketAddr` is
+/// the host and port out of it. Parsed here rather than in the domain because
+/// only the listen side binds: the client side wants the whole URL, and a
+/// shared parser would be a shape neither of them actually wants.
+pub fn bind_addr(target: &str) -> anyhow::Result<SocketAddr> {
+    let rest = target
+        .strip_prefix("http://")
+        .or_else(|| target.strip_prefix("https://"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("{target} is not an http URL; an http listen needs http://host:port")
+        })?;
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    host_port
+        .parse::<SocketAddr>()
+        .map_err(|error| anyhow::anyhow!("{host_port} is not a host:port: {error}"))
 }
 
 /// Runs a bridge until the downstream stream ends.

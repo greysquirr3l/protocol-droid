@@ -166,7 +166,7 @@ pub async fn run(args: &BridgeArgs) -> anyhow::Result<()> {
     // that implies a bridge is now running.
     #[cfg(feature = "bridge")]
     {
-        serve(&upstream, args).await
+        serve(&listen, &upstream, args).await
     }
     #[cfg(not(feature = "bridge"))]
     {
@@ -187,13 +187,38 @@ pub async fn run(args: &BridgeArgs) -> anyhow::Result<()> {
 /// [`LoopError`](protocol_droid::application::bridge::LoopError) for a
 /// downstream pipe that fails mid-run.
 #[cfg(feature = "bridge")]
-async fn serve(upstream: &TransportSpec, args: &BridgeArgs) -> anyhow::Result<()> {
+async fn serve(
+    listen: &TransportSpec,
+    upstream: &TransportSpec,
+    args: &BridgeArgs,
+) -> anyhow::Result<()> {
     let policy = if args.allow_downgrade {
         DegradePolicy::permissive()
     } else {
         DegradePolicy::default()
     };
 
+    // The listen side decides which shape this is, and an `http` listen is a
+    // different job from a `stdio` one: a server outlives its clients, so it
+    // opens an upstream per session rather than one for the process.
+    if listen.kind() == TransportKind::StreamableHttp {
+        let addr = crate::serve::bind_addr(listen.target())?;
+        crate::serve::listen(upstream, addr, &SupportedVersions::all()?, policy).await
+    } else {
+        serve_one_client(upstream, args, policy).await
+    }
+}
+
+/// Runs the single-client `stdio` bridge, and reports what it did.
+///
+/// Split from the caller so the `http` arm above is the only thing holding a
+/// `SocketAddr`, and this stays the path that can return a `LoopReport`.
+#[cfg(feature = "bridge")]
+async fn serve_one_client(
+    upstream: &TransportSpec,
+    args: &BridgeArgs,
+    policy: DegradePolicy,
+) -> anyhow::Result<()> {
     let report = crate::serve::run(upstream, &SupportedVersions::all()?, policy).await?;
     let summary = Summary {
         handshaken: report.handshaken,
@@ -322,7 +347,7 @@ const fn upstream_supported(kind: TransportKind) -> bool {
 /// Checking the upstream and not the listen side would let an `http` listen
 /// pass validation and then fail on the first frame.
 const fn listen_supported(kind: TransportKind) -> bool {
-    matches!(kind, TransportKind::Stdio)
+    matches!(kind, TransportKind::Stdio | TransportKind::StreamableHttp)
 }
 
 fn plan(listen: &TransportSpec, upstream: &TransportSpec) -> Plan {
@@ -512,23 +537,20 @@ mod tests {
         Ok(())
     }
 
-    /// An `http` listen is refused, because there is nothing to pull frames
-    /// from.
+    /// An `http` listen is servable, and for a reason worth pinning.
     ///
-    /// The router exists and speaks Streamable HTTP perfectly well, which is
-    /// what makes this the dangerous direction to get wrong: validation passes
-    /// on "does a server adapter exist", and then the loop has no source to
-    /// read. This pins the narrower claim the check actually makes.
+    /// This used to be the other way round, and the test that asserted it was
+    /// right when written: there was no frame source behind the router. There
+    /// is one now, which is the whole point of the listen side.
     #[test]
-    fn an_http_listen_is_refused_for_want_of_a_frame_source() -> Result<(), TestError> {
+    fn an_http_listen_is_servable() -> Result<(), TestError> {
         let listen = parse("http://127.0.0.1:8080/mcp", "--listen")?;
         let upstream = parse("http://backend:3000/mcp", "--upstream")?;
         let plan = plan(&listen, &upstream);
 
-        assert!(!plan.serve, "an http listen was reported as servable");
         assert!(
-            plan.note.contains("frame source"),
-            "the note did not say why: {note}",
+            plan.serve,
+            "an http listen was refused: {note}",
             note = plan.note
         );
         Ok(())

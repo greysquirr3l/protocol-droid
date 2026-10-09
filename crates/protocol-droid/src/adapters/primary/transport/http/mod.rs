@@ -77,6 +77,7 @@
 //! ```
 
 mod auth;
+mod bridge;
 mod config;
 mod frame_payload;
 pub mod hardening;
@@ -103,6 +104,7 @@ pub const JSON_MEDIA_TYPE: &str = "application/json";
 pub use auth::{
     Anonymous, AuthPolicy, Authenticator, Credentials, OAuthAuthenticator, SystemClock, WallClock,
 };
+pub use bridge::{Bound, BridgeServeError, BridgeSession, HttpBridge};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
 pub use frame_payload::FramePayload;
 pub use refusal::Refusal;

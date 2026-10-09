@@ -160,7 +160,7 @@ serde_json = { workspace = true }
 # prove the waker fires, but not that a handler awaiting the signal is resumed
 # and then suppressed from answering. `time::pause` makes the deadline part of
 # that test instantaneous and deterministic.
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 trybuild = "1.0.121"
 # RFC 7515 base64url, for the one JWT no encoder will produce: an unsecured
 # `alg: none` token. `jsonwebtoken` depends on it too, so this is a dev-only

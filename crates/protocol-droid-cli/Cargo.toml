@@ -19,7 +19,15 @@ categories.workspace = true
 # outside it — that path opens no socket, and a build that cannot open one should
 # still be able to answer "what would this bridge do with this reply".
 default = ["bridge"]
-bridge = ["protocol-droid/http", "protocol-droid/stdio", "protocol-droid/legacy-sse"]
+# `random-ids` is not optional here: an `http` listen hands out a session id
+# on every `initialize`, and the peer presents it on every request after
+# that. A counter would be a guessable session.
+bridge = [
+  "protocol-droid/http",
+  "protocol-droid/stdio",
+  "protocol-droid/legacy-sse",
+  "protocol-droid/random-ids",
+]
 
 [[bin]]
 name = "protocol-droid"

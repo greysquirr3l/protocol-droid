@@ -60,8 +60,12 @@ fn main() -> anyhow::Result<()> {
     // The runtime exists so the serving path can be `.await`ed from a plain
     // `fn main`. It is built once and used for whichever subcommand ran; a
     // subcommand with nothing to await never touches it.
+    // Timers as well as IO. The router's rate limiter keeps its window on a
+    // `tokio::time` sleep, so an `http` listen panicked on its first request
+    // with a runtime that enabled IO alone — after the socket had already been
+    // bound and announced, which is the worst moment to find out.
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+        .enable_all()
         .build()?;
     runtime.block_on(dispatch(Cli::parse().command))
 }
