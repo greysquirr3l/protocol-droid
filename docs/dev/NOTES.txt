@@ -1,0 +1,75 @@
+protocol-droid — engineering notes
+=================================
+
+Defects worth remembering, kept in plain text so they survive outside
+PROGRESS.md (which .gitignore keeps local). One entry per defect, newest
+first. Each says what it looked like, what it actually was, and the rule it
+earns — the symptom matters most, because it is what you will meet again.
+
+
+2026-10-09  The `Arc` blanket impl dropped a method, and it read as a hang
+--------------------------------------------------------------------------
+
+SYMPTOM
+
+  Two of the three push tests in tests/http_bridge_push_wire.rs hung past
+  60 seconds. The third failed instantly with "the bridge never opened the
+  upstream's standing stream". Each test had a 5-second budget of its own,
+  so a stall that outlasted that was not the assertion failing.
+
+  It was not a stall. `sample` on the test binary showed 99.7% CPU on one
+  thread; `ps` alone had shown nothing worth noticing.
+
+CAUSE
+
+  The push work added `wait_pending` and `listen` to the `BridgePeer` trait.
+  The blanket `impl<T: BridgePeer + ?Sized> BridgePeer for Arc<T>` forwarded
+  both. It did not forward `take_pending`, so every call through an `Arc`
+  fell through to the trait default and returned `Vec::new()`.
+
+  The two facts are only harmful together. `wait_pending` resolves the moment
+  anything is parked, so the loop woke, called `drain`, found nothing, and
+  re-armed. 15,893,079 iterations for one held frame. Forward either method
+  alone and nothing breaks at all.
+
+WHY IT SURVIVED REVIEW
+
+  The compiler does not require a blanket impl to forward every method. The
+  default is always available and always plausible, so a missing method is
+  indistinguishable from a deliberate delegation. There is no diagnostic, no
+  test failure pointing at the cause, and no warning.
+
+  Worse, the two methods have the same name and opposite jobs — one asks
+  whether there is anything, the other takes it — so reading the forwarding
+  impl does not make the omission jump out.
+
+THE RULE
+
+  A blanket impl over a wrapper is a re-export of EVERY method, not the ones
+  the author happened to be thinking about. When a trait gains a method, the
+  forwarding impl is where the omission hides. Audit it explicitly.
+
+  And when a test "hangs", measure before theorising: `sample <pid>` for a
+  stack, not `ps` for a number. A spin and a deadlock feel identical from the
+  test harness, and they are opposite problems with opposite fixes.
+
+THREE THINGS THAT HID IT HERE
+
+  Each of these would have hidden it from a shorter session, and each is worth
+  its own habit:
+
+  - The test file did not compile. A `borrow of moved value: url` meant every
+    "test run" was executing a stale binary. The failure text on screen was
+    real; the binary producing it was not. A test result is only evidence
+    about the code it was built from — so check that the run actually
+    rebuilt before believing what it says.
+
+  - Two `eprintln!` probes were still in the tree, one of them on
+    `HttpClient::shape`, which is reached on every response. Debug output left
+    in a hot path is both noise and a signal that the session stopped
+    mid-investigation.
+
+  - The first push test raced. It asserted on a counter the bridge increments
+    from a spawned task, with no `await` between the handshake and the read.
+    It could never have been reliable. It now polls within a budget. A test
+    that passes most of the time is a test that has not been debugged.
