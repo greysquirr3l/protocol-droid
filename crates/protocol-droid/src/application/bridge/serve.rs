@@ -35,15 +35,27 @@
 //! **empty** array: "an Array with at least one value" is the requirement, so
 //! `[]` is a single `-32600`, not an empty array back.
 
+use std::future::Future as _;
+use std::task::Poll;
+
 use serde_json::{Map, Value};
 
 use crate::application::bridge::content::ToolResultCodec;
-use crate::application::bridge::forward::{Bridge, BridgeError, BridgePeer};
+use crate::application::bridge::forward::{Bridge, BridgeError, BridgePeer, SendFuture};
 use crate::application::bridge::{DownstreamConfig, negotiate_downstream};
 use crate::application::jsonrpc::{DynFrameSource, SourceError};
 use crate::application::session::{DynFrameSink, SinkError};
 use crate::domain::ir::JsonObject;
 use crate::domain::{Agreement, DegradePolicy, Leg};
+
+/// Which of the two sides had something to say.
+#[derive(Debug)]
+enum Woke {
+    /// The client sent a frame, or `None` once its stream ended.
+    Client(Result<Option<String>, SourceError>),
+    /// The upstream peer has frames parked for the client.
+    Peer,
+}
 
 /// A frame the bridge could not parse at all.
 const PARSE_ERROR: i64 = -32_700;
@@ -115,6 +127,15 @@ pub enum LoopError {
     /// bytes, which is the one place a panic is least defensible.
     #[error("an envelope could not be written as text: {0}")]
     Encode(#[from] serde_json::Error),
+
+    /// The upstream peer's out-of-band channel could not be opened.
+    ///
+    /// Its own variant because it is the one failure here that says nothing
+    /// about the downstream pipe: every request already relayed still works, so
+    /// a caller that wanted a degraded bridge can carry on, and one that did not
+    /// now has the name of the thing that broke.
+    #[error("the upstream peer's push channel could not be opened: {0}")]
+    Listen(#[from] BridgeError),
 }
 
 /// What one envelope produced.
@@ -361,9 +382,47 @@ where
     /// [`LoopReport::failed`].
     pub async fn run(&mut self) -> Result<LoopReport, LoopError> {
         let mut report = LoopReport::default();
-        while let Some(frame) = self.source.next_frame().await? {
-            self.step(&frame, &mut report).await?;
-            self.drain(&mut report).await?;
+        // Once per run, and only after a peer exists: asking before the
+        // handshake would be asking a peer that has no session to open a
+        // stream with.
+        let mut listening = false;
+        loop {
+            if !listening && let Some(peer) = self.peer() {
+                peer.listen().await?;
+                listening = true;
+            }
+            // The pair is polled inside a block so the borrow `next_frame` takes
+            // on the source ends before anything below takes `&mut self`. The
+            // block yields *which* future finished, not the work done in
+            // response; a select whose arms called `step` would need the source
+            // and the whole loop at once, and the borrow checker was right to
+            // refuse.
+            let woke = {
+                let mut pending = std::pin::pin!(self.wait_pending());
+                let mut frame = std::pin::pin!(self.source.next_frame());
+                std::future::poll_fn(|cx| {
+                    if let Poll::Ready(value) = frame.as_mut().poll(cx) {
+                        return Poll::Ready(Woke::Client(value));
+                    }
+                    if pending.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(Woke::Peer);
+                    }
+                    Poll::Pending
+                })
+                .await
+            };
+            match woke {
+                Woke::Client(Ok(Some(frame))) => {
+                    self.step(&frame, &mut report).await?;
+                    self.drain(&mut report).await?;
+                }
+                Woke::Client(Err(error)) => return Err(error.into()),
+                Woke::Client(Ok(None)) => {
+                    self.drain(&mut report).await?;
+                    break;
+                }
+                Woke::Peer => self.drain(&mut report).await?,
+            }
         }
         // The client stopped sending, which says nothing about whether the
         // server had finished pushing. Whatever arrived between the last
@@ -391,6 +450,17 @@ where
             report.relayed = report.relayed.saturating_add(1);
         }
         Ok(())
+    }
+
+    /// A future resolving when the peer has frames parked for the client.
+    ///
+    /// A loop with no peer yet has nothing to wait on, and gets the same
+    /// never-resolving future a peer that opens no standing stream gets.
+    fn wait_pending(&self) -> SendFuture<'static, ()> {
+        self.peer().map_or_else(
+            || Box::pin(std::future::pending()),
+            BridgePeer::wait_pending,
+        )
     }
 
     /// The upstream peer, once a client has connected to it.

@@ -25,7 +25,7 @@ use core::str::FromStr;
 use core::sync::atomic::{AtomicI64, Ordering};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::adapters::primary::transport::http::{SseError, SseEvent};
@@ -226,7 +226,7 @@ pub struct HttpClient {
     /// any number of messages it wanted to send anyway. Those are real
     /// traffic and they are not this request's answer, so they are held here
     /// and handed to the bridge rather than dropped.
-    unsolicited: Unsolicited,
+    pub(crate) unsolicited: Arc<Unsolicited>,
 }
 
 impl HttpClient {
@@ -263,13 +263,13 @@ impl HttpClient {
     /// to validate: the configuration was checked by whoever parsed it, and the
     /// pool is already built.
     #[must_use]
-    pub const fn from_client(inner: reqwest::Client, config: HttpClientConfig) -> Self {
+    pub fn from_client(inner: reqwest::Client, config: HttpClientConfig) -> Self {
         Self {
             inner,
             config,
             session: Mutex::new(None),
             next_id: AtomicI64::new(1),
-            unsolicited: Unsolicited::new(),
+            unsolicited: Arc::new(Unsolicited::new()),
         }
     }
 
@@ -671,10 +671,55 @@ impl HttpClient {
             }
             self.unsolicited.hold(candidate);
         }
+        // No answer owed: this was a notification, so the peer said `202` and
+        // nothing is owed back. Anything it volunteered on the way is held
+        // above. Reaching here means it closed the stream without a frame at
+        // all, which is not a fault in a notification the caller does not read.
+        if wants.is_none() {
+            return Ok(Map::new());
+        }
         // The stream closed without the answer. A peer that stops mid-answer
         // is a transport fault, and reporting it as one keeps a bridge from
         // forwarding a request it can never complete.
         Err(HttpClientError::Unanswered { method: POST })
+    }
+
+    /// Opens the session's standing stream and reads it until the peer ends it.
+    ///
+    /// ## Why a client that only posts needs this
+    ///
+    /// A Streamable HTTP server may push at any time — `list_changed`, a
+    /// sampling request, a log message — on the stream a `GET` opens. A client
+    /// that only ever POSTs never opens one, so those messages have nowhere to
+    /// arrive, and a bridge forwards every request while telling its own client
+    /// nothing. Opening the stream is what makes [`Self::take_pending`] mean
+    /// anything.
+    ///
+    /// The read runs in its own task and parks into the same queue a mid-call
+    /// frame lands in, so a caller cannot tell which of the two produced what,
+    /// and one wait covers both.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpClientError::NoSessionYet`] before a session exists — there is no
+    /// stream to open without one — and any error a `GET` can produce. Failing
+    /// to open is reported rather than swallowed.
+    pub async fn listen(&self) -> Result<(), HttpClientError> {
+        let mut stream = self.open_stream(None, true).await?;
+        let parked = Arc::clone(&self.unsolicited);
+        tokio::spawn(async move {
+            // Ends when the peer closes the stream. No reconnect here:
+            // `resumable` is the read that survives a drop, and re-establishing
+            // a stream is a different decision with its own rules.
+            while let Ok(Some(event)) = stream.next_event().await {
+                // A frame that is not an object is not a JSON-RPC message and
+                // has no shape to forward it in.
+                if let Ok(Value::Object(frame)) = serde_json::from_str(event.data()) {
+                    parked.hold(frame);
+                }
+            }
+        });
+        Ok(())
     }
 
     /// Takes every frame a server volunteered while this client was busy.
@@ -690,6 +735,13 @@ impl HttpClient {
     ) -> Result<HttpResponse, HttpClientError> {
         let shape = Self::shape(&response)?;
         if shape == Shape::Stream {
+            // Refused here, and only here. `read_document` is the caller that
+            // wanted a whole JSON document and would otherwise hand a caller
+            // SSE bytes under a JSON contract. Every other caller that can meet
+            // a stream reads it as one; routing a call through here instead is
+            // how a server that prefers `text/event-stream` — the preference
+            // the specification states — ends up failing a handshake on its
+            // closing notification.
             return Err(media_error(&response));
         }
         let content_type = media_type(&response);
@@ -1136,20 +1188,36 @@ impl ClientTransport for HttpClient {
         let prepared = (|| {
             let id = self.next_request_id();
             let name = MethodName::new(method).map_err(unavailable)?;
-            let document = request_document(&id, &name, params)
-                .map_err(unavailable)?
-                .to_string();
-            Ok::<_, TransportError>((id, document))
+            let document = request_document(&id, &name, params).map_err(unavailable)?;
+            let envelope = document.as_object().cloned().ok_or_else(|| {
+                unavailable(HttpClientError::NotAMessage {
+                    got: document.to_string(),
+                })
+            })?;
+            Ok::<_, TransportError>((id, envelope))
         })();
 
         Box::pin(async move {
-            let (id, document) = prepared?;
-            let response = self
-                .post(document.as_bytes(), false)
+            let (id, envelope) = prepared?;
+            // `post_envelope` rather than `post`, and that choice is the whole
+            // of this method. `post` insists on a whole JSON document, so a
+            // server that answers with an event stream — the shape the
+            // specification prefers, and the one this crate's own server uses —
+            // was rejected outright, and the handshake failed before it began.
+            // Going through the envelope reader also parks anything the server
+            // volunteered on the way, which a client that only read its own
+            // answer had nowhere to put.
+            let reply = self
+                .post_envelope(&envelope)
                 .await
-                .map_err(unavailable)?;
-            let body = std::str::from_utf8(response.body()).map_err(unavailable)?;
-            reply_result(body, &id).map_err(unavailable)
+                .map_err(unavailable)?
+                .ok_or_else(|| unavailable("a request was answered with no body at all"))?;
+            // One re-serialisation to reach the shared `reply_result`, which
+            // speaks strings. Taken deliberately over hand-matching the id and
+            // lifting `result` here: a second implementation of that rule is a
+            // second answer to when a reply counts as this request's.
+            let text = serde_json::to_string(&Value::Object(reply)).map_err(unavailable)?;
+            reply_result(&text, &id).map_err(unavailable)
         })
     }
 
@@ -1170,17 +1238,31 @@ impl ClientTransport for HttpClient {
     ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>> {
         let prepared = (|| {
             let name = MethodName::new(method).map_err(unavailable)?;
-            let document = notification_document(&name, params)
-                .map_err(unavailable)?
-                .to_string();
-            Ok::<_, TransportError>(document)
+            let document = notification_document(&name, params).map_err(unavailable)?;
+            let Some(envelope) = document.as_object().cloned() else {
+                return Err(unavailable(HttpClientError::NotAMessage {
+                    got: document.to_string(),
+                }));
+            };
+            Ok::<_, TransportError>(envelope)
         })();
 
         Box::pin(async move {
             let document = prepared?;
-            self.post(document.as_bytes(), false)
-                .await
-                .map_err(unavailable)?;
+            // `post_envelope` rather than `post`, and this is the notification
+            // half of the same fix `send` needs. `post` reads through
+            // `read_document`, which refuses an event stream — so a server
+            // that answers the closing `notifications/initialized` with one,
+            // which the specification allows it to do, failed the handshake on
+            // its last step.
+            //
+            // The envelope's answer is discarded rather than matched: a
+            // notification has no id, and the specification answers one with
+            // `202` and nothing worth reading. What matters is that the peer
+            // accepted it. A frame the server volunteered on the way back is
+            // not discarded — `post_envelope` holds it, which is the only
+            // reason a client can learn of a push at all.
+            self.post_envelope(&document).await.map_err(unavailable)?;
             Ok(())
         })
     }

@@ -156,6 +156,12 @@ where
     fn take_pending(&self) -> Vec<Map<String, Value>> {
         Self::take_pending(self)
     }
+
+    fn wait_pending(&self) -> SendFuture<'static, ()> {
+        // The queue is where the frames are, so waiting on the queue is
+        // waiting on the peer.
+        Box::pin(self.unsolicited.wait())
+    }
 }
 
 /// Reads one frame the child wrote, if it is a JSON-RPC message at all.

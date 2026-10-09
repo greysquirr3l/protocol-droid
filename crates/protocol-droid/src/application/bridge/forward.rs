@@ -178,6 +178,47 @@ pub trait BridgePeer: Send + Sync {
     fn take_pending(&self) -> Vec<Map<String, Value>> {
         Vec::new()
     }
+
+    /// Resolves once the peer may have something for
+    /// [`take_pending`](Self::take_pending).
+    ///
+    /// ## Why the default never resolves
+    ///
+    /// A peer that opens no standing stream learns of a frame only while a call
+    /// is in flight, so by the time a caller could wait there is nothing new
+    /// and a wake-up would be a lie. Returning a future that never resolves
+    /// leaves the caller exactly where it was. An adapter that *does* read out
+    /// of band overrides this, and a caller waiting on it stops depending on
+    /// the client speaking first.
+    ///
+    /// `'static` rather than borrowing: the caller polls this alongside a
+    /// future borrowing its own source, and a borrow here would pin the peer
+    /// for the whole of that pair.
+    fn wait_pending(&self) -> SendFuture<'static, ()> {
+        Box::pin(std::future::pending())
+    }
+
+    /// Starts delivering frames the peer pushes on its own.
+    ///
+    /// ## Why this is separate from `wait_pending`
+    ///
+    /// Waiting and reading are different promises. A peer that only learns of a
+    /// frame mid-call has nothing to wait *for*; a peer whose transport carries
+    /// an out-of-band stream has to actually open it, and the caller cannot
+    /// tell which it was handed. So the caller asks once, after the peer
+    /// exists, and a peer that needs nothing says so.
+    ///
+    /// The default succeeds without doing anything, which is the true answer
+    /// for a peer that pushes only in response to a call.
+    ///
+    /// # Errors
+    ///
+    /// [`BridgeError::Unreachable`] when the out-of-band channel could not be
+    /// opened. Reported rather than swallowed: a caller that believes it is
+    /// listening and is not is a caller silently dropping traffic.
+    fn listen(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// A shared peer.
@@ -204,6 +245,25 @@ impl<T: BridgePeer + ?Sized> BridgePeer for std::sync::Arc<T> {
 
     fn close(&self) -> SendFuture<'_, Result<(), BridgeError>> {
         (**self).close()
+    }
+
+    fn wait_pending(&self) -> SendFuture<'static, ()> {
+        (**self).wait_pending()
+    }
+
+    /// Forwarded, and not left to the trait default.
+    ///
+    /// Without this the queue is never drained through an `Arc`, while
+    /// `wait_pending` still resolves the moment anything is held — so the loop
+    /// wakes, finds nothing, and wakes again. That is a spin at full speed
+    /// rather than a stall, which is the worst of the two: it starves the
+    /// runtime and the frames it was woken for are never delivered.
+    fn take_pending(&self) -> Vec<Map<String, Value>> {
+        (**self).take_pending()
+    }
+
+    fn listen(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+        (**self).listen()
     }
 }
 

@@ -47,7 +47,7 @@ pub struct LegacySsePeer {
 impl LegacySsePeer {
     /// Wraps a connected client.
     #[must_use]
-    pub const fn new(inner: Arc<LegacySseClient>) -> Self {
+    pub fn new(inner: Arc<LegacySseClient>) -> Self {
         Self {
             inner,
             unsolicited: Unsolicited::new(),
@@ -162,6 +162,12 @@ impl BridgePeer for LegacySsePeer {
     /// see [`send`](Self::send).
     fn take_pending(&self) -> Vec<Map<String, Value>> {
         Self::take_pending(self)
+    }
+
+    fn wait_pending(&self) -> SendFuture<'static, ()> {
+        // The queue is where the frames are, so waiting on the queue is
+        // waiting on the peer.
+        Box::pin(self.unsolicited.wait())
     }
 }
 

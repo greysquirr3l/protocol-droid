@@ -20,7 +20,10 @@
 //! discarded* is a property of the bridge, not of HTTP.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 use serde_json::{Map, Value};
 
@@ -30,15 +33,53 @@ use serde_json::{Map, Value};
 /// polls in a loop should get each one exactly once.
 #[derive(Debug, Default)]
 pub struct Unsolicited {
-    frames: Mutex<VecDeque<Map<String, Value>>>,
+    /// The frames and the wakers together, under one lock.
+    ///
+    /// Together because "is the queue empty, and if so park me" has to be one
+    /// atomic step. With the queue and the waker list under separate locks a
+    /// frame could land between the check and the park, and the waker that
+    /// would have been told about it is the one just stored.
+    inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    frames: VecDeque<Map<String, Value>>,
+    wakers: Vec<Waker>,
+}
+
+/// Resolves once something has been parked in an [`Unsolicited`].
+#[derive(Debug)]
+struct Pending {
+    inner: Arc<Mutex<Inner>>,
+}
+
+impl Future for Pending {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let Ok(mut inner) = self.inner.lock() else {
+            // A poisoned lock means the queue is unreadable, so waiting on it
+            // is waiting forever. Resolving lets the caller drain, see
+            // nothing, and carry on — which beats hanging.
+            return Poll::Ready(());
+        };
+        if !inner.frames.is_empty() {
+            return Poll::Ready(());
+        }
+        if !inner.wakers.iter().any(|held| held.will_wake(cx.waker())) {
+            inner.wakers.push(cx.waker().clone());
+        }
+        Poll::Pending
+    }
 }
 
 impl Unsolicited {
     /// An empty queue.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            frames: Mutex::new(VecDeque::new()),
+            inner: Arc::new(Mutex::new(Inner::default())),
         }
     }
 
@@ -49,25 +90,48 @@ impl Unsolicited {
     /// act on a queue fault; the alternative — panicking — would take the
     /// bridge down over a bookkeeping problem.
     pub fn hold(&self, frame: Map<String, Value>) {
-        let Ok(mut queued) = self.frames.lock() else {
-            return;
-        };
-        queued.push_back(frame);
+        let mut wakers = Vec::new();
+        {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            inner.frames.push_back(frame);
+            wakers.append(&mut inner.wakers);
+        }
+        // Woken outside the lock: a woken task polled straight away takes this
+        // lock, and holding it across `wake` is how a wake-up becomes a stall.
+        for waker in wakers {
+            waker.wake();
+        }
     }
 
     /// Takes everything held so far, leaving the queue empty.
     #[must_use]
     pub fn take(&self) -> Vec<Map<String, Value>> {
-        let Ok(mut queued) = self.frames.lock() else {
-            return Vec::new();
-        };
-        queued.drain(..).collect()
+        self.inner
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut inner| inner.frames.drain(..).collect())
+    }
+
+    /// Resolves once something has been parked here.
+    ///
+    /// A queue that is already non-empty resolves on the first poll, which is
+    /// what stops a caller parking a frame between its own `take` and its first
+    /// poll from waiting for a wake-up that has already happened.
+    ///
+    /// No `#[must_use]` here: the returned future is itself `#[must_use]`, so
+    /// a second copy of the attribute adds nothing this signature does not
+    /// already say.
+    pub fn wait(&self) -> impl Future<Output = ()> + Send + 'static {
+        Pending {
+            inner: Arc::clone(&self.inner),
+        }
     }
 
     /// How many frames are waiting.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.frames.lock().map_or(0, |queued| queued.len())
+        self.inner.lock().map_or(0, |inner| inner.frames.len())
     }
 
     /// Whether nothing is waiting.

@@ -76,6 +76,25 @@ impl BridgePeer for HttpClient {
         Self::take_pending(self)
     }
 
+    fn wait_pending(&self) -> SendFuture<'static, ()> {
+        // The queue is where the frames are, so waiting on the queue is
+        // waiting on the peer. Nothing else to poll.
+        Box::pin(self.unsolicited.wait())
+    }
+
+    /// Opens the upstream's standing stream.
+    ///
+    /// This is the half that makes a server-initiated message reach the client
+    /// at all: without it the client POSTs, the server answers, and anything
+    /// the server volunteers in between goes to nobody.
+    fn listen(&self) -> SendFuture<'_, Result<(), BridgeError>> {
+        Box::pin(async move {
+            Self::listen(self)
+                .await
+                .map_err(|error| unreachable(&error))
+        })
+    }
+
     fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async move {
             self.notify_envelope(&envelope)
