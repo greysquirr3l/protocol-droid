@@ -68,6 +68,14 @@ impl BridgePeer for HttpClient {
     /// # Errors
     ///
     /// [`BridgeError::Unreachable`] when the request could not be completed.
+    /// The inherent `take_pending` and not this one, which is what an
+    /// unqualified `Self::` resolves to. Naming it here because a reader
+    /// seeing the same method name twice has no other way to tell the two
+    /// apart.
+    fn take_pending(&self) -> Vec<Map<String, Value>> {
+        Self::take_pending(self)
+    }
+
     fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async move {
             self.notify_envelope(&envelope)

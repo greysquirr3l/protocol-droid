@@ -98,6 +98,17 @@ pub enum HttpClientError {
         /// What came back, truncated to something loggable.
         got: String,
     },
+    /// The peer's stream closed without the answer this request was waiting on.
+    ///
+    /// Its own variant because a stream that ends is a different fault from one
+    /// that never began: the first means the peer accepted the request and
+    /// stopped talking, and a bridge reporting it as a transport error tells
+    /// the client something true about a request the server did receive.
+    #[error("the {method} stream closed before the answer arrived")]
+    Unanswered {
+        /// The request that was left unanswered.
+        method: &'static str,
+    },
     /// A body could not be encoded for sending, or a reply body could not be
     /// read back as JSON.
     ///

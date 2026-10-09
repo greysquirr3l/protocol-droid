@@ -29,6 +29,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::adapters::primary::transport::http::{SseError, SseEvent};
+use crate::application::bridge::Unsolicited;
 use crate::application::client::{ClientTransport, TransportError};
 use crate::application::jsonrpc::document::{
     notification_document, reply_result, request_document,
@@ -218,6 +219,14 @@ pub struct HttpClient {
     /// reproducible as its configuration, and two requests in flight on one
     /// client can never collide.
     next_id: AtomicI64,
+    /// Frames a server volunteered on a response body this client was reading
+    /// for something else.
+    ///
+    /// A server may answer one `POST` with a stream carrying the reply *and*
+    /// any number of messages it wanted to send anyway. Those are real
+    /// traffic and they are not this request's answer, so they are held here
+    /// and handed to the bridge rather than dropped.
+    unsolicited: Unsolicited,
 }
 
 impl HttpClient {
@@ -260,6 +269,7 @@ impl HttpClient {
             config,
             session: Mutex::new(None),
             next_id: AtomicI64::new(1),
+            unsolicited: Unsolicited::new(),
         }
     }
 
@@ -367,8 +377,24 @@ impl HttpClient {
             what: "encoded",
             detail: error.to_string(),
         })?;
-        let response = self.post(&body, false).await?;
-        let raw = response.body();
+        // `send` rather than `post`, because `post` insists on a whole
+        // document. The specification lets a server answer a `POST` with
+        // either a JSON document or an event stream, and insisting on the
+        // first here failed every request against a server that chose the
+        // second — which is the choice the specification prefers.
+        let response = self.send(POST, &body, false).await?;
+        let wants = envelope.get("id").cloned();
+        if Self::shape(&response)? == Shape::Stream {
+            return self.read_streamed(response, wants.as_ref()).await.map(Some);
+        }
+        let raw = response
+            .bytes()
+            .await
+            .map_err(|error| HttpClientError::Io {
+                method: POST,
+                error,
+            })?;
+        let raw: &[u8] = &raw;
 
         // A notification is answered with a `202` and no body. `None` is the
         // honest reading: the peer said "received" and sent nothing back.
@@ -624,6 +650,39 @@ impl HttpClient {
     }
 
     /// Turns a `2xx` into a fully-read document.
+    /// Reads a streamed answer, holding everything that was not the reply.
+    ///
+    /// The stream is a sequence of messages and the request has one id, so
+    /// this reads until it sees that id and holds the rest. A frame that is
+    /// not a JSON-RPC object at all is dropped rather than held: there is no
+    /// shape downstream could forward it in.
+    async fn read_streamed(
+        &self,
+        response: reqwest::Response,
+        wants: Option<&Value>,
+    ) -> Result<Map<String, Value>, HttpClientError> {
+        let mut stream = HttpStream::new(response);
+        while let Some(event) = stream.next_event().await? {
+            let Ok(Value::Object(candidate)) = serde_json::from_str(event.data()) else {
+                continue;
+            };
+            if candidate.get("id") == wants {
+                return Ok(candidate);
+            }
+            self.unsolicited.hold(candidate);
+        }
+        // The stream closed without the answer. A peer that stops mid-answer
+        // is a transport fault, and reporting it as one keeps a bridge from
+        // forwarding a request it can never complete.
+        Err(HttpClientError::Unanswered { method: POST })
+    }
+
+    /// Takes every frame a server volunteered while this client was busy.
+    #[must_use]
+    pub fn take_pending(&self) -> Vec<Map<String, Value>> {
+        self.unsolicited.take()
+    }
+
     async fn read_document(
         &self,
         response: reqwest::Response,
