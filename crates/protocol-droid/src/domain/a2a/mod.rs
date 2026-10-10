@@ -22,7 +22,9 @@
 //! the same way it does for MCP.
 
 pub mod agent_card;
+pub mod extended_agent_card;
 pub mod feature;
+pub mod list_tasks;
 pub mod message;
 pub mod push_notification;
 pub mod push_notification_methods;
@@ -39,6 +41,10 @@ pub use agent_card::{
     AgentCapabilities, AgentCard, AgentCardBuilder, AgentCardError, AgentInterface,
     AgentSkill, ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
 };
+pub use extended_agent_card::{
+    GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
+};
+pub use list_tasks::{ListTasksRequest, ListTasksResponse};
 pub use message::{DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart};
 pub use push_notification::{
     PushNotificationAuthenticationInfo, TaskPushNotificationConfig,
