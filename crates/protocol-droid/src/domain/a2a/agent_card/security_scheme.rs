@@ -35,18 +35,17 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// An authentication or authorization scheme the agent
 /// declares.
 ///
 /// The wire form is `OpenAPI 3.x`: a single JSON object
 /// with a `type` field that names the variant. The five
-/// variants map to the proto's `oneof scheme`; the
-/// previous commit shipped the two simple ones
-/// ([`ApiKey`](Self::ApiKey) and [`Http`](Self::Http)),
-/// this commit adds [`OAuth2`](Self::OAuth2). The
-/// remaining two — `OpenID Connect` and `mutual TLS` —
-/// land in their own commits.
+/// variants map to the proto's `oneof scheme`; this
+/// commit ships the final two, [`OpenIdConnect`](Self::OpenIdConnect)
+/// and [`MutualTls`](Self::MutualTls), completing the
+/// set the spec names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SecurityScheme {
@@ -68,6 +67,55 @@ pub enum SecurityScheme {
     /// `Http` variants are forty.
     #[serde(rename = "oauth2")]
     OAuth2(Box<super::oauth_flow::OAuth2SecurityScheme>),
+    /// `OpenID Connect` authentication (the discovery
+    /// URL is the entry point the client fetches to
+    /// learn the OAuth 2 endpoints the OIDC provider
+    /// supports).
+    #[serde(rename = "openIdConnect")]
+    OpenIdConnect(OpenIdConnectSecurityScheme),
+    /// Mutual TLS authentication (RFC 8705). The agent
+    /// authenticates the client by validating the
+    /// client's X.509 certificate against a configured
+    /// trust anchor; no per-request credentials are
+    /// sent.
+    #[serde(rename = "mutualTls")]
+    MutualTls(MutualTlsSecurityScheme),
+}
+
+/// An `OpenID Connect` discovery scheme.
+///
+/// The wire form is `OpenAPI 3.x`'s: a JSON object with
+/// `type: "openIdConnect"` and an `openIdConnectUrl`
+/// the client uses to discover the provider's
+/// configuration (per the
+/// `OpenID Connect Discovery 1.0` spec).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenIdConnectSecurityScheme {
+    /// An optional human-readable description of the
+    /// scheme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Arc<str>>,
+    /// The `OpenID Connect` discovery URL. REQUIRED.
+    pub open_id_connect_url: Url,
+}
+
+/// A mutual-TLS authentication scheme (RFC 8705).
+///
+/// The wire form is `OpenAPI 3.x`'s: a JSON object with
+/// `type: "mutualTls"` and an optional description.
+/// The client presents an X.509 certificate at TLS
+/// handshake; the agent validates the certificate
+/// against its configured trust anchors. No per-request
+/// `Authorization` header is sent — the TLS handshake
+/// is the authentication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutualTlsSecurityScheme {
+    /// An optional human-readable description of the
+    /// scheme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Arc<str>>,
 }
 
 /// An API-key-based authentication scheme.
@@ -140,7 +188,10 @@ pub struct HTTPAuthSecurityScheme {
 mod tests {
     use std::sync::Arc;
 
-    use super::{APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, SecurityScheme};
+    use super::{
+        APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, MutualTlsSecurityScheme,
+        OpenIdConnectSecurityScheme, SecurityScheme,
+    };
 
     type TestError = Box<dyn std::error::Error>;
 
@@ -239,6 +290,80 @@ mod tests {
             scheme: Arc::from("Basic"),
             bearer_format: None,
         });
+        let json = serde_json::to_string(&scheme)?;
+        let parsed: SecurityScheme = serde_json::from_str(&json)?;
+        assert_eq!(parsed, scheme);
+        Ok(())
+    }
+
+    // --- `OpenIdConnect` ---------------------------------------------
+
+    #[test]
+    fn open_id_connect_serialises_with_openapi_wire_form() -> Result<(), TestError> {
+        let scheme = SecurityScheme::OpenIdConnect(OpenIdConnectSecurityScheme {
+            description: Some(Arc::from("Login with the corporate OIDC provider.")),
+            open_id_connect_url: url::Url::parse(
+                "https://auth.example.com/.well-known/openid-configuration",
+            )?,
+        });
+        let value = serde_json::to_value(&scheme)?;
+        let Some(obj) = value.as_object() else {
+            return Err("a SecurityScheme must serialise to a JSON object"
+                .to_owned()
+                .into());
+        };
+        assert_eq!(
+            obj.get("type").and_then(serde_json::Value::as_str),
+            Some("openIdConnect"),
+            "the type field must be the OpenAPI literal \"openIdConnect\""
+        );
+        assert_eq!(
+            obj.get("openIdConnectUrl").and_then(serde_json::Value::as_str),
+            Some("https://auth.example.com/.well-known/openid-configuration")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn open_id_connect_round_trips_through_serde() -> Result<(), TestError> {
+        let scheme = SecurityScheme::OpenIdConnect(OpenIdConnectSecurityScheme {
+            description: None,
+            open_id_connect_url: url::Url::parse("https://auth.example.com/.well-known/openid-configuration")?,
+        });
+        let json = serde_json::to_string(&scheme)?;
+        let parsed: SecurityScheme = serde_json::from_str(&json)?;
+        assert_eq!(parsed, scheme);
+        Ok(())
+    }
+
+    // --- `MutualTls` -------------------------------------------------
+
+    #[test]
+    fn mutual_tls_serialises_with_openapi_wire_form() -> Result<(), TestError> {
+        let scheme = SecurityScheme::MutualTls(MutualTlsSecurityScheme {
+            description: Some(Arc::from("Client certs validated against the corporate CA.")),
+        });
+        let value = serde_json::to_value(&scheme)?;
+        let Some(obj) = value.as_object() else {
+            return Err("a SecurityScheme must serialise to a JSON object"
+                .to_owned()
+                .into());
+        };
+        assert_eq!(
+            obj.get("type").and_then(serde_json::Value::as_str),
+            Some("mutualTls"),
+            "the type field must be the OpenAPI literal \"mutualTls\""
+        );
+        assert_eq!(
+            obj.get("description").and_then(serde_json::Value::as_str),
+            Some("Client certs validated against the corporate CA.")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mutual_tls_round_trips_through_serde() -> Result<(), TestError> {
+        let scheme = SecurityScheme::MutualTls(MutualTlsSecurityScheme { description: None });
         let json = serde_json::to_string(&scheme)?;
         let parsed: SecurityScheme = serde_json::from_str(&json)?;
         assert_eq!(parsed, scheme);

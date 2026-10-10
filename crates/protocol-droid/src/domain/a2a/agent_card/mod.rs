@@ -56,7 +56,8 @@ pub use oauth_flow::{
     OAuth2SecurityScheme, OAuthFlows,
 };
 pub use security_scheme::{
-    APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, SecurityScheme,
+    APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, MutualTlsSecurityScheme,
+    OpenIdConnectSecurityScheme, SecurityScheme,
 };
 pub use types::{
     AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,

@@ -244,6 +244,16 @@ impl AgentCardBuilder {
                         });
                     }
                 }
+                SecurityScheme::OpenIdConnect(_)
+                | SecurityScheme::MutualTls(_) => {
+                    // OpenIdConnectSecurityScheme has no
+                    // builder-time invariants beyond the
+                    // required `open_id_connect_url`, which
+                    // is enforced by `url::Url::parse` at the
+                    // call site. MutualTlsSecurityScheme has
+                    // no required fields at all. Both are
+                    // accepted as-is.
+                }
             }
         }
         Ok(AgentCard {
