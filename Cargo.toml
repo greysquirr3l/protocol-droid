@@ -21,6 +21,26 @@ members = [
     "xtask",
 ]
 
+# Crates that live inside the workspace's directory tree but should
+# not be workspace members. Each one is a transient interop or
+# fixture crate with its own resolver, so the workspace's pinned
+# versions do not leak into it.
+#
+# `crates/protocol-droid/tests/interop_rmcp` is the T22 interop
+# test crate for `rmcp`; pinning it at a fixed rmcp version
+# (`=3.5.1`) would otherwise pin every workspace member too.
+#
+# `crates/protocol-droid/tests/interop_ts_sdk` is the T22 interop
+# test crate for the official TypeScript MCP SDK
+# (`@modelcontextprotocol/sdk`). It is the same shape as
+# `interop_rmcp` but with a `node_modules/` sub-tree populated
+# by `npm install`; the Cargo side is small and the
+# `package-lock.json` is the contract that pins the SDK.
+exclude = [
+    "crates/protocol-droid/tests/interop_rmcp",
+    "crates/protocol-droid/tests/interop_ts_sdk",
+]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

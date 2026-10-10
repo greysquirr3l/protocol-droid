@@ -1,0 +1,14 @@
+{
+  "name": "protocol-droid-interop-ts-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript MCP SDK fixtures driven by the protocol-droid interop test crate. Not a workspace package — this is a fixture for `cargo test -p interop-ts-sdk` to spawn.",
+  "scripts": {
+    "server": "node server.mjs",
+    "client": "node client.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}

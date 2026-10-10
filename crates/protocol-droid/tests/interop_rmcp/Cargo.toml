@@ -1,0 +1,124 @@
+[package]
+# Interop test crate for `rmcp` (the official Rust MCP SDK). NOT a workspace
+# member — the workspace's `members = [...]` in the root `Cargo.toml`
+# `exclude`s this directory on purpose: a transient dev-only crate pulling
+# `rmcp`, `oauth2`, `sse-stream`, and friends should not widen the
+# resolver's dependency closure every workspace member has to be built
+# against.
+#
+# The crate is invoked by hand (`cargo test -p interop-rmcp` from inside
+# this directory) and by the CI matrix in
+# `.github/workflows/conformance.yml`. It is not part of
+# `cargo test --workspace`; a publisher never sees it; a consumer never
+# has to think about it.
+#
+# `name` is unique on crates.io because the crate never publishes; the
+# surface stays local.
+name = "interop-rmcp"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+# The empty `[workspace]` table opts this manifest out of the parent
+# workspace's resolver and members list. `package.workspace = ".."`
+# alone is not enough — cargo's package-belongs-to-workspace test is
+# the *presence* of a parent workspace, not the parent's membership
+# decision, and the only signal cargo accepts from the package is a
+# `[workspace]` table of its own. The table is empty by design: the
+# interop crate owns its own resolver and its own member list (itself,
+# alone).
+[workspace]
+
+
+[lib]
+name = "interop_rmcp"
+path = "src/lib.rs"
+
+[[bin]]
+# The rmcp-server binary the protocol-droid `StdioClient` drives. Spawned
+# by `pd_client_to_rmcp_server` as a child process; the test then talks
+# JSON-RPC over its stdin/stdout and asserts the round trip.
+name = "rmcp_stdio_server"
+path = "src/bin/rmcp_stdio_server.rs"
+
+[dependencies]
+# Pinned with `=` per the T22 task. The pin guards against an unexpected
+# `rmcp` minor release that silently changes the wire shape of a method
+# the matrix asserts. Bumping the pin is a deliberate refresh, not a
+# silent upgrade; the new versions go through the same tests and the
+# same `ALLOWLIST.md` discipline as the conformance suite pin.
+#
+# Features are the minimum the matrix needs:
+# - `server` brings in `ToolRouter`, `#[tool_router]`, `#[tool_handler]`,
+#   `ServerHandler`, and the schemars dep that the `#[tool]` macro
+#   leans on. Default-on, kept explicit so a `rmcp` default-feature
+#   change does not silently widen this crate's resolver.
+# - `transport-io` brings in `transport::io::stdio()`, the only
+#   transport the cross-test's stdio leg needs. Without it the
+#   module is `cfg`-ed out and the import fails.
+rmcp = { version = "=3.5.1", default-features = false, features = [
+    "server",
+    "client",
+    "macros",
+    "transport-io",
+    "transport-child-process",
+] }
+rmcp-macros = "=3.5.1"
+
+# Path dep, not workspace dep, so the interop crate is independent of
+# the workspace's resolver. The path is the relative route from this
+# crate to the library it cross-tests.
+protocol-droid = { path = "../.." }
+
+# The protocol-droid test surface uses the same runtime the library
+# uses, so the matrix test does not introduce a new tokio feature
+# surface for the resolver to argue about.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
+
+# `serde` and `serde_json` are already in the workspace's transitive
+# closure through `protocol-droid`, so pinning them here is just a
+# local readability choice — a reader can see the wire types the test
+# round-trips without having to look them up.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# `anyhow` is the binary crate's error type, and the `Failure`
+# `From<anyhow::Error>` impl in the test crate is the bridge
+# between the two error vocabularies. Putting it in `[dependencies]`
+# rather than `[dev-dependencies]` is what makes the `impl` visible
+# to the lib's callers.
+anyhow = "1"
+
+[lints.rust]
+warnings = "deny"
+missing_docs = "deny"
+uninhabited_static = "deny"
+ambiguous_glob_imported_traits = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
+# Same hard denies as the workspace: a non-workspace crate cannot
+# inherit the lints section, so they are repeated here. A drift
+# between the two is a `cargo l` failure on the workspace, which is
+# exactly the safety net the rule is for.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+suspicious = { level = "deny", priority = -1 }
+
+# The same tolerances the workspace allows; keeping the list identical
+# is what makes a `deny` on the workspace mean the same thing as
+# `deny` here.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+struct_excessive_bools = "allow"
+multiple_crate_versions = "allow"

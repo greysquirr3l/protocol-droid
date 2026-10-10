@@ -1493,10 +1493,7 @@ name = "protocol-droid-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
- "protocol-droid",
  "quote",
- "schemars",
- "serde",
  "syn 3.0.6",
 ]
 

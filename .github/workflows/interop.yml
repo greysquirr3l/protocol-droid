@@ -1,0 +1,191 @@
+name: Interop
+
+# Differential interop between `protocol-droid` and the two SDKs
+# consumer projects most often pair it with: the official Rust MCP
+# SDK (`rmcp`) and the official TypeScript MCP SDK
+# (`@modelcontextprotocol/sdk`). Companion to the conformance
+# workflow: where conformance is the *one* SDK this project tests
+# against directly, this workflow tests against the SDKs a
+# consumer will reach for, and a regression in either direction
+# fails the run.
+#
+# # What this matrix exercises
+#
+# Two jobs, each with two directions:
+#
+# `rmcp`:
+#   1. `protocol-droid` client → `rmcp` server (spawned as a child
+#      from the interop crate's `rmcp_stdio_server` binary)
+#   2. `rmcp` client → `protocol-droid` server (spawned from
+#      `protocol-droid`'s `stdio_server` example)
+#
+# `ts-sdk`:
+#   1. `protocol-droid` client → TS SDK server (`node` driving
+#      `fixtures/server.mjs`, which uses the SDK's `Server` class)
+#   2. TS SDK client → `protocol-droid` server (`node` driving
+#      `fixtures/client.mjs`, which uses the SDK's `Client` class
+#      and is spawned with `protocol-droid`'s `stdio_server`
+#      example as its child)
+#
+# The intersection of revisions is the matrix for each leg.
+# Bumping an SDK's supported set in a future pin is the signal
+# to revisit the matrix in that leg.
+#
+# # Why a separate workflow, not a leg of the conformance workflow
+#
+# The interop crates are NOT workspace members: they live under
+# `crates/protocol-droid/tests/interop_*`, are excluded from the
+# workspace's `members`, and pin their third-party deps so a
+# transient upgrade does not silently widen the workspace's
+# resolver. Running each leg through a separate job is the
+# cheapest expression of that separation, and a regression in
+# one leg does not block the others from running.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege. Nothing here needs write access.
+permissions:
+  contents: read
+
+# A new push to a branch supersedes the run already in flight for that branch.
+concurrency:
+  group: interop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Match the toolchain the workspace pins.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.1"
+  RUST_BACKTRACE: 1
+
+jobs:
+  rmcp:
+    name: rmcp ${{ matrix.direction }} interop
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        direction:
+          - pd-client-to-rmcp-server
+          - rmcp-client-to-pd-server
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      # The interop crate spawns the protocol-droid `stdio_server`
+      # example as a child process, so the example must be built before
+      # the test runs. Building it in the workspace target puts the
+      # binary at the path the interop test resolves from
+      # `CARGO_MANIFEST_DIR`/`CARGO_TARGET_DIR`/`PROFILE`.
+      - name: Build the protocol-droid stdio_server example
+        run: cargo build --example stdio_server -p protocol-droid
+      - name: Run interop ${{ matrix.direction }} matrix
+        run: |
+          case "${{ matrix.direction }}" in
+            pd-client-to-rmcp-server)
+              cargo test --manifest-path crates/protocol-droid/tests/interop_rmcp/Cargo.toml \
+                --test pd_client_to_rmcp_server
+              ;;
+            rmcp-client-to-pd-server)
+              cargo test --manifest-path crates/protocol-droid/tests/interop_rmcp/Cargo.toml \
+                --test rmcp_client_to_pd_server
+              ;;
+            *)
+              echo "unknown direction: ${{ matrix.direction }}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Upload interop findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-${{ matrix.direction }}-findings
+          path: |
+            crates/protocol-droid/tests/interop_rmcp/FINDINGS.md
+          if-no-files-found: ignore
+  ts-sdk:
+    name: ts-sdk ${{ matrix.direction }} interop
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        direction:
+          - pd-client-to-ts-server
+          - ts-client-to-pd-server
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Install Node.js
+        # 20.x is the LTS line the `@modelcontextprotocol/sdk` 1.32.1
+        # packages target; a 22+ runner also works, but pinning the
+        # matrix's Node version is what makes a green CI run on
+        # Monday a green run on Tuesday.
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      # The interop crate spawns the protocol-droid `stdio_server`
+      # example as a child process, so the example must be built
+      # before the test runs. Building it in the workspace target
+      # puts the binary at the path the interop test resolves
+      # from `CARGO_MANIFEST_DIR`/`CARGO_TARGET_DIR`/`PROFILE`.
+      - name: Build the protocol-droid stdio_server example
+        run: cargo build --example stdio_server -p protocol-droid
+      # The TS SDK is fetched with `npm ci` against the committed
+      # `fixtures/package-lock.json` (or `fixtures/package.json`
+      # if no lockfile is present) into `fixtures/node_modules/`.
+      # `npm ci` is what the matrix's reproducibility contract
+      # rests on: a green run on Monday and a red run on Tuesday
+      # with no committed change would mean the lockfile is
+      # out of date, not that the network delivered a different
+      # SDK.
+      - name: Install the TS SDK fixture
+        working-directory: crates/protocol-droid/tests/interop_ts_sdk/fixtures
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run interop ${{ matrix.direction }} matrix
+        run: |
+          case "${{ matrix.direction }}" in
+            pd-client-to-ts-server)
+              cargo test --manifest-path crates/protocol-droid/tests/interop_ts_sdk/Cargo.toml \
+                --test pd_client_to_ts_server
+              ;;
+            ts-client-to-pd-server)
+              cargo test --manifest-path crates/protocol-droid/tests/interop_ts_sdk/Cargo.toml \
+                --test ts_client_to_pd_server
+              ;;
+            *)
+              echo "unknown direction: ${{ matrix.direction }}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Upload interop findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-ts-${{ matrix.direction }}-findings
+          path: |
+            crates/protocol-droid/tests/interop_ts_sdk/FINDINGS.md
+          if-no-files-found: ignore

@@ -16,6 +16,25 @@ capabilities/
 
 # Rust build artifacts
 /target/
+# `crates/protocol-droid/tests/interop_rmcp/` is a *non-workspace*
+# crate with its own resolver and its own `target/` directory.
+# The root-only `/target/` rule above does not match it, and a
+# `git add` of the interop source would otherwise drag the
+# cargo fingerprint cache in with it. The leading-`/` and
+# non-leading-`/` pair is what the project standard is for
+# "ignore the workspace target and ignore every nested one too"
+# — the root rule keeps the workspace's own `target/` out, this
+# one catches the rest.
+target/
+
+# Node modules for the interop-ts-sdk fixtures. The fixtures
+# `package.json` is the contract; `node_modules/` is the
+# resolution of that contract on the developer's machine. CI
+# populates it via `npm install` in the same step that runs
+# the cross-test, so a committed copy would be both redundant
+# and a way for a stale tree to silently replace the lockfile.
+node_modules/
+
 **/*.rs.bk
 
 # Repo Temporary files
