@@ -37,4 +37,12 @@ pub enum AgentCardError {
     /// The provider's organization was empty.
     #[error("AgentCard.provider.organization must be non-empty")]
     EmptyProviderOrganization,
+    /// A protocol extension was given an empty uri or description.
+    #[error("AgentCard.capabilities.extensions[{index}].{field} must be non-empty")]
+    EmptyExtensionField {
+        /// The extension's position in `capabilities.extensions`.
+        index: usize,
+        /// The empty field, one of `uri`, `description`.
+        field: &'static str,
+    },
 }

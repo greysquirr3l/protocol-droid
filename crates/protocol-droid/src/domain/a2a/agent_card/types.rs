@@ -113,12 +113,49 @@ pub struct AgentInterface {
     pub tenant: Option<Arc<str>>,
 }
 
+/// A declaration of a protocol extension the agent supports.
+///
+/// A2A v1.0 §6 reserves a set of extension URIs for
+/// protocol-level additions (e.g. `audio-input`, `video-input`,
+/// agent-to-agent routing). An agent declares the extensions it
+/// honours through [`AgentCapabilities::extensions`]; a client
+/// can read the list to decide which features to surface.
+///
+/// The `params` field carries extension-specific configuration
+/// — a `google.protobuf.Struct` is a JSON object, modelled here
+/// as `serde_json::Map` for round-tripping without an additional
+/// dep on the protobuf crate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExtension {
+    /// The unique URI identifying the extension. REQUIRED,
+    /// non-empty.
+    pub uri: Arc<str>,
+    /// A human-readable description of how the agent uses the
+    /// extension. REQUIRED, non-empty.
+    pub description: Arc<str>,
+    /// If `true`, the client **must** understand and comply
+    /// with the extension's requirements. A client that does
+    /// not understand a required extension must refuse to
+    /// interact with the agent.
+    #[serde(default)]
+    pub required: bool,
+    /// Extension-specific configuration parameters. `None`
+    /// when the extension has no params; an empty object
+    /// (`Some({})`) when the extension defines a params schema
+    /// with no values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 /// The capability set the agent advertises.
 ///
-/// All three booleans are optional in the proto (their absence
-/// is equivalent to `false`), but the struct itself is required
-/// — every card has a `capabilities` field, even if the value is
-/// the default "none of the optional things are on".
+/// The three booleans are optional in the proto (their absence
+/// is equivalent to `false`), and the `extensions` list is the
+/// protocol-extension declaration. The struct itself is
+/// required — every card has a `capabilities` field, even if
+/// the value is the default "none of the optional things are
+/// on".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilities {
@@ -134,6 +171,12 @@ pub struct AgentCapabilities {
     /// the push-notification port consults.
     #[serde(default)]
     pub push_notifications: bool,
+    /// The protocol extensions the agent supports. The list is
+    /// always serialised (the spec marks the field as part of
+    /// `AgentCapabilities`); an empty list means the agent
+    /// speaks the base A2A v1.0 spec with no extensions.
+    #[serde(default)]
+    pub extensions: Vec<AgentExtension>,
     /// The agent publishes an *extended* card behind
     /// authentication. Per the spec, if this is `false` or
     /// absent, calls to `GetExtendedAgentCard` return
@@ -441,6 +484,7 @@ mod tests {
             .with_capabilities(AgentCapabilities {
                 streaming: true,
                 push_notifications: true,
+                extensions: vec![],
                 extended_agent_card: true,
             })
             .with_input_mode("text/plain")

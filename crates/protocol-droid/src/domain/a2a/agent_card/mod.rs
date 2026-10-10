@@ -50,6 +50,6 @@ mod types;
 pub use builder::AgentCardBuilder;
 pub use error::AgentCardError;
 pub use types::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, ProtocolBinding,
-    GRPC, HTTP_JSON, JSONRPC,
+    AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,
+    ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
 };

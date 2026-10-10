@@ -12,7 +12,7 @@ use url::Url;
 
 use crate::domain::a2a::agent_card::error::AgentCardError;
 use crate::domain::a2a::agent_card::types::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill,
+    AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,
 };
 
 /// The builder for [`AgentCard`].
@@ -103,8 +103,19 @@ impl AgentCardBuilder {
 
     /// Sets the capability set.
     #[must_use]
-    pub const fn with_capabilities(mut self, capabilities: AgentCapabilities) -> Self {
+    pub fn with_capabilities(mut self, capabilities: AgentCapabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Adds a single protocol extension the agent supports.
+    /// Convenience for the common "one extension at a time"
+    /// pattern; a caller that wants to set several at once
+    /// builds the [`AgentCapabilities`] directly and uses
+    /// [`with_capabilities`](Self::with_capabilities).
+    #[must_use]
+    pub fn with_extension(mut self, extension: AgentExtension) -> Self {
+        self.capabilities.extensions.push(extension);
         self
     }
 
@@ -176,6 +187,17 @@ impl AgentCardBuilder {
             && provider.organization.is_empty()
         {
             return Err(AgentCardError::EmptyProviderOrganization);
+        }
+        for (index, extension) in self.capabilities.extensions.iter().enumerate() {
+            if extension.uri.is_empty() {
+                return Err(AgentCardError::EmptyExtensionField { index, field: "uri" });
+            }
+            if extension.description.is_empty() {
+                return Err(AgentCardError::EmptyExtensionField {
+                    index,
+                    field: "description",
+                });
+            }
         }
         Ok(AgentCard {
             name,
@@ -471,6 +493,131 @@ mod tests {
         let json = serde_json::to_string(&card)?;
         let parsed: AgentCard = serde_json::from_str(&json)?;
         assert_eq!(parsed, card);
+        Ok(())
+    }
+
+    // --- `AgentCapabilities::extensions` ------------------------------
+
+    #[test]
+    fn valid_extension_builds() -> Result<(), TestError> {
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_extension(super::AgentExtension {
+                uri: Arc::from("https://example.com/extension/audio-input"),
+                description: Arc::from("Accepts audio input on the SendMessage payload."),
+                required: false,
+                params: None,
+            })
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        assert_eq!(card.capabilities.extensions.len(), 1);
+        let ext = card
+            .capabilities
+            .extensions
+            .first()
+            .expect("the card carries exactly one extension");
+        assert_eq!(ext.uri.as_ref(), "https://example.com/extension/audio-input");
+        assert!(!ext.required);
+        assert!(ext.params.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn empty_extension_uri_is_rejected() -> Result<(), TestError> {
+        let err = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_extension(super::AgentExtension {
+                uri: Arc::from(""),
+                description: Arc::from("d"),
+                required: false,
+                params: None,
+            })
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()
+            .expect_err("an empty extension uri must be refused");
+        assert_eq!(
+            err,
+            AgentCardError::EmptyExtensionField { index: 0, field: "uri" }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_extension_description_is_rejected() -> Result<(), TestError> {
+        let err = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_extension(super::AgentExtension {
+                uri: Arc::from("https://example.com/ext"),
+                description: Arc::from(""),
+                required: false,
+                params: None,
+            })
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()
+            .expect_err("an empty extension description must be refused");
+        assert_eq!(
+            err,
+            AgentCardError::EmptyExtensionField {
+                index: 0,
+                field: "description"
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extension_params_round_trip_as_json_object() -> Result<(), TestError> {
+        // `params` is `google.protobuf.Struct` in the proto, a
+        // JSON object. The test pins the round-trip via
+        // `serde_json::Map`: set a value, serialise, parse,
+        // assert equality.
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "mimeType".to_owned(),
+            serde_json::Value::String("audio/wav".to_owned()),
+        );
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_extension(super::AgentExtension {
+                uri: Arc::from("https://example.com/ext"),
+                description: Arc::from("d"),
+                required: false,
+                params: Some(params.clone()),
+            })
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        let value = serde_json::to_value(
+            card.capabilities
+                .extensions
+                .first()
+                .expect("the card carries exactly one extension"),
+        )?;
+        let obj = value
+            .as_object()
+            .expect("extension must serialise to a JSON object");
+        let mime = obj
+            .get("params")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|p| p.get("mimeType"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert_eq!(mime.as_deref(), Some("audio/wav"));
         Ok(())
     }
 }
