@@ -52,11 +52,28 @@ concrete; every JSON-RPC frame in the system passes through
 `decode` once and through `route_one` exactly when the
 router has a registered handler for the method.
 
+The committed baseline for each bench row lives in
+[`crates/protocol-droid/benches/baselines.json`](../crates/protocol-droid/benches/baselines.json);
+the table below renders a representative subset for
+reading.
+
 | Bench | What it measures | Baseline (median) |
 | --- | --- | --- |
-| `decode` | a single `tools/list` envelope | _to be filled in next session_ |
-| `route_one` | a known-method route through the real MCP table | _to be filled in next session_ |
-| `an_unroutable_frame_never_reaches_the_params` | the cost of a method name not in the table, byte-for-byte the same params as `route_one` | _to be filled in next session_ |
+| `decode_tools_call` | a single `tools/call` envelope | **180.7 ns** |
+| `decode_string_id` | an envelope with a string id, escaped on the wire | **129.3 ns** |
+| `decode_escaped_id` | an envelope with an escaped id (the 6× slower path) | **749.7 ns** |
+| `decode_numeric_id` | an envelope with a numeric id | **94.5 ns** |
+| `decode_batch` | a 4-element batch | **244.5 ns** |
+| `a_known_method_routes` | the router against the real MCP table | **171.6 ns** |
+| `an_unroutable_frame_never_reaches_the_params` | the cost of a method name not in the table, byte-for-byte the same params as `a_known_method_routes` | **183.3 ns** |
+| `a_batch_routes_every_element` | the batch case against the real MCP table | **291.7 ns** |
+
+The two routing rows are deliberately close in the committed
+baseline: 171.6 ns vs 183.3 ns, a 7 % gap. A change that
+parsed params before looking the name up would show up as
+the unroutable row drifting *above* the routable row by a
+whole table's worth of work; the bench would catch that
+before review does.
 
 ### `registry` — [`crates/protocol-droid/benches/registry.rs`](../crates/protocol-droid/benches/registry.rs)
 
@@ -68,10 +85,20 @@ separate so a regression in either shows up on its own.
 
 | Bench | What it measures | Baseline (median) |
 | --- | --- | --- |
-| `list_1k` | a one-pass read at 1 000 tools | _to be filled in next session_ |
-| `get_1k` | a single-tool lookup at 1 000 tools | _to be filled in next session_ |
-| `rebuild_1k` | a publish at 1 000 tools | _to be filled in next session_ |
-| `build_1k` | a 1 000-tool initial population | _to be filled in next session_ |
+| `list_1k` | a one-pass read at 1 000 tools | **2.957 µs** |
+| `get_1k` | a single-tool lookup at 1 000 tools | **34.5 ns** |
+| `rebuild_1k` | a publish at 1 000 tools | **5.04 µs** |
+| `rebuild_100` | a publish at 100 tools | **353.6 ns** |
+| `build_1k` | a 1 000-tool initial population | **366.8 µs** |
+| `publish_1k` | a registry publish with a concurrent reader | **9.37 µs** |
+| `unpublish_1k` | a registry unpublish at 1 000 tools | **12.35 µs** |
+
+The `rebuild_1k` vs `rebuild_100` ratio is 14.3× — exactly
+the linear-in-table shape the snapshot copy is supposed to
+have. A change that made `rebuild_1k` quadratic in the
+table would show up as that ratio jumping by an order of
+magnitude; a change that broke the linear shape would show
+up before review does.
 
 ## Filling in the baselines
 
@@ -88,6 +115,19 @@ under `target/criterion/...`; the committed file is the
 *parsed* median, not the raw output, so a reader does not
 have to run a bench to know what number the gate is
 comparing against.
+
+## Smoke test
+
+[`crates/protocol-droid/tests/bench_gate.rs`](../crates/protocol-droid/tests/bench_gate.rs)
+is the cheapest way to prove the gate is wired up at all.
+It runs the same `decode` shape the bench exercises on a
+100 000-iteration hot loop, asserts the per-iter cost is
+below 5× the committed `decode_tools_call` baseline (scaled
+for dev-mode), and would fail if a regression made the
+decoder 5× slower. The smoke test runs in < 1 s on the
+three CI runners and is what the developer's `cargo test`
+turns up; the actual regression gate lives in
+`.github/workflows/ci.yml`'s `bench` job.
 
 ## Comparative bench vs rmcp
 

@@ -24,6 +24,12 @@ edition = "2024"
 rust-version = "1.98"
 publish = false
 
+# Tells `cargo-fuzz` this manifest is a fuzz crate rather than
+# an ordinary library. Without this, the `cargo fuzz` CLI
+# refuses to drive it.
+[package.metadata]
+cargo-fuzz = true
+
 # The empty `[workspace]` table opts this manifest out of the
 # parent workspace's resolver and members list. The reasoning
 # is in the `[package]` comment above.
@@ -31,9 +37,17 @@ publish = false
 
 # A fuzz crate is built as a binary, not a library, and
 # `cargo-fuzz` looks for entry points under `fuzz_targets/`.
-# The targets are not `[[bin]]` entries because `cargo-fuzz`
-# wraps them in its own `libfuzzer` main; the `cargo fuzz run`
-# CLI is the entry point, not `cargo run`.
+# Each target is a `[[bin]]` here so `cargo` can build it
+# without `cargo-fuzz` rewriting the manifest on every run;
+# the `cargo fuzz` CLI is the entry point, not `cargo run`.
+[[bin]]
+name = "envelope-round-trip"
+path = "fuzz_targets/envelope_round_trip.rs"
+
+[[bin]]
+name = "transport-spec-parse"
+path = "fuzz_targets/transport_spec_parse.rs"
+
 [dependencies]
 # `libfuzzer-sys` is the FFI shim around libFuzzer; `cargo-fuzz`
 # is the cargo extension that drives the harness. Both are

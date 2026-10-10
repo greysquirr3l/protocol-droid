@@ -51,9 +51,11 @@ rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 # Matches the `origin` remote. `cargo deny` requires a non-placeholder
 # repository field, so it cannot be omitted; crates.io shows it on the crate
-# page and every `cargo add` inherits it.
+# page and every `cargo add` inherits it. `homepage` is intentionally not
+# also set: as of nightly the manifest linter treats `homepage == repository`
+# as redundant, and a workspace inheritance that triggers a lint is worse
+# than the cosmetic loss of the field.
 repository = "https://github.com/greysquirr3l/protocol-droid"
-homepage = "https://github.com/greysquirr3l/protocol-droid"
 documentation = "https://docs.rs/protocol-droid"
 readme = "README.md"
 keywords = ["mcp", "jsonrpc", "model-context-protocol", "protocol"]
@@ -70,7 +72,6 @@ categories = [
 # `version.workspace = true` inside [workspace.dependencies].
 protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.1.0" }
 protocol-droid = { path = "crates/protocol-droid", version = "0.1.0" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.1.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

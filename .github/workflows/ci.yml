@@ -125,10 +125,14 @@ jobs:
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-      - name: Install stable toolchain
+      - name: Install stable + nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
       # The fuzz crate is `cargo-fuzz` driven; the
       # `libfuzzer-sys` shim it pulls in is a C/C++ build
       # that wants clang. The Ubuntu image ships with it
@@ -141,12 +145,12 @@ jobs:
           workspaces: . -> target
       - name: Fuzz envelope_round_trip
         run: |
-          cargo +stable fuzz run envelope_round_trip \
+          cargo +nightly fuzz run envelope-round-trip \
             --manifest-path crates/protocol-droid/fuzz/Cargo.toml \
             -- -max_total_time=1800
       - name: Fuzz transport_spec_parse
         run: |
-          cargo +stable fuzz run transport_spec_parse \
+          cargo +nightly fuzz run transport-spec-parse \
             --manifest-path crates/protocol-droid/fuzz/Cargo.toml \
             -- -max_total_time=1800
       # A crash becomes a `crash-<sha256>.bin` file in the

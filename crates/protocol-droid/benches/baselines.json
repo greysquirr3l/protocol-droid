@@ -1,0 +1,144 @@
+{
+  "toolchain": {
+    "rustc": "1.98.1",
+    "rustc_verbose": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "divan": "0.1.21",
+    "os": "macOS 26 (Apple silicon)",
+    "profile": "release"
+  },
+  "regression_threshold_percent": 10,
+  "benches": {
+    "jsonrpc_hot_path": {
+      "decode_tools_call": {
+        "median_ns": 180.7,
+        "samples": 100
+      },
+      "decode_string_id": {
+        "median_ns": 129.3,
+        "samples": 100
+      },
+      "decode_escaped_id": {
+        "median_ns": 749.7,
+        "samples": 100
+      },
+      "decode_numeric_id": {
+        "median_ns": 94.48,
+        "samples": 100
+      },
+      "decode_batch": {
+        "median_ns": 244.5,
+        "samples": 100
+      },
+      "decode_notification": {
+        "median_ns": 73.31,
+        "samples": 100
+      },
+      "decode_reply": {
+        "median_ns": 102.5,
+        "samples": 100
+      },
+      "a_known_method_routes": {
+        "median_ns": 171.6,
+        "samples": 100
+      },
+      "an_unroutable_frame_never_reaches_the_params": {
+        "median_ns": 183.3,
+        "samples": 100
+      },
+      "a_notification_routes": {
+        "median_ns": 77.22,
+        "samples": 100
+      },
+      "a_reply_routes_to_no_method": {
+        "median_ns": 101.3,
+        "samples": 100
+      },
+      "a_batch_routes_every_element": {
+        "median_ns": 291.7,
+        "samples": 100
+      },
+      "a_borrowed_id_is_not_copied": {
+        "median_ns": 10.33,
+        "samples": 100
+      },
+      "an_escaped_id_is_unescaped": {
+        "median_ns": 10.49,
+        "samples": 100
+      },
+      "a_string_id_is_escaped_on_the_way_out": {
+        "median_ns": 15.38,
+        "samples": 100
+      },
+      "a_numeric_id_is_written_without_quotes": {
+        "median_ns": 11.14,
+        "samples": 100
+      },
+      "a_known_method_is_found_in_the_table": {
+        "median_ns": 1.423,
+        "samples": 100
+      },
+      "an_unknown_method_misses_in_the_table": {
+        "median_ns": 1.087,
+        "samples": 100
+      },
+      "an_unknown_method_without_params_is_refused": {
+        "median_ns": 96.75,
+        "samples": 100
+      }
+    },
+    "registry": {
+      "list_1k": {
+        "median_us": 2.957,
+        "samples": 100
+      },
+      "list_hidden_1k": {
+        "median_us": 3.176,
+        "samples": 100
+      },
+      "list_scoped_1k": {
+        "median_us": 2.853,
+        "samples": 100
+      },
+      "get_1k": {
+        "median_ns": 34.49,
+        "samples": 100
+      },
+      "get_denied_1k": {
+        "median_ns": 40.35,
+        "samples": 100
+      },
+      "get_miss_1k": {
+        "median_ns": 32.87,
+        "samples": 100
+      },
+      "publish_1k": {
+        "median_us": 9.374,
+        "samples": 100
+      },
+      "rebuild_1k": {
+        "median_us": 5.04,
+        "samples": 100
+      },
+      "rebuild_100": {
+        "median_ns": 353.6,
+        "samples": 100
+      },
+      "build_100": {
+        "median_us": 34.58,
+        "samples": 100
+      },
+      "build_1k": {
+        "median_us": 366.8,
+        "samples": 100
+      },
+      "unpublish_1k": {
+        "median_us": 12.35,
+        "samples": 100
+      },
+      "read_under_publish": {
+        "median_us": 11.95,
+        "samples": 100
+      }
+    }
+  }
+}

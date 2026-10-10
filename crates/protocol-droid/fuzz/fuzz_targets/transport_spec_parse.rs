@@ -26,7 +26,7 @@ fuzz_target!(|data: &str| {
     // The parser is the boundary; everything else is typed.
     // A crash in `parse()` is a bug in the parser, not in
     // the fuzzer.
-    let spec = match data.parse::<protocol_droid::domain::transport::TransportSpec>() {
+    let spec = match data.parse::<protocol_droid::domain::TransportSpec>() {
         Ok(spec) => spec,
         Err(_) => return,
     };
@@ -36,7 +36,7 @@ fuzz_target!(|data: &str| {
     // does not round-trip through `to_string().parse()` is a
     // spec the CLI cannot reliably echo back to its caller.
     let rendered = spec.to_string();
-    let round_tripped = match rendered.parse::<protocol_droid::domain::transport::TransportSpec>() {
+    let round_tripped = match rendered.parse::<protocol_droid::domain::TransportSpec>() {
         Ok(spec) => spec,
         Err(_) => return,
     };
