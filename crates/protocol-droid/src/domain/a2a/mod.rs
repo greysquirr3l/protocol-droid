@@ -24,6 +24,7 @@
 pub mod agent_card;
 pub mod feature;
 pub mod message;
+pub mod push_notification;
 pub mod send_message;
 pub mod task;
 pub mod task_lifecycle;
@@ -38,6 +39,9 @@ pub use agent_card::{
     AgentSkill, ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
 };
 pub use message::{DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart};
+pub use push_notification::{
+    PushNotificationAuthenticationInfo, TaskPushNotificationConfig,
+};
 pub use send_message::{MessageSendConfiguration, SendMessageRequest, SendMessageResponse};
 pub use task::{Artifact, Task, TaskState, TaskStatus};
 pub use task_lifecycle::{
