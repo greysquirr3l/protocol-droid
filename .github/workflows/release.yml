@@ -136,3 +136,109 @@ jobs:
             cargo publish -p "${crate}"
             echo "::endgroup::"
           done
+
+  # A release is a binary on a download page, not just a crates.io entry. The
+  # matrix builds the CLI for the three OSes a consumer actually runs
+  # (Linux, macOS, Windows), on the same three architectures the project's
+  # CI matrix covers (x86_64, aarch64, plus x86_64-musl for static linux).
+  #
+  # The `targets` list mirrors the CI test matrix so a target that CI did
+  # not run is not released; a build that CI did not exercise is a build
+  # whose consumers are the canary.
+  #
+  # The artifacts are uploaded to a GitHub Release tagged `${tag}` (the
+  # output of `resolve-tag`). A maintainer then edits the release notes
+  # through the GitHub UI; this job does not write release notes
+  # programmatically, because a hand-edited note is a reviewed note and a
+  # template-derived note is a PR-description pasted into a release.
+  binaries:
+    name: binaries (${{ matrix.label }})
+    needs: resolve-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+            binary: protocol-droid
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            label: linux-x86_64-musl
+            binary: protocol-droid
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            label: linux-aarch64-musl
+            binary: protocol-droid
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+            binary: protocol-droid
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-aarch64
+            binary: protocol-droid
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+            binary: protocol-droid.exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ matrix.target }}
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Build release binary
+        # The CLI is a `[[bin]]` in the `protocol-droid-cli` crate. The build
+        # is not `--workspace`; only the CLI ships, the library does not.
+        # `--locked` is the gate against a Cargo.lock drift the verifier
+        # never saw.
+        run: |
+          set -euo pipefail
+          cargo build \
+            --release \
+            --locked \
+            --target "${{ matrix.target }}" \
+            --bin "${{ matrix.binary }}"
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd "target/${{ matrix.target }}/release"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a "../../../dist/${{ matrix.binary }}-${{ matrix.label }}.zip" "${{ matrix.binary }}"
+          else
+            tar -C "target/${{ matrix.target }}/release" \
+              -czf "dist/${{ matrix.binary }}-${{ matrix.label }}.tar.gz" \
+              "${{ matrix.binary }}"
+          fi
+      - name: Upload to release
+        env:
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        # `softprops/action-gh-release` is the standard upload step; the
+        # `files:` glob picks up whichever archive the packaging step
+        # produced. The job does not *create* the release — `resolve-tag`
+        # already pushed the tag, and the first upload auto-creates the
+        # GitHub Release that goes with it. Subsequent uploads edit the
+        # same release, so the per-OS jobs do not race on creation.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+          # A maintainer-edited body is what the project rule is asking
+          # for; the action's default body is fine when none is set.
+          fail_on_unmatched_files: true
+          # `draft: true` is the safer default: a maintainer reviews the
+          # release notes and the asset list in the GitHub UI, then
+          # publishes from there. The CI auto-creating a public release
+          # is the failure mode this job is hedging against.
+          draft: true

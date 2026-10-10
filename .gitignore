@@ -47,3 +47,4 @@ docs/dev/uber-mcp-twitter.md
 crates/protocol-droid/fuzz/corpus/
 crates/protocol-droid/fuzz/artifacts/
 crates/protocol-droid/fuzz/fuzz/
+target/book/
