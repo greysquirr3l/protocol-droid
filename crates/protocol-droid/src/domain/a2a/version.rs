@@ -30,6 +30,8 @@
 use core::fmt;
 use core::str::FromStr;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 /// A published A2A revision, or one published after this build was compiled.
 ///
 /// Ordered by `major` then `minor`, oldest to newest. See the module docs for
@@ -88,6 +90,28 @@ impl fmt::Display for A2aVersion {
             Self::V1_0 => f.write_str("1.0"),
             Self::Unknown { major, minor } => write!(f, "{major}.{minor}"),
         }
+    }
+}
+
+/// The wire form of an `A2aVersion` is the `Display` form: `"1.0"`,
+/// `"0.3"`, etc. A `Serialize` impl that delegates to `Display` keeps
+/// the wire form and the in-memory form in lockstep — a change to
+/// one without the other would break the protocol and the type
+/// would catch it.
+impl Serialize for A2aVersion {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+/// The wire form round-trips through `FromStr`; a version that does
+/// not parse is a `ParseA2aVersionError`, which surfaces as a serde
+/// error so a malformed `protocolVersion` field is the typed answer
+/// the spec expects, not a 500.
+impl<'de> Deserialize<'de> for A2aVersion {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 

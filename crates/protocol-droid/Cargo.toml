@@ -140,7 +140,7 @@ base64 = { version = "0.22.1", default-features = false, features = [
 # graph through `reqwest`, and appending query parameters to an endpoint that
 # may already carry some is the case hand-rolled percent-encoding gets wrong:
 # the endpoint comes from a discovery document this crate does not control.
-url = { version = "2.5.8", optional = true }
+url = { version = "2.5.8", optional = true, features = ["serde"] }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,

@@ -176,3 +176,94 @@ fn feature_all_matches_the_match_in_feature_index() {
         "Feature::ALL and the matrix width must agree on the same column count"
     );
 }
+
+// --- serde shape ----------------------------------------------------
+//
+// The `AgentCard.protocolVersion` field on the wire is the
+// `Display` form (`"1.0"`, `"0.3"`, etc.). These tests pin the
+// round-trip so a future serde change cannot break the JSON the
+// spec mandates without the type catching it.
+//
+// The test functions return `Result<(), Failure>` so the
+// fallible `serde_json` calls use `?` instead of `.expect()` —
+// a failing assert prints the engine's account of the failure
+// rather than a panic the cargo test runner has to translate.
+
+#[derive(Debug)]
+enum Failure {
+    Json(serde_json::Error),
+}
+
+impl From<serde_json::Error> for Failure {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(e) => write!(f, "serde_json error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Failure {}
+
+#[test]
+fn a_known_version_serialises_to_its_display_form() -> Result<(), Failure> {
+    let v = A2aVersion::V1_0;
+    let json = serde_json::to_string(&v)?;
+    assert_eq!(
+        json, "\"1.0\"",
+        "V1_0 must serialise as the JSON string `1.0`"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unknown_version_serialises_to_its_display_form() -> Result<(), Failure> {
+    let v = A2aVersion::Unknown {
+        major: 1,
+        minor: 5,
+    };
+    let json = serde_json::to_string(&v)?;
+    assert_eq!(
+        json, "\"1.5\"",
+        "Unknown {{ 1, 5 }} must serialise as the JSON string `1.5`"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_known_version_round_trips_through_serde() -> Result<(), Failure> {
+    let v = A2aVersion::V1_0;
+    let json = serde_json::to_string(&v)?;
+    let parsed: A2aVersion = serde_json::from_str(&json)?;
+    assert_eq!(parsed, v);
+    Ok(())
+}
+
+#[test]
+fn an_unknown_version_round_trips_through_serde() -> Result<(), Failure> {
+    let v = A2aVersion::Unknown {
+        major: 0,
+        minor: 3,
+    };
+    let json = serde_json::to_string(&v)?;
+    let parsed: A2aVersion = serde_json::from_str(&json)?;
+    assert_eq!(parsed, v);
+    Ok(())
+}
+
+#[test]
+fn an_invalid_wire_string_fails_to_deserialise() {
+    // A `protocolVersion` of `"foo.bar"` is malformed; the
+    // serde error must surface as a typed parse failure,
+    // not a 500.
+    let result: Result<A2aVersion, _> = serde_json::from_str("\"foo.bar\"");
+    assert!(
+        result.is_err(),
+        "an invalid version string must fail to deserialise"
+    );
+}

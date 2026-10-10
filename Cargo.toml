@@ -75,7 +75,7 @@ protocol-droid = { path = "crates/protocol-droid", version = "0.1.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 # T16. JWT signature verification for the JWKS token source.
 #

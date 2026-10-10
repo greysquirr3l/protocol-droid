@@ -21,10 +21,18 @@
 //! `application/jsonrpc::Codec` trait so the dispatcher routes
 //! the same way it does for MCP.
 
+pub mod agent_card;
 pub mod feature;
 pub mod version;
+pub mod well_known;
 
 #[cfg(test)]
 mod tests;
 
+pub use agent_card::{
+    AgentCapabilities, AgentCard, AgentCardBuilder, AgentCardError, AgentInterface,
+    AgentSkill, ProtocolBinding,
+};
 pub use version::{A2aVersion, ParseA2aVersionError};
+pub use well_known::{AGENT_CARD_WELL_KNOWN_PATH, is_agent_card_well_known_path};
+
