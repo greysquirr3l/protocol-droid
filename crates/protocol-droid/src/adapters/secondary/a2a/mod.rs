@@ -7,5 +7,7 @@
 //! designed to give T27 for free.
 
 pub mod method_table;
+pub mod ssrf_denylist;
 
 pub use method_table::{A2aMethod, A2aMethodTable};
+pub use ssrf_denylist::SsrfDenylist;
