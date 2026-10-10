@@ -39,6 +39,7 @@ members = [
 exclude = [
     "crates/protocol-droid/tests/interop_rmcp",
     "crates/protocol-droid/tests/interop_ts_sdk",
+    "crates/protocol-droid/fuzz",
 ]
 
 [workspace.package]

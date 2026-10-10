@@ -106,3 +106,59 @@ jobs:
       # and pass on an advisory that has since been published.
       - name: cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
+
+  fuzz:
+    # The fuzz job runs nightly, not on every push. libFuzzer
+    # needs minutes, not seconds, to find anything; a
+    # push-triggered run would either flake (too short) or
+    # burn the CI budget (too long). A `schedule` trigger
+    # fires once a day at the same UTC hour, with
+    # `concurrency.cancel-in-progress: true` so a long
+    # Saturday run does not stack up against a Sunday one.
+    name: fuzz
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    concurrency:
+      group: fuzz-${{ github.workflow }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # The fuzz crate is `cargo-fuzz` driven; the
+      # `libfuzzer-sys` shim it pulls in is a C/C++ build
+      # that wants clang. The Ubuntu image ships with it
+      # pre-installed; an Alpine-flavoured runner would
+      # need an explicit `apt install` step here.
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Fuzz envelope_round_trip
+        run: |
+          cargo +stable fuzz run envelope_round_trip \
+            --manifest-path crates/protocol-droid/fuzz/Cargo.toml \
+            -- -max_total_time=1800
+      - name: Fuzz transport_spec_parse
+        run: |
+          cargo +stable fuzz run transport_spec_parse \
+            --manifest-path crates/protocol-droid/fuzz/Cargo.toml \
+            -- -max_total_time=1800
+      # A crash becomes a `crash-<sha256>.bin` file in the
+      # fuzz crate's `artifacts/`. The runner uploads
+      # everything it finds so a maintainer can re-run
+      # the regression locally with `cargo fuzz run <target>
+      # artifacts/crash-<hash>.bin`.
+      - name: Upload fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: |
+            crates/protocol-droid/fuzz/artifacts/
+          if-no-files-found: ignore

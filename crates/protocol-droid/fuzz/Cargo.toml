@@ -1,0 +1,82 @@
+[package]
+# Fuzz targets for the protocol-droid JSON-RPC envelope, transport
+# spec parser, and per-revision schema lifts.
+#
+# NOT a workspace member: the workspace's `members = [...]` in the
+# root `Cargo.toml` `exclude`s this directory on purpose, the same
+# way it excludes `tests/interop_rmcp` and `tests/interop_ts_sdk`.
+# A fuzz crate pulls in `libfuzzer-sys` and `cargo-fuzz` (a
+# nightly-only tool), and pinning either of those against the
+# workspace's stable 1.98.1 toolchain would either fail to resolve
+# (the toolchain doesn't match) or silently widen the resolver
+# (a different `libfuzzer-sys` pin than the fuzzer needs). The
+# fuzz crate therefore carries its own `[workspace]` table and
+# its own resolver, the same way the interop crates do.
+#
+# The crate is invoked by hand (`cargo +nightly fuzz run
+# envelope_round_trip` from inside this directory) and by the
+# nightly CI run in `.github/workflows/ci.yml`'s `fuzz` job. It
+# is not part of `cargo test --workspace`; a publisher never sees
+# it; a consumer never has to think about it.
+name = "protocol-droid-fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+# The empty `[workspace]` table opts this manifest out of the
+# parent workspace's resolver and members list. The reasoning
+# is in the `[package]` comment above.
+[workspace]
+
+# A fuzz crate is built as a binary, not a library, and
+# `cargo-fuzz` looks for entry points under `fuzz_targets/`.
+# The targets are not `[[bin]]` entries because `cargo-fuzz`
+# wraps them in its own `libfuzzer` main; the `cargo fuzz run`
+# CLI is the entry point, not `cargo run`.
+[dependencies]
+# `libfuzzer-sys` is the FFI shim around libFuzzer; `cargo-fuzz`
+# is the cargo extension that drives the harness. Both are
+# nightly-only on the toolchain axis, but the `protocol-droid`
+# lib targets stable 1.98.1; the fuzz crate is built under a
+# separate toolchain invocation.
+libfuzzer-sys = "0.4"
+
+[dependencies.protocol-droid]
+# Same source as the rest of the workspace — the path
+# substitution works because both are inside the same
+# `crates/` tree.
+path = ".."
+
+[lints.rust]
+warnings = "deny"
+missing_docs = "deny"
+uninhabited_static = "deny"
+ambiguous_glob_imported_traits = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
+# Same hard denies as the workspace, repeated here because a
+# non-workspace crate cannot inherit them. A drift between
+# the two is a `cargo l` failure on the workspace, which is
+# exactly the safety net the rule is for.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+suspicious = { level = "deny", priority = -1 }
+
+# The same tolerances the workspace allows; keeping the list
+# identical is what makes a `deny` on the workspace mean the
+# same thing as `deny` here.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+struct_excessive_bools = "allow"
+multiple_crate_versions = "allow"
