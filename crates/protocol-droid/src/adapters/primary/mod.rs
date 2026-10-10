@@ -7,6 +7,9 @@
 //! lifecycle from 2026-07-28. Each is feature-gated so a
 //! `--no-default-features` build stays a lean core.
 
+#[cfg(all(feature = "a2a", feature = "http"))]
+pub mod a2a;
+
 #[cfg(feature = "http")]
 pub mod transport;
 
