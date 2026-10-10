@@ -22,7 +22,21 @@ use protocol_droid_cli::{bridge, conformance};
 #[derive(Debug, Parser)]
 #[command(
     name = "protocol-droid",
-    version,
+    // `--version` reports the crate version, a short git SHA
+    // (with a `-dirty` suffix when the working tree had
+    // uncommitted changes at build time), and the last
+    // commit's UTC date. The two env vars are baked by
+    // `build.rs`; reading them with `env!` rather than a
+    // `std::env::var` keeps the format a compile-time
+    // constant and removes the runtime lookup.
+    version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (",
+        env!("PROTOCOL_DROID_GIT_SHA"),
+        ", ",
+        env!("PROTOCOL_DROID_BUILD_DATE"),
+        ")",
+    ),
     about = "Model Context Protocol toolkit: bridge, probe, inspect, record, replay.",
     long_about = None,
     arg_required_else_help = true
