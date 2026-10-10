@@ -9,6 +9,12 @@
 //! (session engine), T11 (dynamic registry), T12 (server and client APIs) and
 //! T14 (the idempotency store a retried `tools/call` is deduplicated through).
 
+// T27. The A2A use cases: the URL-filter port, the push-notification
+// delivery port, and the per-revision codecs the wire layer feeds
+// into. Gated on the `a2a` feature because the dependency footprint
+// (the `url` crate) is independent of MCP and a consumer that never
+// speaks A2A should not pay it.
+#[cfg(feature = "a2a")]
 pub mod a2a;
 pub mod bridge;
 pub mod client;
