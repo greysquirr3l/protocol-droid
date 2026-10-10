@@ -73,7 +73,7 @@ jobs:
           - pd-client-to-rmcp-server
           - rmcp-client-to-pd-server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -108,7 +108,7 @@ jobs:
           esac
       - name: Upload interop findings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: interop-${{ matrix.direction }}-findings
           path: |
@@ -124,7 +124,7 @@ jobs:
           - pd-client-to-ts-server
           - ts-client-to-pd-server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -135,7 +135,7 @@ jobs:
         # packages target; a 22+ runner also works, but pinning the
         # matrix's Node version is what makes a green CI run on
         # Monday a green run on Tuesday.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
       - name: Cache cargo build artifacts
@@ -183,7 +183,7 @@ jobs:
           esac
       - name: Upload interop findings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: interop-ts-${{ matrix.direction }}-findings
           path: |
