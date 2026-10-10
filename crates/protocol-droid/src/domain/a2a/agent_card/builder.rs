@@ -12,6 +12,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::domain::a2a::agent_card::error::AgentCardError;
+use crate::domain::a2a::agent_card::security_requirement::SecurityRequirement;
 use crate::domain::a2a::agent_card::security_scheme::SecurityScheme;
 use crate::domain::a2a::agent_card::types::{
     AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,
@@ -37,6 +38,7 @@ pub struct AgentCardBuilder {
     default_output_modes: Vec<Arc<str>>,
     skills: Vec<AgentSkill>,
     security_schemes: BTreeMap<Arc<str>, SecurityScheme>,
+    security_requirements: Vec<SecurityRequirement>,
 }
 
 impl AgentCardBuilder {
@@ -135,6 +137,16 @@ impl AgentCardBuilder {
         scheme: SecurityScheme,
     ) -> Self {
         self.security_schemes.insert(name.into(), scheme);
+        self
+    }
+
+    /// Adds a security requirement to the agent's
+    /// published list. The requirements are tried in
+    /// the order they are added; a client picks the
+    /// first one it can satisfy.
+    #[must_use]
+    pub fn with_security_requirement(mut self, requirement: SecurityRequirement) -> Self {
+        self.security_requirements.push(requirement);
         self
     }
 
@@ -269,6 +281,7 @@ impl AgentCardBuilder {
             default_output_modes: self.default_output_modes,
             skills: self.skills,
             security_schemes: self.security_schemes,
+            security_requirements: self.security_requirements,
         })
     }
 }

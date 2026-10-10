@@ -46,6 +46,7 @@
 mod builder;
 mod error;
 mod oauth_flow;
+mod security_requirement;
 mod security_scheme;
 mod types;
 
@@ -55,6 +56,7 @@ pub use oauth_flow::{
     AuthorizationCodeOAuthFlow, ClientCredentialsOAuthFlow, DeviceCodeOAuthFlow,
     OAuth2SecurityScheme, OAuthFlows,
 };
+pub use security_requirement::{SecurityRequirement, StringList};
 pub use security_scheme::{
     APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, MutualTlsSecurityScheme,
     OpenIdConnectSecurityScheme, SecurityScheme,

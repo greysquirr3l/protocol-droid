@@ -274,6 +274,16 @@ pub struct AgentCard {
     /// fixtures readable.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub security_schemes: std::collections::BTreeMap<Arc<str>, super::security_scheme::SecurityScheme>,
+    /// The security requirements the agent publishes, in
+    /// preference order. Optional in the spec — an agent
+    /// with no `security_requirements` field on the wire
+    /// defaults to "every operation requires no
+    /// authentication", which is the same as publishing
+    /// `[{ "schemes": {} }]`. The two are different signals
+    /// (the former is implicit, the latter is explicit)
+    /// and clients render them differently.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security_requirements: Vec<super::security_requirement::SecurityRequirement>,
 }
 
 #[cfg(test)]
