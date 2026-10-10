@@ -121,23 +121,14 @@ use syn::{ItemFn, ItemImpl, parse_macro_input};
 ///
 /// # Examples
 ///
-/// ```
-/// use serde::Serialize;
-///
-/// #[derive(Serialize)]
-/// struct Sum { total: i32 }
-///
-/// struct Demo;
-///
-/// #[protocol_droid::server(name = "demo")]
-/// impl Demo {
-///     /// Adds two numbers.
-///     #[protocol_droid::tool]
-///     async fn add(a: i32, b: i32) -> Result<Sum, String> {
-///         Ok(Sum { total: a + b })
-///     }
-/// }
-/// ```
+/// A worked example lives in
+/// `crates/protocol-droid/tests/macros.rs`, where every macro
+/// shape is exercised against real types and the listings are
+/// read back through the dispatcher. A doctest here would be a
+/// strict subset of that coverage and would also require this
+/// crate to depend on `protocol-droid` and on `serde` for
+/// compilation, which is the cycle the docstring in
+/// `Cargo.toml` says it does not create.
 // `dead_code_pub_in_binary` fires on these in this crate's own *test* build,
 // and is wrong to: they are the entire public surface, consumed by
 // `protocol-droid` and by its tests, and a proc macro cannot be *called* from
@@ -160,8 +151,8 @@ pub fn tool(_attribute: TokenStream, item: TokenStream) -> TokenStream {
     parse_or_report(item)
 }
 
-/// Marks a plain `fn` returning a [`Resource`](protocol_droid::domain::registry::Resource)
-/// as a resource the server lists.
+/// Marks a plain `fn` returning a `Resource` as a resource the
+/// server lists.
 ///
 /// This attribute generates nothing on its own, for the same reason
 /// [`tool`] generates nothing: it expands inside the `impl` block, where
@@ -205,32 +196,21 @@ pub fn tool(_attribute: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Examples
 ///
-/// ```
-/// use protocol_droid::domain::registry::Resource;
-///
-/// struct Docs;
-///
-/// #[protocol_droid::server(name = "docs")]
-/// impl Docs {
-///     /// The project's readme.
-///     #[protocol_droid::resource]
-///     fn readme() -> Resource {
-///         Resource {
-///             description: Some("The project's readme.".to_string()),
-///             mime_type: Some("text/markdown".to_string()),
-///             ..Resource::new("file:///README.md", "readme")
-///         }
-///     }
-/// }
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> { let _ = Docs.into_server()?; Ok(()) }
-/// ```
+/// A worked example lives in
+/// `crates/protocol-droid/tests/macros.rs`, where every
+/// macro shape is exercised against the real `Resource` and
+/// `Prompt` types and the listings are read back through the
+/// dispatcher. A doctest here would be a strict subset of that
+/// coverage and would also require this crate to depend on
+/// `protocol-droid` for compilation, which is the cycle the
+/// docstring in `Cargo.toml` says it does not create.
 #[proc_macro_attribute]
 pub fn resource(_attribute: TokenStream, item: TokenStream) -> TokenStream {
     parse_or_report(item)
 }
 
-/// Marks a plain `fn` returning a [`Prompt`](protocol_droid::domain::registry::Prompt)
-/// as a prompt the server offers.
+/// Marks a plain `fn` returning a `Prompt` as a prompt the
+/// server offers.
 ///
 /// This attribute generates nothing on its own, for the same reason
 /// [`tool`] generates nothing: it expands inside the `impl` block, where
@@ -249,32 +229,22 @@ pub fn resource(_attribute: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Arguments
 ///
-/// Declared in the body through
-/// [`Prompt::with_argument`](protocol_droid::domain::registry::Prompt::with_argument),
-/// not through the attribute. A prompt's arguments are an ordered list of
-/// named, required-or-not entries, and a comma-separated attribute list
-/// cannot express "required" without a second parallel spelling of every
-/// argument's name.
+/// Declared in the body through `Prompt::with_argument`, not
+/// through the attribute. A prompt's arguments are an ordered
+/// list of named, required-or-not entries, and a comma-separated
+/// attribute list cannot express "required" without a second
+/// parallel spelling of every argument's name.
 ///
 /// # Examples
 ///
-/// ```
-/// use protocol_droid::domain::registry::Prompt;
-///
-/// struct Reviewer;
-///
-/// #[protocol_droid::server(name = "reviewer")]
-/// impl Reviewer {
-///     /// Asks for a review of a diff.
-///     #[protocol_droid::prompt]
-///     fn review() -> Prompt {
-///         Prompt::new("review")
-///             .with_argument("diff", true)
-///             .with_argument("focus", false)
-///     }
-/// }
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> { let _ = Reviewer.into_server()?; Ok(()) }
-/// ```
+/// A worked example lives in
+/// `crates/protocol-droid/tests/macros.rs`, where every macro
+/// shape is exercised against the real `Resource` and `Prompt`
+/// types and the listings are read back through the dispatcher.
+/// A doctest here would be a strict subset of that coverage
+/// and would also require this crate to depend on
+/// `protocol-droid` for compilation, which is the cycle the
+/// docstring in `Cargo.toml` says it does not create.
 #[proc_macro_attribute]
 pub fn prompt(_attribute: TokenStream, item: TokenStream) -> TokenStream {
     parse_or_report(item)
@@ -327,23 +297,14 @@ fn parse_or_report(item: TokenStream) -> TokenStream {
 ///
 /// # Examples
 ///
-/// ```
-/// #[derive(Default)]
-/// struct Demo;
-///
-/// #[protocol_droid::server(name = "demo")]
-/// impl Demo {
-///     #[protocol_droid::tool]
-///     /// Answers, always.
-///     async fn ping() -> Result<String, String> {
-///         Ok("pong".to_string())
-///     }
-/// }
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let server = Demo.into_server()?;
-/// assert_eq!(server.name(), "demo");
-/// # Ok(()) }
-/// ```
+/// A worked example lives in
+/// `crates/protocol-droid/tests/macros.rs`, where every macro
+/// shape is exercised against real types and the listings are
+/// read back through the dispatcher. A doctest here would be a
+/// strict subset of that coverage and would also require this
+/// crate to depend on `protocol-droid` for compilation, which
+/// is the cycle the docstring in `Cargo.toml` says it does not
+/// create.
 // `dead_code_pub_in_binary` fires on both of these in this crate's own *test*
 // build, and is wrong to: they are the entire public surface, consumed by
 // `protocol-droid` and by its tests, and a proc macro cannot be *called* from
