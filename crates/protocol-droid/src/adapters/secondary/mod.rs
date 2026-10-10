@@ -31,3 +31,10 @@ pub mod transport;
 // and a build that speaks stdio on one side and not the other has no use.
 #[cfg(feature = "stdio")]
 pub mod stdio;
+// T27. The A2A (Agent2Agent) JSON-RPC method table. Sits beside the MCP table
+// rather than inside it — the protocol-neutral core in `application/jsonrpc`
+// is what routes on the table, and a future ACP table slots in the same way.
+// Gated on its own feature because the dependency footprint is independent
+// of MCP and a consumer that never speaks A2A should not pay it.
+#[cfg(feature = "a2a")]
+pub mod a2a;

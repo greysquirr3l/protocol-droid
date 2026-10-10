@@ -65,6 +65,16 @@ oauth = ["http", "dep:jsonwebtoken", "dep:sha2", "dep:base64", "dep:url"]
 # satisfy and this crate shipped no implementation of it, so the only code a
 # consumer could copy was a `fetch_add` counter.
 random-ids = ["dep:getrandom"]
+# T27. The A2A (Agent2Agent) protocol module — per-revision method table,
+# per-revision wire codec, and the application handlers behind them. Gated
+# on its own feature because (a) the dependency footprint is independent of
+# MCP and a consumer that never speaks A2A should not pay it, and (b) the
+# feature gate is the seam that lets a future `a2a-grpc` / `a2a-rest` build
+# on top of this without re-touching MCP. `domain/a2a` and `application/a2a`
+# stay compiled in a lean build for the same reason the MCP domain does —
+# they are pure value objects, so gating them would cost the version model to
+# save nothing.
+a2a = []
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
