@@ -24,6 +24,7 @@
 pub mod agent_card;
 pub mod feature;
 pub mod message;
+pub mod task;
 pub mod version;
 pub mod well_known;
 
@@ -35,6 +36,7 @@ pub use agent_card::{
     AgentSkill, ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
 };
 pub use message::{DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart};
+pub use task::{Artifact, Task, TaskState, TaskStatus};
 pub use version::{A2aVersion, ParseA2aVersionError};
 pub use well_known::{AGENT_CARD_WELL_KNOWN_PATH, is_agent_card_well_known_path};
 
