@@ -1,0 +1,30 @@
+//! A2A domain — the version negotiation model, the per-revision
+//! `A2aFeatureProfile`, and the value objects that the wire
+//! codecs (T28) lower into.
+//!
+//! # Where this fits in the protocol-neutral core
+//!
+//! The protocol-neutral core in `domain/jsonrpc` and
+//! `application/session` already speaks JSON-RPC 2.0 — the same
+//! envelope A2A uses. T27 is a *feature* on top of that core: a
+//! per-revision codec (T08-style) and a per-revision
+//! `A2aFeatureProfile` (T05-style) that mirrors the MCP gating
+//! model. A future MCP↔A2A bridge (T28) is the consumer of both
+//! profiles; this module is what the bridge translates *between*.
+//!
+//! # The seam
+//!
+//! `A2aVersion` is the only thing this module re-exports at the
+//! top level. The `A2aFeatureProfile` lives in `a2a::feature` and
+//! the per-revision wire types live under `a2a::wire::v1_0`. A
+//! codec for v1.0 implements the protocol-neutral
+//! `application/jsonrpc::Codec` trait so the dispatcher routes
+//! the same way it does for MCP.
+
+pub mod feature;
+pub mod version;
+
+#[cfg(test)]
+mod tests;
+
+pub use version::{A2aVersion, ParseA2aVersionError};

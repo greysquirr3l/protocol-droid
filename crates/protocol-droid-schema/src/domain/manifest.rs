@@ -220,6 +220,41 @@ pub struct RfcDocument {
     pub cited_by: Vec<String>,
 }
 
+/// Per-revision entries for the A2A protocol.
+///
+/// A2A's canonical wire definition is a proto file (`a2aproject/A2A`),
+/// not a JSON Schema. The schema crate is JSON-Schema-shaped today, so
+/// the A2A entries here are recorded for *provenance* — the digest
+/// locks the proto against a silent re-fetch — without a per-version
+/// JSON Schema to verify. A future revision of the schema crate that
+/// adds a proto path can use the same `files` map the MCP entries
+/// use; the field shape is identical.
+///
+/// The `package` field mirrors the proto file's `package` declaration
+/// (`lf.a2a.v1`, etc.), so the codegen can route per-version types to
+/// the right Rust module without a per-revision hand-edit.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct A2aRevisionSpec {
+    /// Upstream git tag, e.g. `v1.0.0`.
+    pub tag: String,
+    /// Full commit SHA the proto was fetched from. Never a branch name.
+    pub commit: String,
+    /// Proto `package` declaration. Distinct revisions can share a
+    /// `package`; the field is for codegen, not for ordering.
+    pub package: String,
+    /// Upstream directory holding the proto, relative to the
+    /// repository root. Recorded rather than derived because the A2A
+    /// repo's layout is the way it is, not a rule this crate can
+    /// assume.
+    pub spec_prefix: String,
+    /// File name to SHA-256, lowercase hex. A file absent from this
+    /// map is not digest-locked and is not verified. The same
+    /// provenance story as [`RevisionSpec::files`].
+    #[serde(default)]
+    pub files: BTreeMap<String, String>,
+}
+
 /// The whole of `spec/MANIFEST.toml`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -239,6 +274,14 @@ pub struct Manifest {
     /// [`ManifestMeta::excluded_tags`] makes worth stating explicitly.
     #[serde(default)]
     pub rfc_documents: BTreeMap<String, RfcDocument>,
+    /// A2A protocol revisions. Defaults to empty so a manifest
+    /// predating Phase 9 keeps parsing. The field lives here rather
+    /// than in a separate file because the MCP and A2A tables are
+    /// both *what is vendored*; the shape difference (JSON Schema
+    /// vs proto) is the per-table detail, not a structural
+    /// difference.
+    #[serde(default)]
+    pub a2a_revisions: BTreeMap<String, A2aRevisionSpec>,
 }
 
 /// Ways a manifest can fail to parse or to match the tree it describes.

@@ -11,6 +11,7 @@
 
 mod bridge;
 mod capability;
+pub mod a2a;
 pub mod feature;
 pub mod idempotency;
 pub mod ir;
