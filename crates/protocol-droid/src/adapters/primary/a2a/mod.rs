@@ -13,4 +13,6 @@
 //! serving — they can implement their own transport
 //! without paying the axum cost.
 #[cfg(all(feature = "a2a", feature = "http"))]
+pub mod jsonrpc_serve;
+#[cfg(all(feature = "a2a", feature = "http"))]
 pub mod well_known_serve;
