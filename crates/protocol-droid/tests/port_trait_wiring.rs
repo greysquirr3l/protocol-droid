@@ -64,6 +64,17 @@ const WIRED: &[(&str, &str)] = &[
     ("RandomIds", "IdSource"),
     ("HttpClient", "BridgePeer"),
     ("WireToolResults", "ToolResultCodec"),
+    // The four OAuth adapters. The composition root that
+    // wired them is `crates/protocol-droid/tests/oauth_wiring.rs`,
+    // which constructs each with a real-looking config
+    // and asserts the trait bound. The CLI does not yet
+    // compose an OAuth flow — that is a T26 follow-up —
+    // but the adapters are reachable from a composition
+    // root, which is what the audit's "wired" set tests.
+    ("OsSecrets", "AuthorizationSecrets"),
+    ("IntrospectionSource", "TokenSource"),
+    ("JwtSource", "TokenSource"),
+    ("HttpTokenEndpoint", "TokenEndpoint"),
 ];
 
 /// The set of port-trait impls that exist but are not yet
@@ -72,16 +83,7 @@ const WIRED: &[(&str, &str)] = &[
 /// prints it on every run, even when it is empty, so
 /// reverting the wiring (rather than completing it)
 /// would still leave a finding on the record.
-const OUTSTANDING: &[(&str, &str)] = &[
-    // The oauth adapters. None of them are wired into a
-    // composition root yet; the oauth wiring is the T26
-    // work. When the wiring lands, the entries move from
-    // `OUTSTANDING` to `WIRED` and the audit is satisfied.
-    ("OsSecrets", "AuthorizationSecrets"),
-    ("IntrospectionSource", "TokenSource"),
-    ("JwtSource", "TokenSource"),
-    ("HttpTokenEndpoint", "TokenEndpoint"),
-];
+const OUTSTANDING: &[(&str, &str)] = &[];
 
 /// The error type the audit's two tests return. Collecting
 /// the failure modes into a small enum means the test
@@ -147,7 +149,7 @@ fn every_wired_port_trait_impl_is_constructed() -> Result<(), Failure> {
 /// is `#[ignore]`'d so it does not fail the suite, and a
 /// developer who runs the ignored test gets the list.
 #[test]
-#[ignore = "audit finding surface; the entries here are the T26 wiring work"]
+#[ignore = "audit finding surface; the entries here stay empty once the wiring is complete"]
 fn outstanding_unwired_adapters() -> Result<(), Failure> {
     let source = collect_composition_root_source()?;
     let mut unwired: Vec<&str> = Vec::new();
