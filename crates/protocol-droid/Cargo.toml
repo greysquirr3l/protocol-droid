@@ -75,7 +75,7 @@ random-ids = ["dep:getrandom"]
 # they are pure value objects, so gating them would cost the version model to
 # save nothing. The `url` dep is here (not in the unconditional list) because
 # only the SSRF filter needs it, and the SSRF filter is A2A-specific.
-a2a = ["dep:url"]
+a2a = ["dep:url", "url/serde"]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
@@ -140,7 +140,7 @@ base64 = { version = "0.22.1", default-features = false, features = [
 # graph through `reqwest`, and appending query parameters to an endpoint that
 # may already carry some is the case hand-rolled percent-encoding gets wrong:
 # the endpoint comes from a discovery document this crate does not control.
-url = { version = "2.5.8", optional = true, features = ["serde"] }
+url = { version = "2.5.8", optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,

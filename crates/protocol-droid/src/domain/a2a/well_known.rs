@@ -45,10 +45,10 @@ pub const AGENT_CARD_WELL_KNOWN_PATH: &str = "/.well-known/agent-card.json";
 /// ```
 #[must_use]
 pub fn is_agent_card_well_known_path(path: &str) -> bool {
-    // The match is a single load-immediate-and-compare on the hot
-    // path: the agent-card matcher in the HTTP adapter is called
-    // once per request, and the constant-length comparison lets
-    // the compiler lower it to a memcmp on the literal. The
+    // The match is a single bytewise compare on the hot path: the
+    // agent-card matcher in the HTTP adapter is called once per
+    // request, and the constant-length comparison lets the
+    // compiler lower it to a `memcmp` on the literal. The
     // function is intentionally non-`const` because
     // `PartialEq<[u8]>` is not `const`-stable in 1.98; the
     // runtime cost is the same and the call site is not in a

@@ -31,7 +31,7 @@ mod tests;
 
 pub use agent_card::{
     AgentCapabilities, AgentCard, AgentCardBuilder, AgentCardError, AgentInterface,
-    AgentSkill, ProtocolBinding,
+    AgentSkill, ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
 };
 pub use version::{A2aVersion, ParseA2aVersionError};
 pub use well_known::{AGENT_CARD_WELL_KNOWN_PATH, is_agent_card_well_known_path};

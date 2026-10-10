@@ -35,12 +35,29 @@
 //! the spec mandates are checked once at the end instead of at every
 //! call site that constructs a card.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::domain::a2a::A2aVersion;
+
+/// The JSON-RPC binding — the v1.0 default.
+///
+/// A `LazyLock<ProtocolBinding>` because `Arc::from` is not
+/// `const` in 1.98, and an associated constant of type `Self`
+/// is not allowed on stable. The constant lives at module scope
+/// so callers reach it as `agent_card::JSONRPC`.
+pub static JSONRPC: LazyLock<ProtocolBinding> =
+    LazyLock::new(|| ProtocolBinding(Arc::from("JSONRPC")));
+
+/// The gRPC binding.
+pub static GRPC: LazyLock<ProtocolBinding> =
+    LazyLock::new(|| ProtocolBinding(Arc::from("GRPC")));
+
+/// The HTTP+JSON binding (REST-style POSTs of JSON-RPC envelopes).
+pub static HTTP_JSON: LazyLock<ProtocolBinding> =
+    LazyLock::new(|| ProtocolBinding(Arc::from("HTTP+JSON")));
 
 /// The protocol binding an [`AgentInterface`] advertises.
 ///
@@ -49,41 +66,13 @@ use crate::domain::a2a::A2aVersion;
 /// deployment can advertise a custom binding (e.g. `HTTP+SSE+JSON`). The
 /// newtype is a typed boundary; comparisons go through `as_str`, the
 /// `custom` constructor is the escape hatch for forward compatibility,
-/// and the three spec-named values have associated constants.
+/// and the three spec-named values are pre-built [`LazyLock`] constants
+/// in this module (see [`JSONRPC`], [`GRPC`], [`HTTP_JSON`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProtocolBinding(Arc<str>);
 
 impl ProtocolBinding {
-    /// The wire form of the JSON-RPC binding — the v1.0 default.
-    pub const JSONRPC_STR: &'static str = "JSONRPC";
-    /// The wire form of the gRPC binding.
-    pub const GRPC_STR: &'static str = "GRPC";
-    /// The wire form of the HTTP+JSON binding (REST-style POSTs of
-    /// JSON-RPC envelopes).
-    pub const HTTP_JSON_STR: &'static str = "HTTP+JSON";
-
-    /// The JSON-RPC binding — the v1.0 default. The `Arc<str>` is
-    /// built on first use via the lazy hook below; the constants
-    /// above give callers the wire form without paying for the
-    /// allocation up front.
-    #[must_use]
-    pub fn jsonrpc() -> Self {
-        Self(Arc::from(Self::JSONRPC_STR))
-    }
-
-    /// The gRPC binding.
-    #[must_use]
-    pub fn grpc() -> Self {
-        Self(Arc::from(Self::GRPC_STR))
-    }
-
-    /// The HTTP+JSON binding.
-    #[must_use]
-    pub fn http_json() -> Self {
-        Self(Arc::from(Self::HTTP_JSON_STR))
-    }
-
     /// A custom binding the spec does not name, for forward compatibility.
     #[must_use]
     pub fn custom(value: impl Into<Arc<str>>) -> Self {
@@ -99,9 +88,11 @@ impl ProtocolBinding {
 
 impl Default for ProtocolBinding {
     fn default() -> Self {
-        // The default is JSON-RPC, the v1.0 primary binding. An agent
-        // builder that does not pick a binding gets a JSON-RPC card.
-        Self::jsonrpc()
+        // The default is JSON-RPC, the v1.0 primary binding. An
+        // agent builder that does not pick a binding gets a
+        // JSON-RPC card. The clone is cheap (one refcount bump)
+        // and avoids a `LazyLock` deref in a hot path.
+        JSONRPC.clone()
     }
 }
 
@@ -399,7 +390,6 @@ mod tests {
 
     use super::{
         AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill,
-        ProtocolBinding,
     };
     use crate::domain::a2a::A2aVersion;
 
@@ -408,7 +398,7 @@ mod tests {
     fn sample_interface() -> Result<AgentInterface, TestError> {
         Ok(AgentInterface {
             url: url::Url::from_str("https://example.com/a2a/v1")?,
-            protocol_binding: ProtocolBinding::jsonrpc(),
+            protocol_binding: super::JSONRPC.clone(),
             protocol_version: A2aVersion::V1_0,
             tenant: None,
         })
@@ -702,5 +692,50 @@ mod tests {
         assert_eq!(first_input.as_deref(), Some("text/plain"));
         assert_eq!(first_output.as_deref(), Some("text/plain"));
         Ok(())
+    }
+
+    // --- `ProtocolBinding` constants and methods -----------------------
+
+    #[test]
+    fn protocol_binding_jsonrpc_constant_has_the_spec_wire_form() {
+        // The wire form is the A2A spec's literal; a typo in the
+        // `LazyLock` body would be a protocol break.
+        assert_eq!(super::JSONRPC.as_str(), "JSONRPC");
+    }
+
+    #[test]
+    fn protocol_binding_grpc_constant_has_the_spec_wire_form() {
+        assert_eq!(super::GRPC.as_str(), "GRPC");
+    }
+
+    #[test]
+    fn protocol_binding_http_json_constant_has_the_spec_wire_form() {
+        assert_eq!(super::HTTP_JSON.as_str(), "HTTP+JSON");
+    }
+
+    #[test]
+    fn protocol_binding_custom_carries_the_callers_value() {
+        let binding = super::ProtocolBinding::custom("HTTP+SSE+JSON");
+        assert_eq!(binding.as_str(), "HTTP+SSE+JSON");
+    }
+
+    #[test]
+    fn protocol_binding_default_is_json_rpc() {
+        // The default is the v1.0 primary binding — an agent
+        // builder that does not pick a binding gets a JSON-RPC
+        // card. The test pins the implicit default, so a future
+        // refactor that changes it fails loudly.
+        assert_eq!(super::ProtocolBinding::default().as_str(), "JSONRPC");
+    }
+
+    #[test]
+    fn protocol_binding_constants_are_distinct() {
+        // Three distinct `LazyLock`s with three distinct values;
+        // a typo that produced the same string for two of them
+        // would still serialise to a working card but would
+        // route incorrectly at the wire layer.
+        assert_ne!(super::JSONRPC.as_str(), super::GRPC.as_str());
+        assert_ne!(super::JSONRPC.as_str(), super::HTTP_JSON.as_str());
+        assert_ne!(super::GRPC.as_str(), super::HTTP_JSON.as_str());
     }
 }

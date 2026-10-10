@@ -11,6 +11,13 @@
 
 mod bridge;
 mod capability;
+// T27. The A2A domain value objects: version negotiation, the
+// per-revision feature profile, the `AgentCard`, and the well-known
+// path. Gated on the `a2a` feature because the `url` dep is
+// unconditional under the gate (only the A2A agent card uses it
+// with the `serde` feature on) and a consumer that never speaks
+// A2A should not pull it in.
+#[cfg(feature = "a2a")]
 pub mod a2a;
 pub mod feature;
 pub mod idempotency;
