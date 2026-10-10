@@ -47,7 +47,14 @@ clap = { workspace = true }
 # from a plain `fn main`. The lean-core property belongs to the *library*; a
 # binary that cannot drive its own subcommands is not a smaller binary, it is a
 # broken one.
-tokio = { workspace = true, features = ["io-std", "rt", "macros"] }
+tokio = { workspace = true, features = ["io-std", "rt", "macros", "process"] }
+# `conformance self` probes the fixture server's port over loopback HTTP, so a
+# `reqwest::Client` is the only thing that needs to be added. A leaner approach
+# would be `tokio::net::TcpStream` + a hand-written JSON-RPC POST, but the
+# probe is a single well-formed request — a one-off `reqwest` is the cheaper
+# answer to write, and `reqwest` is already in the workspace's transitive
+# closure through the `protocol-droid` library.
+reqwest = { workspace = true, features = ["json"], default-features = false }
 protocol-droid = { workspace = true }
 
 [lints]

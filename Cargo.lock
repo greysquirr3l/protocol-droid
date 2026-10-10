@@ -1481,6 +1481,7 @@ dependencies = [
  "anyhow",
  "clap",
  "protocol-droid",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",

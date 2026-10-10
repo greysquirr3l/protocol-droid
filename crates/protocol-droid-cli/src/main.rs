@@ -6,7 +6,7 @@
 //! of its own.
 
 use clap::{Parser, Subcommand};
-use protocol_droid_cli::bridge;
+use protocol_droid_cli::{bridge, conformance};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///
@@ -43,6 +43,12 @@ struct Cli {
 enum Command {
     /// Validate and report a version-translating bridge between two peers.
     Bridge(bridge::BridgeArgs),
+    /// Run the official MCP conformance suite against a server or client.
+    ///
+    /// Three modes: `server` (suite → your server URL), `client` (suite →
+    /// your client subprocess), and `self` (suite → this crate's own
+    /// fixtures — wired by T21 phase 2).
+    Conformance(conformance::ConformanceArgs),
 }
 
 /// Entry point.
@@ -78,12 +84,13 @@ fn main() -> anyhow::Result<()> {
 async fn dispatch(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Bridge(args) => bridge::run(&args).await,
+        Command::Conformance(args) => conformance::run(&args).await,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{Cli, Command};
     use clap::error::ErrorKind;
     use clap::{CommandFactory, Parser};
 
@@ -128,5 +135,115 @@ mod tests {
             matches!(&parsed, Err(err) if err.kind() == ErrorKind::UnknownArgument),
             "expected UnknownArgument, got {parsed:?}",
         );
+    }
+
+    /// `conformance server` round-trips through clap with every flag the
+    /// subcommand names. Exercising `try_parse_from` here, where the bin's
+    /// `Cli` and `Command` types live, is what keeps the conformance types
+    /// alive in the lib test build.
+    #[test]
+    fn conformance_server_round_trips_through_clap() {
+        let parsed = Cli::try_parse_from([
+            "protocol-droid",
+            "conformance",
+            "server",
+            "--url",
+            "http://127.0.0.1:8080/mcp",
+            "--spec-version",
+            "2024-11-05",
+            "--scenario",
+            "tools_call",
+            "--suite",
+            "active",
+            "--json",
+        ]);
+        let Ok(parsed) = parsed else {
+            assert_eq!(Ok(()), Err("clap parse failed"));
+            return;
+        };
+        let server = match parsed.command {
+            Command::Conformance(crate::conformance::ConformanceArgs {
+                mode: crate::conformance::ConformanceMode::Server(server),
+            }) => server,
+            other => {
+                assert_eq!(
+                    "Conformance/Server".to_owned(),
+                    format!("{other:?}"),
+                    "expected Conformance/Server, got {other:?}"
+                );
+                return;
+            }
+        };
+        assert_eq!(server.url, "http://127.0.0.1:8080/mcp");
+        assert_eq!(server.spec_version, "2024-11-05");
+        assert_eq!(server.scenario.as_deref(), Some("tools_call"));
+        assert_eq!(server.suite.as_deref(), Some("active"));
+        assert!(server.json);
+    }
+
+    /// `conformance client` parses through clap the same way as `server`.
+    #[test]
+    fn conformance_client_round_trips_through_clap() {
+        let parsed = Cli::try_parse_from([
+            "protocol-droid",
+            "conformance",
+            "client",
+            "--command",
+            "./my-client",
+            "--spec-version",
+            "2025-06-18",
+        ]);
+        let Ok(parsed) = parsed else {
+            assert_eq!(Ok(()), Err("clap parse failed"));
+            return;
+        };
+        let client = match parsed.command {
+            Command::Conformance(crate::conformance::ConformanceArgs {
+                mode: crate::conformance::ConformanceMode::Client(client),
+            }) => client,
+            other => {
+                assert_eq!(
+                    "Conformance/Client".to_owned(),
+                    format!("{other:?}"),
+                    "expected Conformance/Client, got {other:?}"
+                );
+                return;
+            }
+        };
+        assert_eq!(client.command, "./my-client");
+        assert_eq!(client.spec_version, "2025-06-18");
+        assert!(client.scenario.is_none());
+    }
+
+    /// `conformance self` parses, and `--port` defaults to `0` so the OS
+    /// chooses a free port for the fixture server.
+    #[test]
+    fn conformance_self_round_trips_through_clap() {
+        let parsed = Cli::try_parse_from([
+            "protocol-droid",
+            "conformance",
+            "self",
+            "--spec-version",
+            "2026-07-28",
+        ]);
+        let Ok(parsed) = parsed else {
+            assert_eq!(Ok(()), Err("clap parse failed"));
+            return;
+        };
+        let self_args = match parsed.command {
+            Command::Conformance(crate::conformance::ConformanceArgs {
+                mode: crate::conformance::ConformanceMode::Self_(self_args),
+            }) => self_args,
+            other => {
+                assert_eq!(
+                    "Conformance/Self".to_owned(),
+                    format!("{other:?}"),
+                    "expected Conformance/Self, got {other:?}"
+                );
+                return;
+            }
+        };
+        assert_eq!(self_args.spec_version, "2026-07-28");
+        assert_eq!(self_args.port, 0, "--port default must be 0");
     }
 }

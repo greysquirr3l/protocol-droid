@@ -1,0 +1,112 @@
+name: Conformance
+
+# Runs the official `@modelcontextprotocol/conformance` suite against the
+# reference server fixture in this crate. The pin is in
+# `crates/protocol-droid-cli/conformance/PINNED_VERSION`; bumping it is a
+# deliberate refresh, not a silent upgrade.
+#
+# # What this matrix exercises
+#
+# Four revisions: `2025-03-26`, `2025-06-18`, `2025-11-25`, `2026-07-28`. The
+# pinned suite version (`0.2.0-alpha.12`) does not include `2024-11-05` as
+# an applicable spec version, and that exclusion is documented in
+# `crates/protocol-droid-cli/conformance/ALLOWLIST.md` — the project still
+# supports `2024-11-05` *at the codec level*, the conformance matrix just does
+# not have a scenario set for it at this pin. A bump to a future suite
+# version that re-introduces `2024-11-05` is the trigger to add the leg
+# back.
+#
+# # What this matrix does *not* exercise
+#
+# The client-side scenarios. The reference client fixture is the next
+# phase of T21 — until then, the matrix validates that the project's
+# own server answers what the suite's *server* scenarios ask, against
+# four revisions, and exits non-zero on any failure.
+#
+# # Why the matrix uses `cargo` to start the fixture
+#
+# `cargo run --example conformance_reference_server` is what the rest of
+# the project uses to exercise the fixture, and CI's checkout + cache is
+# the same shape a local dev's `cargo test` is. A separate binary
+# distribution would be a second code path that could drift from the
+# example, and the example is what the wrapper's `self` mode also
+# starts — so a CI run validates both at once.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege. Nothing here needs write access.
+permissions:
+  contents: read
+
+# A new push to a branch supersedes the run already in flight for that branch.
+concurrency:
+  group: conformance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Match the toolchain the workspace pins.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.1"
+  RUST_BACKTRACE: 1
+
+jobs:
+  conformance:
+    name: Conformance (${{ matrix.spec-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        spec-version:
+          - 2025-03-26
+          - 2025-06-18
+          - 2025-11-25
+          - 2026-07-28
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Build the conformance wrapper
+        run: cargo build -p protocol-droid-cli --bin protocol-droid
+      # `cargo run --example` is a fresh build per CI run without a cache
+      # hit. The cache above is keyed on `target/`, so the second run
+      # below reuses the example binary when nothing changed.
+      - name: Run conformance self
+        run: |
+          cargo run --quiet -p protocol-droid-cli -- conformance self \
+            --spec-version "${{ matrix.spec-version }}" \
+            --timeout 10m
+      - name: Run individual server scenarios
+        # Exercise the scenario names most likely to regress the codec
+        # (tools-list, prompts-list, resources-list, completion-complete).
+        # Each one is a one-off, so a regression in one does not
+        # short-circuit the others — every scenario in this list
+        # either passes or the run fails.
+        run: |
+          set -euo pipefail
+          for scenario in tools-list prompts-list resources-list completion-complete; do
+            echo "=== $scenario (cumulative) ==="
+            cargo run --quiet -p protocol-droid-cli -- conformance self \
+              --spec-version "${{ matrix.spec-version }}" \
+              --scenario "$scenario" \
+              --force \
+              --timeout 5m
+          done
+      - name: Upload suite results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-${{ matrix.spec-version }}
+          path: |
+            /tmp/refserver.log
+          if-no-files-found: ignore

@@ -196,3 +196,7 @@ required-features = ["stdio"]
 [[example]]
 name = "server"
 required-features = ["http"]
+
+[[example]]
+name = "conformance_reference_server"
+required-features = ["http", "random-ids"]
