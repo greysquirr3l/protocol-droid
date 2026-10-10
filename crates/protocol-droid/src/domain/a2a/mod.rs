@@ -26,6 +26,7 @@ pub mod feature;
 pub mod message;
 pub mod send_message;
 pub mod task;
+pub mod task_lifecycle;
 pub mod version;
 pub mod well_known;
 
@@ -39,6 +40,9 @@ pub use agent_card::{
 pub use message::{DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart};
 pub use send_message::{MessageSendConfiguration, SendMessageRequest, SendMessageResponse};
 pub use task::{Artifact, Task, TaskState, TaskStatus};
+pub use task_lifecycle::{
+    CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
+};
 pub use version::{A2aVersion, ParseA2aVersionError};
 pub use well_known::{AGENT_CARD_WELL_KNOWN_PATH, is_agent_card_well_known_path};
 
