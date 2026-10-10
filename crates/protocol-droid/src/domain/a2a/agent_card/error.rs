@@ -3,6 +3,8 @@
 //! A single enum in its own file so a `match` is greppable and a
 //! new variant does not touch the value-object file.
 
+use std::sync::Arc;
+
 use thiserror::Error;
 
 /// Errors a builder can raise.
@@ -44,5 +46,22 @@ pub enum AgentCardError {
         index: usize,
         /// The empty field, one of `uri`, `description`.
         field: &'static str,
+    },
+    /// A security scheme was registered with an empty name.
+    #[error("AgentCard.security_schemes key must be non-empty")]
+    EmptySecuritySchemeName,
+    /// An API key security scheme has an empty `name` (the
+    /// parameter name, not the scheme key).
+    #[error("AgentCard.security_schemes[{name}].name must be non-empty")]
+    EmptyAPIKeyParameterName {
+        /// The scheme key in the `security_schemes` map.
+        name: Arc<str>,
+    },
+    /// An HTTP security scheme has an empty `scheme` (the
+    /// IANA-registered auth scheme, e.g. `Bearer`).
+    #[error("AgentCard.security_schemes[{name}].scheme must be non-empty")]
+    EmptyHTTPAuthScheme {
+        /// The scheme key in the `security_schemes` map.
+        name: Arc<str>,
     },
 }

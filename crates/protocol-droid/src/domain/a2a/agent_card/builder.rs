@@ -6,11 +6,13 @@
 //! value-object, and the only place the spec's required-field
 //! invariants are checked.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use url::Url;
 
 use crate::domain::a2a::agent_card::error::AgentCardError;
+use crate::domain::a2a::agent_card::security_scheme::SecurityScheme;
 use crate::domain::a2a::agent_card::types::{
     AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,
 };
@@ -34,6 +36,7 @@ pub struct AgentCardBuilder {
     default_input_modes: Vec<Arc<str>>,
     default_output_modes: Vec<Arc<str>>,
     skills: Vec<AgentSkill>,
+    security_schemes: BTreeMap<Arc<str>, SecurityScheme>,
 }
 
 impl AgentCardBuilder {
@@ -119,6 +122,22 @@ impl AgentCardBuilder {
         self
     }
 
+    /// Registers a security scheme under `name`. The same
+    /// name is the key in
+    /// [`AgentCard::security_schemes`](super::AgentCard::security_schemes)
+    /// and the key a client uses in
+    /// [`SecurityRequirement`](super::SecurityRequirement)
+    /// to demand that scheme. The wire form is `OpenAPI 3.x`.
+    #[must_use]
+    pub fn with_security_scheme(
+        mut self,
+        name: impl Into<Arc<str>>,
+        scheme: SecurityScheme,
+    ) -> Self {
+        self.security_schemes.insert(name.into(), scheme);
+        self
+    }
+
     /// Adds a default input mode.
     #[must_use]
     pub fn with_input_mode(mut self, mode: impl Into<Arc<str>>) -> Self {
@@ -199,6 +218,27 @@ impl AgentCardBuilder {
                 });
             }
         }
+        for (name, scheme) in &self.security_schemes {
+            if name.is_empty() {
+                return Err(AgentCardError::EmptySecuritySchemeName);
+            }
+            match scheme {
+                SecurityScheme::ApiKey(api_key) => {
+                    if api_key.name.is_empty() {
+                        return Err(AgentCardError::EmptyAPIKeyParameterName {
+                            name: Arc::clone(name),
+                        });
+                    }
+                }
+                SecurityScheme::Http(http) => {
+                    if http.scheme.is_empty() {
+                        return Err(AgentCardError::EmptyHTTPAuthScheme {
+                            name: Arc::clone(name),
+                        });
+                    }
+                }
+            }
+        }
         Ok(AgentCard {
             name,
             description,
@@ -211,6 +251,7 @@ impl AgentCardBuilder {
             default_input_modes: self.default_input_modes,
             default_output_modes: self.default_output_modes,
             skills: self.skills,
+            security_schemes: self.security_schemes,
         })
     }
 }
@@ -618,6 +659,197 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
         assert_eq!(mime.as_deref(), Some("audio/wav"));
+        Ok(())
+    }
+
+    // --- security schemes --------------------------------------------
+
+    #[test]
+    fn api_key_security_scheme_round_trips() -> Result<(), TestError> {
+        use super::super::security_scheme::{APIKeyLocation, APIKeySecurityScheme, SecurityScheme};
+
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_security_scheme(
+                "publicRead",
+                SecurityScheme::ApiKey(APIKeySecurityScheme {
+                    description: Some(Arc::from("Read-only API key.")),
+                    in_: APIKeyLocation::Header,
+                    name: Arc::from("X-API-Key"),
+                }),
+            )
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        let scheme = card
+            .security_schemes
+            .get("publicRead")
+            .expect("the registered scheme must be present in the map");
+        let json = serde_json::to_value(scheme)?;
+        let obj = json
+            .as_object()
+            .expect("the scheme must serialise to a JSON object");
+        assert_eq!(
+            obj.get("type").and_then(serde_json::Value::as_str),
+            Some("apiKey")
+        );
+        assert_eq!(
+            obj.get("in").and_then(serde_json::Value::as_str),
+            Some("header")
+        );
+        assert_eq!(
+            obj.get("name").and_then(serde_json::Value::as_str),
+            Some("X-API-Key")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn http_security_scheme_round_trips() -> Result<(), TestError> {
+        use super::super::security_scheme::{HTTPAuthSecurityScheme, SecurityScheme};
+
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_security_scheme(
+                "bearerAuth",
+                SecurityScheme::Http(HTTPAuthSecurityScheme {
+                    description: None,
+                    scheme: Arc::from("Bearer"),
+                    bearer_format: Some(Arc::from("JWT")),
+                }),
+            )
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        let scheme = card
+            .security_schemes
+            .get("bearerAuth")
+            .expect("the registered scheme must be present in the map");
+        let json = serde_json::to_value(scheme)?;
+        let obj = json
+            .as_object()
+            .expect("the scheme must serialise to a JSON object");
+        assert_eq!(
+            obj.get("type").and_then(serde_json::Value::as_str),
+            Some("http")
+        );
+        assert_eq!(
+            obj.get("scheme").and_then(serde_json::Value::as_str),
+            Some("Bearer")
+        );
+        assert_eq!(
+            obj.get("bearerFormat").and_then(serde_json::Value::as_str),
+            Some("JWT")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_security_scheme_name_is_rejected() -> Result<(), TestError> {
+        use super::super::security_scheme::{APIKeyLocation, APIKeySecurityScheme, SecurityScheme};
+
+        let err = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_security_scheme(
+                "",
+                SecurityScheme::ApiKey(APIKeySecurityScheme {
+                    description: None,
+                    in_: APIKeyLocation::Header,
+                    name: Arc::from("X-API-Key"),
+                }),
+            )
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()
+            .expect_err("an empty scheme name must be refused");
+        assert_eq!(err, AgentCardError::EmptySecuritySchemeName);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_api_key_parameter_name_is_rejected() -> Result<(), TestError> {
+        use super::super::security_scheme::{APIKeyLocation, APIKeySecurityScheme, SecurityScheme};
+
+        let err = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_security_scheme(
+                "publicRead",
+                SecurityScheme::ApiKey(APIKeySecurityScheme {
+                    description: None,
+                    in_: APIKeyLocation::Header,
+                    name: Arc::from(""),
+                }),
+            )
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()
+            .expect_err("an empty API key parameter name must be refused");
+        assert_eq!(
+            err,
+            AgentCardError::EmptyAPIKeyParameterName {
+                name: Arc::from("publicRead"),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_http_auth_scheme_is_rejected() -> Result<(), TestError> {
+        use super::super::security_scheme::{HTTPAuthSecurityScheme, SecurityScheme};
+
+        let err = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_security_scheme(
+                "bearerAuth",
+                SecurityScheme::Http(HTTPAuthSecurityScheme {
+                    description: None,
+                    scheme: Arc::from(""),
+                    bearer_format: None,
+                }),
+            )
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()
+            .expect_err("an empty HTTP auth scheme must be refused");
+        assert_eq!(
+            err,
+            AgentCardError::EmptyHTTPAuthScheme {
+                name: Arc::from("bearerAuth"),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unset_security_schemes_carries_empty_map() -> Result<(), TestError> {
+        // A card that does not call `with_security_scheme`
+        // must serialise without a `securitySchemes` field.
+        // The test pins both the in-memory shape (an empty
+        // `BTreeMap`) and the wire shape (the field is
+        // absent — `BTreeMap` is empty so
+        // `skip_serializing_if` drops it).
+        let card = sample_card()?;
+        assert!(card.security_schemes.is_empty());
+        let value = serde_json::to_value(&card)?;
+        let obj = value
+            .as_object()
+            .expect("the card must serialise to a JSON object");
+        assert!(!obj.contains_key("securitySchemes"));
         Ok(())
     }
 }

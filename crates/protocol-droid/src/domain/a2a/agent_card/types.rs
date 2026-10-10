@@ -216,15 +216,14 @@ pub struct AgentSkill {
 
 /// A self-describing manifest for an agent.
 ///
-/// This is the required-fields view plus the three
+/// This is the required-fields view plus the four
 /// single-value optional fields the proto names
-/// (`provider`, `documentation_url`, `icon_url`). The
-/// security-related optional fields (`security_schemes`,
-/// `security_requirements`, `signatures`) land in a
-/// follow-up commit that brings in the
-/// [`SecurityScheme`](https://swagger.io/specification/v2/#securityDefinitionsObject)
-/// type — the OpenAPI-flavoured shape is substantial enough
-/// to want its own commit.
+/// (`provider`, `documentation_url`, `icon_url`, plus
+/// the `security_schemes` map that lands in this commit).
+/// The remaining optional fields (`security_requirements`,
+/// `signatures`) land in follow-up commits — the former
+/// is its own type, the latter is RFC 7515 JWS and wants
+/// its own dependency footprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCard {
@@ -266,6 +265,15 @@ pub struct AgentCard {
     /// The skills the agent advertises. REQUIRED (the field is
     /// always present; an empty list is valid).
     pub skills: Vec<AgentSkill>,
+    /// The security schemes the agent advertises, keyed by
+    /// the caller's chosen scheme name. Optional in the
+    /// spec — an agent that does not require authentication
+    /// has no `securitySchemes` field on the wire. The map
+    /// is `BTreeMap` so the wire form is deterministic
+    /// (alphabetical by scheme name), which keeps test
+    /// fixtures readable.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub security_schemes: std::collections::BTreeMap<Arc<str>, super::security_scheme::SecurityScheme>,
 }
 
 #[cfg(test)]

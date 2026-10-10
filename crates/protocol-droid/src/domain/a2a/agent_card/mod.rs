@@ -45,10 +45,14 @@
 
 mod builder;
 mod error;
+mod security_scheme;
 mod types;
 
 pub use builder::AgentCardBuilder;
 pub use error::AgentCardError;
+pub use security_scheme::{
+    APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, SecurityScheme,
+};
 pub use types::{
     AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,
     ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
