@@ -41,9 +41,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// The wire form is `OpenAPI 3.x`: a single JSON object
 /// with a `type` field that names the variant. The five
-/// variants map to the proto's `oneof scheme`; this
-/// commit ships the two simple ones, [`ApiKey`](Self::ApiKey)
-/// and [`Http`](Self::Http).
+/// variants map to the proto's `oneof scheme`; the
+/// previous commit shipped the two simple ones
+/// ([`ApiKey`](Self::ApiKey) and [`Http`](Self::Http)),
+/// this commit adds [`OAuth2`](Self::OAuth2). The
+/// remaining two — `OpenID Connect` and `mutual TLS` —
+/// land in their own commits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SecurityScheme {
@@ -57,6 +60,14 @@ pub enum SecurityScheme {
     /// is also standard.
     #[serde(rename = "http")]
     Http(HTTPAuthSecurityScheme),
+    /// OAuth 2.0 authentication (RFC 6749). The variant
+    /// carries the [`OAuth2SecurityScheme`] payload
+    /// (flows + RFC 8414 metadata URL) boxed to keep the
+    /// enum's total size down — the OAuth 2 sub-types
+    /// are several hundred bytes, and the `ApiKey` /
+    /// `Http` variants are forty.
+    #[serde(rename = "oauth2")]
+    OAuth2(Box<super::oauth_flow::OAuth2SecurityScheme>),
 }
 
 /// An API-key-based authentication scheme.

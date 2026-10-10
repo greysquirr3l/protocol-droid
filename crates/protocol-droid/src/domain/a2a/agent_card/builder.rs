@@ -237,6 +237,13 @@ impl AgentCardBuilder {
                         });
                     }
                 }
+                SecurityScheme::OAuth2(oauth2) => {
+                    if !oauth2.flows.has_any() {
+                        return Err(AgentCardError::EmptyOAuthFlows {
+                            name: Arc::clone(name),
+                        });
+                    }
+                }
             }
         }
         Ok(AgentCard {

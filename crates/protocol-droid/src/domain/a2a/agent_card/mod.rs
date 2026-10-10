@@ -45,11 +45,16 @@
 
 mod builder;
 mod error;
+mod oauth_flow;
 mod security_scheme;
 mod types;
 
 pub use builder::AgentCardBuilder;
 pub use error::AgentCardError;
+pub use oauth_flow::{
+    AuthorizationCodeOAuthFlow, ClientCredentialsOAuthFlow, DeviceCodeOAuthFlow,
+    OAuth2SecurityScheme, OAuthFlows,
+};
 pub use security_scheme::{
     APIKeyLocation, APIKeySecurityScheme, HTTPAuthSecurityScheme, SecurityScheme,
 };

@@ -64,4 +64,14 @@ pub enum AgentCardError {
         /// The scheme key in the `security_schemes` map.
         name: Arc<str>,
     },
+    /// An OAuth 2.0 security scheme has no flow set. The
+    /// proto's `oneof flow` and the `OpenAPI 3.x` wire
+    /// form both require at least one of
+    /// `authorizationCode`, `clientCredentials`, or
+    /// `deviceCode` to be present.
+    #[error("AgentCard.security_schemes[{name}].flows must declare at least one flow")]
+    EmptyOAuthFlows {
+        /// The scheme key in the `security_schemes` map.
+        name: Arc<str>,
+    },
 }
