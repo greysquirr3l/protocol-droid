@@ -72,6 +72,22 @@ impl Default for ProtocolBinding {
 
 // --- Sub-messages ---------------------------------------------------
 
+/// The service provider of the agent.
+///
+/// The proto marks both fields REQUIRED. The builder rejects an
+/// empty `organization`; the `url` field is typed `url::Url`,
+/// so an invalid URL is a `url::ParseError` at the call site
+/// that constructs the value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentProvider {
+    /// A URL for the agent provider's website or relevant
+    /// documentation. REQUIRED.
+    pub url: Url,
+    /// The name of the agent provider's organization. REQUIRED,
+    /// non-empty.
+    pub organization: Arc<str>,
+}
+
 /// One protocol binding the agent publishes, with the URL it is
 /// reachable at and the A2A version it speaks.
 ///
@@ -157,12 +173,15 @@ pub struct AgentSkill {
 
 /// A self-describing manifest for an agent.
 ///
-/// This is the required-fields view. The full proto has
-/// additional optional fields (`provider`, `documentation_url`,
-/// `icon_url`, `security_schemes`, `security_requirements`,
-/// `signatures`, `extensions`) that a follow-up commit adds; the
-/// builder is the place those land when the wire codec work
-/// pulls them in.
+/// This is the required-fields view plus the three
+/// single-value optional fields the proto names
+/// (`provider`, `documentation_url`, `icon_url`). The
+/// security-related optional fields (`security_schemes`,
+/// `security_requirements`, `signatures`) land in a
+/// follow-up commit that brings in the
+/// [`SecurityScheme`](https://swagger.io/specification/v2/#securityDefinitionsObject)
+/// type — the OpenAPI-flavoured shape is substantial enough
+/// to want its own commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCard {
@@ -178,6 +197,21 @@ pub struct AgentCard {
     /// order. REQUIRED, non-empty. An agent with no interface
     /// has no protocol to speak.
     pub supported_interfaces: Vec<AgentInterface>,
+    /// The service provider of the agent. Optional in the
+    /// proto, present here as `Option<AgentProvider>` so the
+    /// field is omitted from the wire form when the agent
+    /// does not advertise a provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<AgentProvider>,
+    /// A URL providing additional documentation about the
+    /// agent. Optional in the proto; absent by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_url: Option<Url>,
+    /// A URL to an icon for the agent. Optional in the
+    /// proto; absent by default. UI clients surface this
+    /// as the agent's avatar in a directory listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<Url>,
     /// The capability set. REQUIRED — the field is always
     /// present on the wire.
     pub capabilities: AgentCapabilities,
@@ -308,17 +342,87 @@ mod tests {
                 obj.keys().collect::<Vec<_>>()
             );
         }
+        // The three optional fields are absent by default —
+        // a card with no provider / docs / icon should not
+        // serialise `null` for them, and the absence is
+        // the signal a client uses to render the agent
+        // without an org tag, docs link, or avatar.
+        for optional in ["provider", "documentationUrl", "iconUrl"] {
+            assert!(
+                !obj.contains_key(optional),
+                "an unset optional must be absent (not null); got key {optional:?}"
+            );
+        }
         // No snake_case leakage.
         for leak in [
             "supported_interfaces",
             "default_input_modes",
             "default_output_modes",
+            "documentation_url",
+            "icon_url",
         ] {
             assert!(
                 !obj.contains_key(leak),
                 "the JSON object must not contain snake_case {leak:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn optional_fields_appear_when_set() -> Result<(), TestError> {
+        // The wire form carries an optional field only when
+        // it is set; the test pins each of the three so a
+        // future refactor that always-serialises cannot
+        // silently change the JSON.
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(super::AgentInterface {
+                url: url::Url::parse("https://example.com/a2a/v1")?,
+                protocol_binding: JSONRPC.clone(),
+                protocol_version: crate::domain::a2a::A2aVersion::V1_0,
+                tenant: None,
+            })
+            .with_provider(super::AgentProvider {
+                url: url::Url::parse("https://example.com")?,
+                organization: Arc::from("Example Co"),
+            })
+            .with_documentation_url(url::Url::parse("https://example.com/docs")?)
+            .with_icon_url(url::Url::parse("https://example.com/icon.png")?)
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        let value = serde_json::to_value(&card)?;
+        let obj = value
+            .as_object()
+            .expect("the card must serialise to a JSON object");
+
+        let provider = obj
+            .get("provider")
+            .and_then(serde_json::Value::as_object);
+        let provider_url = provider
+            .and_then(|p| p.get("url"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let provider_org = provider
+            .and_then(|p| p.get("organization"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert_eq!(provider_url.as_deref(), Some("https://example.com/"));
+        assert_eq!(provider_org.as_deref(), Some("Example Co"));
+
+        let docs = obj
+            .get("documentationUrl")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let icon = obj
+            .get("iconUrl")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert_eq!(docs.as_deref(), Some("https://example.com/docs"));
+        assert_eq!(icon.as_deref(), Some("https://example.com/icon.png"));
         Ok(())
     }
 

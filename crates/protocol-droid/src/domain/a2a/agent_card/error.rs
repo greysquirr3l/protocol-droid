@@ -34,4 +34,7 @@ pub enum AgentCardError {
         /// The empty field, one of `id`, `name`, `description`.
         field: &'static str,
     },
+    /// The provider's organization was empty.
+    #[error("AgentCard.provider.organization must be non-empty")]
+    EmptyProviderOrganization,
 }

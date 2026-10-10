@@ -8,9 +8,11 @@
 
 use std::sync::Arc;
 
+use url::Url;
+
 use crate::domain::a2a::agent_card::error::AgentCardError;
 use crate::domain::a2a::agent_card::types::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentSkill,
+    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill,
 };
 
 /// The builder for [`AgentCard`].
@@ -25,6 +27,9 @@ pub struct AgentCardBuilder {
     description: Option<Arc<str>>,
     version: Option<Arc<str>>,
     supported_interfaces: Vec<AgentInterface>,
+    provider: Option<AgentProvider>,
+    documentation_url: Option<Url>,
+    icon_url: Option<Url>,
     capabilities: AgentCapabilities,
     default_input_modes: Vec<Arc<str>>,
     default_output_modes: Vec<Arc<str>>,
@@ -65,6 +70,34 @@ impl AgentCardBuilder {
     #[must_use]
     pub fn with_interface(mut self, interface: AgentInterface) -> Self {
         self.supported_interfaces.push(interface);
+        self
+    }
+
+    /// Sets the service provider of the agent. Optional in the
+    /// spec; a builder that does not call this method produces
+    /// a card with no provider field on the wire.
+    #[must_use]
+    pub fn with_provider(mut self, provider: AgentProvider) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// Sets the URL providing additional documentation about the
+    /// agent. Optional in the spec; absent on the wire unless
+    /// this method is called.
+    #[must_use]
+    pub fn with_documentation_url(mut self, url: Url) -> Self {
+        self.documentation_url = Some(url);
+        self
+    }
+
+    /// Sets the URL to an icon for the agent. Optional in the
+    /// spec; absent on the wire unless this method is called.
+    /// UI clients surface this as the agent's avatar in a
+    /// directory listing.
+    #[must_use]
+    pub fn with_icon_url(mut self, url: Url) -> Self {
+        self.icon_url = Some(url);
         self
     }
 
@@ -139,11 +172,19 @@ impl AgentCardBuilder {
                 });
             }
         }
+        if let Some(provider) = &self.provider
+            && provider.organization.is_empty()
+        {
+            return Err(AgentCardError::EmptyProviderOrganization);
+        }
         Ok(AgentCard {
             name,
             description,
             version,
             supported_interfaces: self.supported_interfaces,
+            provider: self.provider,
+            documentation_url: self.documentation_url,
+            icon_url: self.icon_url,
             capabilities: self.capabilities,
             default_input_modes: self.default_input_modes,
             default_output_modes: self.default_output_modes,
@@ -332,6 +373,104 @@ mod tests {
         assert_eq!(card.name.as_ref(), "Research Agent");
         assert_eq!(card.supported_interfaces.len(), 1);
         assert_eq!(card.skills.len(), 1);
+        Ok(())
+    }
+
+    // --- optional fields ---------------------------------------------
+
+    #[test]
+    fn valid_provider_builds() -> Result<(), TestError> {
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_provider(super::AgentProvider {
+                url: url::Url::parse("https://example.com")?,
+                organization: Arc::from("Example Co"),
+            })
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        let provider = card
+            .provider
+            .as_ref()
+            .expect("a card built with_provider must carry the provider");
+        assert_eq!(provider.organization.as_ref(), "Example Co");
+        assert_eq!(provider.url.as_str(), "https://example.com/");
+        Ok(())
+    }
+
+    #[test]
+    fn empty_provider_organization_is_rejected() -> Result<(), TestError> {
+        let err = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_provider(super::AgentProvider {
+                url: url::Url::parse("https://example.com")?,
+                organization: Arc::from(""),
+            })
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()
+            .expect_err("an empty provider organization must be refused");
+        assert_eq!(err, AgentCardError::EmptyProviderOrganization);
+        Ok(())
+    }
+
+    #[test]
+    fn unset_provider_carries_none() -> Result<(), TestError> {
+        // A card that does not call `with_provider` must
+        // serialise without a `provider` field. The test
+        // pins both the in-memory shape (`None`) and the
+        // wire shape (the field is absent).
+        let card = sample_card()?;
+        assert!(card.provider.is_none());
+        let value = serde_json::to_value(&card)?;
+        let obj = value
+            .as_object()
+            .expect("the card must serialise to a JSON object");
+        assert!(!obj.contains_key("provider"));
+        Ok(())
+    }
+
+    #[test]
+    fn documentation_url_round_trips() -> Result<(), TestError> {
+        let url = url::Url::parse("https://example.com/docs")?;
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_documentation_url(url.clone())
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        assert_eq!(card.documentation_url.as_ref(), Some(&url));
+        let json = serde_json::to_string(&card)?;
+        let parsed: AgentCard = serde_json::from_str(&json)?;
+        assert_eq!(parsed, card);
+        Ok(())
+    }
+
+    #[test]
+    fn icon_url_round_trips() -> Result<(), TestError> {
+        let url = url::Url::parse("https://example.com/icon.png")?;
+        let card = AgentCardBuilder::new()
+            .with_name("n")
+            .with_description("d")
+            .with_version("1.0.0")
+            .with_interface(sample_interface()?)
+            .with_icon_url(url.clone())
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .build()?;
+        assert_eq!(card.icon_url.as_ref(), Some(&url));
+        let json = serde_json::to_string(&card)?;
+        let parsed: AgentCard = serde_json::from_str(&json)?;
+        assert_eq!(parsed, card);
         Ok(())
     }
 }
