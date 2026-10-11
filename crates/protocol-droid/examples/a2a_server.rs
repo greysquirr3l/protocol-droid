@@ -3,12 +3,20 @@
 //! The smallest thing an external A2A peer can actually reach over
 //! the wire: it serves the well-known `AgentCard` at
 //! `/.well-known/agent-card.json`, the JSON-RPC 2.0 method table
-//! at `/a2a`, and the streaming SSE endpoint at `/a2a/stream`,
-//! on a configurable address (default `127.0.0.1:8080`).
+//! at `/a2a`, the streaming SSE endpoint at `/a2a/stream`, and a
+//! liveness probe at `/health`, on a configurable address (default
+//! `127.0.0.1:8080`).
 //!
 //! ```text
 //! cargo run -p protocol-droid --example a2a_server --features a2a,http
 //! ```
+//!
+//! Override the bind address with `A2A_ADDR=0.0.0.0:9000 cargo run ...`.
+//! The example does not install a SIGINT handler; ctrl-c kills
+//! the process. A real agent would wire `with_graceful_shutdown`
+//! to `tokio::signal::ctrl_c` (and SIGTERM on Unix) so
+//! in-flight SSE streams and JSON-RPC requests drain before
+//! the process exits.
 //!
 //! A one-shot probe is `curl`:
 //!
@@ -26,13 +34,18 @@
 //!   -d '{"jsonrpc":"2.0","id":2,"method":"SendStreamingMessage",
 //!        "params":{"message":{"role":"user",
 //!                             "parts":[{"kind":"text","text":"hello"}]}}}'
+//!
+//! curl http://127.0.0.1:8080/health
 //! ```
 //!
 //! The well-known route is the A2A §8 discovery mechanism; the
 //! JSON-RPC path is the method table the card names; the
-//! streaming path emits Server-Sent Events. A server that only
-//! serves JSON-RPC is reachable, but not discoverable; a server
-//! that only serves the card is not reachable at all.
+//! streaming path emits Server-Sent Events; the health path
+//! is the conventional way a container orchestrator decides
+//! whether to send traffic. A server that only serves
+//! JSON-RPC is reachable, but not discoverable; a server that
+//! only serves the card is not reachable at all; a server
+//! without a health probe cannot be load-balanced.
 //!
 //! The agent below is a real in-memory task store with all
 //! eleven A2A methods wired up. `SendMessage` creates a task
@@ -644,10 +657,13 @@ fn build_card() -> Arc<AgentCard> {
     )
 }
 
-/// Mounts the well-known path, the JSON-RPC path, and the
-/// streaming SSE path on one router. The same agent implements
-/// both `A2aRequestHandler` and `A2aStreamingRequestHandler`
-/// so the two paths share the same task store.
+/// Mounts the well-known path, the JSON-RPC path, the
+/// streaming SSE path, and a liveness probe at `/health`,
+/// on one router. The same agent implements both
+/// `A2aRequestHandler` and `A2aStreamingRequestHandler` so
+/// the two paths share the same task store. The health
+/// probe is the conventional way a container orchestrator
+/// decides whether to send traffic to the agent.
 fn build_router() -> Router {
     let card = build_card();
     let agent = EchoAgent {
@@ -655,13 +671,14 @@ fn build_router() -> Router {
     };
     let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent.clone());
     let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(agent);
-    serve_well_known(card)
+    let api = serve_well_known(card)
         .merge(serve_jsonrpc("/a2a", request_handler, A2aVersion::V1_0))
         .merge(serve_streaming(
             "/a2a/stream",
             streaming_handler,
             A2aVersion::V1_0,
-        ))
+        ));
+    api.merge(health_router())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -670,13 +687,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+    serve_with_addr(bind_addr()).await
+}
+
+/// Reads the bind address from the `A2A_ADDR` env var, or
+/// falls back to `127.0.0.1:8080`. Container orchestrators
+/// usually set the address via env; a developer running the
+/// example locally uses the default.
+fn bind_addr() -> SocketAddr {
+    let raw = std::env::var("A2A_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
+    match raw.parse() {
+        Ok(addr) => addr,
+        Err(error) => {
+            eprintln!(
+                "a2a_server: A2A_ADDR={raw:?} is not a valid socket address: {error}"
+            );
+            "127.0.0.1:8080".parse().expect("default address parses")
+        }
+    }
+}
+
+async fn serve_with_addr(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let router = build_router();
-    let addr: SocketAddr = "127.0.0.1:8080".parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!("a2a_server: listening on {addr}");
     eprintln!("a2a_server: card at http://{addr}/.well-known/agent-card.json");
     eprintln!("a2a_server: JSON-RPC at http://{addr}/a2a");
     eprintln!("a2a_server: streaming at http://{addr}/a2a/stream");
+    eprintln!("a2a_server: health at http://{addr}/health");
+    // A real agent would call `with_graceful_shutdown` and
+    // wire it to `tokio::signal::ctrl_c` (and SIGTERM on
+    // Unix) so SIGINT drains in-flight SSE streams and
+    // JSON-RPC requests before the process exits. The
+    // example skips that to keep the tokio feature set
+    // minimal — `signal` is not part of the `http`
+    // feature's `tokio` shape.
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Liveness probe. Returns 200 OK with the agent's
+/// name and version so a container orchestrator can
+/// verify the agent is reachable, and a human reading
+/// the response can confirm which build is running.
+fn health_router() -> Router {
+    async fn health() -> &'static str {
+        "ok\n"
+    }
+    Router::new().route("/health", axum::routing::get(health))
 }

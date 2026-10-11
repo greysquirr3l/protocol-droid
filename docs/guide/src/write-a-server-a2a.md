@@ -2,8 +2,9 @@
 
 An A2A server is a struct that implements `A2aRequestHandler`,
 plus two or three axum routers — one for the well-known
-`AgentCard`, one for the JSON-RPC method table, and one for
-the streaming SSE endpoint. There is no macro; the serving
+`AgentCard`, one for the JSON-RPC method table, one for
+the streaming SSE endpoint, and a `/health` probe for
+container orchestrators. There is no macro; the serving
 adapter is small enough that a hand-rolled server is shorter
 than the macro expansion would be.
 
@@ -12,15 +13,24 @@ than the macro expansion would be.
 The
 [`examples/a2a_server.rs`](../../crates/protocol-droid/examples/a2a_server.rs)
 example is a complete A2A server: an in-memory task store, an
-agent that implements `SendMessage`, `GetTask`, `CancelTask`,
-and `ListTasks` over JSON-RPC, and `SendStreamingMessage` and
-`SubscribeToTask` over Server-Sent Events. The well-known
-`AgentCard` is served at `/.well-known/agent-card.json`. Run
-it:
+agent that implements all eleven A2A v1.0 methods over
+JSON-RPC, and the two streaming methods over Server-Sent
+Events. The well-known `AgentCard` is served at
+`/.well-known/agent-card.json`; a liveness probe is served
+at `/health`. Run it:
 
 ```text
 cargo run -p protocol-droid --example a2a_server --features a2a,http
 ```
+
+Override the bind address with `A2A_ADDR=0.0.0.0:9000 cargo run ...`.
+A bad `A2A_ADDR` value is reported on stderr and the default
+(`127.0.0.1:8080`) is used. The example does not install a
+SIGINT handler; ctrl-c kills the process. A real agent would
+wire `with_graceful_shutdown` to `tokio::signal::ctrl_c` (and
+SIGTERM on Unix) so in-flight SSE streams and JSON-RPC
+requests drain before the process exits — the example skips
+that to keep the `tokio` feature set minimal.
 
 A one-shot probe is `curl`:
 
