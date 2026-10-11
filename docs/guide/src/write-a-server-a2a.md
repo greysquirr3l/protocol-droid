@@ -127,6 +127,33 @@ same agent struct can implement both `A2aRequestHandler` and
 `A2aStreamingRequestHandler` so the two paths share the same
 task store.
 
+## The agent card, and what it must claim
+
+The card's `capabilities` flags are a contract. A peer that
+fetches the well-known path reads `streaming`,
+`pushNotifications`, `extendedAgentCard`, and `extensions`
+to decide which methods to call. A card that says
+`streaming: false` tells the peer *do not call
+`SendStreamingMessage`*; a card that says
+`pushNotifications: false` tells it *do not call
+`CreateTaskPushNotificationConfig`*. The example's card
+sets `streaming: true` and `pushNotifications: true`
+because the example actually serves those methods on
+`/a2a/stream` and delivers to webhooks it has registered.
+A card that contradicts the methods the agent serves is
+not "conservative" — it is wrong, and a peer that follows
+it will silently miss features the agent offers.
+
+`extendedAgentCard` is the one capability that, when true,
+also requires authentication. The spec says a card with
+`extendedAgentCard: true` must gate `GetExtendedAgentCard`
+behind authentication, and the card may also carry a
+`securitySchemes` field that names the schemes the agent
+accepts. The example's card sets `extendedAgentCard:
+false` because the example has no extra capabilities to
+return; a real agent with skills behind auth would set
+it to `true` and add the schemes.
+
 ## The handler traits
 
 `A2aRequestHandler` has one method: `dispatch(method, params,
