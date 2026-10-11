@@ -32,6 +32,32 @@ SIGTERM on Unix) so in-flight SSE streams and JSON-RPC
 requests drain before the process exits — the example skips
 that to keep the `tokio` feature set minimal.
 
+## The matching client
+
+The
+[`examples/a2a_client.rs`](../../crates/protocol-droid/examples/a2a_client.rs)
+example is the mirror of `a2a_server.rs`: where the
+server example shows what an A2A peer serves, this one
+shows what an A2A peer consumes. The library has no
+`A2aClient` port yet (that is T27 scope), so the example
+uses `reqwest` directly. Run it against the server:
+
+```text
+# terminal 1
+cargo run -p protocol-droid --example a2a_server --features a2a,http
+
+# terminal 2
+cargo run -p protocol-droid --example a2a_client --features a2a,http
+```
+
+Override the peer with `A2A_PEER=http://other-host:9000`.
+The client fetches the well-known card, reads the
+declared capabilities, finds the JSON-RPC interface, and
+exercises `SendMessage`, `GetTask`, `ListTasks`, and
+`CancelTask`. Streaming methods (`SendStreamingMessage`,
+`SubscribeToTask`) need an SSE reader; the JSON-RPC
+envelope is the same.
+
 A one-shot probe is `curl`:
 
 ```text

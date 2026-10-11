@@ -215,3 +215,7 @@ required-features = ["http"]
 [[example]]
 name = "conformance_reference_server"
 required-features = ["http", "random-ids"]
+
+[[example]]
+name = "a2a_client"
+required-features = ["a2a", "http"]

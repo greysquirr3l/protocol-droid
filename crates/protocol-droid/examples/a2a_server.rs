@@ -203,17 +203,19 @@ impl TaskStore {
 
 /// The agent. Holds the task store behind an `Arc<Mutex>` so the
 /// JSON-RPC dispatcher can move the shared state into each
-/// request's handler, plus a `WebhookDelivery` adapter and a
-/// `tokio` runtime handle so the handlers can spawn push
-/// notification deliveries without blocking the request
-/// thread. `Clone` is required because the same agent is wrapped
-/// into two `Arc<dyn ...>` pointers — one for the
-/// request/response handler, one for the streaming handler.
+/// request's handler, plus a `WebhookDelivery` adapter, a
+/// `tokio` runtime handle, and the agent card. The card is
+/// cloned into each `GetExtendedAgentCard` response so the
+/// response and the well-known path share the same value.
+/// `Clone` is required because the same agent is wrapped into
+/// two `Arc<dyn ...>` pointers — one for the request/response
+/// handler, one for the streaming handler.
 #[derive(Clone)]
 struct EchoAgent {
     store: Arc<std::sync::Mutex<TaskStore>>,
     delivery: Arc<WebhookDelivery>,
     handle: tokio::runtime::Handle,
+    card: Arc<AgentCard>,
 }
 
 impl A2aRequestHandler for EchoAgent {
@@ -509,7 +511,7 @@ impl EchoAgent {
         _request: &GetExtendedAgentCardRequest,
     ) -> GetExtendedAgentCardResponse {
         let _ = self.store.lock().expect("store lock").len();
-        GetExtendedAgentCardResponse((*build_card()).clone())
+        GetExtendedAgentCardResponse((*self.card).clone())
     }
 
     /// Streaming counterpart to `handle_send_message`. Emits two
@@ -712,19 +714,27 @@ fn reply_for(message: &Message) -> Message {
 /// `push_notifications: false` would tell a peer that
 /// `CreateTaskPushNotificationConfig` is unsupported. The
 /// example actually does both, so the card has to say both.
-fn build_card() -> Arc<AgentCard> {
+///
+/// `addr` is the address the server is bound to, so the
+/// interface URL points at the right place. A card that
+/// advertised `http://127.0.0.1:8080/a2a` while bound
+/// to `127.0.0.1:8084` would be a lie a peer would
+/// believe; the `a2a_client` example is the test for
+/// that lie, and it is the reason `addr` is the input.
+fn build_card(addr: SocketAddr) -> Arc<AgentCard> {
     let capabilities = AgentCapabilities {
         streaming: true,
         push_notifications: true,
         ..Default::default()
     };
+    let interface_url = format!("http://{addr}/a2a");
     Arc::new(
         AgentCardBuilder::new()
             .with_name("Echo Agent")
             .with_description("An A2A example that echoes messages back as completed tasks.")
             .with_version("0.1.0")
             .with_interface(AgentInterface {
-                url: url::Url::parse("http://127.0.0.1:8080/a2a").expect("static URL parses"),
+                url: url::Url::parse(&interface_url).expect("addr-derived URL parses"),
                 protocol_binding: JSONRPC.clone(),
                 protocol_version: A2aVersion::V1_0,
                 tenant: None,
@@ -750,13 +760,22 @@ fn build_card() -> Arc<AgentCard> {
 /// the two paths share the same task store. The health
 /// probe is the conventional way a container orchestrator
 /// decides whether to send traffic to the agent.
-fn build_router() -> Router {
-    let card = build_card();
+///
+/// `addr` is the address the server will bind to. It is
+/// threaded through to `build_card` so the card's
+/// interface URL points at the right place; a card
+/// that advertised `http://127.0.0.1:8080/a2a` while
+/// the server is bound to `127.0.0.1:8084` would be a
+/// lie a peer would believe, and `a2a_client` is the
+/// test that catches it.
+fn build_router(addr: SocketAddr) -> Router {
+    let card = build_card(addr);
     let delivery = WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER));
     let agent = EchoAgent {
         store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
         delivery: Arc::new(delivery),
         handle: tokio::runtime::Handle::current(),
+        card: card.clone(),
     };
     let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent.clone());
     let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(agent);
@@ -776,7 +795,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    serve_with_addr(bind_addr()).await
+    let addr = bind_addr();
+    serve_with_addr(addr).await
 }
 
 /// Reads the bind address from the `A2A_ADDR` env var, or
@@ -797,7 +817,7 @@ fn bind_addr() -> SocketAddr {
 }
 
 async fn serve_with_addr(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-    let router = build_router();
+    let router = build_router(addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!("a2a_server: listening on {addr}");
     eprintln!("a2a_server: card at http://{addr}/.well-known/agent-card.json");
