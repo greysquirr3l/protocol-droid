@@ -139,6 +139,56 @@
         "median_us": 11.95,
         "samples": 100
       }
+    },
+    "a2a_serving": {
+      "decode_send_message": {
+        "median_ns": 273.1,
+        "samples": 100
+      },
+      "decode_get_task": {
+        "median_ns": 139.0,
+        "samples": 100
+      },
+      "decode_cancel_task": {
+        "median_ns": 141.6,
+        "samples": 100
+      },
+      "decode_list_tasks": {
+        "median_ns": 133.8,
+        "samples": 100
+      },
+      "decode_send_streaming_message": {
+        "median_ns": 254.9,
+        "samples": 100
+      },
+      "decode_subscribe_to_task": {
+        "median_ns": 136.4,
+        "samples": 100
+      },
+      "decode_reply": {
+        "median_ns": 176.7,
+        "samples": 100
+      },
+      "a_known_method_routes": {
+        "median_ns": 267.9,
+        "samples": 100
+      },
+      "an_unroutable_frame_never_reaches_the_params": {
+        "median_ns": 252.2,
+        "samples": 100
+      },
+      "a_get_task_routes": {
+        "median_ns": 165.7,
+        "samples": 100
+      },
+      "a_send_streaming_message_routes": {
+        "median_ns": 252.3,
+        "samples": 100
+      },
+      "a_reply_routes_to_no_method": {
+        "median_ns": 171.6,
+        "samples": 100
+      }
     }
   }
 }

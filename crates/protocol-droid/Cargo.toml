@@ -195,6 +195,10 @@ harness = false
 name = "registry"
 harness = false
 
+[[bench]]
+name = "a2a_serving"
+harness = false
+
 # Cargo builds every file in `examples/` for every feature configuration, so an
 # example that speaks a gated transport must declare what it needs or
 # `cargo test --workspace --no-default-features` — a CI matrix entry, not a
