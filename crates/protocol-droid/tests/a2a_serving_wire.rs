@@ -280,6 +280,21 @@ fn decode_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Resul
 }
 
 fn build_card() -> Arc<protocol_droid::domain::a2a::agent_card::AgentCard> {
+    build_card_with_capabilities(false, false)
+}
+
+/// Builds a card with the streaming and push-notification
+/// capabilities toggled, so a test can pin the on-wire
+/// shape the serving adapter uses for each combination.
+fn build_card_with_capabilities(
+    streaming: bool,
+    push_notifications: bool,
+) -> Arc<protocol_droid::domain::a2a::agent_card::AgentCard> {
+    let capabilities = AgentCapabilities {
+        streaming,
+        push_notifications,
+        ..Default::default()
+    };
     Arc::new(
         AgentCardBuilder::new()
             .with_name("Test Agent")
@@ -291,7 +306,7 @@ fn build_card() -> Arc<protocol_droid::domain::a2a::agent_card::AgentCard> {
                 protocol_version: A2aVersion::V1_0,
                 tenant: None,
             })
-            .with_capabilities(AgentCapabilities::default())
+            .with_capabilities(capabilities)
             .with_input_mode("text/plain")
             .with_output_mode("text/plain")
             .with_skill(AgentSkill {
@@ -307,6 +322,14 @@ fn build_card() -> Arc<protocol_droid::domain::a2a::agent_card::AgentCard> {
 
 fn router() -> axum::Router {
     let card = build_card();
+    let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent {
+        store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
+    });
+    serve_well_known(card).merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0))
+}
+
+fn router_with_capabilities(streaming: bool, push_notifications: bool) -> axum::Router {
+    let card = build_card_with_capabilities(streaming, push_notifications);
     let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent {
         store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
     });
@@ -354,6 +377,46 @@ async fn well_known_serves_card() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(input_mode, Some("text/plain"));
     assert_eq!(output_mode, Some("text/plain"));
     assert_eq!(skill_id, Some("echo"));
+    Ok(())
+}
+
+/// The well-known path's `capabilities` object reflects the
+/// fields the card declared — the spec's discovery contract
+/// is that a peer reads these flags to decide which methods
+/// to call. A card that says `streaming: false` would tell
+/// a peer to never call `SendStreamingMessage`, and a card
+/// that says `pushNotifications: false` would tell a peer
+/// that `CreateTaskPushNotificationConfig` is unsupported.
+#[tokio::test]
+async fn well_known_serves_capabilities() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router_with_capabilities(true, true);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/agent-card.json")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let streaming = body.pointer("/capabilities/streaming").and_then(Value::as_bool);
+    let push = body
+        .pointer("/capabilities/pushNotifications")
+        .and_then(Value::as_bool);
+    let extended = body
+        .pointer("/capabilities/extendedAgentCard")
+        .and_then(Value::as_bool);
+    let extensions = body
+        .pointer("/capabilities/extensions")
+        .and_then(Value::as_array);
+    assert_eq!(streaming, Some(true));
+    assert_eq!(push, Some(true));
+    assert_eq!(extended, Some(false));
+    let Some(extensions) = extensions else {
+        return Err("expected /capabilities/extensions array".into());
+    };
+    assert!(extensions.is_empty());
     Ok(())
 }
 

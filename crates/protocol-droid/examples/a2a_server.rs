@@ -704,8 +704,20 @@ fn reply_for(message: &Message) -> Message {
     }))
 }
 
-/// Builds the agent card. The well-known path serves this exact value.
+/// Builds the agent card. The well-known path serves this
+/// exact value, so the capabilities declared here are the
+/// capabilities a peer will discover. A card that says
+/// `streaming: false` would tell a peer to never call
+/// `SendStreamingMessage`, and a card that says
+/// `push_notifications: false` would tell a peer that
+/// `CreateTaskPushNotificationConfig` is unsupported. The
+/// example actually does both, so the card has to say both.
 fn build_card() -> Arc<AgentCard> {
+    let capabilities = AgentCapabilities {
+        streaming: true,
+        push_notifications: true,
+        ..Default::default()
+    };
     Arc::new(
         AgentCardBuilder::new()
             .with_name("Echo Agent")
@@ -717,7 +729,7 @@ fn build_card() -> Arc<AgentCard> {
                 protocol_version: A2aVersion::V1_0,
                 tenant: None,
             })
-            .with_capabilities(AgentCapabilities::default())
+            .with_capabilities(capabilities)
             .with_input_mode("text/plain")
             .with_output_mode("text/plain")
             .with_skill(AgentSkill {
