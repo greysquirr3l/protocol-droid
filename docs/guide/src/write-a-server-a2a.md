@@ -53,13 +53,22 @@ cargo run -p protocol-droid --example a2a_client --features a2a,http
 Override the peer with `A2A_PEER=http://other-host:9000`.
 The client fetches the well-known card, reads the
 declared capabilities, finds the JSON-RPC interface, and
-exercises `SendMessage`, `SendStreamingMessage`,
-`GetTask`, `SubscribeToTask`, `ListTasks`, and
-`CancelTask`. The push-notification config methods
-(`Create`/`Get`/`List`/`DeleteTaskPushNotificationConfig`)
-are similar to `GetTask` in shape; `GetExtendedAgentCard`
-is the same as fetching the well-known card with an
-auth header.
+exercises ten of the eleven A2A v1.0 methods:
+`SendMessage`, `SendStreamingMessage`, `GetTask`,
+`SubscribeToTask`, `ListTasks`, `CancelTask`,
+`CreateTaskPushNotificationConfig`,
+`GetTaskPushNotificationConfig`,
+`ListTaskPushNotificationConfigs`,
+`DeleteTaskPushNotificationConfig`. The eleventh,
+`GetExtendedAgentCard`, is auth-gated; the example has
+no auth, so a real consumer would fetch the well-known
+card with the same auth header. The webhook URL the
+client registers is `http://1.2.3.4:9999/wh` — the
+SSRF denylist on the example server accepts it (it
+is not on the deny list) but the network has no
+route to that address, so the delivery silently
+fails; the example is exercising the config CRUD,
+not the delivery.
 
 A one-shot probe is `curl`:
 

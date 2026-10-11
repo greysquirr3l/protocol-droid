@@ -22,17 +22,28 @@
 //! The peer must be reachable; the well-known card is the
 //! first thing the client fetches.
 //!
-//! The example exercises six of the eleven A2A v1.0
+//! The example exercises ten of the eleven A2A v1.0
 //! methods — `SendMessage`, `SendStreamingMessage`,
 //! `GetTask`, `SubscribeToTask`, `ListTasks`,
-//! `CancelTask`. The push-notification config methods
-//! (`Create`/`Get`/`List`/`DeleteTaskPushNotificationConfig`)
-//! are similar to `GetTask` in shape; `GetExtendedAgentCard`
-//! is the same as fetching the well-known card with an
-//! auth header. All three are routine request/response.
+//! `CancelTask`, `CreateTaskPushNotificationConfig`,
+//! `GetTaskPushNotificationConfig`,
+//! `ListTaskPushNotificationConfigs`,
+//! `DeleteTaskPushNotificationConfig`. The eleventh,
+//! `GetExtendedAgentCard`, is auth-gated; a real
+//! consumer would fetch the well-known card with the
+//! same auth header.
+//!
 //! The streaming methods need a Server-Sent Events
 //! parser on top of the JSON-RPC envelope; `sse_post`
-//! is the line reader.
+//! is the line reader. The push-notification config
+//! methods share the JSON-RPC envelope with the
+//! request/response methods; the example uses
+//! `http://1.2.3.4:9999/wh` as the webhook URL because
+//! the SSRF denylist on the example server accepts it
+//! (it is not on the deny list) but the network has no
+//! route to that address, so the delivery silently
+//! fails. The example is exercising the config CRUD,
+//! not the delivery.
 
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,6 +53,13 @@ use protocol_droid::adapters::secondary::a2a::A2aMethod;
 use protocol_droid::domain::a2a::agent_card::AgentCard;
 use protocol_droid::domain::a2a::agent_card::JSONRPC;
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
+use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
+use protocol_droid::domain::a2a::push_notification_methods::{
+    CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
+    DeleteTaskPushNotificationConfigRequest, DeleteTaskPushNotificationConfigResponse,
+    GetTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigResponse,
+    ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
+};
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use protocol_droid::domain::a2a::streaming_events::StreamingEvent;
 use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse};
@@ -86,6 +104,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     send_streaming_message(&client, &stream_url, "hello via streaming").await?;
     subscribe_to_task(&client, &stream_url, &task_id).await?;
+
+    let pc_id = create_push_notification_config(
+        &client,
+        jsonrpc_url.as_str(),
+        &task_id,
+        "http://1.2.3.4:9999/wh",
+        "demo-token",
+    )
+    .await?;
+    get_push_notification_config(&client, jsonrpc_url.as_str(), &task_id, &pc_id).await?;
+    list_push_notification_configs(&client, jsonrpc_url.as_str(), &task_id).await?;
+    delete_push_notification_config(&client, jsonrpc_url.as_str(), &task_id, &pc_id).await?;
 
     Ok(())
 }
@@ -169,6 +199,104 @@ async fn cancel_task(
     let result: Value = json_rpc(client, url, A2aMethod::CancelTask, value).await?;
     let _response: CancelTaskResponse = serde_json::from_value(result.clone())?;
     eprintln!("CancelTask({task_id}) -> {}", get_status(&result));
+    Ok(())
+}
+
+/// `CreateTaskPushNotificationConfig`. The example
+/// uses `http://1.2.3.4:9999/wh` because the SSRF
+/// denylist on the example server rejects loopback
+/// URLs (so the test would be vacuous if it pointed
+/// at the peer) and 1.2.3.4 is not on the deny list
+/// (so the config-time check accepts it). The
+/// delivery to 1.2.3.4 will silently fail because
+/// the network has no route to that address; the
+/// point of the example is the config CRUD, not the
+/// delivery. Returns the config id assigned by the
+/// server.
+async fn create_push_notification_config(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+    webhook_url: &str,
+    token: &str,
+) -> Result<String, Box<dyn Error>> {
+    let config = TaskPushNotificationConfig {
+        id: "placeholder".to_owned(),
+        task_id: task_id.to_owned(),
+        url: webhook_url.to_owned(),
+        token: Some(token.to_owned()),
+        authentication: None,
+        metadata: std::collections::BTreeMap::new(),
+    };
+    let request = CreateTaskPushNotificationConfigRequest::from(config);
+    let value = serde_json::to_value(&request)?;
+    let result: Value =
+        json_rpc(client, url, A2aMethod::CreateTaskPushNotificationConfig, value).await?;
+    let response: CreateTaskPushNotificationConfigResponse = serde_json::from_value(result)?;
+    let config_id = response.0.id;
+    eprintln!("CreateTaskPushNotificationConfig({task_id}) -> {config_id}");
+    Ok(config_id)
+}
+
+/// `GetTaskPushNotificationConfig`. Reads back the
+/// config created above. The URL field round-trips
+/// byte-for-byte, which is the wire contract the
+/// library's serving adapter promises.
+async fn get_push_notification_config(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+    config_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let request = GetTaskPushNotificationConfigRequest::new(config_id.to_owned(), task_id.to_owned());
+    let value = serde_json::to_value(&request)?;
+    let result: Value =
+        json_rpc(client, url, A2aMethod::GetTaskPushNotificationConfig, value).await?;
+    let _response: GetTaskPushNotificationConfigResponse = serde_json::from_value(result)?;
+    eprintln!("GetTaskPushNotificationConfig({task_id}, {config_id}) -> ok");
+    Ok(())
+}
+
+/// `ListTaskPushNotificationConfigs`. After the
+/// create above, the list has one entry; the
+/// example does not page.
+async fn list_push_notification_configs(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let request = ListTaskPushNotificationConfigsRequest {
+        task_id: task_id.to_owned(),
+        page_size: None,
+        page_token: None,
+    };
+    let value = serde_json::to_value(&request)?;
+    let result: Value =
+        json_rpc(client, url, A2aMethod::ListTaskPushNotificationConfigs, value).await?;
+    let response: ListTaskPushNotificationConfigsResponse = serde_json::from_value(result)?;
+    eprintln!(
+        "ListTaskPushNotificationConfigs({task_id}) -> {} config(s)",
+        response.configs.len()
+    );
+    Ok(())
+}
+
+/// `DeleteTaskPushNotificationConfig`. The server
+/// returns an empty response body; the example
+/// just confirms the call succeeded.
+async fn delete_push_notification_config(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+    config_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let request =
+        DeleteTaskPushNotificationConfigRequest::new(config_id.to_owned(), task_id.to_owned());
+    let value = serde_json::to_value(&request)?;
+    let result: Value =
+        json_rpc(client, url, A2aMethod::DeleteTaskPushNotificationConfig, value).await?;
+    let _response: DeleteTaskPushNotificationConfigResponse = serde_json::from_value(result)?;
+    eprintln!("DeleteTaskPushNotificationConfig({task_id}, {config_id}) -> ok");
     Ok(())
 }
 
