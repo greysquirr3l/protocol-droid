@@ -8,6 +8,33 @@ container orchestrators. There is no macro; the serving
 adapter is small enough that a hand-rolled server is shorter
 than the macro expansion would be.
 
+## The smallest server
+
+The
+[`examples/a2a_minimal_server.rs`](../../crates/protocol-droid/examples/a2a_minimal_server.rs)
+example is a 180-line A2A server that uses the
+[`serve_a2a_agent`](../../crates/protocol-droid/src/adapters/primary/a2a/serve_agent.rs)
+façade. The handler is a stub — every method
+returns `-32601 Method not implemented` — and
+there is no task store, no delivery port, and
+no health probe. The point is the front door:
+one function call mounts the well-known
+path, the JSON-RPC path, and the streaming
+SSE path on one router. Run it:
+
+```text
+cargo run -p protocol-droid --example a2a_minimal_server --features a2a,http
+```
+
+A real consumer starts here, fills in the
+methods they need, and adds task state and
+delivery when the use case demands it. The
+minimal example's `Echo` is the
+`A2aRequestHandler + A2aStreamingRequestHandler`
+impl; the rest of the work is per-method
+business logic and the infrastructure
+choices the consumer is making anyway.
+
 ## The reference server
 
 The
