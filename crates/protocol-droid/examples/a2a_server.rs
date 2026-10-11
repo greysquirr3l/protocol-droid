@@ -420,12 +420,25 @@ impl EchoAgent {
     }
 
     fn handle_list_tasks(&self, request: &ListTasksRequest) -> ListTasksResponse {
-        let tasks = self
-            .store
-            .lock()
-            .expect("store lock")
-            .list(request.context_id.as_deref(), request.status);
-        ListTasksResponse::new(tasks)
+        let store = self.store.lock().expect("store lock");
+        // `total_size` is the number of tasks
+        // available *before* the page trim, so a
+        // peer paginating through a 100-task list
+        // can see the full count on every page and
+        // decide when to stop. The `tasks` vector
+        // is the page-trimmed list. A page size of
+        // `0` is a malformed response per the spec
+        // ("the page size is at least 1"), so the
+        // example always returns a positive
+        // `page_size` even when the peer did not
+        // ask for pagination. The pagination math
+        // is a pure function (`paginate_tasks`)
+        // so a regression catches it in a unit
+        // test, not against a real server.
+        let total_size = store.tasks.len();
+        let filtered = store.list(request.context_id.as_deref(), request.status);
+        drop(store);
+        paginate_tasks(filtered, request.page_size, total_size)
     }
 
     /// Creates a push notification config for a task. The
@@ -704,6 +717,46 @@ impl EchoAgent {
     }
 }
 
+/// Trims a filtered task list to the peer's page
+/// size and stamps the spec-required `page_size`
+/// and `total_size` metadata on the response.
+///
+/// The math is extracted into a pure function so a
+/// regression in the pagination invariants is
+/// caught in a unit test, not by a wire test
+/// against a real server. The invariants the
+/// A2A v1.0 spec names are:
+///
+/// - `page_size` is at least `1` (a response with
+///   `page_size: 0` is malformed per the spec).
+/// - `total_size` is the count of tasks available
+///   *before* the page trim, so a peer
+///   paginating through a long list can see the
+///   full count on every page.
+/// - The trimmed `tasks` vector has at most
+///   `page_size` entries.
+///
+/// A peer that sends `page_size: 0` is sending a
+/// request the spec does not allow; the example
+/// treats it as "no page size" and uses the
+/// filtered count (clamped to a minimum of 1).
+/// Returning `-32602 InvalidParams` would be
+/// stricter; a real agent can choose.
+fn paginate_tasks(
+    filtered: Vec<Task>,
+    request_page_size: Option<u32>,
+    total_size: usize,
+) -> ListTasksResponse {
+    let requested = request_page_size.filter(|size| *size > 0);
+    let page_size = requested
+        .and_then(|size| usize::try_from(size).ok())
+        .unwrap_or_else(|| filtered.len().max(1));
+    let trimmed: Vec<Task> = filtered.into_iter().take(page_size).collect();
+    ListTasksResponse::new(trimmed)
+        .with_page_size(u32::try_from(page_size).unwrap_or(u32::MAX))
+        .with_total_size(u32::try_from(total_size).unwrap_or(u32::MAX))
+}
+
 /// Builds the agent's reply. The work the agent does is a
 /// one-line echo because the example's point is the wiring.
 fn reply_for(message: &Message) -> Message {
@@ -905,6 +958,127 @@ async fn check_bearer(
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from("{\"error\":\"unauthorized\"}"))
         .expect("a static 401 response builds")
+}
+
+/// Unit tests for the pure helpers. The wire tests in
+/// `tests/a2a_serving_wire.rs` pin the serving-adapter
+/// integration; these tests pin the spec-conformance
+/// invariants the example must hold — a regression here
+/// is what a wire test would otherwise catch by accident.
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests assert on fallible calls; .expect() is the standard test pattern"
+)]
+mod tests {
+    use super::*;
+
+    fn task(id: &str) -> Task {
+        Task::new(id.to_owned()).with_status(TaskStatus {
+            state: TaskState::Completed,
+            message: None,
+            timestamp: None,
+        })
+    }
+
+    /// A `ListTasks` response with at least one
+    /// task has a positive `page_size`. A
+    /// `page_size` of `0` is a malformed
+    /// response per the A2A spec; the
+    /// `ListTasksResponse::new` constructor
+    /// defaults to `0`, and a handler that
+    /// forgets to set it ships a malformed
+    /// response. This test pins the fix.
+    #[test]
+    fn paginate_tasks_sets_positive_page_size() -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(vec![task("t-1")], None, 1);
+        if response.page_size == 0 {
+            return Err(format!(
+                "page_size must be at least 1 per the A2A spec; got {}",
+                response.page_size
+            )
+            .into());
+        }
+        if response.total_size != 1 {
+            return Err(format!("total_size must be 1, got {}", response.total_size).into());
+        }
+        Ok(())
+    }
+
+    /// A peer-supplied `page_size` trims the
+    /// `tasks` vector but leaves `total_size`
+    /// reporting the full pre-trim count. A
+    /// peer paginating through a 100-task list
+    /// should see `total_size: 100` on every
+    /// page so it can decide when to stop.
+    #[test]
+    fn paginate_tasks_trims_to_requested_page_size() -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2"), task("t-3"), task("t-4"), task("t-5")],
+            Some(2),
+            5,
+        );
+        if response.tasks.len() != 2 {
+            return Err(format!("expected 2 tasks, got {}", response.tasks.len()).into());
+        }
+        if response.page_size != 2 {
+            return Err(format!("expected page_size 2, got {}", response.page_size).into());
+        }
+        if response.total_size != 5 {
+            return Err(format!("expected total_size 5, got {}", response.total_size).into());
+        }
+        Ok(())
+    }
+
+    /// An empty filtered list still produces a
+    /// well-formed response: `page_size: 1` (the
+    /// spec floor) and `total_size: 0` (no tasks
+    /// matched). The vector is empty; no
+    /// `tasks` member is required beyond an
+    /// empty array.
+    #[test]
+    fn paginate_tasks_empty_filter_keeps_page_size_at_one(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(Vec::new(), None, 0);
+        if response.page_size == 0 {
+            return Err("page_size must be at least 1 even for an empty result".into());
+        }
+        if response.total_size != 0 {
+            return Err(format!("expected total_size 0, got {}", response.total_size).into());
+        }
+        Ok(())
+    }
+
+    /// A peer-supplied `page_size: 0` is a
+    /// spec-malformed request (the spec floor
+    /// is 1). The example treats it as "no
+    /// page size" rather than returning
+    /// `-32602`, so the response is still
+    /// well-formed (`page_size` is the
+    /// filtered count, not 0). A stricter
+    /// server could return `InvalidParams`;
+    /// the example chooses tolerance for
+    /// the wire-shape reference.
+    #[test]
+    fn paginate_tasks_treats_zero_page_size_as_unset(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2")],
+            Some(0),
+            2,
+        );
+        if response.page_size == 0 {
+            return Err("page_size must be at least 1; a peer-supplied 0 is treated as unset".into());
+        }
+        if response.tasks.len() != 2 {
+            return Err(format!(
+                "expected both tasks in the page, got {}",
+                response.tasks.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
