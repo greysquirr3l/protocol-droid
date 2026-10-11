@@ -6,81 +6,14 @@ for the JSON-RPC method table. There is no macro; the serving
 adapter is small enough that a hand-rolled server is shorter
 than the macro expansion would be.
 
-## The 60-line minimal server
+## The reference server
 
 The
 [`examples/a2a_server.rs`](../../crates/protocol-droid/examples/a2a_server.rs)
-example is the smallest server that is also a complete one.
-It implements `SendMessage` and `GetTask`, serves the
-`AgentCard` on the well-known path, and runs on
-`127.0.0.1:8080`:
-
-```text
-use std::net::SocketAddr;
-use std::sync::Arc;
-
-use axum::Router;
-use protocol_droid::adapters::primary::a2a::jsonrpc_serve::serve_jsonrpc;
-use protocol_droid::adapters::primary::a2a::well_known_serve::serve_well_known;
-use protocol_droid::adapters::secondary::a2a::A2aMethod;
-use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
-use protocol_droid::domain::a2a::A2aVersion;
-use protocol_droid::domain::a2a::agent_card::{
-    AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
-};
-use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
-use protocol_droid::domain::a2a::send_message::SendMessageResponse;
-use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
-
-struct EchoAgent;
-
-impl A2aRequestHandler for EchoAgent {
-    fn dispatch(
-        &self,
-        method: A2aMethod,
-        _params: Option<serde_json::Value>,
-        _context: &A2aRequestContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, A2aError>> + Send + '_>> {
-        Box::pin(async move { /* … */ Ok(serde_json::Value::Null) })
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let card = Arc::new(
-        AgentCardBuilder::new()
-            .with_name("Echo Agent")
-            .with_description("Echoes messages back.")
-            .with_version("0.1.0")
-            .with_interface(AgentInterface {
-                url: url::Url::parse("http://127.0.0.1:8080/a2a")?,
-                protocol_binding: JSONRPC.clone(),
-                protocol_version: A2aVersion::V1_0,
-                tenant: None,
-            })
-            .with_capabilities(AgentCapabilities::default())
-            .with_input_mode("text/plain")
-            .with_output_mode("text/plain")
-            .with_skill(AgentSkill {
-                id: "echo".into(),
-                name: "Echo".into(),
-                description: "Echoes the user's message.".into(),
-                tags: Vec::new(),
-            })
-            .build()?,
-    );
-    let handler: Arc<dyn A2aRequestHandler> = Arc::new(EchoAgent);
-    let router = serve_well_known(card).merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0));
-
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:8080".parse::<SocketAddr>()?).await?;
-        axum::serve(listener, router).await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })
-}
-```
-
-Run it:
+example is a complete A2A server: an in-memory task store, an
+agent that implements `SendMessage`, `GetTask`, `CancelTask`,
+and `ListTasks`, and the well-known `AgentCard` served at
+`/.well-known/agent-card.json`. Run it:
 
 ```text
 cargo run -p protocol-droid --example a2a_server --features a2a,http
@@ -94,8 +27,20 @@ curl http://127.0.0.1:8080/.well-known/agent-card.json
 curl -X POST http://127.0.0.1:8080/a2a \
   -H "content-type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage",
-       "params":{"message":{"role":"user","messageId":"m-1",
+       "params":{"message":{"role":"user",
                             "parts":[{"kind":"text","text":"hello"}]}}}'
+
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"GetTask","params":{"id":"t-1"}}'
+
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"ListTasks","params":{}}'
+
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"CancelTask","params":{"id":"t-1"}}'
 ```
 
 ## The two routes, and why both
@@ -127,11 +72,24 @@ the raw params. The handler is free to do anything that
 returns a `serde_json::Value` that matches the method's
 response shape on the wire.
 
-For a more typed shape, `A2aRequestHandlerExt` provides
-per-method wrappers (`send_message`, `get_task`,
+Inside `dispatch`, the cleanest pattern is one async helper
+per implemented method. The example does this with
+`handle_send_message`, `handle_get_task`, `handle_cancel_task`,
+and `handle_list_tasks`, each one taking the typed request and
+returning the typed response. The handler trait's lifetimes
+prevent the `dispatch` method from forwarding the per-method
+typed wrappers on `A2aRequestHandlerExt` directly — the trait
+borrows `&self` and `&context` with independent lifetimes, but
+the extension trait's wrappers unify them — so the typed
+wrappers are for external callers and the inner async helpers
+are for `dispatch`.
+
+For a more typed external shape, `A2aRequestHandlerExt`
+provides per-method wrappers (`send_message`, `get_task`,
 `cancel_task`, `list_tasks`, `get_extended_agent_card`,
 plus the four push-notification methods). Each one parses
-`params` for you and returns the typed response value.
+`params` for you and returns the typed response value. The
+blanket impl on every `A2aRequestHandler` is automatic.
 
 ## Streaming
 
@@ -142,3 +100,17 @@ is `A2aStreamingRequestHandler`, which returns a `Stream<Item
 emits Server-Sent Events on the response stream. See
 `adapters::primary::a2a::streaming_typed_dispatch` for the
 typed wrappers.
+
+## Task lifecycle
+
+The example agent stores its tasks in an in-memory
+`HashMap` behind a `Mutex`. A real agent would put a database
+here, or a queue fronting a worker pool. The store's shape —
+keyed by `task id` with optional filters on context and state
+— is the same either way.
+
+`SendMessage` returns a `Task` in `completed` state with the
+reply attached to the status message. `GetTask` reads the
+task back. `CancelTask` mutates the task's status to
+`cancelled`. `ListTasks` enumerates the store, optionally
+filtered by context id and state.

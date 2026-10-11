@@ -28,48 +28,125 @@ use protocol_droid::domain::a2a::agent_card::{
     AgentCapabilities, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
 };
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
-use protocol_droid::domain::a2a::send_message::SendMessageResponse;
+use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
+use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, GetTaskRequest};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The minimal agent: `SendMessage` and `GetTask` round-trip;
-/// every other method returns `MethodNotFound` (JSON-RPC
-/// `-32601`).
-struct MinimalAgent;
+/// A minimal task store, identical in shape to the one in the
+/// `a2a_server` example. The wire tests exercise the same
+/// `SendMessage → GetTask → ListTasks → CancelTask` flow the
+/// example does, but driven through `tower::ServiceExt::oneshot`
+/// so a port never has to bind.
+#[derive(Default)]
+struct TaskStore {
+    next_id: u64,
+    tasks: std::collections::HashMap<String, Task>,
+}
+
+struct MinimalAgent {
+    store: Arc<std::sync::Mutex<TaskStore>>,
+}
 
 impl A2aRequestHandler for MinimalAgent {
     fn dispatch(
         &self,
         method: A2aMethod,
-        _params: Option<Value>,
+        params: Option<Value>,
         _context: &A2aRequestContext,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + '_>,
     > {
-        let value = match method {
-            A2aMethod::GetTask => serde_json::to_value(
-                Task::new("t-1").with_status(TaskStatus {
-                    state: TaskState::Completed,
-                    message: None,
-                    timestamp: None,
-                }),
-            ),
-            A2aMethod::SendMessage => serde_json::to_value(SendMessageResponse::Message(
-                Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
+        let store = self.store.clone();
+        match method {
+            A2aMethod::SendMessage => Box::pin(async move {
+                let _ = decode_params::<SendMessageRequest>(params)?;
+                let next_id = {
+                    let mut store = store.lock().expect("store lock");
+                    store.next_id = store.next_id.wrapping_add(1);
+                    store.next_id
+                };
+                let task_id = format!("t-{next_id}");
+                let reply = Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
                     text: "hi".to_owned(),
                     metadata: std::collections::BTreeMap::new(),
-                })),
-            )),
-            other => {
-                let _ = other;
-                return Box::pin(std::future::ready(Err(A2aError::MethodNotFound)));
-            }
-        };
-        Box::pin(std::future::ready(value.map_err(|e| A2aError::InternalError {
-            message: e.to_string(),
-        })))
+                }));
+                let task = Task::new(task_id.clone()).with_status(TaskStatus {
+                    state: TaskState::Completed,
+                    message: Some(reply),
+                    timestamp: None,
+                });
+                store
+                    .lock()
+                    .expect("store lock")
+                    .tasks
+                    .insert(task_id, task.clone());
+                serde_json::to_value(SendMessageResponse::Task(task)).map_err(|e| {
+                    A2aError::InternalError {
+                        message: e.to_string(),
+                    }
+                })
+            }),
+            A2aMethod::GetTask => Box::pin(async move {
+                let request: GetTaskRequest = decode_params(params)?;
+                let value = store
+                    .lock()
+                    .expect("store lock")
+                    .tasks
+                    .get(&request.id)
+                    .cloned();
+                let value = value.ok_or_else(|| A2aError::InvalidParams {
+                    reason: format!("no task with id '{}'", request.id),
+                })?;
+                serde_json::to_value(value).map_err(|e| A2aError::InternalError {
+                    message: e.to_string(),
+                })
+            }),
+            A2aMethod::CancelTask => Box::pin(async move {
+                let request: CancelTaskRequest = decode_params(params)?;
+                let value = store
+                    .lock()
+                    .expect("store lock")
+                    .tasks
+                    .get_mut(&request.id)
+                    .map(|t| {
+                        t.status = TaskStatus {
+                            state: TaskState::Cancelled,
+                            message: None,
+                            timestamp: None,
+                        };
+                        t.clone()
+                    });
+                let value = value.ok_or_else(|| A2aError::InvalidParams {
+                    reason: format!("no task with id '{}'", request.id),
+                })?;
+                serde_json::to_value(value).map_err(|e| A2aError::InternalError {
+                    message: e.to_string(),
+                })
+            }),
+            A2aMethod::ListTasks => Box::pin(async move {
+                let tasks = {
+                    let store = store.lock().expect("store lock");
+                    store.tasks.values().cloned().collect::<Vec<_>>()
+                };
+                Ok(serde_json::json!({
+                    "tasks": tasks,
+                    "nextPageToken": "",
+                    "pageSize": tasks.len(),
+                }))
+            }),
+            _other => Box::pin(std::future::ready(Err(A2aError::MethodNotFound))),
+        }
     }
+}
+
+fn decode_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, A2aError> {
+    serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| {
+        A2aError::InvalidParams {
+            reason: format!("params do not match the method shape: {error}"),
+        }
+    })
 }
 
 fn build_card() -> Arc<protocol_droid::domain::a2a::agent_card::AgentCard> {
@@ -100,7 +177,9 @@ fn build_card() -> Arc<protocol_droid::domain::a2a::agent_card::AgentCard> {
 
 fn router() -> axum::Router {
     let card = build_card();
-    let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent);
+    let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent {
+        store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
+    });
     serve_well_known(card).merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0))
 }
 
@@ -149,7 +228,8 @@ async fn well_known_serves_card() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// `SendMessage` returns a JSON-RPC `result` envelope whose
-/// `result` is the agent's reply message.
+/// `result` is the agent's reply task. The reply's
+/// `status.message` carries the agent message.
 #[tokio::test]
 async fn send_message_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let app = router();
@@ -160,7 +240,6 @@ async fn send_message_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         "params": {
             "message": {
                 "role": "user",
-                "messageId": "m-1",
                 "parts": [{"kind": "text", "text": "hi"}]
             }
         }
@@ -179,27 +258,62 @@ async fn send_message_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let body: Value = serde_json::from_slice(&bytes)?;
     let jsonrpc = body.pointer("/jsonrpc").and_then(Value::as_str);
     let id = body.pointer("/id").and_then(Value::as_i64);
-    let role = body.pointer("/result/role").and_then(Value::as_str);
+    let state = body
+        .pointer("/result/status/state")
+        .and_then(Value::as_str);
+    let role = body
+        .pointer("/result/status/message/role")
+        .and_then(Value::as_str);
     let text = body
-        .pointer("/result/parts/0/text")
+        .pointer("/result/status/message/parts/0/text")
         .and_then(Value::as_str);
     assert_eq!(jsonrpc, Some("2.0"));
     assert_eq!(id, Some(1));
+    assert_eq!(state, Some("completed"));
     assert_eq!(role, Some("agent"));
     assert_eq!(text, Some("hi"));
     Ok(())
 }
 
 /// `GetTask` returns a JSON-RPC `result` envelope whose
-/// `result` is the task object.
+/// `result` is the task object. The task is created by a
+/// prior `SendMessage` and read back with `GetTask`.
 #[tokio::test]
 async fn get_task_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let app = router();
-    let body = json!({
+    let send = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "hi"}]
+            }
+        }
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let task_id = body
+        .pointer("/result/id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let get = json!({
         "jsonrpc": "2.0",
         "id": 7,
         "method": "GetTask",
-        "params": {"id": "t-1"}
+        "params": {"id": task_id.clone().unwrap_or_default()}
     });
     let response = app
         .oneshot(
@@ -207,19 +321,19 @@ async fn get_task_round_trips() -> Result<(), Box<dyn std::error::Error>> {
                 .method("POST")
                 .uri("/a2a")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&body)?))?,
+                .body(Body::from(serde_json::to_vec(&get)?))?,
         )
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
     let id = body.pointer("/id").and_then(Value::as_i64);
-    let task_id = body.pointer("/result/id").and_then(Value::as_str);
+    let read_id = body.pointer("/result/id").and_then(Value::as_str);
     let state = body
         .pointer("/result/status/state")
         .and_then(Value::as_str);
     assert_eq!(id, Some(7));
-    assert_eq!(task_id, Some("t-1"));
+    assert_eq!(read_id, task_id.as_deref());
     assert_eq!(state, Some("completed"));
     Ok(())
 }
@@ -250,5 +364,169 @@ async fn unknown_method_returns_method_not_found() -> Result<(), Box<dyn std::er
     let message = body.pointer("/error/message").and_then(Value::as_str);
     assert_eq!(code, Some(-32601));
     assert_eq!(message, Some("Method not found"));
+    Ok(())
+}
+
+/// `SendMessage` followed by `GetTask` round-trips the task id
+/// the agent assigns, and the task's status carries the reply.
+#[tokio::test]
+async fn send_then_get_returns_same_task() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let send = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "hi"}]
+            }
+        }
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let task_id = body
+        .pointer("/result/id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "GetTask",
+        "params": {"id": task_id.clone().unwrap_or_default()}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&get)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let read_id = body.pointer("/result/id").and_then(Value::as_str);
+    let state = body
+        .pointer("/result/status/state")
+        .and_then(Value::as_str);
+    assert_eq!(read_id, task_id.as_deref());
+    assert_eq!(state, Some("completed"));
+    Ok(())
+}
+
+/// `CancelTask` flips a task's state to `cancelled`. The
+/// follow-up `GetTask` observes the new state.
+#[tokio::test]
+async fn cancel_flips_state_to_cancelled() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let send = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "hi"}]
+            }
+        }
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let task_id = body
+        .pointer("/result/id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "CancelTask",
+        "params": {"id": task_id.clone().unwrap_or_default()}
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&cancel)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "GetTask",
+        "params": {"id": task_id.unwrap_or_default()}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&get)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let state = body
+        .pointer("/result/status/state")
+        .and_then(Value::as_str);
+    assert_eq!(state, Some("cancelled"));
+    Ok(())
+}
+
+/// `GetTask` for an unknown id returns `-32602` (invalid
+/// params) with a reason naming the missing id.
+#[tokio::test]
+async fn get_missing_task_returns_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "GetTask",
+        "params": {"id": "t-does-not-exist"}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let code = body.pointer("/error/code").and_then(Value::as_i64);
+    let message = body.pointer("/error/message").and_then(Value::as_str);
+    assert_eq!(code, Some(-32602));
+    assert_eq!(message, Some("Invalid params"));
     Ok(())
 }
