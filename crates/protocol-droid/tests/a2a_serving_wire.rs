@@ -530,3 +530,101 @@ async fn get_missing_task_returns_invalid_params() -> Result<(), Box<dyn std::er
     assert_eq!(message, Some("Invalid params"));
     Ok(())
 }
+
+/// Streaming support is a separate concern from the
+/// request/response adapter. The handler that needs streaming
+/// methods implements `A2aStreamingRequestHandler` and the
+/// streaming `SendStreamingMessage` round-trips a
+/// `working`-then-`completed` pair on a single SSE response.
+#[tokio::test]
+async fn send_streaming_message_emits_working_then_completed() -> Result<(), Box<dyn std::error::Error>> {
+    use protocol_droid::adapters::primary::a2a::streaming_serve::{
+        serve_streaming, A2aStreamingRequestHandler,
+    };
+    use protocol_droid::domain::a2a::send_message::SendMessageRequest;
+    use protocol_droid::domain::a2a::streaming_events::StreamingEvent;
+    use protocol_droid::domain::a2a::task_lifecycle::GetTaskRequest;
+    use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
+
+    struct EchoStreamAgent;
+    impl A2aStreamingRequestHandler for EchoStreamAgent {
+        fn dispatch_stream(
+            &self,
+            method: protocol_droid::adapters::secondary::a2a::A2aMethod,
+            _params: Option<Value>,
+            _context: &A2aRequestContext,
+        ) -> std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>> + Send>,
+        > {
+            match method {
+                protocol_droid::adapters::secondary::a2a::A2aMethod::SendStreamingMessage => {
+                    Box::pin(futures_util::stream::iter([
+                        Ok(StreamingEvent::Status(protocol_droid::domain::a2a::streaming_events::TaskStatusUpdateEvent {
+                            task_id: "t-s1".to_owned(),
+                            context_id: String::new(),
+                            status: protocol_droid::domain::a2a::task::TaskStatus {
+                                state: protocol_droid::domain::a2a::task::TaskState::Working,
+                                message: Some(Message::new(MessageRole::Agent)),
+                                timestamp: None,
+                            },
+                            is_final: false,
+                            metadata: std::collections::BTreeMap::new(),
+                        })),
+                        Ok(StreamingEvent::Status(protocol_droid::domain::a2a::streaming_events::TaskStatusUpdateEvent {
+                            task_id: "t-s1".to_owned(),
+                            context_id: String::new(),
+                            status: protocol_droid::domain::a2a::task::TaskStatus {
+                                state: protocol_droid::domain::a2a::task::TaskState::Completed,
+                                message: Some(Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
+                                    text: "hi".to_owned(),
+                                    metadata: std::collections::BTreeMap::new(),
+                                }))),
+                                timestamp: None,
+                            },
+                            is_final: true,
+                            metadata: std::collections::BTreeMap::new(),
+                        })),
+                    ]))
+                }
+                _other => Box::pin(futures_util::stream::iter(std::iter::once(Err(A2aError::MethodNotFound)))),
+            }
+        }
+    }
+    let _ = SendMessageRequest::new;
+    let _: GetTaskRequest = GetTaskRequest::new(String::new());
+
+    let app: axum::Router = serve_streaming(
+        "/a2a/stream",
+        Arc::new(EchoStreamAgent) as Arc<dyn A2aStreamingRequestHandler>,
+        protocol_droid::domain::a2a::A2aVersion::V1_0,
+    );
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendStreamingMessage",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "hi"}]
+            }
+        }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/stream")
+                .header("content-type", "application/json")
+                .header("accept", "text/event-stream")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let text = std::str::from_utf8(&bytes)?;
+    // Two SSE events, one `working` and one `completed`/`final`.
+    assert!(text.contains(r#""state":"working""#));
+    assert!(text.contains(r#""state":"completed""#));
+    assert!(text.contains(r#""final":true"#));
+    assert!(text.contains(r#""taskId":"t-s1""#));
+    Ok(())
+}

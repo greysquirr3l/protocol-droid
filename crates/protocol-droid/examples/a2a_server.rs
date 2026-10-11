@@ -2,8 +2,9 @@
 //!
 //! The smallest thing an external A2A peer can actually reach over
 //! the wire: it serves the well-known `AgentCard` at
-//! `/.well-known/agent-card.json` and the JSON-RPC 2.0 method table
-//! at `/a2a`, on a configurable address (default `127.0.0.1:8080`).
+//! `/.well-known/agent-card.json`, the JSON-RPC 2.0 method table
+//! at `/a2a`, and the streaming SSE endpoint at `/a2a/stream`,
+//! on a configurable address (default `127.0.0.1:8080`).
 //!
 //! ```text
 //! cargo run -p protocol-droid --example a2a_server --features a2a,http
@@ -17,20 +18,31 @@
 //! curl -X POST http://127.0.0.1:8080/a2a \
 //!   -H "content-type: application/json" \
 //!   -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage",
-//!        "params":{"message":{"role":"user","messageId":"m-1",
+//!        "params":{"message":{"role":"user",
+//!                             "parts":[{"kind":"text","text":"hello"}]}}}'
+//!
+//! curl -N -X POST http://127.0.0.1:8080/a2a/stream \
+//!   -H "content-type: application/json" \
+//!   -d '{"jsonrpc":"2.0","id":2,"method":"SendStreamingMessage",
+//!        "params":{"message":{"role":"user",
 //!                             "parts":[{"kind":"text","text":"hello"}]}}}'
 //! ```
 //!
 //! The well-known route is the A2A §8 discovery mechanism; the
-//! JSON-RPC path is the method table the card names. A server that
-//! only serves JSON-RPC is reachable, but not discoverable; a server
+//! JSON-RPC path is the method table the card names; the
+//! streaming path emits Server-Sent Events. A server that only
+//! serves JSON-RPC is reachable, but not discoverable; a server
 //! that only serves the card is not reachable at all.
 //!
 //! The agent below is a real in-memory task store. `SendMessage`
 //! creates a task in the store and returns it, `GetTask` reads
 //! from the store, `CancelTask` mutates the store, and `ListTasks`
-//! enumerates the store. The agent's "work" is a one-line echo
-//! because the point of an example is the wiring, not the work.
+//! enumerates the store. `SendStreamingMessage` emits the same
+//! task across two SSE events — a `working` status and a
+//! `completed` status with the echo reply — and `SubscribeToTask`
+//! emits a single final event with the task's current state. The
+//! agent's "work" is a one-line echo because the point of an
+//! example is the wiring, not the work.
 
 #![allow(
     clippy::expect_used,
@@ -42,7 +54,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
+use futures_util::stream;
 use protocol_droid::adapters::primary::a2a::jsonrpc_serve::serve_jsonrpc;
+use protocol_droid::adapters::primary::a2a::streaming_serve::{
+    serve_streaming, A2aStreamingRequestHandler,
+};
 use protocol_droid::adapters::primary::a2a::well_known_serve::serve_well_known;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
 use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
@@ -52,12 +68,12 @@ use protocol_droid::domain::a2a::agent_card::{
 };
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
+use protocol_droid::domain::a2a::streaming_events::{StreamingEvent, TaskStatusUpdateEvent};
 use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
 use protocol_droid::domain::a2a::task_lifecycle::{
     CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
 };
 use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
-use tokio::sync::Mutex;
 
 /// The in-memory task store. A real agent would put a database
 /// here, or a queue fronting a worker pool. The shape — keyed
@@ -108,9 +124,12 @@ impl TaskStore {
 
 /// The agent. Holds the task store behind an `Arc<Mutex>` so the
 /// JSON-RPC dispatcher can move the shared state into each
-/// request's handler.
+/// request's handler. `Clone` is required because the same agent
+/// is wrapped into two `Arc<dyn ...>` pointers — one for the
+/// request/response handler, one for the streaming handler.
+#[derive(Clone)]
 struct EchoAgent {
-    store: Arc<Mutex<TaskStore>>,
+    store: Arc<std::sync::Mutex<TaskStore>>,
 }
 
 impl A2aRequestHandler for EchoAgent {
@@ -129,7 +148,7 @@ impl A2aRequestHandler for EchoAgent {
                     Err(error) => return Box::pin(std::future::ready(Err(error))),
                 };
                 Box::pin(async move {
-                    let value = self.handle_send_message(request).await?;
+                    let value = self.handle_send_message(&request);
                     serde_json::to_value(value).map_err(|error| A2aError::InternalError {
                         message: format!("serialise: {error}"),
                     })
@@ -141,7 +160,7 @@ impl A2aRequestHandler for EchoAgent {
                     Err(error) => return Box::pin(std::future::ready(Err(error))),
                 };
                 Box::pin(async move {
-                    let value = self.handle_get_task(request).await?;
+                    let value = self.handle_get_task(&request)?;
                     serde_json::to_value(value).map_err(|error| A2aError::InternalError {
                         message: format!("serialise: {error}"),
                     })
@@ -153,7 +172,7 @@ impl A2aRequestHandler for EchoAgent {
                     Err(error) => return Box::pin(std::future::ready(Err(error))),
                 };
                 Box::pin(async move {
-                    let value = self.handle_cancel_task(request).await?;
+                    let value = self.handle_cancel_task(&request)?;
                     serde_json::to_value(value).map_err(|error| A2aError::InternalError {
                         message: format!("serialise: {error}"),
                     })
@@ -165,7 +184,7 @@ impl A2aRequestHandler for EchoAgent {
                     Err(error) => return Box::pin(std::future::ready(Err(error))),
                 };
                 Box::pin(async move {
-                    let value = self.handle_list_tasks(request).await?;
+                    let value = self.handle_list_tasks(&request);
                     serde_json::to_value(value).map_err(|error| A2aError::InternalError {
                         message: format!("serialise: {error}"),
                     })
@@ -196,13 +215,13 @@ fn decode_params<T: serde::de::DeserializeOwned>(
 // methods on `EchoAgent` and call those from `dispatch`.
 
 impl EchoAgent {
-    async fn handle_send_message(
+    fn handle_send_message(
         &self,
-        request: SendMessageRequest,
-    ) -> Result<SendMessageResponse, A2aError> {
+        request: &SendMessageRequest,
+    ) -> SendMessageResponse {
         let reply = reply_for(&request.message);
         let next_id = {
-            let mut store = self.store.lock().await;
+            let mut store = self.store.lock().expect("store lock");
             store.next_id = store.next_id.wrapping_add(1);
             store.next_id
         };
@@ -213,14 +232,14 @@ impl EchoAgent {
         });
         task.id = Arc::from(format!("t-{next_id}"));
         let stored = task.clone();
-        self.store.lock().await.insert(stored);
-        Ok(SendMessageResponse::Task(task))
+        self.store.lock().expect("store lock").insert(stored);
+        SendMessageResponse::Task(task)
     }
 
-    async fn handle_get_task(&self, request: GetTaskRequest) -> Result<GetTaskResponse, A2aError> {
+    fn handle_get_task(&self, request: &GetTaskRequest) -> Result<GetTaskResponse, A2aError> {
         self.store
             .lock()
-            .await
+            .expect("store lock")
             .get(&request.id)
             .map(GetTaskResponse::from)
             .ok_or_else(|| A2aError::InvalidParams {
@@ -228,13 +247,13 @@ impl EchoAgent {
             })
     }
 
-    async fn handle_cancel_task(
+    fn handle_cancel_task(
         &self,
-        request: CancelTaskRequest,
+        request: &CancelTaskRequest,
     ) -> Result<CancelTaskResponse, A2aError> {
         self.store
             .lock()
-            .await
+            .expect("store lock")
             .cancel(&request.id)
             .map(CancelTaskResponse::from)
             .ok_or_else(|| A2aError::InvalidParams {
@@ -242,16 +261,138 @@ impl EchoAgent {
             })
     }
 
-    async fn handle_list_tasks(
-        &self,
-        request: ListTasksRequest,
-    ) -> Result<ListTasksResponse, A2aError> {
+    fn handle_list_tasks(&self, request: &ListTasksRequest) -> ListTasksResponse {
         let tasks = self
             .store
             .lock()
-            .await
+            .expect("store lock")
             .list(request.context_id.as_deref(), request.status);
-        Ok(ListTasksResponse::new(tasks))
+        ListTasksResponse::new(tasks)
+    }
+
+    /// Streaming counterpart to `handle_send_message`. Emits two
+    /// events: a `working` status, then a `completed` status with
+    /// the echo reply, marked `is_final`. The task id is
+    /// allocated up front so both events carry the same id; a
+    /// concurrent `GetTask` from another peer can read the task
+    /// once the completed event is in the store.
+    fn handle_streaming_send(
+        &self,
+        request: &SendMessageRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>>
+                + Send,
+        >,
+    > {
+        let store = self.store.clone();
+        let next_id = {
+            let mut store = store.lock().expect("store lock");
+            store.next_id = store.next_id.wrapping_add(1);
+            store.next_id
+        };
+        let task_id = format!("t-{next_id}");
+        let task = Task::new(task_id.clone()).with_status(TaskStatus {
+            state: TaskState::Completed,
+            message: Some(reply_for(&request.message)),
+            timestamp: None,
+        });
+        let stored = task.clone();
+        store.lock().expect("store lock").insert(stored);
+        let working_reply = Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
+            text: "thinking…".to_owned(),
+            metadata: std::collections::BTreeMap::new(),
+        }));
+        let working = StreamingEvent::Status(TaskStatusUpdateEvent {
+            task_id: task_id.clone(),
+            context_id: String::new(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: Some(working_reply),
+                timestamp: None,
+            },
+            is_final: false,
+            metadata: std::collections::BTreeMap::new(),
+        });
+        let completed = StreamingEvent::Status(TaskStatusUpdateEvent {
+            task_id,
+            context_id: String::new(),
+            status: task.status,
+            is_final: true,
+            metadata: std::collections::BTreeMap::new(),
+        });
+        Box::pin(stream::iter([Ok(working), Ok(completed)]))
+    }
+
+    /// Streaming counterpart to `handle_get_task`. Reads the
+    /// task from the store and emits a single final event with
+    /// its current status.
+    fn handle_subscribe_to_task(
+        &self,
+        request: &GetTaskRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>>
+                + Send,
+        >,
+    > {
+        let store = self.store.clone();
+        let event = store.lock().expect("store lock").get(&request.id).map_or_else(
+            || {
+                Err(A2aError::InvalidParams {
+                    reason: format!("no task with id '{}'", request.id),
+                })
+            },
+            |task| {
+                Ok(StreamingEvent::Status(TaskStatusUpdateEvent {
+                    task_id: task.id.to_string(),
+                    context_id: String::new(),
+                    status: task.status,
+                    is_final: true,
+                    metadata: std::collections::BTreeMap::new(),
+                }))
+            },
+        );
+        Box::pin(stream::iter([event]))
+    }
+}
+
+/// The streaming trait. The same agent that owns the request/
+/// response handler also owns the streaming handler, so the
+/// task store is shared between the two paths.
+impl A2aStreamingRequestHandler for EchoAgent {
+    fn dispatch_stream(
+        &self,
+        method: A2aMethod,
+        params: Option<serde_json::Value>,
+        _context: &A2aRequestContext,
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>>
+                + Send,
+        >,
+    > {
+        match method {
+            A2aMethod::SendStreamingMessage => {
+                let request: SendMessageRequest = match decode_params(params) {
+                    Ok(r) => r,
+                    Err(error) => {
+                        return Box::pin(stream::iter(std::iter::once(Err(error))));
+                    }
+                };
+                self.handle_streaming_send(&request)
+            }
+            A2aMethod::SubscribeToTask => {
+                let request: GetTaskRequest = match decode_params(params) {
+                    Ok(r) => r,
+                    Err(error) => {
+                        return Box::pin(stream::iter(std::iter::once(Err(error))));
+                    }
+                };
+                self.handle_subscribe_to_task(&request)
+            }
+            _other => Box::pin(stream::iter(std::iter::once(Err(A2aError::MethodNotFound)))),
+        }
     }
 }
 
@@ -300,14 +441,24 @@ fn build_card() -> Arc<AgentCard> {
     )
 }
 
-/// Mounts the well-known path and the JSON-RPC path on one router.
+/// Mounts the well-known path, the JSON-RPC path, and the
+/// streaming SSE path on one router. The same agent implements
+/// both `A2aRequestHandler` and `A2aStreamingRequestHandler`
+/// so the two paths share the same task store.
 fn build_router() -> Router {
     let card = build_card();
     let agent = EchoAgent {
-        store: Arc::new(Mutex::new(TaskStore::default())),
+        store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
     };
-    let handler: Arc<dyn A2aRequestHandler> = Arc::new(agent);
-    serve_well_known(card).merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0))
+    let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent.clone());
+    let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(agent);
+    serve_well_known(card)
+        .merge(serve_jsonrpc("/a2a", request_handler, A2aVersion::V1_0))
+        .merge(serve_streaming(
+            "/a2a/stream",
+            streaming_handler,
+            A2aVersion::V1_0,
+        ))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -322,6 +473,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("a2a_server: listening on {addr}");
     eprintln!("a2a_server: card at http://{addr}/.well-known/agent-card.json");
     eprintln!("a2a_server: JSON-RPC at http://{addr}/a2a");
+    eprintln!("a2a_server: streaming at http://{addr}/a2a/stream");
     axum::serve(listener, router).await?;
     Ok(())
 }
