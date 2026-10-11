@@ -126,6 +126,33 @@ impl ClientError {
     }
 }
 
+/// What failed when [`Client::connect_stdio`] could not open a session.
+///
+/// Mirrors [`ConnectError`] but is stdio-specific: the spawn stage is the
+/// one the HTTP paths do not have, and the typed inner errors are the
+/// adapter's spawn / handshake / versions errors rather than the HTTP
+/// ones. Kept as a distinct type so a caller that handles "could not
+/// connect" once does not have to know which transport it was.
+#[cfg(feature = "stdio")]
+#[derive(Debug, thiserror::Error)]
+pub enum StdioConnectError {
+    /// The offered revisions could not be built.
+    #[error("this build's own revision table is unusable: {0}")]
+    Versions(#[from] crate::domain::SupportedVersionsError),
+
+    /// The transport config could not be built.
+    #[error("the transport config is not usable: {0}")]
+    Config(#[from] ClientError),
+
+    /// The child could not be spawned.
+    #[error("the child could not be spawned: {0}")]
+    Spawn(#[from] crate::adapters::secondary::stdio::SpawnError),
+
+    /// The handshake did not complete.
+    #[error("the handshake did not complete: {0}")]
+    Handshake(#[from] HandshakeError),
+}
+
 /// What a client offers a server, before anything is negotiated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfig {
@@ -427,6 +454,71 @@ impl Client {
         versions: &SupportedVersions,
     ) -> Result<Self, ConnectError> {
         Ok(connect::open(spec, versions).await?.0)
+    }
+
+    /// Connects to an MCP server over stdio by spawning it as a child.
+    ///
+    /// `spec` is the program and (optionally) arguments; `args` is
+    /// appended after the program's own arguments. The function spawns
+    /// the child, drains the child's stderr into
+    /// `Diagnostics::stderr()`, runs the MCP `initialize` handshake,
+    /// and binds the resulting session to a [`Client`].
+    ///
+    /// This is the stdio counterpart of [`connect_to`](Self::connect_to)
+    /// for the HTTP transports. The four steps the consumer would
+    /// otherwise write by hand — spawn a [`StdioClient`], build a
+    /// [`ClientConfig`], run [`handshake`], bind the session with
+    /// [`from_session`](Self::from_session) — are one call here.
+    /// Each of those steps is a decision the consumer should not be
+    /// making for a use case the library already has an answer to:
+    /// which adapter speaks a given spec is a fact about the crate,
+    /// the set of revisions to offer is a matter of what this build
+    /// has wire types for, and the diagnostics channel is the obvious
+    /// one. A consumer who has an opinion on any of those uses the
+    /// four steps directly; both paths are public.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StdioConnectError`] on any of the four stages. The
+    /// child is killed on failure, so a refused handshake does not
+    /// leave a process behind.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use protocol_droid::adapters::secondary::stdio::ChildSpec;
+    /// use protocol_droid::application::client::Client;
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let spec = ChildSpec::new("upstream-mcp-server")?;
+    /// let client = Client::connect_stdio(&spec).await?;
+    /// let tools = client.list_tools().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`StdioClient`]: crate::adapters::secondary::stdio::StdioClient
+    /// [`ClientConfig`]: crate::adapters::secondary::stdio::ClientConfig
+    #[cfg(feature = "stdio")]
+    pub async fn connect_stdio(
+        spec: &crate::adapters::secondary::stdio::ChildSpec,
+    ) -> Result<Self, StdioConnectError> {
+        use crate::adapters::primary::stdio::Diagnostics;
+        use crate::adapters::secondary::stdio::StdioClient;
+
+        let diagnostics = Diagnostics::stderr();
+        let transport_config = crate::adapters::secondary::stdio::ClientConfig::default();
+        let transport = StdioClient::spawn(spec, transport_config, diagnostics)
+            .await
+            .map_err(StdioConnectError::Spawn)?;
+        let transport: Arc<dyn ClientTransport> = Arc::new(transport);
+        let versions = default_versions().map_err(StdioConnectError::Versions)?;
+        let config = ClientConfig::speaking(versions.as_slice().to_vec(), TransportKind::Stdio)
+            .map_err(StdioConnectError::Config)?;
+        let session = handshake(transport.as_ref(), &config)
+            .await
+            .map_err(StdioConnectError::Handshake)?;
+        Ok(Self::from_session(&session, transport))
     }
 
     /// The revision this client and its server agreed on.
@@ -945,6 +1037,29 @@ mod tests {
             client.session().server_info,
             None,
             "a bare Negotiation carries no peer names, and inventing them is worse than none"
+        );
+    }
+
+    /// The error type for `connect_stdio` is a distinct `enum` from
+    /// `ConnectError` because the spawn stage is stdio-specific. The
+    /// variants' `Display` impls name the stage that failed, which is
+    /// the one bit of information a caller retrying on transient
+    /// transport faults needs. This test exists to keep the type
+    /// reachable from the lib's own test target — the
+    /// `dead_code_pub_in_binary` lint denies unused `pub` items, and
+    /// the doctest that exercises the function does not name the
+    /// error type directly (it uses `Box<dyn Error>`).
+    #[cfg(feature = "stdio")]
+    #[test]
+    fn stdio_connect_error_names_the_stage() {
+        use super::StdioConnectError;
+        let err = StdioConnectError::Versions(
+            crate::domain::SupportedVersionsError::Empty,
+        );
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("revision table"),
+            "Versions variant must name the stage: {rendered}"
         );
     }
 }

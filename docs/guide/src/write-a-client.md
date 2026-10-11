@@ -10,27 +10,23 @@ implement the `BridgePeer` port trait and can be driven by
 ## A 9-line minimal client
 
 ```text
-use protocol_droid::adapters::secondary::stdio::{ChildSpec, ClientConfig, StdioClient};
+use protocol_droid::adapters::secondary::stdio::ChildSpec;
 use protocol_droid::application::client::Client;
-use protocol_droid::adapters::secondary::diagnostics::Diagnostics;
-use protocol_droid::domain::ProtocolVersion;
 
 let spec = ChildSpec::new("upstream-mcp-server")?;
-let config = ClientConfig::default();
-let client = StdioClient::spawn(&spec, config, Diagnostics::stderr())?;
-
-let mut session = Client::new(client)
-    .initialize(ProtocolVersion::latest())
-    .await?;
-
-let reply = session
-    .call_tool("add", serde_json::json!({"a": 2, "b": 3}))
-    .await?;
+let client = Client::connect_stdio(&spec).await?;
+let tools = client.list_tools().await?;
 ```
 
-The client is one `Client::new(...)` call away. The `Client`
-type is the consumer-side entry point; the rest of the library's
-internals are hidden behind it.
+`Client::connect_stdio` is the consumer-side entry point; the
+rest of the library's internals (the spawn, the handshake, the
+session bind) are hidden behind one call. The four steps a
+consumer would otherwise write by hand — `StdioClient::spawn`,
+`handshake`, `Client::from_session` — are folded into
+`connect_stdio`. A consumer who needs to control any of those
+(specific protocol versions, a custom diagnostics channel,
+shorter timeouts) uses the four steps directly; both paths are
+public and `connect_stdio` is the easy one.
 
 ## What the client handles
 
