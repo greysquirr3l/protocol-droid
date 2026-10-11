@@ -22,47 +22,37 @@ Three ideas set it apart:
 3. **Every transport the spec has ever defined.** stdio, legacy HTTP+SSE
    (`2024-11-05`), Streamable HTTP (stateful), and the `2026-07-28` stateless
    lifecycle — each with both a server and a client half. The CLI on top is
-   being built to a Swiss-army knife; today it has one of its five blades, the
-   version-translating `bridge` (see [Status](#status)).
+   being built to a Swiss-army knife; today it has two of its five blades, the
+   version-translating `bridge` and `replay` (see [Status](#status)).
 
 ## Status
 
-Seventeen of twenty-nine tasks are complete, preflight green at **1,584 tests**
-across the workspace.
+Twenty-two of twenty-nine tasks are complete, with four in flight.
+Preflight is green at **2,015 tests** across the workspace
+(`cargo test --workspace --all-features`).
 
-| Done    | What it built                                                                                           |
-| ------- | ------------------------------------------------------------------------------------------------------- |
-| T01–T03 | Workspace, vendored schemas at pinned commits, per-revision wire types generated at build time          |
-| T04–T06 | `ProtocolVersion`, the 37-feature catalogue, `FeatureProfile` resolution, negotiation as pure functions |
-| T07–T08 | The canonical IR, and six lift/lower codecs with `DegradePolicy` and `TranslationReport`                |
-| T09–T12 | Single-pass JSON-RPC router, session engine, lock-free dynamic registry, `#[server]`/`#[tool]` macros   |
-| T13–T15 | stdio, Streamable HTTP, stateless HTTP, and legacy HTTP+SSE — server **and** client halves              |
-| T16     | OAuth 2.1: resource server, PKCE client, RFC 7591 + CIMD registration, RFC 7662 introspection, JWT/JWKS |
-| T17     | HTTP hardening: `Origin`/DNS-rebinding, rate limiting, request deadline, concurrency ceiling            |
+| Done        | What it built                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------- |
+| T01–T03     | Workspace, vendored schemas at pinned commits, per-revision wire types generated at build time          |
+| T04–T06     | `ProtocolVersion`, the 37-feature catalogue, `FeatureProfile` resolution, negotiation as pure functions |
+| T07–T08     | The canonical IR, and six lift/lower codecs with `DegradePolicy` and `TranslationReport`                |
+| T09–T12     | Single-pass JSON-RPC router, session engine, lock-free dynamic registry, `#[server]`/`#[tool]` macros   |
+| T13–T15     | stdio, Streamable HTTP, stateless HTTP, and legacy HTTP+SSE — server **and** client halves              |
+| T16         | OAuth 2.1: resource server, PKCE client, RFC 7591 + CIMD registration, RFC 7662 introspection, JWT/JWKS |
+| T17         | HTTP hardening: `Origin`/DNS-rebinding, rate limiting, request deadline, concurrency ceiling            |
+| T18, T21, T22, T24, T25 | The version-translating `bridge` serving loop; the official conformance suite (`conformance self/server/client`); differential interop vs `rmcp` and the TypeScript SDK across four revisions; security audit (no exploitable findings, `SECURITY-REVIEW.md` committed); wiring stub audit |
 
-**In progress — `protocol-droid bridge` (T18).** The version-translating proxy
-is built and serving: a `bridge` subcommand opens an upstream, negotiates with it
-by reference, and forwards a client's frames translated between revisions. Two
-gaps keep it open, both documented in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#known-gaps):
+**In progress.** T20 (`replay`, built — `record` deferred per the
+strategy's Phase 1), T23 (perf + fuzz baselines committed; the
+comparative bench against `rmcp` is the one open piece), T26
+(docs/release; automatic publish deliberately disabled so a human
+reviews the `crates.io` push), and T27 (A2A — the second product,
+gated behind MVP sign-off per the strategy document).
 
-- The listen side is **stdio-only**. `BridgeLoop` pulls frames from a
-  `FrameSource`, and `StdioSource` is the crate's only implementation — the axum
-  router is request/response shaped, so an HTTP listen side needs a
-  _subscription-shaped source_, not a router change.
-- Frames the upstream pushes **out of band are dropped**. `take_pending` is
-  called nowhere outside the adapters, so `notifications/tools/list_changed` and
-  friends never reach the client.
-
-**Partly built.** `replay` (T20) reads a JSONL session and emits
-per-frame `forwarded` / `downgraded` / `refused` verdicts. `record`
-is the same task's other half and is still pending; a user can
-hand-write a session file for now. `probe` / `inspect` (T19), the
-official conformance suite (T21), differential interop against
-rmcp and the TypeScript SDK (T22), the performance and fuzzing
-campaign (T23), and the security and integration audits (T24–T25)
-remain pending. A2A and ACP (T27–T29) are post-MVP and gated
-behind MVP sign-off.
+**Not started.** T19 (`probe` / `inspect`), T28 (MCP ↔ A2A bridge),
+T29 (ACP). T19 and T28 are operator-side tooling; the strategy
+document's recommendation is to ship `replay` first (done) and
+fund the rest once a user has a reason to ask.
 
 The three ideas above describe the finished design. Where the code does not yet
 match the design, the architecture document says so rather than rounding up.
