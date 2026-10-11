@@ -21,6 +21,15 @@
 //! conformance suite; this file is the proof that the four
 //! adapters are reachable from a composition root and that
 //! the trait bounds they advertise compile.
+//!
+//! The test is gated behind the `oauth` and `random-ids`
+//! features because every type it touches
+//! (`OsSecrets`, `IntrospectionSource`, `JwtSource`,
+//! `HttpTokenEndpoint`, and the `jsonwebtoken` crate) is
+//! feature-gated there. A default-feature build would not
+//! compile the test, so we skip the file entirely in that
+//! configuration.
+#![cfg(all(feature = "oauth", feature = "random-ids"))]
 
 use std::sync::Arc;
 
