@@ -7,10 +7,12 @@
 
 pub(crate) mod handler;
 mod push_notification;
+mod typed_dispatch;
 mod url_filter;
 
 pub use handler::{A2aError, A2aRequestContext, A2aRequestHandler};
 pub use push_notification::{
     NotificationConfig, NotificationConfigError, PushNotificationDelivery, WebhookUrl,
 };
+pub use typed_dispatch::A2aRequestHandlerExt;
 pub use url_filter::{FilterDenial, UrlFilter};
