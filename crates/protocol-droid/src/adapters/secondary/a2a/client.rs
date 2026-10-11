@@ -65,6 +65,16 @@
 //!    [`delete_push_notification_config`](Self::delete_push_notification_config))
 //!    round-trip a `TaskPushNotificationConfig`
 //!    through the same JSON-RPC envelope.
+//! 6. [`get_extended_agent_card`](Self::get_extended_agent_card)
+//!    fetches the authenticated extended agent
+//!    card. The A2A spec splits the card into a
+//!    public read (the well-known path, no
+//!    authentication) and an extended read (this
+//!    method, requires the same bearer token the
+//!    JSON-RPC and streaming routes require). The
+//!    method exists so a consumer does not have
+//!    to drop down to `reqwest` for one
+//!    authenticated card fetch.
 //!
 //! # What it deliberately does not do
 //!
@@ -119,6 +129,9 @@ use serde_json::{Value, json};
 
 use crate::adapters::secondary::a2a::A2aMethod;
 use crate::domain::a2a::agent_card::AgentCard;
+use crate::domain::a2a::extended_agent_card::{
+    GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
+};
 use crate::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 use crate::domain::a2a::push_notification_methods::{
     CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
@@ -461,6 +474,37 @@ impl A2aClient {
         Ok(())
     }
 
+    /// `GetExtendedAgentCard` — fetch the
+    /// authenticated extended agent card.
+    ///
+    /// The A2A spec splits the agent card into
+    /// two reads: the *public* card served on the
+    /// well-known path with no authentication,
+    /// and the *extended* card returned by this
+    /// method, which requires the same bearer
+    /// token the JSON-RPC and streaming routes
+    /// require. The extended card is the same
+    /// card plus any additional capabilities the
+    /// server chooses not to advertise publicly
+    /// (a paid tool, an admin endpoint, a
+    /// tenant-scoped skill).
+    ///
+    /// A consumer who has not set a bearer token
+    /// via [`with_bearer_token`](Self::with_bearer_token)
+    /// will see a 401 from the peer — that is
+    /// the spec's "you must authenticate to read
+    /// this card" signal, not a transport error.
+    /// A consumer who has set a token gets the
+    /// extended card in the response.
+    pub async fn get_extended_agent_card(
+        &self,
+        request: GetExtendedAgentCardRequest,
+    ) -> Result<GetExtendedAgentCardResponse, A2aClientError> {
+        let params = serde_json::to_value(&request)?;
+        self.post_json_rpc(A2aMethod::GetExtendedAgentCard, params)
+            .await
+    }
+
     /// POSTs a JSON-RPC envelope to the method table and parses the typed result.
     async fn post_json_rpc<T: DeserializeOwned>(
         &self,
@@ -659,6 +703,27 @@ mod tests {
         match &client.bearer {
             None => {}
             Some(_) => unreachable!("a fresh `A2aClient::new` has no bearer token"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn get_extended_agent_card_request_serialises_as_empty_object(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // The spec's `GetExtendedAgentCardRequest`
+        // has only a `tenant` path parameter, so
+        // the wire body is `{}` (not `null`). The
+        // test pins the shape so a future revision
+        // that adds a real field catches the
+        // round-trip drift here, not in a wire
+        // test against a real server.
+        let request = GetExtendedAgentCardRequest::new();
+        let value = serde_json::to_value(&request)?;
+        let object = value
+            .as_object()
+            .ok_or("the extended-card request must serialise to a JSON object")?;
+        if !object.is_empty() {
+            return Err(format!("expected `{{}}`, got {value}").into());
         }
         Ok(())
     }

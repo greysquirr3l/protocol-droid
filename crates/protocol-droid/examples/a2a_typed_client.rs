@@ -174,5 +174,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     eprintln!("DeleteTaskPushNotificationConfig -> ok");
 
+    // `get_extended_agent_card` is the
+    // authenticated read of the agent card.
+    // The well-known path serves the *public*
+    // card without auth; the extended card is
+    // the same card plus the additional
+    // capabilities the server does not
+    // advertise publicly. The example runs
+    // unauthenticated by default — set
+    // `A2A_BEARER_TOKEN` on both sides to
+    // exercise this path; without a token
+    // the peer answers with 401 and the
+    // example surfaces that as a typed
+    // `A2aClientError::Io`.
+    if std::env::var("A2A_BEARER_TOKEN").is_ok() {
+        let extended = client
+            .get_extended_agent_card(protocol_droid::domain::a2a::extended_agent_card::GetExtendedAgentCardRequest::new())
+            .await?;
+        eprintln!("GetExtendedAgentCard -> {} v{}", extended.name, extended.version);
+    } else {
+        eprintln!(
+            "GetExtendedAgentCard -> skipped (set A2A_BEARER_TOKEN on both sides to exercise)"
+        );
+    }
+
     Ok(())
 }

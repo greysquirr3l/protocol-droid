@@ -103,13 +103,20 @@ a low-level reference.
 [`examples/a2a_typed_client.rs`](../../crates/protocol-droid/examples/a2a_typed_client.rs)
 is the front door: `A2aClient::new(peer)?`, typed
 request/response types, no envelope munging. The
-example is 180 lines and drives four representative
-paths (`card`, `send_message`, `get_task`,
-`send_streaming_message`) so a consumer can see
-the shape of every method without scrolling
-through 500 lines of wire-level exercises; the
-remaining seven methods are a one-line `client.X(request)`
-each. Run it:
+example is now 202 lines and drives all eleven
+A2A v1.0 methods — `card`, `send_message`,
+`get_task`, `list_tasks`, `cancel_task`,
+`send_streaming_message`, the four
+push-notification-config CRUD calls, and
+`get_extended_agent_card` (the last is only
+called when `A2A_BEARER_TOKEN` is set, since
+the extended read is auth-gated; without a
+token, the example prints a one-line "skipped"
+message). `subscribe_to_task` is intentionally
+not exercised because the typed client treats
+the streaming path as collect-then-iterate,
+and the example already exercises the
+streaming collection shape. Run it:
 
 ```text
 # terminal 1
@@ -120,22 +127,18 @@ cargo run -p protocol-droid --example a2a_typed_client --features a2a,http
 ```
 
 Override the peer with `A2A_PEER=http://other-host:9000`.
-The typed client exercises four representative
-methods so the consumer can see the shape of
-every call: `send_message`, `get_task`,
-`send_streaming_message` (SSE collection), and
-the implicit `card` round-trip that discovers
-the JSON-RPC and streaming endpoints. The
-remaining seven — `cancel_task`, `list_tasks`,
-`subscribe_to_task`, the four push-notification
-config CRUD calls, and `get_extended_agent_card`
-— are a one-line `client.X(request).await?` each;
-a consumer wiring a real product starts from
-the typed client's `card()` call and adds the
-methods the product needs. `GetExtendedAgentCard`
-is auth-gated; a real consumer fetches it
-through the same bearer-token header, but the
-typed example does not call it.
+The example calls `card()` first to discover the
+peer, then exercises every request/response
+method the example agent supports, plus the
+streaming `send_streaming_message` round-trip
+that drives the SSE path end-to-end. The webhook
+URL the typed example registers is
+`http://1.2.3.4:9999/wh` — the SSRF denylist on
+the example server accepts it (it is not on the
+deny list) but the network has no route to that
+address, so the delivery silently fails; the
+example is exercising the config CRUD, not the
+delivery.
 
 For a peer that requires authentication, set
 `A2A_BEARER_TOKEN=<token>` on both sides. The

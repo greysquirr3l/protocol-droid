@@ -33,7 +33,10 @@ use protocol_droid::adapters::secondary::a2a::A2aMethod;
 use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
 use protocol_droid::domain::a2a::A2aVersion;
 use protocol_droid::domain::a2a::agent_card::{
-    AgentCardBuilder, AgentInterface, HTTPAuthSecurityScheme, JSONRPC, SecurityScheme,
+    AgentCard, AgentCardBuilder, AgentInterface, HTTPAuthSecurityScheme, JSONRPC, SecurityScheme,
+};
+use protocol_droid::domain::a2a::extended_agent_card::{
+    GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
 };
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
@@ -61,6 +64,7 @@ struct TaskStore {
 #[derive(Clone)]
 struct MinimalAgent {
     store: Arc<Mutex<TaskStore>>,
+    card: Arc<AgentCard>,
 }
 
 impl A2aRequestHandler for MinimalAgent {
@@ -79,6 +83,7 @@ impl A2aRequestHandler for MinimalAgent {
         _context: &A2aRequestContext,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + '_>> {
         let store = self.store.clone();
+        let card = Arc::clone(&self.card);
         Box::pin(async move {
             match method {
                 A2aMethod::SendMessage => {
@@ -280,9 +285,23 @@ impl A2aRequestHandler for MinimalAgent {
                     guard.push_configs.remove(&request.id);
                     Ok(Value::Null)
                 }
-                A2aMethod::SendStreamingMessage
-                | A2aMethod::SubscribeToTask
-                | A2aMethod::GetExtendedAgentCard => Err(A2aError::MethodNotFound),
+                A2aMethod::GetExtendedAgentCard => {
+                    let _request: GetExtendedAgentCardRequest =
+                        serde_json::from_value(params.unwrap_or(Value::Null)).map_err(
+                            |error| A2aError::InvalidParams {
+                                reason: error.to_string(),
+                            },
+                        )?;
+                    serde_json::to_value(GetExtendedAgentCardResponse(
+                        Arc::unwrap_or_clone(Arc::clone(&card)),
+                    ))
+                    .map_err(|error| A2aError::InternalError {
+                        message: error.to_string(),
+                    })
+                }
+                A2aMethod::SendStreamingMessage | A2aMethod::SubscribeToTask => {
+                    Err(A2aError::MethodNotFound)
+                }
             }
         })
     }
@@ -394,11 +413,14 @@ async fn spawn_test_peer_with_bearer(
         let _ = token.len();
     }
     let card = builder.build().expect("card builder invariants satisfied");
+    let card = Arc::new(card);
     let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent {
         store: Arc::new(Mutex::new(TaskStore::default())),
+        card: Arc::clone(&card),
     });
     let streaming: Arc<dyn A2aStreamingRequestHandler> = Arc::new(MinimalAgent {
         store: Arc::new(Mutex::new(TaskStore::default())),
+        card: Arc::clone(&card),
     });
     let mut protected = Router::new()
         .merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0))
@@ -410,7 +432,7 @@ async fn spawn_test_peer_with_bearer(
             check_bearer_middleware,
         ));
     }
-    let router = serve_well_known(Arc::new(card)).merge(protected);
+    let router = serve_well_known(Arc::clone(&card)).merge(protected);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
@@ -696,6 +718,71 @@ async fn wrong_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error>>
             );
             if !is_transport {
                 return Err(format!("wrong bearer should be a 401, got {error}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_extended_agent_card_round_trips_with_a_bearer_token(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // `GetExtendedAgentCard` is the
+    // authenticated read of the agent card;
+    // the A2A spec splits the card into a
+    // public read (the well-known path, no
+    // authentication) and an extended read
+    // (this method, requires the same
+    // bearer token the JSON-RPC and
+    // streaming routes require). The peer
+    // requires a token; the client attaches
+    // the right one; the response is the
+    // typed `GetExtendedAgentCardResponse`
+    // wrapping the same `AgentCard` the
+    // well-known path served.
+    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let client = A2aClient::new(url)?.with_bearer_token("top-secret");
+    let response = client
+        .get_extended_agent_card(GetExtendedAgentCardRequest::new())
+        .await?;
+    assert_eq!(response.name.as_ref(), "a2a_client_wire_agent");
+    assert_eq!(response.version.as_ref(), "0.1.0");
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_extended_agent_card_is_a_401_without_a_bearer_token(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Same peer, no token. The wire-level
+    // assertion is that the request is
+    // rejected — the public well-known
+    // read is still available, but the
+    // extended read is auth-gated.
+    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let client = A2aClient::new(url)?;
+    let result = client
+        .get_extended_agent_card(GetExtendedAgentCardRequest::new())
+        .await;
+    match result {
+        Ok(_) => {
+            return Err(
+                "the extended card is auth-gated; a missing token must be a wire-level rejection"
+                    .into(),
+            );
+        }
+        Err(error) => {
+            let is_transport = matches!(
+                error,
+                protocol_droid::adapters::secondary::a2a::A2aClientError::Io(_)
+            ) || matches!(
+                error,
+                protocol_droid::adapters::secondary::a2a::A2aClientError::JsonRpc { .. }
+            );
+            if !is_transport {
+                return Err(format!(
+                    "missing bearer on extended card should be a 401, got {error}"
+                )
+                .into());
             }
         }
     }
