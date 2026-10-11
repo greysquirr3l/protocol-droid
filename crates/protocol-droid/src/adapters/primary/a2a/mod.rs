@@ -22,6 +22,8 @@
 #[cfg(all(feature = "a2a", feature = "http"))]
 pub mod jsonrpc_serve;
 #[cfg(all(feature = "a2a", feature = "http"))]
+pub mod serve_agent;
+#[cfg(all(feature = "a2a", feature = "http"))]
 pub mod streaming_serve;
 #[cfg(all(feature = "a2a", feature = "http"))]
 pub mod streaming_typed_dispatch;

@@ -20,6 +20,8 @@ use std::sync::Arc;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use protocol_droid::adapters::primary::a2a::jsonrpc_serve::serve_jsonrpc;
+use protocol_droid::adapters::primary::a2a::serve_agent::serve_a2a_agent;
+use protocol_droid::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
 use protocol_droid::adapters::primary::a2a::well_known_serve::serve_well_known;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
 use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
@@ -1060,4 +1062,82 @@ async fn delete_push_notification_config_removes_it() -> Result<(), Box<dyn std:
     let body: Value = serde_json::from_slice(&bytes)?;
     assert_eq!(body.pointer("/error/code").and_then(Value::as_i64), Some(-32602));
     Ok(())
+}
+
+/// `serve_a2a_agent` is the convenience façade that
+/// mounts the well-known path, the JSON-RPC path,
+/// and the streaming path on one router. The test
+/// confirms the façade serves the well-known path
+/// the same way `serve_well_known` does, and that
+/// the JSON-RPC path is reachable on the prefix
+/// the consumer chose. The streaming path is the
+/// same prefix with `/stream` appended; the
+/// example's `a2a_client` exercises it
+/// end-to-end, which is the wire contract.
+#[tokio::test]
+async fn facade_serves_well_known_and_jsonrpc() -> Result<(), Box<dyn std::error::Error>> {
+    let card = build_card();
+    let store = Arc::new(std::sync::Mutex::new(TaskStore::default()));
+    let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent { store: store.clone() });
+    let streaming: Arc<dyn A2aStreamingRequestHandler> =
+        Arc::new(EmptyStreamAgent { store: store.clone() });
+    let app = serve_a2a_agent("/a2a", handler, streaming, card);
+
+    let well_known = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/agent-card.json")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(well_known.status(), StatusCode::OK);
+
+    let send = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"type": "text", "text": "hi"}]
+            }
+        }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    assert!(body.get("result").is_some(), "expected a result: {body}");
+    Ok(())
+}
+
+/// A streaming handler that returns an empty stream
+/// for every method. The façade test only needs the
+/// type to satisfy `A2aStreamingRequestHandler`; the
+/// JSON-RPC path is what the assertion exercises.
+struct EmptyStreamAgent {
+    store: Arc<std::sync::Mutex<TaskStore>>,
+}
+
+impl A2aStreamingRequestHandler for EmptyStreamAgent {
+    fn dispatch_stream(
+        &self,
+        _method: A2aMethod,
+        _params: Option<Value>,
+        _context: &A2aRequestContext,
+    ) -> std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<protocol_droid::domain::a2a::streaming_events::StreamingEvent, A2aError>> + Send>,
+    > {
+        drop(self.store.lock().expect("store lock"));
+        Box::pin(futures_util::stream::empty())
+    }
 }

@@ -32,6 +32,38 @@ SIGTERM on Unix) so in-flight SSE streams and JSON-RPC
 requests drain before the process exits — the example skips
 that to keep the `tokio` feature set minimal.
 
+## The convenience façade
+
+The example assembles the three serving
+adapters (`serve_well_known`, `serve_jsonrpc`,
+`serve_streaming`) by hand, because the
+example is the layer-by-layer reference. A
+consumer who wants a one-liner can use
+[`serve_a2a_agent`](../../crates/protocol-droid/src/adapters/primary/a2a/serve_agent.rs),
+which mounts the same three routes on one
+router:
+
+```text
+use std::sync::Arc;
+use protocol_droid::adapters::primary::a2a::serve_agent::serve_a2a_agent;
+
+let app = serve_a2a_agent(
+    "/a2a",
+    Arc::new(my_agent),     // implements A2aRequestHandler
+    Arc::new(my_agent),     // implements A2aStreamingRequestHandler
+    Arc::new(my_card),
+);
+```
+
+The streaming path is derived as
+`{jsonrpc_path}/stream`. The well-known path
+is fixed at `/.well-known/agent-card.json`
+per A2A v1.0 §8. The example uses the
+layer-by-layer form so the route shape is
+visible at a glance; the façade is what a
+consumer building a real product would
+reach for.
+
 ## The matching client
 
 The
