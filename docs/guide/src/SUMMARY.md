@@ -12,6 +12,7 @@
 
 - [Write a server](./write-a-server.md)
 - [Write a client](./write-a-client.md)
+- [Write an A2A server](./write-a-server-a2a.md)
 - [Bridge two peers](./bridge.md)
 
 # Operations
