@@ -236,8 +236,9 @@ impl A2aRequestHandler for EchoAgent {
     > {
         match method {
             A2aMethod::SendMessage => {
-                let Ok(request) = decode_params::<SendMessageRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<SendMessageRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_send_message(&request);
@@ -245,8 +246,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::GetTask => {
-                let Ok(request) = decode_params::<GetTaskRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<GetTaskRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_get_task(&request)?;
@@ -254,8 +256,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::CancelTask => {
-                let Ok(request) = decode_params::<CancelTaskRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<CancelTaskRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_cancel_task(&request)?;
@@ -263,8 +266,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::ListTasks => {
-                let Ok(request) = decode_params::<ListTasksRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<ListTasksRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_list_tasks(&request);
@@ -272,8 +276,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::CreateTaskPushNotificationConfig => {
-                let Ok(request) = decode_params::<CreateTaskPushNotificationConfigRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<CreateTaskPushNotificationConfigRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_create_push_notification_config(&request)?;
@@ -281,8 +286,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::GetTaskPushNotificationConfig => {
-                let Ok(request) = decode_params::<GetTaskPushNotificationConfigRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<GetTaskPushNotificationConfigRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_get_push_notification_config(&request)?;
@@ -290,8 +296,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::ListTaskPushNotificationConfigs => {
-                let Ok(request) = decode_params::<ListTaskPushNotificationConfigsRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<ListTaskPushNotificationConfigsRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_list_push_notification_configs(&request);
@@ -299,8 +306,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::DeleteTaskPushNotificationConfig => {
-                let Ok(request) = decode_params::<DeleteTaskPushNotificationConfigRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<DeleteTaskPushNotificationConfigRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_delete_push_notification_config(&request)?;
@@ -308,8 +316,9 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::GetExtendedAgentCard => {
-                let Ok(request) = decode_params::<GetExtendedAgentCardRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<GetExtendedAgentCardRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = self.handle_get_extended_agent_card(&request);

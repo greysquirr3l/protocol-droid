@@ -80,8 +80,9 @@ impl A2aRequestHandler for MinimalAgent {
         let store = self.store.clone();
         match method {
             A2aMethod::SendMessage => {
-                let Ok(_request) = decode_params::<SendMessageRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let _request = match decode_params::<SendMessageRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let next_id = {
@@ -113,8 +114,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::GetTask => {
-                let Ok(request) = decode_params::<GetTaskRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<GetTaskRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = store
@@ -132,8 +134,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::CancelTask => {
-                let Ok(request) = decode_params::<CancelTaskRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<CancelTaskRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let value = store
@@ -158,8 +161,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::ListTasks => {
-                let Ok(_request) = decode_params::<Value>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let _request = match decode_params::<Value>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let tasks = store
@@ -177,8 +181,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::CreateTaskPushNotificationConfig => {
-                let Ok(request) = decode_params::<CreateTaskPushNotificationConfigRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<CreateTaskPushNotificationConfigRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let stored = {
@@ -197,8 +202,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::GetTaskPushNotificationConfig => {
-                let Ok(request) = decode_params::<GetTaskPushNotificationConfigRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<GetTaskPushNotificationConfigRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let config = store
@@ -220,8 +226,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::ListTaskPushNotificationConfigs => {
-                let Ok(request) = decode_params::<ListTaskPushNotificationConfigsRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<ListTaskPushNotificationConfigsRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let configs: Vec<TaskPushNotificationConfig> = store
@@ -239,8 +246,9 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::DeleteTaskPushNotificationConfig => {
-                let Ok(request) = decode_params::<DeleteTaskPushNotificationConfigRequest>(params) else {
-                    return decode_failed(A2aError::MethodNotFound);
+                let request = match decode_params::<DeleteTaskPushNotificationConfigRequest>(params) {
+                    Ok(request) => request,
+                    Err(error) => return decode_failed(error),
                 };
                 Box::pin(async move {
                     let removed = store
@@ -722,6 +730,48 @@ async fn get_missing_task_returns_invalid_params() -> Result<(), Box<dyn std::er
     let code = body.pointer("/error/code").and_then(Value::as_i64);
     let message = body.pointer("/error/message").and_then(Value::as_str);
     assert_eq!(code, Some(-32602));
+    assert_eq!(message, Some("Invalid params"));
+    Ok(())
+}
+
+/// A `GetTask` request whose `id` field is missing
+/// from the params surfaces as a typed `-32602`
+/// (invalid params), not `-32601` (method not
+/// found). The JSON-RPC spec distinguishes them:
+/// `-32601` says "no such method on this server",
+/// `-32602` says "the method exists but the params
+/// you sent are not its shape". A dispatcher
+/// that conflates them hides the wrong-doing
+/// from the peer.
+#[tokio::test]
+async fn missing_required_param_field_returns_invalid_params_not_method_not_found(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "GetTask",
+        "params": {}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let code = body.pointer("/error/code").and_then(Value::as_i64);
+    let message = body.pointer("/error/message").and_then(Value::as_str);
+    assert_eq!(
+        code,
+        Some(-32602),
+        "missing required `id` field is `-32602` invalid params, not `-32601` method not found; got {body}"
+    );
     assert_eq!(message, Some("Invalid params"));
     Ok(())
 }
