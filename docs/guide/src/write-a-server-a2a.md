@@ -206,10 +206,15 @@ filtered by context id and state.
 The four `*TaskPushNotificationConfig` methods let a peer
 register a webhook URL for a task, fetch it back, list the
 configs attached to a task, and remove it. The example
-stores the configs in a `HashMap` keyed by `pc-N`; a real
-agent would also wire the configs to a webhook delivery
-adapter that POSTs to the configured URL when the task's
-state changes. `GetExtendedAgentCard` returns the same card
+validates the URL through the SSRF denylist at config time
+and spawns a delivery task on the runtime handle for every
+config registered against a task. The delivery runs in the
+background; the handler returns immediately. The library
+ships `SsrfDenylist` (an `OWASP`-cited IP-range denylist
+covering loopback, link-local, multicast, and the metadata
+endpoints) and `WebhookDelivery` (a `reqwest`-backed POST
+with re-validation at delivery time so a DNS-rebind attack
+is caught). `GetExtendedAgentCard` returns the same card
 the well-known path serves, since the example has no
 extended capabilities — a real agent would gate this on
 authentication and return additional skills.

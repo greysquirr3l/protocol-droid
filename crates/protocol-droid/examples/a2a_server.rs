@@ -58,13 +58,14 @@
 //! task's current state. The four
 //! `*TaskPushNotificationConfig` methods let a peer register,
 //! fetch, list, and remove a webhook URL for a task; the
-//! example stores the config but does not deliver notifications
-//! — wiring that to the HTTP webhook delivery adapter is a
-//! real agent's job, not an example's. `GetExtendedAgentCard`
-//! returns the same card with an additional flag, since the
-//! example has no extra capabilities. The agent's "work" is a
-//! one-line echo because the point of an example is the
-//! wiring, not the work.
+//! example validates the URL through the SSRF denylist at
+//! config time and delivers a notification to every
+//! registered webhook when the task's state changes.
+//! `GetExtendedAgentCard` returns the same card with an
+//! additional flag, since the example has no extra
+//! capabilities. The agent's "work" is a one-line echo
+//! because the point of an example is the wiring, not the
+//! work.
 
 #![allow(
     clippy::expect_used,
@@ -83,7 +84,12 @@ use protocol_droid::adapters::primary::a2a::streaming_serve::{
 };
 use protocol_droid::adapters::primary::a2a::well_known_serve::serve_well_known;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
-use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
+use protocol_droid::adapters::secondary::a2a::ssrf_denylist::SsrfDenylist;
+use protocol_droid::adapters::secondary::a2a::webhook_delivery::WebhookDelivery;
+use protocol_droid::application::a2a::{
+    A2aError, A2aRequestContext, A2aRequestHandler, NotificationConfig, PushNotificationDelivery,
+    WebhookUrl,
+};
 use protocol_droid::domain::a2a::A2aVersion;
 use protocol_droid::domain::a2a::agent_card::{
     AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
@@ -197,12 +203,17 @@ impl TaskStore {
 
 /// The agent. Holds the task store behind an `Arc<Mutex>` so the
 /// JSON-RPC dispatcher can move the shared state into each
-/// request's handler. `Clone` is required because the same agent
-/// is wrapped into two `Arc<dyn ...>` pointers — one for the
+/// request's handler, plus a `WebhookDelivery` adapter and a
+/// `tokio` runtime handle so the handlers can spawn push
+/// notification deliveries without blocking the request
+/// thread. `Clone` is required because the same agent is wrapped
+/// into two `Arc<dyn ...>` pointers — one for the
 /// request/response handler, one for the streaming handler.
 #[derive(Clone)]
 struct EchoAgent {
     store: Arc<std::sync::Mutex<TaskStore>>,
+    delivery: Arc<WebhookDelivery>,
+    handle: tokio::runtime::Handle,
 }
 
 impl A2aRequestHandler for EchoAgent {
@@ -256,7 +267,7 @@ impl A2aRequestHandler for EchoAgent {
                     return decode_failed(A2aError::MethodNotFound);
                 };
                 Box::pin(async move {
-                    let value = self.handle_create_push_notification_config(&request);
+                    let value = self.handle_create_push_notification_config(&request)?;
                     serde_json::to_value(value).map_err(|error| serialise_error(&error))
                 })
             }
@@ -361,6 +372,7 @@ impl EchoAgent {
         task.id = Arc::from(format!("t-{next_id}"));
         let stored = task.clone();
         self.store.lock().expect("store lock").insert(stored);
+        self.deliver_for_task(task.id.as_ref());
         SendMessageResponse::Task(task)
     }
 
@@ -406,7 +418,21 @@ impl EchoAgent {
     fn handle_create_push_notification_config(
         &self,
         request: &CreateTaskPushNotificationConfigRequest,
-    ) -> CreateTaskPushNotificationConfigResponse {
+    ) -> Result<CreateTaskPushNotificationConfigResponse, A2aError> {
+        // Validate the URL through the SSRF denylist before
+        // storing it. A config with a denied URL would never
+        // deliver, so refusing at config time surfaces the
+        // problem to the client (with a typed reason) instead
+        // of silently dropping deliveries. The same
+        // `WebhookUrl::new` runs at delivery time as
+        // defense-in-depth.
+        let url: url::Url = request.0.url.parse().map_err(|error| A2aError::InvalidParams {
+            reason: format!("webhook URL is not a valid URL: {error}"),
+        })?;
+        let _validated = WebhookUrl::new(&SsrfDenylist::FILTER, url, A2aVersion::V1_0)
+            .map_err(|denial| A2aError::InvalidParams {
+                reason: format!("webhook URL was rejected: {denial}"),
+            })?;
         let id = {
             let mut store = self.store.lock().expect("store lock");
             store.insert_push_config(request.0.clone())
@@ -417,7 +443,7 @@ impl EchoAgent {
             .expect("store lock")
             .get_push_config(&id)
             .expect("config we just inserted");
-        CreateTaskPushNotificationConfigResponse(stored)
+        Ok(CreateTaskPushNotificationConfigResponse(stored))
     }
 
     /// Reads a push notification config by id.
@@ -515,6 +541,7 @@ impl EchoAgent {
         });
         let stored = task.clone();
         store.lock().expect("store lock").insert(stored);
+        self.deliver_for_task(&task_id);
         let working_reply = Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
             text: "thinking…".to_owned(),
             metadata: std::collections::BTreeMap::new(),
@@ -612,6 +639,53 @@ impl A2aStreamingRequestHandler for EchoAgent {
     }
 }
 
+impl EchoAgent {
+    /// Reads the push notification configs for `task_id`,
+    /// builds a `NotificationConfig` for each, and spawns a
+    /// delivery task on the runtime handle. The handler
+    /// returns immediately; the delivery runs in the
+    /// background. A config whose URL fails the SSRF
+    /// denylist at delivery time is silently skipped — the
+    /// filter already ran at config time, so a second
+    /// refusal means a DNS-rebind attack, and skipping is
+    /// the safer answer.
+    fn deliver_for_task(&self, task_id: &str) {
+        let configs = self
+            .store
+            .lock()
+            .expect("store lock")
+            .list_push_configs(task_id);
+        if configs.is_empty() {
+            return;
+        }
+        let Some(task) = self.store.lock().expect("store lock").get(task_id) else {
+            return;
+        };
+        let Ok(body) = serde_json::to_vec(&task) else {
+            return;
+        };
+        for config in configs {
+            let Ok(url) = config.url.parse::<url::Url>() else {
+                continue;
+            };
+            let Ok(webhook) =
+                WebhookUrl::new(&SsrfDenylist::FILTER, url, A2aVersion::V1_0)
+            else {
+                continue;
+            };
+            let notification = NotificationConfig {
+                webhook,
+                token: config.token.as_deref().map(std::sync::Arc::from),
+            };
+            let delivery = self.delivery.clone();
+            let body = body.clone();
+            self.handle.spawn(async move {
+                let _ = delivery.deliver(&notification, &body).await;
+            });
+        }
+    }
+}
+
 /// Builds the agent's reply. The work the agent does is a
 /// one-line echo because the example's point is the wiring.
 fn reply_for(message: &Message) -> Message {
@@ -666,8 +740,11 @@ fn build_card() -> Arc<AgentCard> {
 /// decides whether to send traffic to the agent.
 fn build_router() -> Router {
     let card = build_card();
+    let delivery = WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER));
     let agent = EchoAgent {
         store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
+        delivery: Arc::new(delivery),
+        handle: tokio::runtime::Handle::current(),
     };
     let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent.clone());
     let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(agent);
