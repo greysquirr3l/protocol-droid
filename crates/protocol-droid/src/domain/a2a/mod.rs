@@ -29,6 +29,7 @@ pub mod message;
 pub mod push_notification;
 pub mod push_notification_methods;
 pub mod send_message;
+pub mod streaming_events;
 pub mod task;
 pub mod task_lifecycle;
 pub mod version;
@@ -56,6 +57,9 @@ pub use push_notification_methods::{
     ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
 };
 pub use send_message::{MessageSendConfiguration, SendMessageRequest, SendMessageResponse};
+pub use streaming_events::{
+    StreamingEvent, TaskArtifactUpdateEvent, TaskStatusUpdateEvent,
+};
 pub use task::{Artifact, Task, TaskState, TaskStatus};
 pub use task_lifecycle::{
     CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
