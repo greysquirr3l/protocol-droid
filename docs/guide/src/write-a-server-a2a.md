@@ -53,10 +53,13 @@ cargo run -p protocol-droid --example a2a_client --features a2a,http
 Override the peer with `A2A_PEER=http://other-host:9000`.
 The client fetches the well-known card, reads the
 declared capabilities, finds the JSON-RPC interface, and
-exercises `SendMessage`, `GetTask`, `ListTasks`, and
-`CancelTask`. Streaming methods (`SendStreamingMessage`,
-`SubscribeToTask`) need an SSE reader; the JSON-RPC
-envelope is the same.
+exercises `SendMessage`, `SendStreamingMessage`,
+`GetTask`, `SubscribeToTask`, `ListTasks`, and
+`CancelTask`. The push-notification config methods
+(`Create`/`Get`/`List`/`DeleteTaskPushNotificationConfig`)
+are similar to `GetTask` in shape; `GetExtendedAgentCard`
+is the same as fetching the well-known card with an
+auth header.
 
 A one-shot probe is `curl`:
 

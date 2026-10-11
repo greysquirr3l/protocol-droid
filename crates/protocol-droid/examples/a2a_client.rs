@@ -22,13 +22,17 @@
 //! The peer must be reachable; the well-known card is the
 //! first thing the client fetches.
 //!
-//! The example exercises four of the eleven A2A v1.0
-//! methods — `SendMessage`, `GetTask`, `ListTasks`,
-//! `CancelTask` — all over JSON-RPC. Streaming methods
-//! (`SendStreamingMessage`, `SubscribeToTask`) need a
-//! Server-Sent Events parser; the JSON-RPC envelope is
-//! the same, so adding them is an SSE reader on top of
-//! the same `json_rpc_envelope` shape.
+//! The example exercises six of the eleven A2A v1.0
+//! methods — `SendMessage`, `SendStreamingMessage`,
+//! `GetTask`, `SubscribeToTask`, `ListTasks`,
+//! `CancelTask`. The push-notification config methods
+//! (`Create`/`Get`/`List`/`DeleteTaskPushNotificationConfig`)
+//! are similar to `GetTask` in shape; `GetExtendedAgentCard`
+//! is the same as fetching the well-known card with an
+//! auth header. All three are routine request/response.
+//! The streaming methods need a Server-Sent Events
+//! parser on top of the JSON-RPC envelope; `sse_post`
+//! is the line reader.
 
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,8 +43,10 @@ use protocol_droid::domain::a2a::agent_card::AgentCard;
 use protocol_droid::domain::a2a::agent_card::JSONRPC;
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
+use protocol_droid::domain::a2a::streaming_events::StreamingEvent;
 use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse};
 use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
+use protocol_droid::domain::a2a::task::TaskState;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -53,10 +59,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .timeout(Duration::from_secs(10))
         .build()?;
 
-    // 1. Fetch the well-known card. The card tells us what
-    //    the peer supports and where to reach it.
-    let card_url = format!("{peer}/.well-known/agent-card.json");
-    let card: AgentCard = fetch_json(&client, &card_url).await?;
+    let card: AgentCard = fetch_json(&client, &format!("{peer}/.well-known/agent-card.json")).await?;
     eprintln!("peer: {} v{}", card.name, card.version);
     eprintln!(
         "capabilities: streaming={} pushNotifications={} extendedAgentCard={}",
@@ -65,10 +68,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         card.capabilities.extended_agent_card,
     );
 
-    // 2. Find the JSON-RPC interface. A peer may advertise
-    //    multiple bindings (JSON-RPC, gRPC, HTTP+JSON); the
-    //    A2aClient v1.0 line is JSON-RPC, and the example
-    //    speaks that one.
     let jsonrpc_url = card
         .supported_interfaces
         .iter()
@@ -76,47 +75,69 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("peer advertises no JSON-RPC interface")?
         .url
         .clone();
+    let stream_url = jsonrpc_url.as_str().replace("/a2a", "/a2a/stream");
 
-    // 3. SendMessage. Construct the request with the typed
-    //    `Message` value object — the same one the server
-    //    decodes back.
-    let message = Message::new(MessageRole::User)
-        .with_part(Part::Text(TextPart {
-            text: "hello from a2a_client".to_owned(),
-            metadata: std::collections::BTreeMap::new(),
-        }));
-    let send = SendMessageRequest {
+    let task_id = send_message(&client, jsonrpc_url.as_str(), "hello from a2a_client").await?;
+    eprintln!("SendMessage -> task id {task_id}");
+
+    get_task(&client, jsonrpc_url.as_str(), &task_id).await?;
+    list_tasks(&client, jsonrpc_url.as_str()).await?;
+    cancel_task(&client, jsonrpc_url.as_str(), &task_id).await?;
+
+    send_streaming_message(&client, &stream_url, "hello via streaming").await?;
+    subscribe_to_task(&client, &stream_url, &task_id).await?;
+
+    Ok(())
+}
+
+/// `SendMessage` with a single text part. Returns the
+/// new task's id, which is what every other method
+/// here keys off of.
+async fn send_message(
+    client: &Client,
+    url: &str,
+    text: &str,
+) -> Result<String, Box<dyn Error>> {
+    let message = Message::new(MessageRole::User).with_part(Part::Text(TextPart {
+        text: text.to_owned(),
+        metadata: std::collections::BTreeMap::new(),
+    }));
+    let request = SendMessageRequest {
         message,
         configuration: None,
         metadata: std::collections::BTreeMap::new(),
     };
-    let send_value = serde_json::to_value(&send)?;
-    let result: Value = json_rpc(&client, jsonrpc_url.as_str(), A2aMethod::SendMessage, send_value).await?;
-    let task_response: SendMessageResponse = serde_json::from_value(result.clone())?;
-    let task_id = match &task_response {
-        SendMessageResponse::Task(task) => task.id.to_string(),
-        SendMessageResponse::Message(_) => {
-            return Err("peer returned a Message instead of a Task".into());
-        }
-    };
-    eprintln!("SendMessage -> task id {task_id}");
+    let value = serde_json::to_value(&request)?;
+    let result: Value = json_rpc(client, url, A2aMethod::SendMessage, value).await?;
+    let response: SendMessageResponse = serde_json::from_value(result)?;
+    match response {
+        SendMessageResponse::Task(task) => Ok(task.id.to_string()),
+        SendMessageResponse::Message(_) => Err("peer returned a Message instead of a Task".into()),
+    }
+}
 
-    // 4. GetTask. Read the task back to confirm the
-    //    server's view matches what we sent.
-    let get = GetTaskRequest {
-        id: task_id.clone(),
+/// `GetTask`. Prints the response's `status.state`.
+async fn get_task(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let request = GetTaskRequest {
+        id: task_id.to_owned(),
         history_length: None,
         metadata: std::collections::BTreeMap::new(),
     };
-    let get_value = serde_json::to_value(&get)?;
-    let result: Value = json_rpc(&client, jsonrpc_url.as_str(), A2aMethod::GetTask, get_value).await?;
-    let _get_response: GetTaskResponse = serde_json::from_value(result.clone())?;
+    let value = serde_json::to_value(&request)?;
+    let result: Value = json_rpc(client, url, A2aMethod::GetTask, value).await?;
+    let _response: GetTaskResponse = serde_json::from_value(result.clone())?;
     eprintln!("GetTask({task_id}) -> {}", get_status(&result));
+    Ok(())
+}
 
-    // 5. ListTasks. A peer may filter by context id or
-    //    state; the example leaves both empty so the
-    //    response is the full list.
-    let list = ListTasksRequest {
+/// `ListTasks`. The example leaves every filter empty
+/// so the response is the full list.
+async fn list_tasks(client: &Client, url: &str) -> Result<(), Box<dyn Error>> {
+    let request = ListTasksRequest {
         context_id: None,
         status: None,
         page_size: None,
@@ -125,23 +146,97 @@ async fn main() -> Result<(), Box<dyn Error>> {
         history_length: None,
         metadata: std::collections::BTreeMap::new(),
     };
-    let list_value = serde_json::to_value(&list)?;
-    let result: Value = json_rpc(&client, jsonrpc_url.as_str(), A2aMethod::ListTasks, list_value).await?;
-    let list_response: ListTasksResponse = serde_json::from_value(result.clone())?;
-    eprintln!("ListTasks -> {} task(s)", list_response.tasks.len());
+    let value = serde_json::to_value(&request)?;
+    let result: Value = json_rpc(client, url, A2aMethod::ListTasks, value).await?;
+    let response: ListTasksResponse = serde_json::from_value(result)?;
+    eprintln!("ListTasks -> {} task(s)", response.tasks.len());
+    Ok(())
+}
 
-    // 6. CancelTask. The example agent's task is already
-    //    in `completed` state, so the cancel is a no-op
-    //    on state but still returns the task.
-    let cancel = CancelTaskRequest {
-        id: task_id.clone(),
+/// `CancelTask`. The example's task is already in
+/// `completed` state, so the cancel is a no-op on
+/// state but still returns the task.
+async fn cancel_task(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let request = CancelTaskRequest {
+        id: task_id.to_owned(),
         metadata: std::collections::BTreeMap::new(),
     };
-    let cancel_value = serde_json::to_value(&cancel)?;
-    let result: Value = json_rpc(&client, jsonrpc_url.as_str(), A2aMethod::CancelTask, cancel_value).await?;
-    let _cancel_response: CancelTaskResponse = serde_json::from_value(result.clone())?;
+    let value = serde_json::to_value(&request)?;
+    let result: Value = json_rpc(client, url, A2aMethod::CancelTask, value).await?;
+    let _response: CancelTaskResponse = serde_json::from_value(result.clone())?;
     eprintln!("CancelTask({task_id}) -> {}", get_status(&result));
+    Ok(())
+}
 
+/// `SendStreamingMessage` over SSE. POSTs to the
+/// streaming endpoint, reads the response body as a
+/// Server-Sent Events stream, and prints the
+/// `state` of every status event. The example agent
+/// emits a `working` event followed by a `completed`
+/// event.
+async fn send_streaming_message(
+    client: &Client,
+    url: &str,
+    text: &str,
+) -> Result<(), Box<dyn Error>> {
+    let message = Message::new(MessageRole::User).with_part(Part::Text(TextPart {
+        text: text.to_owned(),
+        metadata: std::collections::BTreeMap::new(),
+    }));
+    let request = SendMessageRequest {
+        message,
+        configuration: None,
+        metadata: std::collections::BTreeMap::new(),
+    };
+    let value = serde_json::to_value(&request)?;
+    let events: Vec<StreamingEvent> = sse_post(client, url, A2aMethod::SendStreamingMessage, value).await?;
+    let names = events
+        .iter()
+        .map(|e| match e {
+            StreamingEvent::Status(s) => format!(
+                "{} ({})",
+                state_name(s.status.state),
+                if s.is_final { "final" } else { "more" }
+            ),
+            StreamingEvent::Artifact(_) => "artifact".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("SendStreamingMessage -> {names}");
+    Ok(())
+}
+
+/// `SubscribeToTask` over SSE. The same wire format as
+/// `SendStreamingMessage`, but the request is a
+/// `GetTaskRequest` and the response is a single
+/// final event with the task's current state. The
+/// example's task is already cancelled (from
+/// `cancel_task`), so the event carries that state.
+async fn subscribe_to_task(
+    client: &Client,
+    url: &str,
+    task_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let request = GetTaskRequest {
+        id: task_id.to_owned(),
+        history_length: None,
+        metadata: std::collections::BTreeMap::new(),
+    };
+    let value = serde_json::to_value(&request)?;
+    let events: Vec<StreamingEvent> = sse_post(client, url, A2aMethod::SubscribeToTask, value).await?;
+    if let Some(StreamingEvent::Status(s)) = events.first() {
+        eprintln!(
+            "SubscribeToTask({task_id}) -> {} (final={})",
+            state_name(s.status.state),
+            s.is_final
+        );
+    } else {
+        eprintln!("SubscribeToTask({task_id}) -> (no events)");
+    }
     Ok(())
 }
 
@@ -185,6 +280,63 @@ async fn json_rpc<T: DeserializeOwned>(
     Ok(serde_json::from_value(result.clone())?)
 }
 
+/// Sends one JSON-RPC 2.0 request to a streaming
+/// endpoint and reads the Server-Sent Events response
+/// body. Each event is `data: <json-rpc-response>\n\n`
+/// per the A2A streaming serve adapter; this helper
+/// splits the body on blank lines, takes the `data:`
+/// prefix off, parses the JSON-RPC envelope, and
+/// collects the `result` field into a vector of typed
+/// values. The whole body is read at once because the
+/// example's streams are short (one or two events); a
+/// real consumer that processes events as they arrive
+/// would use `response.bytes_stream()` and a line
+/// buffer instead. The shape is the same — the
+/// library's streaming serve produces one
+/// JSON-RPC envelope per `data:` line.
+async fn sse_post<T: DeserializeOwned>(
+    client: &Client,
+    url: &str,
+    method: A2aMethod,
+    params: Value,
+) -> Result<Vec<T>, Box<dyn Error>> {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let envelope = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method.as_str(),
+        "params": params,
+    });
+    let body = client
+        .post(url)
+        .body(serde_json::to_vec(&envelope)?)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let mut events = Vec::new();
+    for block in body.split("\n\n") {
+        for line in block.lines() {
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let envelope: Value = serde_json::from_str(data)?;
+            if let Some(error) = envelope.get("error") {
+                return Err(format!("JSON-RPC error: {error}").into());
+            }
+            let Some(result) = envelope.get("result") else {
+                continue;
+            };
+            events.push(serde_json::from_value(result.clone())?);
+        }
+    }
+    Ok(events)
+}
+
 /// Reads `status.state` from a JSON-RPC `result` value
 /// for a Task-shaped response. Used as a one-line
 /// confirmation that the round trip carried the
@@ -194,6 +346,22 @@ fn get_status(result: &Value) -> String {
         .pointer("/status/state")
         .and_then(Value::as_str)
         .map_or_else(|| "(no status)".to_owned(), std::borrow::ToOwned::to_owned)
+}
+
+/// Renders a `TaskState` to its wire form (`working`,
+/// `completed`, `cancelled`, ...). The library's
+/// `TaskState` derives `Serialize` with
+/// `rename_all = "snake_case"`, so the same shape that
+/// appears in the JSON-RPC envelope is what the
+/// helper produces. A real consumer that wanted a
+/// user-facing label would map the wire form to a
+/// translated string; for the example, the wire form
+/// is enough.
+fn state_name(state: TaskState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|v| v.as_str().map(std::borrow::ToOwned::to_owned))
+        .unwrap_or_else(|| "(unknown)".to_owned())
 }
 
 /// GETs a URL and parses the response body as JSON into
