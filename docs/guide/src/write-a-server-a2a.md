@@ -93,41 +93,93 @@ reach for.
 
 ## The matching client
 
-The
-[`examples/a2a_client.rs`](../../crates/protocol-droid/examples/a2a_client.rs)
-example is the mirror of `a2a_server.rs`: where the
-server example shows what an A2A peer serves, this one
-shows what an A2A peer consumes. The library has no
-`A2aClient` port yet (that is T27 scope), so the example
-uses `reqwest` directly. Run it against the server:
+Two examples are the mirror of `a2a_server.rs`. The
+library-side `A2aClient` port is the recommended way to
+consume an A2A peer; the raw-reqwest example remains as
+a low-level reference.
+
+### The typed client
+
+[`examples/a2a_typed_client.rs`](../../crates/protocol-droid/examples/a2a_typed_client.rs)
+is the front door: `A2aClient::new(peer)?`, typed
+request/response types, no envelope munging. The
+example is 180 lines and drives four representative
+paths (`card`, `send_message`, `get_task`,
+`send_streaming_message`) so a consumer can see
+the shape of every method without scrolling
+through 500 lines of wire-level exercises; the
+remaining seven methods are a one-line `client.X(request)`
+each. Run it:
 
 ```text
 # terminal 1
 cargo run -p protocol-droid --example a2a_server --features a2a,http
 
 # terminal 2
-cargo run -p protocol-droid --example a2a_client --features a2a,http
+cargo run -p protocol-droid --example a2a_typed_client --features a2a,http
 ```
 
 Override the peer with `A2A_PEER=http://other-host:9000`.
-The client fetches the well-known card, reads the
-declared capabilities, finds the JSON-RPC interface, and
-exercises ten of the eleven A2A v1.0 methods:
-`SendMessage`, `SendStreamingMessage`, `GetTask`,
-`SubscribeToTask`, `ListTasks`, `CancelTask`,
-`CreateTaskPushNotificationConfig`,
-`GetTaskPushNotificationConfig`,
-`ListTaskPushNotificationConfigs`,
-`DeleteTaskPushNotificationConfig`. The eleventh,
-`GetExtendedAgentCard`, is auth-gated; the example has
-no auth, so a real consumer would fetch the well-known
-card with the same auth header. The webhook URL the
-client registers is `http://1.2.3.4:9999/wh` — the
-SSRF denylist on the example server accepts it (it
-is not on the deny list) but the network has no
-route to that address, so the delivery silently
-fails; the example is exercising the config CRUD,
-not the delivery.
+The typed client exercises four representative
+methods so the consumer can see the shape of
+every call: `send_message`, `get_task`,
+`send_streaming_message` (SSE collection), and
+the implicit `card` round-trip that discovers
+the JSON-RPC and streaming endpoints. The
+remaining seven — `cancel_task`, `list_tasks`,
+`subscribe_to_task`, the four push-notification
+config CRUD calls, and `get_extended_agent_card`
+— are a one-line `client.X(request).await?` each;
+a consumer wiring a real product starts from
+the typed client's `card()` call and adds the
+methods the product needs. `GetExtendedAgentCard`
+is auth-gated; a real consumer fetches it
+through the same bearer-token header, but the
+typed example does not call it.
+
+For a peer that requires authentication, set
+`A2A_BEARER_TOKEN=<token>` on both sides. The
+`a2a_typed_client` reads the env var and attaches
+`Authorization: Bearer <token>` to every request via
+`A2aClient::with_bearer_token(token)`; the
+`a2a_server` reads the same env var, declares a
+`bearer` `SecurityScheme::Http` on the card, and
+runs the JSON-RPC and streaming routes through an
+axum `from_fn_with_state` middleware that 401s on
+a missing or wrong token. The well-known card is
+unauthenticated so a peer can fetch it to discover
+the scheme.
+
+### The raw client (for reference)
+
+[`examples/a2a_client.rs`](../../crates/protocol-droid/examples/a2a_client.rs)
+is the 513-line raw-reqwest example. The library
+already speaks A2A on the consumer's behalf, so
+no new code should be written against this
+example — it exists to show the wire shape
+beneath `A2aClient`, the same way the
+`a2a_server` shows the wire shape beneath the
+serving adapters. A consumer who needs an
+A2A-wire-level hand-rolled client (for an HTTP
+proxy, an A/B testing shim, a recording proxy)
+starts from this example, not from scratch.
+
+The raw client exercises ten of the eleven A2A v1.0
+methods (`send_message`, `get_task`, `list_tasks`,
+`cancel_task`, `subscribe_to_task`,
+`send_streaming_message`, and the four
+push-notification-config CRUD calls) so a reader
+can compare every wire shape to the typed port
+above. The webhook URL it registers is
+`http://1.2.3.4:9999/wh` — the SSRF denylist on
+the example server accepts it (it is not on the
+deny list) but the network has no route to that
+address, so the delivery silently fails; the
+example is exercising the config CRUD, not the
+delivery. The eleventh, `get_extended_agent_card`,
+is auth-gated; a real consumer would fetch it
+with the same auth header, but the example has
+no auth.
 
 A one-shot probe is `curl`:
 
