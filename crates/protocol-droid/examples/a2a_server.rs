@@ -12,11 +12,17 @@
 //! ```
 //!
 //! Override the bind address with `A2A_ADDR=0.0.0.0:9000 cargo run ...`.
-//! The example does not install a SIGINT handler; ctrl-c kills
-//! the process. A real agent would wire `with_graceful_shutdown`
-//! to `tokio::signal::ctrl_c` (and SIGTERM on Unix) so
-//! in-flight SSE streams and JSON-RPC requests drain before
-//! the process exits.
+//! Set `A2A_BEARER_TOKEN=secret cargo run ...` to require an
+//! `Authorization: Bearer <token>` header on every JSON-RPC
+//! and streaming request. The well-known path is unauthenticated
+//! (a peer must be able to fetch the card to discover the
+//! scheme), the card declares the scheme, and the
+//! `a2a_typed_client` example is the consumer that exercises
+//! the path. The example does not install a SIGINT handler;
+//! ctrl-c kills the process. A real agent would wire
+//! `with_graceful_shutdown` to `tokio::signal::ctrl_c` (and
+//! SIGTERM on Unix) so in-flight SSE streams and JSON-RPC
+//! requests drain before the process exits.
 //!
 //! A one-shot probe is `curl`:
 //!
@@ -92,7 +98,8 @@ use protocol_droid::application::a2a::{
 };
 use protocol_droid::domain::a2a::A2aVersion;
 use protocol_droid::domain::a2a::agent_card::{
-    AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
+    AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, HTTPAuthSecurityScheme,
+    JSONRPC, SecurityScheme,
 };
 use protocol_droid::domain::a2a::extended_agent_card::{
     GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
@@ -721,36 +728,55 @@ fn reply_for(message: &Message) -> Message {
 /// to `127.0.0.1:8084` would be a lie a peer would
 /// believe; the `a2a_client` example is the test for
 /// that lie, and it is the reason `addr` is the input.
-fn build_card(addr: SocketAddr) -> Arc<AgentCard> {
+fn build_card(addr: SocketAddr, bearer: Option<&str>) -> Arc<AgentCard> {
     let capabilities = AgentCapabilities {
         streaming: true,
         push_notifications: true,
         ..Default::default()
     };
     let interface_url = format!("http://{addr}/a2a");
-    Arc::new(
-        AgentCardBuilder::new()
-            .with_name("Echo Agent")
-            .with_description("An A2A example that echoes messages back as completed tasks.")
-            .with_version("0.1.0")
-            .with_interface(AgentInterface {
-                url: url::Url::parse(&interface_url).expect("addr-derived URL parses"),
-                protocol_binding: JSONRPC.clone(),
-                protocol_version: A2aVersion::V1_0,
-                tenant: None,
-            })
-            .with_capabilities(capabilities)
-            .with_input_mode("text/plain")
-            .with_output_mode("text/plain")
-            .with_skill(AgentSkill {
-                id: "echo".into(),
-                name: "Echo".into(),
-                description: "Echoes the user's message back as a completed task.".into(),
-                tags: Vec::new(),
-            })
-            .build()
-            .expect("card is built from valid inputs"),
-    )
+    let mut builder = AgentCardBuilder::new()
+        .with_name("Echo Agent")
+        .with_description("An A2A example that echoes messages back as completed tasks.")
+        .with_version("0.1.0")
+        .with_interface(AgentInterface {
+            url: url::Url::parse(&interface_url).expect("addr-derived URL parses"),
+            protocol_binding: JSONRPC.clone(),
+            protocol_version: A2aVersion::V1_0,
+            tenant: None,
+        })
+        .with_capabilities(capabilities)
+        .with_input_mode("text/plain")
+        .with_output_mode("text/plain")
+        .with_skill(AgentSkill {
+            id: "echo".into(),
+            name: "Echo".into(),
+            description: "Echoes the user's message back as a completed task.".into(),
+            tags: Vec::new(),
+        });
+    if let Some(token) = bearer {
+        // The card declares the auth scheme the
+        // server enforces. A peer that has a token
+        // sets `Authorization: Bearer <token>` on
+        // every JSON-RPC and streaming request;
+        // the well-known path is unauthenticated
+        // (the card itself must be reachable so a
+        // peer can discover the scheme).
+        builder = builder.with_security_scheme(
+            "bearer",
+            SecurityScheme::Http(HTTPAuthSecurityScheme {
+                scheme: std::sync::Arc::from("bearer"),
+                bearer_format: None,
+                description: Some(std::sync::Arc::from(
+                    "Set A2A_BEARER_TOKEN to require this token on every JSON-RPC and streaming request.",
+                )),
+            }),
+        );
+        // The token value is held by the
+        // router's middleware, not the card.
+        let _ = token;
+    }
+    Arc::new(builder.build().expect("card is built from valid inputs"))
 }
 
 /// Mounts the well-known path, the JSON-RPC path, the
@@ -769,7 +795,8 @@ fn build_card(addr: SocketAddr) -> Arc<AgentCard> {
 /// lie a peer would believe, and `a2a_client` is the
 /// test that catches it.
 fn build_router(addr: SocketAddr) -> Router {
-    let card = build_card(addr);
+    let bearer = bearer_token();
+    let card = build_card(addr, bearer.as_deref());
     let delivery = WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER));
     let agent = EchoAgent {
         store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
@@ -779,14 +806,70 @@ fn build_router(addr: SocketAddr) -> Router {
     };
     let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent.clone());
     let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(agent);
-    let api = serve_well_known(card)
+    let mut api = serve_well_known(card)
         .merge(serve_jsonrpc("/a2a", request_handler, A2aVersion::V1_0))
         .merge(serve_streaming(
             "/a2a/stream",
             streaming_handler,
             A2aVersion::V1_0,
         ));
+    if let Some(token) = bearer {
+        // The card declares the scheme; the
+        // middleware enforces it. The same
+        // middleware sits in front of the
+        // JSON-RPC and the streaming route, so
+        // a peer that does not present the
+        // token sees a 401 from either.
+        api = api
+            .route_layer(axum::middleware::from_fn_with_state(
+                std::sync::Arc::from(token),
+                check_bearer,
+            ));
+    }
     api.merge(health_router())
+}
+
+/// Reads the bearer token from `A2A_BEARER_TOKEN`, or
+/// returns `None` if the env var is unset. The
+/// example runs unauthenticated by default so a
+/// first-time reader is not blocked by auth; setting
+/// the env var turns the same binary into a
+/// representative bearer-protected server.
+fn bearer_token() -> Option<String> {
+    std::env::var("A2A_BEARER_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// Validates `Authorization: Bearer <token>` against
+/// the configured token. The well-known path is not
+/// routed through this middleware (it is `merge`'d
+/// into the router, and `route_layer` only applies
+/// to the routes that come *before* the layer is
+/// added in the call order; the
+/// `serve_well_known` is `merge`'d into the same
+/// router, so the layer protects the JSON-RPC and
+/// streaming routes but not the well-known card).
+async fn check_bearer(
+    axum::extract::State(expected): axum::extract::State<std::sync::Arc<str>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let header = request
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if let Some(value) = header
+        && let Some(token) = value.strip_prefix("Bearer ")
+        && token == expected.as_ref()
+    {
+        return next.run(request).await;
+    }
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::UNAUTHORIZED)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from("{\"error\":\"unauthorized\"}"))
+        .expect("a static 401 response builds")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

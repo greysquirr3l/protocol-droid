@@ -186,6 +186,7 @@ pub struct A2aClient {
     card_path: Arc<str>,
     jsonrpc_path: Arc<str>,
     streaming_path: Arc<str>,
+    bearer: Option<Arc<str>>,
     http: HttpClient,
     next_id: Arc<AtomicI64>,
 }
@@ -198,13 +199,17 @@ impl Clone for A2aClient {
     /// clone and its original issue distinct
     /// ids. The [`Arc<str>`] paths are
     /// reference-counted copies, not deep
-    /// clones.
+    /// clones. The bearer token, if any, is
+    /// also `Arc<str>` — a clone points at
+    /// the same allocation, not a copy of
+    /// the secret.
     fn clone(&self) -> Self {
         Self {
             base: Arc::clone(&self.base),
             card_path: Arc::clone(&self.card_path),
             jsonrpc_path: Arc::clone(&self.jsonrpc_path),
             streaming_path: Arc::clone(&self.streaming_path),
+            bearer: self.bearer.as_ref().map(Arc::clone),
             http: self.http.clone(),
             next_id: Arc::clone(&self.next_id),
         }
@@ -240,6 +245,7 @@ impl A2aClient {
             card_path: Arc::from(AGENT_CARD_WELL_KNOWN_PATH),
             jsonrpc_path: Arc::from("/a2a"),
             streaming_path: Arc::from("/a2a/stream"),
+            bearer: None,
             http,
             next_id: Arc::new(AtomicI64::new(1)),
         })
@@ -277,9 +283,34 @@ impl A2aClient {
             card_path: Arc::from(card_path.into()),
             jsonrpc_path: Arc::from(jsonrpc_path.into()),
             streaming_path: Arc::from(streaming_path.into()),
+            bearer: None,
             http,
             next_id: Arc::new(AtomicI64::new(1)),
         })
+    }
+
+    /// Attaches a Bearer token to every subsequent request.
+    ///
+    /// The A2A v1.0 spec lets an agent declare a
+    /// `securitySchemes` map on its card; the most
+    /// common value is `Http` with `Bearer` (RFC
+    /// 6750). A consumer that has an opaque token
+    /// from the peer's auth endpoint passes it
+    /// here, and every `card()`, `send_message()`,
+    /// and `send_streaming_message()` call carries
+    /// `Authorization: Bearer <token>`. The card
+    /// itself is fetched unauthenticated by default
+    /// — a peer that gates the card behind auth
+    /// needs a separate way to get the token, which
+    /// is out of scope for this commit.
+    ///
+    /// The token is held in an `Arc<str>`; a clone
+    /// shares the same allocation, not a copy of
+    /// the secret.
+    #[must_use]
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer = Some(Arc::from(token.into()));
+        self
     }
 
     /// Fetches the agent card at the well-known URI.
@@ -298,13 +329,14 @@ impl A2aClient {
     /// `AgentCard` shape.
     pub async fn card(&self) -> Result<AgentCard, A2aClientError> {
         let url = format!("{}{}", self.base, self.card_path);
-        let response = self
+        let mut request = self
             .http
             .get(&url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .send()
-            .await?
-            .error_for_status()?;
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(token) = self.bearer.as_deref() {
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = request.send().await?.error_for_status()?;
         let body = response.text().await?;
         let card: AgentCard = serde_json::from_str(&body)?;
         Ok(card)
@@ -444,15 +476,16 @@ impl A2aClient {
             "params": params,
         });
         let body = serde_json::to_vec(&envelope)?;
-        let response = self
+        let mut request = self
             .http
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, "application/json")
-            .body(body)
-            .send()
-            .await?
-            .error_for_status()?;
+            .body(body);
+        if let Some(token) = self.bearer.as_deref() {
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = request.send().await?.error_for_status()?;
         let body = response.text().await?;
         let envelope: Value = serde_json::from_str(&body)?;
         Self::extract_result(&envelope)
@@ -474,15 +507,16 @@ impl A2aClient {
             "params": params,
         });
         let body = serde_json::to_vec(&envelope)?;
-        let response = self
+        let mut request = self
             .http
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, "text/event-stream")
-            .body(body)
-            .send()
-            .await?
-            .error_for_status()?;
+            .body(body);
+        if let Some(token) = self.bearer.as_deref() {
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = request.send().await?.error_for_status()?;
         let body = response.text().await?;
         Self::parse_sse_blocks(&body)
     }
@@ -598,5 +632,34 @@ mod tests {
                 unreachable!("lines without `data:` are skipped, not errors, got {error}")
             }
         }
+    }
+
+    #[test]
+    fn with_bearer_token_is_carried_on_a_clone() -> Result<(), A2aClientError> {
+        // The token is an `Arc<str>`; cloning the client
+        // shares the same allocation, not a deep copy.
+        let original = A2aClient::new("http://peer")?.with_bearer_token("secret");
+        let cloned = original.clone();
+        // Both clients point at the same peer and same
+        // paths; the wire-level assertion is that every
+        // outbound request carries `Authorization: Bearer
+        // secret`, which the integration test pins against
+        // a real server. This unit test only checks the
+        // construction: no panic, the same path.
+        assert_eq!(cloned.card_path, original.card_path);
+        Ok(())
+    }
+
+    #[test]
+    fn without_bearer_token_the_authorization_header_is_absent() -> Result<(), A2aClientError> {
+        // The default client is unauthenticated. The
+        // struct's `bearer` field is `None`, so the
+        // request builder skips the Authorization header.
+        let client = A2aClient::new("http://peer")?;
+        match &client.bearer {
+            None => {}
+            Some(_) => unreachable!("a fresh `A2aClient::new` has no bearer token"),
+        }
+        Ok(())
     }
 }

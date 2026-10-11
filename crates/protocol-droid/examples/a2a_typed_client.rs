@@ -21,6 +21,14 @@
 //! a2a_server: streaming at http://127.0.0.1:8080/a2a/stream
 //! $ cargo run -p protocol-droid --example a2a_typed_client
 //! ```
+//!
+//! Set `A2A_BEARER_TOKEN=secret` on both sides to exercise
+//! the bearer-token path:
+//!
+//! ```text
+//! $ A2A_BEARER_TOKEN=secret cargo run -p protocol-droid --example a2a_server
+//! $ A2A_BEARER_TOKEN=secret cargo run -p protocol-droid --example a2a_typed_client
+//! ```
 
 use std::error::Error;
 
@@ -40,7 +48,19 @@ const PEER: &str = "http://127.0.0.1:8080";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let client = A2aClient::new(PEER)?;
+    // The peer is started with `A2A_BEARER_TOKEN=secret`
+    // when an auth demonstration is wanted. The
+    // client reads the same env var so the two
+    // sides match; a peer that does not require
+    // auth ignores the header and the request
+    // still works.
+    let client = match std::env::var("A2A_BEARER_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        Some(token) => A2aClient::new(PEER)?.with_bearer_token(token),
+        None => A2aClient::new(PEER)?,
+    };
 
     // `card` returns the agent's `AgentCard`. The
     // library does not cache the card; a consumer

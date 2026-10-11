@@ -31,7 +31,9 @@ use protocol_droid::adapters::secondary::a2a::A2aClient;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
 use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
 use protocol_droid::domain::a2a::A2aVersion;
-use protocol_droid::domain::a2a::agent_card::{AgentCardBuilder, AgentInterface, JSONRPC};
+use protocol_droid::domain::a2a::agent_card::{
+    AgentCardBuilder, AgentInterface, HTTPAuthSecurityScheme, JSONRPC, SecurityScheme,
+};
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
 use protocol_droid::domain::a2a::push_notification_methods::{
@@ -321,7 +323,43 @@ impl A2aStreamingRequestHandler for MinimalAgent {
 }
 
 async fn spawn_test_peer() -> (String, tokio::task::JoinHandle<()>) {
-    let card = AgentCardBuilder::new()
+    spawn_test_peer_with_bearer(None).await
+}
+
+/// A bearer-token check middleware used by the
+/// auth-required test peer. Defined at the
+/// module level so the
+/// `from_fn_with_state` call in
+/// `spawn_test_peer_with_bearer` can name it
+/// without putting an `async fn` item after a
+/// statement (which clippy flags as
+/// "items after statements").
+async fn check_bearer_middleware(
+    axum::extract::State(expected): axum::extract::State<Arc<str>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let header = request
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if let Some(value) = header
+        && let Some(token) = value.strip_prefix("Bearer ")
+        && token == expected.as_ref()
+    {
+        return next.run(request).await;
+    }
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::UNAUTHORIZED)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from("{\"error\":\"unauthorized\"}"))
+        .expect("a static 401 response builds")
+}
+
+async fn spawn_test_peer_with_bearer(
+    required_token: Option<&str>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let mut builder = AgentCardBuilder::new()
         .with_name("a2a_client_wire_agent")
         .with_description("A test agent for A2aClient.")
         .with_version("0.1.0")
@@ -338,18 +376,40 @@ async fn spawn_test_peer() -> (String, tokio::task::JoinHandle<()>) {
             name: Arc::from("echo"),
             description: Arc::from("Echo the user message back as a reply."),
             tags: Vec::new(),
-        })
-        .build()
-        .expect("card builder invariants satisfied");
+        });
+    if let Some(token) = required_token {
+        builder = builder.with_security_scheme(
+            "bearer",
+            SecurityScheme::Http(HTTPAuthSecurityScheme {
+                scheme: Arc::from("bearer"),
+                bearer_format: None,
+                description: Some(Arc::from(
+                    "Bearer token auth. Required for JSON-RPC and streaming; the well-known card is unauthenticated.",
+                )),
+            }),
+        );
+        // The token is referenced via the type
+        // parameter so the compiler doesn't drop it.
+        let _ = token.len();
+    }
+    let card = builder.build().expect("card builder invariants satisfied");
     let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent {
         store: Arc::new(Mutex::new(TaskStore::default())),
     });
     let streaming: Arc<dyn A2aStreamingRequestHandler> = Arc::new(MinimalAgent {
         store: Arc::new(Mutex::new(TaskStore::default())),
     });
-    let router = serve_well_known(Arc::new(card))
+    let mut router = serve_well_known(Arc::new(card))
         .merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0))
         .merge(serve_streaming("/a2a/stream", streaming, A2aVersion::V1_0));
+    if let Some(expected) = required_token {
+        let expected = Arc::from(expected);
+        router = router
+            .route_layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&expected),
+                check_bearer_middleware,
+            ));
+    }
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
@@ -519,5 +579,93 @@ async fn with_paths_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let card = client.card().await?;
     assert_eq!(card.name.as_ref(), "a2a_client_wire_agent");
+    Ok(())
+}
+
+#[tokio::test]
+async fn bearer_token_unlocks_an_auth_required_peer() -> Result<(), Box<dyn std::error::Error>> {
+    // The peer requires a bearer token; the
+    // client attaches it via
+    // `with_bearer_token`; the typed
+    // `send_message` round-trip succeeds.
+    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let client = A2aClient::new(url)?.with_bearer_token("top-secret");
+    let response = client
+        .send_message(SendMessageRequest::new(user_message("hi")))
+        .await?;
+    let SendMessageResponse::Task(task) = response else {
+        return Err("the minimal agent returns a Task, not a Message".into());
+    };
+    assert_eq!(task.status.state, TaskState::Completed);
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error>> {
+    // The peer requires a bearer token; the
+    // client has none. The wire-level
+    // assertion is that the request fails
+    // — the typed `send_message` surfaces
+    // the status as `A2aClientError::Io`
+    // because `reqwest::Response::error_for_status`
+    // is what runs first.
+    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let client = A2aClient::new(url)?;
+    let result = client
+        .send_message(SendMessageRequest::new(user_message("hi")))
+        .await;
+    // The exact error variant is a transport
+    // failure on the status code (4xx is
+    // surfaced by `error_for_status`); the
+    // shape of the failure is the right
+    // thing to pin, not its `Display` text.
+    match result {
+        Ok(_) => {
+            return Err(
+                "a missing token must be a wire-level rejection".into(),
+            );
+        }
+        Err(error) => {
+            let is_transport = matches!(
+                error,
+                protocol_droid::adapters::secondary::a2a::A2aClientError::Io(_)
+            ) || matches!(
+                error,
+                protocol_droid::adapters::secondary::a2a::A2aClientError::JsonRpc { .. }
+            );
+            if !is_transport {
+                return Err(format!("missing bearer should be a 401, got {error}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn wrong_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error>> {
+    // The peer requires a specific token;
+    // the client sends a different one.
+    // The wire-level assertion is that the
+    // request is rejected.
+    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let client = A2aClient::new(url)?.with_bearer_token("not-the-secret");
+    let result = client
+        .send_message(SendMessageRequest::new(user_message("hi")))
+        .await;
+    match result {
+        Ok(_) => return Err("a wrong token must be a wire-level rejection".into()),
+        Err(error) => {
+            let is_transport = matches!(
+                error,
+                protocol_droid::adapters::secondary::a2a::A2aClientError::Io(_)
+            ) || matches!(
+                error,
+                protocol_droid::adapters::secondary::a2a::A2aClientError::JsonRpc { .. }
+            );
+            if !is_transport {
+                return Err(format!("wrong bearer should be a 401, got {error}").into());
+            }
+        }
+    }
     Ok(())
 }
