@@ -28,6 +28,13 @@ use protocol_droid::domain::a2a::agent_card::{
     AgentCapabilities, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
 };
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
+use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
+use protocol_droid::domain::a2a::push_notification_methods::{
+    CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
+    DeleteTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigRequest,
+    GetTaskPushNotificationConfigResponse, ListTaskPushNotificationConfigsRequest,
+    ListTaskPushNotificationConfigsResponse,
+};
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
 use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, GetTaskRequest};
@@ -43,6 +50,8 @@ use tower::ServiceExt;
 struct TaskStore {
     next_id: u64,
     tasks: std::collections::HashMap<String, Task>,
+    next_config_id: u64,
+    push_configs: std::collections::HashMap<String, TaskPushNotificationConfig>,
 }
 
 struct MinimalAgent {
@@ -50,6 +59,14 @@ struct MinimalAgent {
 }
 
 impl A2aRequestHandler for MinimalAgent {
+    // The MinimalAgent implements the same nine methods the
+    // example covers. The dispatch table mirrors the example's
+    // shape so the wire tests are checking the same envelope
+    // the example produces.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per A2A method the test agent supports"
+    )]
     fn dispatch(
         &self,
         method: A2aMethod,
@@ -60,85 +77,198 @@ impl A2aRequestHandler for MinimalAgent {
     > {
         let store = self.store.clone();
         match method {
-            A2aMethod::SendMessage => Box::pin(async move {
-                let _ = decode_params::<SendMessageRequest>(params)?;
-                let next_id = {
-                    let mut store = store.lock().expect("store lock");
-                    store.next_id = store.next_id.wrapping_add(1);
-                    store.next_id
+            A2aMethod::SendMessage => {
+                let Ok(_request) = decode_params::<SendMessageRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
                 };
-                let task_id = format!("t-{next_id}");
-                let reply = Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
-                    text: "hi".to_owned(),
-                    metadata: std::collections::BTreeMap::new(),
-                }));
-                let task = Task::new(task_id.clone()).with_status(TaskStatus {
-                    state: TaskState::Completed,
-                    message: Some(reply),
-                    timestamp: None,
-                });
-                store
-                    .lock()
-                    .expect("store lock")
-                    .tasks
-                    .insert(task_id, task.clone());
-                serde_json::to_value(SendMessageResponse::Task(task)).map_err(|e| {
-                    A2aError::InternalError {
-                        message: e.to_string(),
-                    }
-                })
-            }),
-            A2aMethod::GetTask => Box::pin(async move {
-                let request: GetTaskRequest = decode_params(params)?;
-                let value = store
-                    .lock()
-                    .expect("store lock")
-                    .tasks
-                    .get(&request.id)
-                    .cloned();
-                let value = value.ok_or_else(|| A2aError::InvalidParams {
-                    reason: format!("no task with id '{}'", request.id),
-                })?;
-                serde_json::to_value(value).map_err(|e| A2aError::InternalError {
-                    message: e.to_string(),
-                })
-            }),
-            A2aMethod::CancelTask => Box::pin(async move {
-                let request: CancelTaskRequest = decode_params(params)?;
-                let value = store
-                    .lock()
-                    .expect("store lock")
-                    .tasks
-                    .get_mut(&request.id)
-                    .map(|t| {
-                        t.status = TaskStatus {
-                            state: TaskState::Cancelled,
-                            message: None,
-                            timestamp: None,
-                        };
-                        t.clone()
+                Box::pin(async move {
+                    let next_id = {
+                        let mut store = store.lock().expect("store lock");
+                        store.next_id = store.next_id.wrapping_add(1);
+                        store.next_id
+                    };
+                    let task_id = format!("t-{next_id}");
+                    let reply =
+                        Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
+                            text: "hi".to_owned(),
+                            metadata: std::collections::BTreeMap::new(),
+                        }));
+                    let task = Task::new(task_id.clone()).with_status(TaskStatus {
+                        state: TaskState::Completed,
+                        message: Some(reply),
+                        timestamp: None,
                     });
-                let value = value.ok_or_else(|| A2aError::InvalidParams {
-                    reason: format!("no task with id '{}'", request.id),
-                })?;
-                serde_json::to_value(value).map_err(|e| A2aError::InternalError {
-                    message: e.to_string(),
+                    store
+                        .lock()
+                        .expect("store lock")
+                        .tasks
+                        .insert(task_id, task.clone());
+                    serde_json::to_value(SendMessageResponse::Task(task)).map_err(|e| {
+                        A2aError::InternalError {
+                            message: e.to_string(),
+                        }
+                    })
                 })
-            }),
-            A2aMethod::ListTasks => Box::pin(async move {
-                let tasks = {
-                    let store = store.lock().expect("store lock");
-                    store.tasks.values().cloned().collect::<Vec<_>>()
+            }
+            A2aMethod::GetTask => {
+                let Ok(request) = decode_params::<GetTaskRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
                 };
-                Ok(serde_json::json!({
-                    "tasks": tasks,
-                    "nextPageToken": "",
-                    "pageSize": tasks.len(),
-                }))
-            }),
+                Box::pin(async move {
+                    let value = store
+                        .lock()
+                        .expect("store lock")
+                        .tasks
+                        .get(&request.id)
+                        .cloned()
+                        .ok_or_else(|| A2aError::InvalidParams {
+                            reason: format!("no task with id '{}'", request.id),
+                        })?;
+                    serde_json::to_value(value).map_err(|e| A2aError::InternalError {
+                        message: e.to_string(),
+                    })
+                })
+            }
+            A2aMethod::CancelTask => {
+                let Ok(request) = decode_params::<CancelTaskRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let value = store
+                        .lock()
+                        .expect("store lock")
+                        .tasks
+                        .get_mut(&request.id)
+                        .map(|t| {
+                            t.status = TaskStatus {
+                                state: TaskState::Cancelled,
+                                message: None,
+                                timestamp: None,
+                            };
+                            t.clone()
+                        })
+                        .ok_or_else(|| A2aError::InvalidParams {
+                            reason: format!("no task with id '{}'", request.id),
+                        })?;
+                    serde_json::to_value(value).map_err(|e| A2aError::InternalError {
+                        message: e.to_string(),
+                    })
+                })
+            }
+            A2aMethod::ListTasks => {
+                let Ok(_request) = decode_params::<Value>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let tasks = store
+                        .lock()
+                        .expect("store lock")
+                        .tasks
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    Ok(serde_json::json!({
+                        "tasks": tasks,
+                        "nextPageToken": "",
+                        "pageSize": tasks.len(),
+                    }))
+                })
+            }
+            A2aMethod::CreateTaskPushNotificationConfig => {
+                let Ok(request) = decode_params::<CreateTaskPushNotificationConfigRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let stored = {
+                        let mut store = store.lock().expect("store lock");
+                        store.next_config_id = store.next_config_id.wrapping_add(1);
+                        let id = format!("pc-{}", store.next_config_id);
+                        let mut config = request.0;
+                        config.id.clone_from(&id);
+                        store.push_configs.insert(id.clone(), config.clone());
+                        config
+                    };
+                    serde_json::to_value(CreateTaskPushNotificationConfigResponse(stored))
+                        .map_err(|e| A2aError::InternalError {
+                            message: e.to_string(),
+                        })
+                })
+            }
+            A2aMethod::GetTaskPushNotificationConfig => {
+                let Ok(request) = decode_params::<GetTaskPushNotificationConfigRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let config = store
+                        .lock()
+                        .expect("store lock")
+                        .push_configs
+                        .get(&request.id)
+                        .cloned()
+                        .ok_or_else(|| A2aError::InvalidParams {
+                            reason: format!(
+                                "no push config with id '{}' for task '{}'",
+                                request.id, request.task_id
+                            ),
+                        })?;
+                    serde_json::to_value(GetTaskPushNotificationConfigResponse(config))
+                        .map_err(|e| A2aError::InternalError {
+                            message: e.to_string(),
+                        })
+                })
+            }
+            A2aMethod::ListTaskPushNotificationConfigs => {
+                let Ok(request) = decode_params::<ListTaskPushNotificationConfigsRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let configs: Vec<TaskPushNotificationConfig> = store
+                        .lock()
+                        .expect("store lock")
+                        .push_configs
+                        .values()
+                        .filter(|c| c.task_id == request.task_id)
+                        .cloned()
+                        .collect();
+                    serde_json::to_value(ListTaskPushNotificationConfigsResponse::new(configs))
+                        .map_err(|e| A2aError::InternalError {
+                            message: e.to_string(),
+                        })
+                })
+            }
+            A2aMethod::DeleteTaskPushNotificationConfig => {
+                let Ok(request) = decode_params::<DeleteTaskPushNotificationConfigRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let removed = store
+                        .lock()
+                        .expect("store lock")
+                        .push_configs
+                        .remove(&request.id)
+                        .ok_or_else(|| A2aError::InvalidParams {
+                            reason: format!(
+                                "no push config with id '{}' for task '{}'",
+                                request.id, request.task_id
+                            ),
+                        })?;
+                    let _ = removed;
+                    Ok(serde_json::json!({}))
+                })
+            }
             _other => Box::pin(std::future::ready(Err(A2aError::MethodNotFound))),
         }
     }
+}
+
+/// Returns a ready-failed future for a dispatch arm whose
+/// params could not be decoded.
+fn decode_failed(
+    error: A2aError,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + 'static>,
+> {
+    Box::pin(std::future::ready(Err(error)))
 }
 
 fn decode_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, A2aError> {
@@ -626,5 +756,245 @@ async fn send_streaming_message_emits_working_then_completed() -> Result<(), Box
     assert!(text.contains(r#""state":"completed""#));
     assert!(text.contains(r#""final":true"#));
     assert!(text.contains(r#""taskId":"t-s1""#));
+    Ok(())
+}
+
+/// `CreateTaskPushNotificationConfig` round-trips a
+/// config through the JSON-RPC adapter. The server is
+/// expected to assign a `pc-N` id and echo it back.
+#[tokio::test]
+async fn create_push_notification_config_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "CreateTaskPushNotificationConfig",
+        "params": {
+            "id": "placeholder",
+            "taskId": "t-1",
+            "url": "https://example.com/webhook",
+            "token": "tok-1"
+        }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(body.pointer("/result/id").and_then(Value::as_str), Some("pc-1"));
+    assert_eq!(
+        body.pointer("/result/url").and_then(Value::as_str),
+        Some("https://example.com/webhook")
+    );
+    assert_eq!(
+        body.pointer("/result/taskId").and_then(Value::as_str),
+        Some("t-1")
+    );
+    assert_eq!(
+        body.pointer("/result/token").and_then(Value::as_str),
+        Some("tok-1")
+    );
+    Ok(())
+}
+
+/// `GetTaskPushNotificationConfig` reads the config back
+/// from the store by id.
+#[tokio::test]
+async fn get_push_notification_config_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let create = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "CreateTaskPushNotificationConfig",
+        "params": {
+            "id": "placeholder",
+            "taskId": "t-1",
+            "url": "https://example.com/webhook"
+        }
+    });
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create)?))?,
+        )
+        .await?;
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "GetTaskPushNotificationConfig",
+        "params": {"id": "pc-1", "taskId": "t-1"}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&get)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(body.pointer("/result/id").and_then(Value::as_str), Some("pc-1"));
+    Ok(())
+}
+
+/// `GetTaskPushNotificationConfig` for an unknown id
+/// returns `-32602` (invalid params).
+#[tokio::test]
+async fn get_missing_push_notification_config_returns_invalid_params(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "GetTaskPushNotificationConfig",
+        "params": {"id": "pc-missing", "taskId": "t-1"}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(body.pointer("/error/code").and_then(Value::as_i64), Some(-32602));
+    Ok(())
+}
+
+/// `ListTaskPushNotificationConfigs` returns the configs
+/// for a task, in insertion order. An empty list is
+/// represented as an empty `configs` array.
+#[tokio::test]
+async fn list_push_notification_configs_filters_by_task() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    for (i, task_id) in ["t-1", "t-1", "t-2"].iter().enumerate() {
+        let create = json!({
+            "jsonrpc": "2.0",
+            "id": i + 1,
+            "method": "CreateTaskPushNotificationConfig",
+            "params": {
+                "id": "placeholder",
+                "taskId": task_id,
+                "url": format!("https://example.com/wh/{i}")
+            }
+        });
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/a2a")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&create)?))?,
+            )
+            .await?;
+    }
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 100,
+        "method": "ListTaskPushNotificationConfigs",
+        "params": {"taskId": "t-1"}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&list)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let configs = body.pointer("/result/configs").and_then(Value::as_array);
+    let Some(configs) = configs else {
+        return Err("expected /result/configs array".into());
+    };
+    assert_eq!(configs.len(), 2);
+    for config in configs {
+        assert_eq!(
+            config.pointer("/taskId").and_then(Value::as_str),
+            Some("t-1")
+        );
+    }
+    Ok(())
+}
+
+/// `DeleteTaskPushNotificationConfig` removes a config;
+/// a subsequent `Get` returns `-32602` (invalid params).
+#[tokio::test]
+async fn delete_push_notification_config_removes_it() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let create = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "CreateTaskPushNotificationConfig",
+        "params": {
+            "id": "placeholder",
+            "taskId": "t-1",
+            "url": "https://example.com/webhook"
+        }
+    });
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create)?))?,
+        )
+        .await?;
+    let delete = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "DeleteTaskPushNotificationConfig",
+        "params": {"id": "pc-1", "taskId": "t-1"}
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&delete)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let get = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "GetTaskPushNotificationConfig",
+        "params": {"id": "pc-1", "taskId": "t-1"}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&get)?))?,
+        )
+        .await?;
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(body.pointer("/error/code").and_then(Value::as_i64), Some(-32602));
     Ok(())
 }

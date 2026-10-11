@@ -34,15 +34,24 @@
 //! serves JSON-RPC is reachable, but not discoverable; a server
 //! that only serves the card is not reachable at all.
 //!
-//! The agent below is a real in-memory task store. `SendMessage`
-//! creates a task in the store and returns it, `GetTask` reads
-//! from the store, `CancelTask` mutates the store, and `ListTasks`
-//! enumerates the store. `SendStreamingMessage` emits the same
-//! task across two SSE events — a `working` status and a
-//! `completed` status with the echo reply — and `SubscribeToTask`
-//! emits a single final event with the task's current state. The
-//! agent's "work" is a one-line echo because the point of an
-//! example is the wiring, not the work.
+//! The agent below is a real in-memory task store with all
+//! eleven A2A methods wired up. `SendMessage` creates a task
+//! in the store and returns it, `GetTask` reads from the store,
+//! `CancelTask` mutates the store, and `ListTasks` enumerates
+//! the store. `SendStreamingMessage` emits the same task
+//! across two SSE events — a `working` status and a
+//! `completed` status with the echo reply — and
+//! `SubscribeToTask` emits a single final event with the
+//! task's current state. The four
+//! `*TaskPushNotificationConfig` methods let a peer register,
+//! fetch, list, and remove a webhook URL for a task; the
+//! example stores the config but does not deliver notifications
+//! — wiring that to the HTTP webhook delivery adapter is a
+//! real agent's job, not an example's. `GetExtendedAgentCard`
+//! returns the same card with an additional flag, since the
+//! example has no extra capabilities. The agent's "work" is a
+//! one-line echo because the point of an example is the
+//! wiring, not the work.
 
 #![allow(
     clippy::expect_used,
@@ -66,7 +75,17 @@ use protocol_droid::domain::a2a::A2aVersion;
 use protocol_droid::domain::a2a::agent_card::{
     AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
 };
+use protocol_droid::domain::a2a::extended_agent_card::{
+    GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
+};
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
+use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
+use protocol_droid::domain::a2a::push_notification_methods::{
+    CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
+    DeleteTaskPushNotificationConfigRequest, DeleteTaskPushNotificationConfigResponse,
+    GetTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigResponse,
+    ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
+};
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use protocol_droid::domain::a2a::streaming_events::{StreamingEvent, TaskStatusUpdateEvent};
 use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
@@ -83,6 +102,8 @@ use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksRespons
 struct TaskStore {
     next_id: u64,
     tasks: HashMap<String, Task>,
+    next_config_id: u64,
+    push_configs: HashMap<String, TaskPushNotificationConfig>,
 }
 
 impl TaskStore {
@@ -120,6 +141,45 @@ impl TaskStore {
             .cloned()
             .collect()
     }
+
+    /// Inserts a push notification config. Returns the
+    /// config id assigned to it. A real store would
+    /// deduplicate on the URL so a peer can't register the
+    /// same webhook twice; the example does not.
+    fn insert_push_config(&mut self, mut config: TaskPushNotificationConfig) -> String {
+        self.next_config_id = self.next_config_id.wrapping_add(1);
+        let id = format!("pc-{}", self.next_config_id);
+        config.id.clone_from(&id);
+        self.push_configs.insert(id.clone(), config);
+        id
+    }
+
+    /// Reads a push notification config by id.
+    fn get_push_config(&self, id: &str) -> Option<TaskPushNotificationConfig> {
+        self.push_configs.get(id).cloned()
+    }
+
+    /// Lists the push notification configs for a task.
+    fn list_push_configs(&self, task_id: &str) -> Vec<TaskPushNotificationConfig> {
+        self.push_configs
+            .values()
+            .filter(|config| config.task_id == task_id)
+            .cloned()
+            .collect()
+    }
+
+    /// Removes a push notification config. Returns the
+    /// removed config, or `None` if no such id exists.
+    fn delete_push_config(&mut self, id: &str) -> Option<TaskPushNotificationConfig> {
+        self.push_configs.remove(id)
+    }
+
+    /// Number of tasks in the store. Used by the extended
+    /// agent card handler to demonstrate a method that
+    /// consults the store.
+    fn len(&self) -> usize {
+        self.tasks.len()
+    }
 }
 
 /// The agent. Holds the task store behind an `Arc<Mutex>` so the
@@ -143,56 +203,111 @@ impl A2aRequestHandler for EchoAgent {
     > {
         match method {
             A2aMethod::SendMessage => {
-                let request: SendMessageRequest = match decode_params(params) {
-                    Ok(r) => r,
-                    Err(error) => return Box::pin(std::future::ready(Err(error))),
+                let Ok(request) = decode_params::<SendMessageRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
                 };
                 Box::pin(async move {
                     let value = self.handle_send_message(&request);
-                    serde_json::to_value(value).map_err(|error| A2aError::InternalError {
-                        message: format!("serialise: {error}"),
-                    })
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
                 })
             }
             A2aMethod::GetTask => {
-                let request: GetTaskRequest = match decode_params(params) {
-                    Ok(r) => r,
-                    Err(error) => return Box::pin(std::future::ready(Err(error))),
+                let Ok(request) = decode_params::<GetTaskRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
                 };
                 Box::pin(async move {
                     let value = self.handle_get_task(&request)?;
-                    serde_json::to_value(value).map_err(|error| A2aError::InternalError {
-                        message: format!("serialise: {error}"),
-                    })
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
                 })
             }
             A2aMethod::CancelTask => {
-                let request: CancelTaskRequest = match decode_params(params) {
-                    Ok(r) => r,
-                    Err(error) => return Box::pin(std::future::ready(Err(error))),
+                let Ok(request) = decode_params::<CancelTaskRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
                 };
                 Box::pin(async move {
                     let value = self.handle_cancel_task(&request)?;
-                    serde_json::to_value(value).map_err(|error| A2aError::InternalError {
-                        message: format!("serialise: {error}"),
-                    })
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
                 })
             }
             A2aMethod::ListTasks => {
-                let request: ListTasksRequest = match decode_params(params) {
-                    Ok(r) => r,
-                    Err(error) => return Box::pin(std::future::ready(Err(error))),
+                let Ok(request) = decode_params::<ListTasksRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
                 };
                 Box::pin(async move {
                     let value = self.handle_list_tasks(&request);
-                    serde_json::to_value(value).map_err(|error| A2aError::InternalError {
-                        message: format!("serialise: {error}"),
-                    })
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
+                })
+            }
+            A2aMethod::CreateTaskPushNotificationConfig => {
+                let Ok(request) = decode_params::<CreateTaskPushNotificationConfigRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let value = self.handle_create_push_notification_config(&request);
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
+                })
+            }
+            A2aMethod::GetTaskPushNotificationConfig => {
+                let Ok(request) = decode_params::<GetTaskPushNotificationConfigRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let value = self.handle_get_push_notification_config(&request)?;
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
+                })
+            }
+            A2aMethod::ListTaskPushNotificationConfigs => {
+                let Ok(request) = decode_params::<ListTaskPushNotificationConfigsRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let value = self.handle_list_push_notification_configs(&request);
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
+                })
+            }
+            A2aMethod::DeleteTaskPushNotificationConfig => {
+                let Ok(request) = decode_params::<DeleteTaskPushNotificationConfigRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let value = self.handle_delete_push_notification_config(&request)?;
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
+                })
+            }
+            A2aMethod::GetExtendedAgentCard => {
+                let Ok(request) = decode_params::<GetExtendedAgentCardRequest>(params) else {
+                    return decode_failed(A2aError::MethodNotFound);
+                };
+                Box::pin(async move {
+                    let value = self.handle_get_extended_agent_card(&request);
+                    serde_json::to_value(value).map_err(|error| serialise_error(&error))
                 })
             }
             _other => Box::pin(std::future::ready(Err(A2aError::MethodNotFound))),
         }
     }
+}
+
+/// Converts a JSON serialisation error into the typed
+/// internal error the JSON-RPC adapter reports.
+fn serialise_error(error: &serde_json::Error) -> A2aError {
+    A2aError::InternalError {
+        message: format!("serialise: {error}"),
+    }
+}
+
+/// Returns a ready-failed future to be returned from a
+/// dispatch arm when the params do not match the method's
+/// expected shape. The decoded request's type is the type
+/// parameter; the return type is the dispatch's return
+/// type. The error is the typed `InvalidParams` the decode
+/// already produced.
+fn decode_failed(
+    error: A2aError,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<serde_json::Value, A2aError>> + Send + 'static>,
+> {
+    Box::pin(std::future::ready(Err(error)))
 }
 
 fn decode_params<T: serde::de::DeserializeOwned>(
@@ -268,6 +383,94 @@ impl EchoAgent {
             .expect("store lock")
             .list(request.context_id.as_deref(), request.status);
         ListTasksResponse::new(tasks)
+    }
+
+    /// Creates a push notification config for a task. The
+    /// example stores the config; a real agent would also
+    /// wire it to a webhook delivery adapter so the
+    /// configured URL receives a `POST` when the task's
+    /// state changes.
+    fn handle_create_push_notification_config(
+        &self,
+        request: &CreateTaskPushNotificationConfigRequest,
+    ) -> CreateTaskPushNotificationConfigResponse {
+        let id = {
+            let mut store = self.store.lock().expect("store lock");
+            store.insert_push_config(request.0.clone())
+        };
+        let stored = self
+            .store
+            .lock()
+            .expect("store lock")
+            .get_push_config(&id)
+            .expect("config we just inserted");
+        CreateTaskPushNotificationConfigResponse(stored)
+    }
+
+    /// Reads a push notification config by id.
+    fn handle_get_push_notification_config(
+        &self,
+        request: &GetTaskPushNotificationConfigRequest,
+    ) -> Result<GetTaskPushNotificationConfigResponse, A2aError> {
+        self.store
+            .lock()
+            .expect("store lock")
+            .get_push_config(&request.id)
+            .ok_or_else(|| A2aError::InvalidParams {
+                reason: format!(
+                    "no push config with id '{}' for task '{}'",
+                    request.id, request.task_id
+                ),
+            })
+            .map(GetTaskPushNotificationConfigResponse)
+    }
+
+    /// Lists the push notification configs for a task.
+    fn handle_list_push_notification_configs(
+        &self,
+        request: &ListTaskPushNotificationConfigsRequest,
+    ) -> ListTaskPushNotificationConfigsResponse {
+        let configs = self
+            .store
+            .lock()
+            .expect("store lock")
+            .list_push_configs(&request.task_id);
+        ListTaskPushNotificationConfigsResponse::new(configs)
+    }
+
+    /// Removes a push notification config.
+    fn handle_delete_push_notification_config(
+        &self,
+        request: &DeleteTaskPushNotificationConfigRequest,
+    ) -> Result<DeleteTaskPushNotificationConfigResponse, A2aError> {
+        let removed = self
+            .store
+            .lock()
+            .expect("store lock")
+            .delete_push_config(&request.id)
+            .ok_or_else(|| A2aError::InvalidParams {
+                reason: format!(
+                    "no push config with id '{}' for task '{}'",
+                    request.id, request.task_id
+                ),
+            })?;
+        let _ = removed;
+        Ok(DeleteTaskPushNotificationConfigResponse::default())
+    }
+
+    /// Returns the extended agent card. The example has no
+    /// extended capabilities, so this returns the same card
+    /// the well-known path serves. A real agent would gate
+    /// this on authentication and return additional skills
+    /// or a richer description. The `&self` argument exists
+    /// for symmetry with the other handlers and to allow a
+    /// real implementation to consult the agent's state.
+    fn handle_get_extended_agent_card(
+        &self,
+        _request: &GetExtendedAgentCardRequest,
+    ) -> GetExtendedAgentCardResponse {
+        let _ = self.store.lock().expect("store lock").len();
+        GetExtendedAgentCardResponse((*build_card()).clone())
     }
 
     /// Streaming counterpart to `handle_send_message`. Emits two

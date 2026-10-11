@@ -56,6 +56,33 @@ curl -N -X POST http://127.0.0.1:8080/a2a/stream \
 curl -N -X POST http://127.0.0.1:8080/a2a/stream \
   -H "content-type: application/json" \
   -d '{"jsonrpc":"2.0","id":6,"method":"SubscribeToTask","params":{"id":"t-1"}}'
+
+# Push notification config CRUD
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":7,"method":"CreateTaskPushNotificationConfig",
+       "params":{"id":"placeholder","taskId":"t-1",
+                 "url":"https://example.com/webhook","token":"tok"}}'
+
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":8,"method":"GetTaskPushNotificationConfig",
+       "params":{"id":"pc-1","taskId":"t-1"}}'
+
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":9,"method":"ListTaskPushNotificationConfigs",
+       "params":{"taskId":"t-1"}}'
+
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":10,"method":"DeleteTaskPushNotificationConfig",
+       "params":{"id":"pc-1","taskId":"t-1"}}'
+
+# Extended agent card (returns the same card, no extra features)
+curl -X POST http://127.0.0.1:8080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":11,"method":"GetExtendedAgentCard","params":{}}'
 ```
 
 ## The routes, and why each
@@ -68,11 +95,13 @@ A server that only serves JSON-RPC is reachable, but not
 discoverable; a server that only serves the card is not
 reachable at all.
 
-The JSON-RPC route serves the request/response methods
-(`SendMessage`, `GetTask`, `CancelTask`, `ListTasks`,
-`GetExtendedAgentCard`, the four push-notification methods).
-The streaming route serves `SendStreamingMessage` and
-`SubscribeToTask` as Server-Sent Events.
+The JSON-RPC route serves the request/response methods. The
+example covers all eleven: `SendMessage`, `GetTask`,
+`CancelTask`, `ListTasks`, `GetExtendedAgentCard`, and the
+four `*TaskPushNotificationConfig` methods for webhook
+registration. The streaming route serves
+`SendStreamingMessage` and `SubscribeToTask` as Server-Sent
+Events.
 
 All three routes are served by merging routers:
 
@@ -163,3 +192,14 @@ a single final event with its current state. `GetTask` reads
 the task back. `CancelTask` mutates the task's status to
 `cancelled`. `ListTasks` enumerates the store, optionally
 filtered by context id and state.
+
+The four `*TaskPushNotificationConfig` methods let a peer
+register a webhook URL for a task, fetch it back, list the
+configs attached to a task, and remove it. The example
+stores the configs in a `HashMap` keyed by `pc-N`; a real
+agent would also wire the configs to a webhook delivery
+adapter that POSTs to the configured URL when the task's
+state changes. `GetExtendedAgentCard` returns the same card
+the well-known path serves, since the example has no
+extended capabilities — a real agent would gate this on
+authentication and return additional skills.
