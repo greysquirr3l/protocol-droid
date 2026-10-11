@@ -806,7 +806,23 @@ fn build_router(addr: SocketAddr) -> Router {
     };
     let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent.clone());
     let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(agent);
-    let mut api = serve_well_known(card)
+    // A2A v1.0 §8 names the well-known card as
+    // the discovery endpoint a peer reads to
+    // learn the security scheme. A server that
+    // requires a bearer MUST still answer the
+    // well-known request without one — otherwise
+    // a peer that knows nothing about the server
+    // has no way to learn what to send. The
+    // bearer layer therefore wraps only the
+    // JSON-RPC and streaming sub-router; the
+    // well-known card is merged in afterwards
+    // and stays unauthenticated. A naïve
+    // `route_layer` after the full
+    // `merge` chain would protect the
+    // well-known too — the wire-level regression
+    // test in `tests/a2a_client_wire.rs` pins
+    // this and would fail with that mistake.
+    let mut protected = Router::new()
         .merge(serve_jsonrpc("/a2a", request_handler, A2aVersion::V1_0))
         .merge(serve_streaming(
             "/a2a/stream",
@@ -820,13 +836,15 @@ fn build_router(addr: SocketAddr) -> Router {
         // JSON-RPC and the streaming route, so
         // a peer that does not present the
         // token sees a 401 from either.
-        api = api
+        protected = protected
             .route_layer(axum::middleware::from_fn_with_state(
                 std::sync::Arc::from(token),
                 check_bearer,
             ));
     }
-    api.merge(health_router())
+    serve_well_known(card)
+        .merge(protected)
+        .merge(health_router())
 }
 
 /// Reads the bearer token from `A2A_BEARER_TOKEN`, or
@@ -842,14 +860,22 @@ fn bearer_token() -> Option<String> {
 }
 
 /// Validates `Authorization: Bearer <token>` against
-/// the configured token. The well-known path is not
-/// routed through this middleware (it is `merge`'d
-/// into the router, and `route_layer` only applies
-/// to the routes that come *before* the layer is
-/// added in the call order; the
-/// `serve_well_known` is `merge`'d into the same
-/// router, so the layer protects the JSON-RPC and
-/// streaming routes but not the well-known card).
+/// the configured token. The well-known path is
+/// not routed through this middleware because
+/// `build_router` mounts the well-known card on a
+/// *separate* sub-router that is `merge`'d into the
+/// final router *after* the `route_layer` is
+/// applied — a `route_layer` call only protects
+/// the routes that are already in the router at
+/// the time of the call, and the well-known is
+/// not yet in the router when this layer runs. A
+/// naïve `route_layer` after the full merge chain
+/// would protect the well-known too and the peer
+/// could not learn the auth scheme to begin with;
+/// the wire-level regression test in
+/// `tests/a2a_client_wire.rs`
+/// (`the_well_known_card_is_unauthenticated_even_when_bearer_is_required`)
+/// pins this and would fail with that mistake.
 async fn check_bearer(
     axum::extract::State(expected): axum::extract::State<std::sync::Arc<str>>,
     request: axum::extract::Request,

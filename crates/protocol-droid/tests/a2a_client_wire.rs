@@ -20,6 +20,7 @@
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use axum::Router;
 use futures_core::Stream;
 use futures_util::stream;
 use protocol_droid::adapters::primary::a2a::jsonrpc_serve::serve_jsonrpc;
@@ -399,17 +400,17 @@ async fn spawn_test_peer_with_bearer(
     let streaming: Arc<dyn A2aStreamingRequestHandler> = Arc::new(MinimalAgent {
         store: Arc::new(Mutex::new(TaskStore::default())),
     });
-    let mut router = serve_well_known(Arc::new(card))
+    let mut protected = Router::new()
         .merge(serve_jsonrpc("/a2a", handler, A2aVersion::V1_0))
         .merge(serve_streaming("/a2a/stream", streaming, A2aVersion::V1_0));
     if let Some(expected) = required_token {
         let expected = Arc::from(expected);
-        router = router
-            .route_layer(axum::middleware::from_fn_with_state(
-                Arc::clone(&expected),
-                check_bearer_middleware,
-            ));
+        protected = protected.route_layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&expected),
+            check_bearer_middleware,
+        ));
     }
+    let router = serve_well_known(Arc::new(card)).merge(protected);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
@@ -637,6 +638,37 @@ async fn missing_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error
                 return Err(format!("missing bearer should be a 401, got {error}").into());
             }
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_well_known_card_is_unauthenticated_even_when_bearer_is_required(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // A2A v1.0 §8 names the well-known card
+    // as the discovery endpoint a peer reads
+    // to learn the security scheme, so a
+    // server that requires a bearer MUST
+    // still answer the well-known request
+    // without one — otherwise a peer that
+    // knows nothing about the server has no
+    // way to learn what to send. The
+    // example's `a2a_server` and the wire
+    // test peer in
+    // `spawn_test_peer_with_bearer` both
+    // claim this in their doc comments; the
+    // wire-level assertion here is the
+    // truth test.
+    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let peer = url;
+    let response = reqwest::get(format!("{peer}/.well-known/agent-card.json")).await?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(format!(
+            "the well-known card is the discovery endpoint; an unauthenticated GET must \
+             return 200 so a peer can learn the bearer scheme, got {}",
+            response.status()
+        )
+        .into());
     }
     Ok(())
 }
