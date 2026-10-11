@@ -20,6 +20,7 @@
 pub mod bridge;
 pub mod check;
 pub mod conformance;
+pub mod record;
 pub mod replay;
 // The serving path needs both transports the library speaks as a client. The
 // probe in `bridge` does not, and stays available without them.
