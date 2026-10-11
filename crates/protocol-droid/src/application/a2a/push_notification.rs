@@ -116,6 +116,18 @@ pub enum NotificationConfigError {
     /// not help.
     #[error("the webhook URL was rejected: {0}")]
     Refused(#[from] super::url_filter::FilterDenial),
+    /// The URL was accepted but the
+    /// delivery step failed (network,
+    /// timeout, non-2xx, or a
+    /// redirect loop). The handler
+    /// decides whether to retry;
+    /// the port reports the failure
+    /// as a structured reason.
+    #[error("transient delivery failure: {reason}")]
+    TransientFailure {
+        /// A human-readable reason for the failure.
+        reason: String,
+    },
 }
 
 /// The port the push-notification handler depends on.
@@ -223,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_config_error_preserves_the_filter_denial() {
+    fn notification_config_error_preserves_the_filter_denial() -> Result<(), TestError> {
         // The `Refused` variant wraps the typed `FilterDenial` so a
         // handler can surface the *class* of refusal (loopback, RFC
         // 1918, scheme, etc.) rather than collapsing every config
@@ -237,7 +249,14 @@ mod tests {
         assert!(display.contains("rejected"), "display was {display}");
         match err {
             NotificationConfigError::Refused(d) => assert_eq!(d, denial),
+            NotificationConfigError::TransientFailure { reason } => {
+                return Err(format!(
+                    "expected Refused, got TransientFailure({reason})"
+                )
+                .into());
+            }
         }
+        Ok(())
     }
 
     /// A recording impl of `PushNotificationDelivery` for the trait test.
