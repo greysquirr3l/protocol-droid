@@ -261,6 +261,57 @@ pub trait A2aRequestHandler: Send + Sync + 'static {
     /// Any [`A2aError`]. The serving adapter
     /// answers with the right JSON-RPC code;
     /// the handler never has to know the code.
+    ///
+    /// # Example
+    ///
+    /// A minimal handler that implements only
+    /// `SendMessage` and returns
+    /// `A2aError::MethodNotImplemented` for the
+    /// other ten methods. The full reference
+    /// impl is in the `a2a_server` example.
+    ///
+    /// ```no_run
+    /// use std::pin::Pin;
+    /// use std::sync::Arc;
+    ///
+    /// use futures_core::Future;
+    /// use serde_json::{json, Value};
+    ///
+    /// use protocol_droid::adapters::secondary::a2a::A2aMethod;
+    ///     use protocol_droid::application::a2a::{
+    ///     A2aError, A2aRequestContext, A2aRequestHandler,
+    /// };
+    ///
+    /// struct EchoAgent;
+    ///
+    /// impl A2aRequestHandler for EchoAgent {
+    ///     fn dispatch(
+    ///         &self,
+    ///         method: A2aMethod,
+    ///         params: Option<Value>,
+    ///         _context: &A2aRequestContext,
+    ///     ) -> Pin<
+    ///         Box<dyn Future<Output = Result<Value, A2aError>> + Send + '_>,
+    ///     > {
+    ///         Box::pin(async move {
+    ///             match method {
+    ///                 A2aMethod::SendMessage => {
+    ///                     // Decode the params, run the
+    ///                     // agent's logic, return the
+    ///                     // result as JSON.
+    ///                     Ok(json!({"id": "t-1", "status":
+    ///                         {"state": "completed"}}))
+    ///                 }
+    ///                 other => Err(A2aError::MethodNotImplemented {
+    ///                     method: other,
+    ///                 }),
+    ///             }
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// let _handler: Arc<dyn A2aRequestHandler> = Arc::new(EchoAgent);
+    /// ```
     fn dispatch(
         &self,
         method: A2aMethod,

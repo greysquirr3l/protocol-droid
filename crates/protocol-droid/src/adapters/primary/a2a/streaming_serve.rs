@@ -136,6 +136,77 @@ pub trait A2aStreamingRequestHandler: Send + Sync + 'static {
     /// ends when the handler's stream
     /// returns `None`, or when the
     /// client disconnects.
+    ///
+    /// # Example
+    ///
+    /// A minimal handler that emits a
+    /// single `working` event followed by
+    /// a `completed` event for
+    /// `SendStreamingMessage`. The full
+    /// reference impl is in the
+    /// `a2a_server` example.
+    ///
+    /// ```no_run
+    ///     use std::pin::Pin;
+    ///     use std::sync::Arc;
+    ///
+    ///     use futures_core::Stream;
+    ///     use futures_util::stream;
+    ///
+    ///     use protocol_droid::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
+    ///     use protocol_droid::adapters::secondary::a2a::A2aMethod;
+    ///     use protocol_droid::application::a2a::{
+    ///         A2aError, A2aRequestContext,
+    ///     };
+    ///     use protocol_droid::domain::a2a::streaming_events::{
+    ///         StreamingEvent, TaskStatusUpdateEvent,
+    ///     };
+    ///     use protocol_droid::domain::a2a::task::{TaskState, TaskStatus};
+    ///
+    ///     struct EchoAgent;
+    ///
+    ///     impl A2aStreamingRequestHandler for EchoAgent {
+    ///         fn dispatch_stream(
+    ///             &self,
+    ///             method: A2aMethod,
+    ///             _params: Option<serde_json::Value>,
+    ///             _context: &A2aRequestContext,
+    ///         ) -> Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>> {
+    ///             let events = match method {
+    ///                 A2aMethod::SendStreamingMessage => vec![
+    ///                     Ok(StreamingEvent::Status(TaskStatusUpdateEvent {
+    ///                         task_id: "t-1".to_owned(),
+    ///                         context_id: "c-1".to_owned(),
+    ///                         status: TaskStatus {
+    ///                             state: TaskState::Working,
+    ///                             message: None,
+    ///                             timestamp: None,
+    ///                         },
+    ///                         is_final: false,
+    ///                         metadata: std::collections::BTreeMap::new(),
+    ///                     })),
+    ///                     Ok(StreamingEvent::Status(TaskStatusUpdateEvent {
+    ///                         task_id: "t-1".to_owned(),
+    ///                         context_id: "c-1".to_owned(),
+    ///                         status: TaskStatus {
+    ///                             state: TaskState::Completed,
+    ///                             message: None,
+    ///                             timestamp: None,
+    ///                         },
+    ///                         is_final: true,
+    ///                         metadata: std::collections::BTreeMap::new(),
+    ///                     })),
+    ///                 ],
+    ///                 _ => vec![
+    ///                     Err(A2aError::MethodNotImplemented { method }),
+    ///                 ],
+    ///             };
+    ///             Box::pin(stream::iter(events))
+    ///         }
+    ///     }
+    ///
+    ///     let _handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(EchoAgent);
+    /// ```
     fn dispatch_stream(
         &self,
         method: crate::adapters::secondary::a2a::A2aMethod,
