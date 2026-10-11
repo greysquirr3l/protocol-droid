@@ -6,9 +6,11 @@
 //! in the same way. That parallelism is the property the MVP seam was
 //! designed to give T27 for free.
 
+pub mod client;
 pub mod method_table;
 pub mod ssrf_denylist;
 pub mod webhook_delivery;
 
+pub use client::{A2aClient, A2aClientError};
 pub use method_table::{A2aMethod, A2aMethodTable};
 pub use ssrf_denylist::SsrfDenylist;
