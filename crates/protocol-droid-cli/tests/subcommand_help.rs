@@ -88,6 +88,13 @@ fn conformance_help_renders() -> Result<(), String> {
     assert_help_contains("conformance", "conformance")
 }
 
+/// `replay --help` reaches the help text and renders a fragment
+/// that names the subcommand.
+#[test]
+fn replay_help_renders() -> Result<(), String> {
+    assert_help_contains("replay", "replay")
+}
+
 /// The binary's own `--version` text is rendered through
 /// the build script's `version` arg, which sets the crate
 /// version plus the embedded SHA. The assertion is on the

@@ -54,11 +54,15 @@ gaps keep it open, both documented in
   called nowhere outside the adapters, so `notifications/tools/list_changed` and
   friends never reach the client.
 
-**Not started.** `probe` / `inspect` (T19), `record` / `replay` (T20), the
-official conformance suite (T21), differential interop against rmcp and the
-TypeScript SDK (T22), the performance and fuzzing campaign (T23), and the
-security and integration audits (T24–T25). A2A and ACP (T27–T29) are post-MVP
-and gated behind MVP sign-off.
+**Partly built.** `replay` (T20) reads a JSONL session and emits
+per-frame `forwarded` / `downgraded` / `refused` verdicts. `record`
+is the same task's other half and is still pending; a user can
+hand-write a session file for now. `probe` / `inspect` (T19), the
+official conformance suite (T21), differential interop against
+rmcp and the TypeScript SDK (T22), the performance and fuzzing
+campaign (T23), and the security and integration audits (T24–T25)
+remain pending. A2A and ACP (T27–T29) are post-MVP and gated
+behind MVP sign-off.
 
 The three ideas above describe the finished design. Where the code does not yet
 match the design, the architecture document says so rather than rounding up.

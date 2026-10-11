@@ -6,7 +6,7 @@
 //! of its own.
 
 use clap::{Parser, Subcommand};
-use protocol_droid_cli::{bridge, conformance};
+use protocol_droid_cli::{bridge, conformance, replay};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///
@@ -63,6 +63,15 @@ enum Command {
     /// your client subprocess), and `self` (suite → this crate's own
     /// fixtures — wired by T21 phase 2).
     Conformance(conformance::ConformanceArgs),
+    /// Replay a captured session against a target revision, frame by frame.
+    ///
+    /// Reads a JSONL session file (one `{version, frame}` per line),
+    /// runs each frame through the same translator the bridge uses, and
+    /// writes a per-frame `forwarded` / `downgraded` / `refused` verdict
+    /// to stdout. A human summary lands on stderr. Session *capture* is
+    /// a separate command (`record`) and is not yet built — a user can
+    /// hand-write the input for now.
+    Replay(replay::ReplayArgs),
 }
 
 /// Entry point.
@@ -99,6 +108,7 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Bridge(args) => bridge::run(&args).await,
         Command::Conformance(args) => conformance::run(&args).await,
+        Command::Replay(args) => replay::run(&args),
     }
 }
 
