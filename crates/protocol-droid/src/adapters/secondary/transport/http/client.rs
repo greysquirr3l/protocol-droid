@@ -396,11 +396,18 @@ impl HttpClient {
             })?;
         let raw: &[u8] = &raw;
 
-        // A notification is answered with a `202` and no body. `None` is the
-        // honest reading: the peer said "received" and sent nothing back.
-        // Synthesising an empty envelope here would hand the caller a reply
-        // that does not exist, and a proxy that echoed one downstream would
-        // invent a response the server never sent.
+        // A notification carries no id, so the peer has nothing to match
+        // against and the body is "received" regardless of shape. The
+        // specification recommends `202` with no body, but a server that
+        // answers with `200` and `null` is acknowledging the same thing, and
+        // treating it as a transport fault makes the closing
+        // `notifications/initialized` of every handshake fail. `None` is
+        // the honest reading for a notification whether the body is empty,
+        // `null`, or anything else that is not a JSON-RPC reply.
+        if wants.is_none() {
+            return Ok(None);
+        }
+
         if raw.is_empty() {
             return Ok(None);
         }

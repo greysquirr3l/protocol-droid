@@ -65,6 +65,31 @@ fn main() -> anyhow::Result<()> {
 The two paths converge on the same `Server::serve` entry point.
 The macro is sugar; the `Server` is the actual surface.
 
+## Transports: stdio and Streamable HTTP
+
+The `stdio` transport drives a child process's standard
+streams. The library also ships a Streamable HTTP transport
+— same `Server` and same `#[tool]` macros, different
+serving adapter. The
+[`examples/http_server.rs`](../../crates/protocol-droid/examples/http_server.rs)
+example is the counterpart to `stdio_server.rs`:
+
+```text
+use protocol_droid::adapters::primary::transport::http::HttpBuilder;
+
+let server = Greeter.into_server()?;
+let report = HttpBuilder::new(server).addr(addr).serve().await?;
+```
+
+`HttpBuilder` mirrors `StdioBuilder`: same protocol, different
+delivery mechanism. Both share the four pieces a serving
+adapter needs (a `Server`, a `Dispatcher`, a `PeerSession`,
+a frame loop); neither asks the caller to name a protocol
+version. A consumer who needs the full feature set the
+conformance suite reads copies
+[`conformance_reference_server.rs`](../../crates/protocol-droid/examples/conformance_reference_server.rs)
+instead — the same `HttpBuilder`, every feature wired.
+
 ## What the server does not do
 
 - It does not start a tokio runtime; `serve_stdio` builds one
