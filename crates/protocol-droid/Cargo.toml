@@ -42,7 +42,7 @@ stdio = ["dep:tokio"]
 # the idempotency port, the routing headers, negotiation — is already compiled
 # without it, so a consumer that only wants the IR and the codecs pays for none
 # of this.
-http = ["dep:axum", "dep:futures-core", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
+http = ["dep:axum", "dep:futures-core", "dep:futures-util", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
 # T15. The deprecated 2024-11-05 HTTP+SSE transport, which `2025-03-26`
 # replaced and which is the only transport that revision speaks. It needs the
 # HTTP stack, so it implies it rather than listing it again — and it is a
@@ -114,6 +114,7 @@ axum = { workspace = true, optional = true }
 # `tower` is already in the workspace so this adds no new resolution.
 tower = { workspace = true, optional = true, features = ["limit", "timeout", "util"] }
 futures-core = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 # T14. The Streamable HTTP client, gated by the same `http` feature as the
 # server above: a consumer that does not run an HTTP server has no use for an
 # HTTP client, and the two are alternatives rather than a set.

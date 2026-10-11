@@ -163,6 +163,7 @@ axum = { version = "0.8.9", default-features = false, features = [
 # so the whole cost of a streaming response is this one trait — everything
 # else about the stream is ours (`sse::ReplayStream`).
 futures-core = "0.3.31"
+futures-util = "0.3.31"
 # `ServiceExt::oneshot` drives a `Router` in a test without binding a socket.
 # A dev-dependency rather than a real one: nothing in the adapter needs to
 # call a `Service`, only a test does.

@@ -2,9 +2,16 @@
 //!
 //! The A2A spec's surface on the server side is a
 //! well-known path (the agent card) and a JSON-RPC
-//! endpoint (the methods). This module is the driving
-//! adapter for the well-known path; the JSON-RPC
-//! endpoint is the next T27 commit.
+//! endpoint (the methods), plus a streaming
+//! variant of two of the methods. This module
+//! is the driving adapter for all three:
+//!
+//! - [`well_known_serve`] serves the agent card
+//!   on the well-known path.
+//! - [`jsonrpc_serve`] serves the regular
+//!   (request/response) JSON-RPC endpoint.
+//! - [`streaming_serve`] serves the streaming
+//!   (SSE) JSON-RPC endpoint.
 //!
 //! Feature-gated on `a2a` (the value objects) AND
 //! `http` (the axum dep). A consumer who turns on
@@ -14,5 +21,7 @@
 //! without paying the axum cost.
 #[cfg(all(feature = "a2a", feature = "http"))]
 pub mod jsonrpc_serve;
+#[cfg(all(feature = "a2a", feature = "http"))]
+pub mod streaming_serve;
 #[cfg(all(feature = "a2a", feature = "http"))]
 pub mod well_known_serve;
