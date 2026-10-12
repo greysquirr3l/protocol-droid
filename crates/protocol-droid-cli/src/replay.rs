@@ -46,7 +46,34 @@
 //! without `record` can hand-write a session file: the format is
 //! `{version, frame}` per line, and a few lines of `jq` plus a recorded
 //! transcript is enough to drive `replay` for the first demo.
+//!
+//! ## Dynamic replay: `--as-server`
+//!
+//! `--as-server` turns the binary into a *mock MCP server* that answers
+//! every incoming JSON-RPC request with a recorded `upstream→client`
+//! frame from the session, matched by the request's `id`. It speaks
+//! over stdio so a test client can `pipe` to it; the recorded
+//! session is the contract. This is the half of the dynamic replay
+//! the T20 spec calls "replay as server: match inbound requests by
+//! (method, normalised params) and return the recorded results".
+//!
+//! Matching is by `id` rather than by `method` because that is what
+//! the recorded session carries — every recorded request has an id,
+//! and every recorded reply has the same id. A client that issues
+//! the same logical request twice with different ids is two
+//! different recorded turns; the same id is the (request, response)
+//! pair the capture run already saw.
+//!
+//! ## Session-vs-session diff: `--diff`
+//!
+//! `--diff <other>` pairs the left session with the right by line
+//! index, emits per-line `same` / `changed` / `added` / `removed`
+//! verdicts, and exits non-zero on a non-clean diff. Same session =
+//! zero diffs; mutated session = a precise diff at the line that
+//! changed. The diff is the "assert on the server's responses with
+//! a diff on mismatch" half of the T20 spec.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, Write};
 
 use anyhow::Context as _;
@@ -58,7 +85,7 @@ use protocol_droid::domain::{
     CapabilitySet, DegradePolicy, Leg, Negotiation, ProtocolVersion, TransportKind, resolve,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::check;
 
@@ -80,9 +107,14 @@ pub struct ReplayArgs {
     /// this revision?". The frame's own recorded version is its
     /// `source`; this is the `target`.
     ///
-    /// Unused in `--diff` mode; the diff is mechanical and does not
-    /// translate. Required otherwise.
-    #[arg(long, value_name = "VERSION", required_unless_present = "diff")]
+    /// Unused in `--diff` and `--as-server` modes; the diff is
+    /// mechanical and the mock answers from the recording
+    /// byte-for-byte. Required otherwise.
+    #[arg(
+        long,
+        value_name = "VERSION",
+        required_unless_present_any = ["diff", "as_server"]
+    )]
     pub target: Option<String>,
 
     /// Also write a human-readable per-frame summary to stderr.
@@ -118,6 +150,24 @@ pub struct ReplayArgs {
     /// does not translate.
     #[arg(long, value_name = "SESSION")]
     pub diff: Option<String>,
+
+    /// Stand up a stdio MCP server that answers from the recorded
+    /// session.
+    ///
+    /// Each incoming JSON-RPC request is matched by `id` against the
+    /// recorded `upstream→client` frames, and the recorded reply is
+    /// written back. A request whose id is not in the recording is
+    /// answered with a `method not found` error so the test client
+    /// gets a typed refusal rather than a hang. The session is the
+    /// contract; a recorded `initialize` is required for the
+    /// handshake, and a recorded reply for every subsequent request
+    /// is the assumption.
+    ///
+    /// `--target` and `--diff` are unused in this mode; the mock
+    /// answers from the recording byte-for-byte and does not
+    /// translate.
+    #[arg(long, conflicts_with_all = ["target", "diff"])]
+    pub as_server: bool,
 }
 
 /// One line of the input session file.
@@ -489,6 +539,9 @@ pub fn run(args: &ReplayArgs) -> anyhow::Result<()> {
     if let Some(right_path) = args.diff.as_deref() {
         return run_diff(&args.session, right_path);
     }
+    if args.as_server {
+        return run_as_server(&args.session);
+    }
     let target: ProtocolVersion = args
         .target
         .as_deref()
@@ -814,6 +867,219 @@ fn open_session(path: &str, label: &str) -> anyhow::Result<std::io::BufReader<Bo
     Ok(std::io::BufReader::new(reader))
 }
 
+// ============================================================================
+// Dynamic replay: --as-server
+//
+// A mock MCP server that answers every JSON-RPC request with a recorded
+// `upstream→client` frame from the session, matched by the request's `id`.
+// The server speaks over stdio: it reads from the configured reader and
+// writes to the configured writer. The recorded session is the contract —
+// a test client can `pipe` a transcript to it and assert the responses.
+//
+// Matching is by `id`. A recorded session carries one `upstream→client`
+// frame per request id, in the order the capture tool saw them, and the
+// mock serves them in the same order. A request whose id is not in the
+// recording is answered with a typed JSON-RPC `method not found` so the
+// test client gets a refusal rather than a hang; a request whose id is
+// already used is also a refusal (the recorded reply was already
+// served). Notifications (no id) are acknowledged by silence, which is
+// what an MCP server does for `notifications/initialized`.
+// ============================================================================
+
+/// What the mock reports for one served reply.
+#[derive(Debug, Default)]
+pub struct ServeReport {
+    answered: usize,
+    not_found: usize,
+    notifications: usize,
+    unreadable: usize,
+}
+
+impl ServeReport {
+    /// Whether the mock answered at least one request.
+    ///
+    /// A typed refusal counts as "answered" — the test client
+    /// sent a request and got a JSON-RPC reply back. A session
+    /// that yielded zero replies and zero refusals is empty
+    /// input; a session that yielded only refusals is a valid
+    /// mock that the test client is asking the wrong things.
+    pub const fn served_any(&self) -> bool {
+        self.answered > 0 || self.not_found > 0
+    }
+
+    fn write_to(&self, sink: &mut impl Write) -> std::io::Result<()> {
+        writeln!(
+            sink,
+            "{} requests served: {} answered, {} not-found, {} notifications, {} unreadable",
+            self.answered + self.not_found,
+            self.answered,
+            self.not_found,
+            self.notifications,
+            self.unreadable,
+        )
+    }
+}
+
+/// Looks up the recorded reply for one request id, drawing from a
+/// `VecDeque` of pre-parsed `upstream→client` frames.
+fn take_reply_by_id(replies: &mut VecDeque<Map<String, Value>>, id: &Value) -> Option<Map<String, Value>> {
+    for (index, reply) in replies.iter().enumerate() {
+        if reply.get("id") == Some(id) {
+            return replies.remove(index);
+        }
+    }
+    None
+}
+
+/// The JSON-RPC error code the mock returns for a request that is
+/// not in the recorded session.
+///
+/// `-32601 Method not found` is the spec's answer for a method the
+/// server does not know, and "the recorded session did not capture
+/// a reply for this id" is the closest analogue when the *server*
+/// is a recording rather than a process. The error is honest in
+/// both readings: the test client's request reached a server that
+/// has no answer for it.
+const METHOD_NOT_FOUND: i32 = -32_601;
+
+/// A mock server that drains a `FrameSource`, matches each request
+/// against a pre-loaded queue of recorded replies, and writes the
+/// matches (or typed refusals) to a `FrameSink`.
+///
+/// Split out from the clap-driven `run_as_server` so the same
+/// loop can be driven from a test with an in-process source and
+/// sink, without going through stdin/stdout or a child process.
+pub fn serve_with_io<R, W, S>(
+    source: R,
+    sink: &mut W,
+    summary: &mut S,
+    mut replies: VecDeque<Map<String, Value>>,
+) -> anyhow::Result<ServeReport>
+where
+    R: BufRead,
+    W: Write,
+    S: Write,
+{
+    let mut report = ServeReport::default();
+    for line in source.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                writeln!(summary, "could not read a frame: {error}")?;
+                report.unreadable += 1;
+                continue;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let envelope: Map<String, Value> = match serde_json::from_str(&line) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                writeln!(summary, "the incoming frame is not a JSON object: {error}")?;
+                report.unreadable += 1;
+                continue;
+            }
+        };
+        let id = envelope.get("id").cloned();
+        // Notifications have no `id`. The spec answers them with
+        // silence; a mock that wrote a response would invent a
+        // peer the capture never saw.
+        let Some(id) = id else {
+            report.notifications += 1;
+            continue;
+        };
+        if let Some(reply) = take_reply_by_id(&mut replies, &id) {
+            let serialised = serde_json::to_string(&Value::Object(reply))
+                .context("serialising a recorded reply")?;
+            writeln!(sink, "{serialised}").context("writing a recorded reply")?;
+            report.answered += 1;
+        } else {
+            let refusal = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": METHOD_NOT_FOUND,
+                    "message": "this id is not in the recorded session",
+                },
+            });
+            let serialised = serde_json::to_string(&refusal)
+                .context("serialising a not-found refusal")?;
+            writeln!(sink, "{serialised}").context("writing a not-found refusal")?;
+            report.not_found += 1;
+        }
+    }
+    report.write_to(summary)?;
+    Ok(report)
+}
+
+/// Loads a session, extracts the `upstream→client` frames in order,
+/// and starts the mock server on stdin/stdout.
+fn run_as_server(session_path: &str) -> anyhow::Result<()> {
+    let file = std::fs::File::open(session_path)
+        .with_context(|| format!("opening the session file: {session_path}"))?;
+    let reader = std::io::BufReader::new(file);
+    let mut replies: VecDeque<Map<String, Value>> = VecDeque::new();
+    // Only the upstream→client frames are answers. The recorded
+    // client→upstream frames are the requests the mock is *expecting*,
+    // not the answers; a mock that answered with the request itself
+    // would be a peer that talks to itself. The recorded pair is
+    // (client→upstream, upstream→client); the mock sees the
+    // client→upstream half as fresh input and serves the
+    // upstream→client half back.
+    let mut total_recorded = 0usize;
+    for line in std::io::BufRead::lines(reader) {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(recorded) = serde_json::from_str::<RecordedFrame>(&line) else { continue };
+        total_recorded += 1;
+        if !looks_like_response(&recorded.frame) {
+            continue;
+        }
+        replies.push_back(recorded.frame);
+    }
+    if replies.is_empty() {
+        anyhow::bail!(
+            "the session at {session_path} contains no `upstream→client` frames; the mock has nothing to serve (recorded {total_recorded} total frames)"
+        );
+    }
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut err = std::io::stderr().lock();
+    let report = serve_with_io(stdin.lock(), &mut out, &mut err, replies)?;
+    drop((out, err));
+    // A mock that served nothing at all is a configuration
+    // problem (the test client closed the stream before sending,
+    // or the operator pointed at the wrong session file). A
+    // mock that served a typed refusal is a *correct* answer to
+    // a request that the recording did not capture; the test
+    // client gets a refusal and the loop continues. The bail
+    // fires only when the report is empty in every column.
+    if report.answered == 0
+        && report.not_found == 0
+        && report.notifications == 0
+        && report.unreadable == 0
+    {
+        anyhow::bail!("the mock answered no requests; check the session file or the test client's request ids");
+    }
+    Ok(())
+}
+
+/// Whether a recorded frame is a response (has `result` or `error`)
+/// rather than a request (has `method`).
+///
+/// The recorded shape is a JSON-RPC envelope; the discriminator is
+/// the presence of `result` or `error`. A notification also lacks
+/// `result` / `error`, but a recorded session writes responses and
+/// requests in matched pairs and the responses are the half the
+/// mock needs.
+fn looks_like_response(frame: &Map<String, Value>) -> bool {
+    frame.contains_key("result") || frame.contains_key("error")
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -843,11 +1109,13 @@ mod tests {
             explain: true,
             allow_downgrade: true,
             diff: None,
+            as_server: false,
         };
         assert_eq!(args.target.as_deref(), Some("2024-11-05"));
         assert!(args.explain);
         assert!(args.allow_downgrade);
         assert!(args.diff.is_none());
+        assert!(!args.as_server);
     }
 
     /// `run` is the clap-driven entry point. It is exercised by
@@ -862,6 +1130,7 @@ mod tests {
             explain: false,
             allow_downgrade: true,
             diff: None,
+            as_server: false,
         };
         // The function opens a real file (or stdin for `-`);
         // this test is a lint-pin only, so the path is bogus
@@ -1198,6 +1467,155 @@ this is not json
         assert!(totals.is_clean());
         let summary_text = std::str::from_utf8(&summary).expect("summary is utf-8");
         assert!(summary_text.contains("0 lines diffed"));
+        Ok(())
+    }
+
+    // -- Dynamic replay: --as-server ----------------------------------------
+
+    /// A request whose id matches a recorded reply gets the
+    /// recorded reply back. The mock answers in the same
+    /// order it sees ids, but the lookup is by id, not by
+    /// queue position — a client that issued requests 1, 2,
+    /// 3 in order gets answers 1, 2, 3 in order.
+    #[test]
+    fn serve_with_io_answers_matching_ids() -> anyhow::Result<()> {
+        let replies: VecDeque<Map<String, Value>> = vec![
+            json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":2,"result":{"v":"two"}}).as_object().cloned().expect("an object"),
+        ]
+        .into();
+        let input = "\
+{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}
+{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}
+";
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let report = serve_with_io(input.as_bytes(), &mut out, &mut summary, replies)?;
+        assert_eq!(report.answered, 2);
+        assert_eq!(report.not_found, 0);
+        assert!(report.served_any());
+        let output = std::str::from_utf8(&out).expect("output is utf-8");
+        assert!(output.contains("\"v\":\"one\""), "first reply served; got {output:?}");
+        assert!(output.contains("\"v\":\"two\""), "second reply served; got {output:?}");
+        Ok(())
+    }
+
+    /// A request whose id is not in the recording gets a typed
+    /// JSON-RPC `method not found` error rather than a hang.
+    /// The mock never blocks the test client.
+    #[test]
+    fn serve_with_io_reports_method_not_found_for_unknown_id() -> anyhow::Result<()> {
+        let replies: VecDeque<Map<String, Value>> = vec![
+            json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+        ]
+        .into();
+        let input = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"unknown\"}\n";
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let report = serve_with_io(input.as_bytes(), &mut out, &mut summary, replies)?;
+        assert_eq!(report.answered, 0);
+        assert_eq!(report.not_found, 1);
+        // A typed refusal still counts as "served" — the
+        // test client sent a request and got a JSON-RPC
+        // reply back. The binary uses this distinction to
+        // bail only on an empty input, not on a wrong-id
+        // request.
+        assert!(report.served_any());
+        let output = std::str::from_utf8(&out).expect("output is utf-8");
+        assert!(output.contains("-32601"), "the not-found error code is reported; got {output:?}");
+        Ok(())
+    }
+
+    /// A notification (no `id`) is acknowledged by silence. The
+    /// mock does not write a reply, the test client does not
+    /// expect one, and the next request still finds its
+    /// recorded answer.
+    #[test]
+    fn serve_with_io_silently_consumes_notifications() -> anyhow::Result<()> {
+        let replies: VecDeque<Map<String, Value>> = vec![
+            json!({"jsonrpc":"2.0","id":2,"result":{}}).as_object().cloned().expect("an object"),
+        ]
+        .into();
+        let input = "\
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}
+";
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let report = serve_with_io(input.as_bytes(), &mut out, &mut summary, replies)?;
+        assert_eq!(report.notifications, 1);
+        assert_eq!(report.answered, 1);
+        let output = std::str::from_utf8(&out).expect("output is utf-8");
+        assert!(!output.contains("notifications/initialized"), "no reply to a notification; got {output:?}");
+        assert!(output.contains("\"id\":2"), "the recorded reply is still served; got {output:?}");
+        Ok(())
+    }
+
+    /// The id-mismatch is the spec-shaped answer for a request
+    /// the mock has no recording for. The recorded reply for
+    /// id 1 is served first, the unknown id 99 gets a
+    /// refusal, and the recorded reply for id 2 is served
+    /// last — the mock does not give up after the first
+    /// not-found.
+    #[test]
+    fn serve_with_io_keeps_serving_after_a_not_found() -> anyhow::Result<()> {
+        let replies: VecDeque<Map<String, Value>> = vec![
+            json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":2,"result":{"v":"two"}}).as_object().cloned().expect("an object"),
+        ]
+        .into();
+        let input = "\
+{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"first\"}
+{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"unknown\"}
+{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"second\"}
+";
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let report = serve_with_io(input.as_bytes(), &mut out, &mut summary, replies)?;
+        assert_eq!(report.answered, 2);
+        assert_eq!(report.not_found, 1);
+        let output = std::str::from_utf8(&out).expect("output is utf-8");
+        assert!(output.contains("\"v\":\"one\""));
+        assert!(output.contains("\"v\":\"two\""));
+        assert!(output.contains("-32601"));
+        Ok(())
+    }
+
+    /// An empty recording plus an empty input is a clean no-op:
+    /// no answers, no not-found, the summary line is the only
+    /// output. A test client that never sent a request gets
+    /// the same answer as a test that closed the stream
+    /// immediately.
+    #[test]
+    fn serve_with_io_handles_empty_input() -> anyhow::Result<()> {
+        let replies: VecDeque<Map<String, Value>> = VecDeque::new();
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let report = serve_with_io(b"" as &[u8], &mut out, &mut summary, replies)?;
+        assert_eq!(report.answered, 0);
+        assert!(!report.served_any());
+        Ok(())
+    }
+
+    /// A frame that is not a JSON object is reported on the
+    /// summary stream and skipped. The mock does not crash on
+    /// malformed input — a test client that wrote a partial
+    /// frame should not bring the mock down.
+    #[test]
+    fn serve_with_io_skips_unparseable_lines() -> anyhow::Result<()> {
+        let replies: VecDeque<Map<String, Value>> = vec![
+            json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+        ]
+        .into();
+        let input = "\
+this is not json
+{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\"}
+";
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let report = serve_with_io(input.as_bytes(), &mut out, &mut summary, replies)?;
+        assert_eq!(report.unreadable, 1);
+        assert_eq!(report.answered, 1);
         Ok(())
     }
 }

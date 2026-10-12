@@ -217,6 +217,7 @@ fn clap_args_are_well_formed() {
         explain: true,
         allow_downgrade: true,
         diff: None,
+        as_server: false,
     };
     assert_eq!(args.target.as_deref(), Some("2024-11-05"));
     assert!(args.explain);
@@ -400,5 +401,81 @@ fn binary_replay_diff_exits_non_zero_on_mutation() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("the two sessions differ"));
+}
+
+// -- --as-server integration tests ----------------------------------------
+
+/// The binary's `replay --as-server`, driven as a subprocess with
+/// a small transcript on stdin, answers the requests with the
+/// recorded replies by id. Pinned here so a clap-derive change
+/// that alters the wire surface (e.g. flag rename) shows up as
+/// a test failure, not a silently-broken CLI.
+#[test]
+fn binary_replay_as_server_answers_recorded_replies() {
+    let session = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"name\":\"mock\"}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+    let session_path = write_session("bin-as-server", session);
+    let transcript = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n";
+    let mut child = std::process::Command::new(protocol_droid_bin())
+        .args(["replay", &session_path, "--as-server"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the protocol-droid binary");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(transcript.as_bytes())
+        .expect("write transcript");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("wait on the binary");
+    assert!(
+        output.status.success(),
+        "binary should exit zero on a clean mock; got {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"id\":1"), "the recorded reply for id 1 is served; got {stdout:?}");
+    assert!(stdout.contains("\"id\":2"), "the recorded reply for id 2 is served; got {stdout:?}");
+    assert!(stdout.contains("\"name\":\"mock\""), "the recorded result is byte-identical; got {stdout:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("2 answered"), "the summary reports the served count; got {stderr:?}");
+}
+
+/// A request whose id is not in the recording gets a typed
+/// JSON-RPC `method not found` error back, not a hang.
+#[test]
+fn binary_replay_as_server_returns_method_not_found_for_unknown_id() {
+    let session = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+"#;
+    let session_path = write_session("bin-as-server-404", session);
+    let transcript = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"unknown\"}\n";
+    let mut child = std::process::Command::new(protocol_droid_bin())
+        .args(["replay", &session_path, "--as-server"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the protocol-droid binary");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(transcript.as_bytes())
+        .expect("write transcript");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("wait on the binary");
+    // The mock answered at least one request (the not-found
+    // refusal) and exits zero, mirroring the per-frame refusal
+    // contract: typed refusal, not a hang.
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("-32601"), "the spec's method-not-found code; got {stdout:?}");
+    assert!(stdout.contains("\"id\":99"), "the unknown id is echoed back; got {stdout:?}");
 }
 
