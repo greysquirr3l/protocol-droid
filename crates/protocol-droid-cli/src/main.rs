@@ -6,7 +6,7 @@
 //! of its own.
 
 use clap::{Parser, Subcommand};
-use protocol_droid_cli::{bridge, conformance, probe, record, replay};
+use protocol_droid_cli::{bridge, conformance, inspect, probe, record, replay};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///
@@ -57,6 +57,15 @@ struct Cli {
 enum Command {
     /// Validate and report a version-translating bridge between two peers.
     Bridge(bridge::BridgeArgs),
+    /// List and call primitives on a server, one-shot.
+    ///
+    /// Runs the same connection the consumer path runs, then performs
+    /// one `list`, `schema`, or `call` and writes the answer as JSON on
+    /// stdout. A REPL would require a human at a terminal; an agent
+    /// calling a tool should not have to hold the whole result in its
+    /// context window to use it. The one-shot form is the scriptable
+    /// form, and the scriptable form is the one that exists.
+    Inspect(inspect::InspectArgs),
     /// Fingerprint what revisions an MCP server actually speaks.
     ///
     /// Tries `initialize` (or `server/discover` on `2026-07-28`) at every
@@ -120,6 +129,7 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Bridge(args) => bridge::run(&args).await,
         Command::Conformance(args) => conformance::run(&args).await,
+        Command::Inspect(args) => inspect::run(&args).await,
         Command::Probe(args) => probe::run(&args).await,
         Command::Replay(args) => replay::run(&args),
         Command::Record(args) => record::run(&args).await,

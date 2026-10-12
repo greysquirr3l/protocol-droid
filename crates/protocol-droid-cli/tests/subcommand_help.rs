@@ -102,6 +102,13 @@ fn probe_help_renders() -> Result<(), String> {
     assert_help_contains("probe", "probe")
 }
 
+/// `inspect --help` reaches the help text and renders a fragment
+/// that names the subcommand.
+#[test]
+fn inspect_help_renders() -> Result<(), String> {
+    assert_help_contains("inspect", "inspect")
+}
+
 /// The binary's own `--version` text is rendered through
 /// the build script's `version` arg, which sets the crate
 /// version plus the embedded SHA. The assertion is on the

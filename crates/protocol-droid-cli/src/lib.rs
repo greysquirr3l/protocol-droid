@@ -20,6 +20,7 @@
 pub mod bridge;
 pub mod check;
 pub mod conformance;
+pub mod inspect;
 pub mod probe;
 pub mod record;
 pub mod replay;
