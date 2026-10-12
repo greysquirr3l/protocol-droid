@@ -1567,6 +1567,248 @@ mod tests {
         }
         Ok(())
     }
+
+    /// `reply_for` is a pure function: a
+    /// user message with a single text
+    /// part produces an agent message
+    /// whose text is `"echo: <text>"`. The
+    /// single-part case is the common
+    /// one; a regression that lost the
+    /// `echo:` prefix would silently
+    /// change the wire shape.
+    #[test]
+    fn reply_for_single_text_part_carries_echo_prefix(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let user = Message::new(MessageRole::User).with_part(Part::Text(TextPart {
+            text: "hello".to_owned(),
+            metadata: std::collections::BTreeMap::new(),
+        }));
+        let reply = reply_for(&user);
+        if reply.role != MessageRole::Agent {
+            return Err(format!("expected Agent role, got {:?}", reply.role).into());
+        }
+        let [Part::Text(reply_text)] = &reply.parts[..] else {
+            return Err("expected exactly one text part on the reply".into());
+        };
+        if reply_text.text != "echo: hello" {
+            return Err(format!(
+                "expected 'echo: hello', got {:?}",
+                reply_text.text
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `reply_for` joins multiple text
+    /// parts with a single space. A
+    /// regression that joined with `""`
+    /// would mangle multi-part inputs.
+    /// Non-text parts are filtered out —
+    /// the agent has nothing useful to do
+    /// with a `Part::File` or `Part::Data`,
+    /// so they do not appear in the
+    /// reply.
+    #[test]
+    fn reply_for_joins_text_parts_with_space(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let user = Message::new(MessageRole::User)
+            .with_part(Part::Text(TextPart {
+                text: "alpha".to_owned(),
+                metadata: std::collections::BTreeMap::new(),
+            }))
+            .with_part(Part::Text(TextPart {
+                text: "beta".to_owned(),
+                metadata: std::collections::BTreeMap::new(),
+            }));
+        let reply = reply_for(&user);
+        let [Part::Text(reply_text)] = &reply.parts[..] else {
+            return Err("expected exactly one text part on the reply".into());
+        };
+        if reply_text.text != "echo: alpha beta" {
+            return Err(format!(
+                "expected 'echo: alpha beta', got {:?}",
+                reply_text.text
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `reply_for` on a message with no
+    /// text parts still produces a
+    /// well-formed reply — the prefix
+    /// carries an empty body, and the
+    /// role is `Agent`. The wire shape
+    /// is what the consumer reads; a
+    /// regression that returned `None`
+    /// or a different role would break
+    /// the round-trip.
+    #[test]
+    fn reply_for_message_with_no_text_parts_returns_echo_with_empty_body(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let user = Message::new(MessageRole::User);
+        let reply = reply_for(&user);
+        if reply.role != MessageRole::Agent {
+            return Err(format!("expected Agent role, got {:?}", reply.role).into());
+        }
+        let [Part::Text(reply_text)] = &reply.parts[..] else {
+            return Err("expected exactly one text part on the reply".into());
+        };
+        if reply_text.text != "echo: " {
+            return Err(format!(
+                "expected 'echo: ' (with empty body), got {:?}",
+                reply_text.text
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `build_card` declares the
+    /// capabilities the example
+    /// actually supports: `streaming` and
+    /// `push_notifications` are both
+    /// `true`. A card that said
+    /// `streaming: false` would tell a
+    /// peer to never call
+    /// `SendStreamingMessage`, and a
+    /// card that said
+    /// `push_notifications: false` would
+    /// tell a peer that
+    /// `CreateTaskPushNotificationConfig`
+    /// is unsupported. The example does
+    /// both, so the card has to say both.
+    #[test]
+    fn build_card_declares_streaming_and_push_notifications(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+        let card = build_card(addr, None);
+        if !card.capabilities.streaming {
+            return Err("card.capabilities.streaming must be true".into());
+        }
+        if !card.capabilities.push_notifications {
+            return Err("card.capabilities.push_notifications must be true".into());
+        }
+        Ok(())
+    }
+
+    /// `build_card` advertises the
+    /// interface at the right URL: the
+    /// example is bound to `addr`, and
+    /// the card's interface URL has to
+    /// match. A card that advertised
+    /// `http://127.0.0.1:8080/a2a` while
+    /// the server was actually bound to
+    /// `127.0.0.1:8084` would be a lie a
+    /// peer would believe; the
+    /// `a2a_client` example is the test
+    /// for that lie, but pinning it in a
+    /// unit test catches the regression
+    /// before the wire test would.
+    #[test]
+    fn build_card_interface_url_matches_bound_addr(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:8084".parse()?;
+        let card = build_card(addr, None);
+        if card.supported_interfaces.len() != 1 {
+            return Err(format!(
+                "expected 1 supported interface, got {}",
+                card.supported_interfaces.len()
+            )
+            .into());
+        }
+        let interface = &card.supported_interfaces[0];
+        let expected = format!("http://{addr}/a2a");
+        if interface.url.as_str() != expected {
+            return Err(format!(
+                "expected interface URL {expected:?}, got {:?}",
+                interface.url.as_str()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `build_card` without a bearer
+    /// token does not publish a security
+    /// scheme. A card that always
+    /// declared `bearer` would tell a
+    /// peer that the server requires a
+    /// token even when it does not, and
+    /// the peer would fail to discover
+    /// the server.
+    #[test]
+    fn build_card_without_bearer_omits_security_schemes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+        let card = build_card(addr, None);
+        if !card.security_schemes.is_empty() {
+            return Err(format!(
+                "expected no security schemes, got {}",
+                card.security_schemes.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `build_card` with a bearer token
+    /// publishes a `bearer` security
+    /// scheme so a peer can discover
+    /// the requirement. The middleware
+    /// (`check_bearer`) is the
+    /// enforcement half; the card
+    /// declares what is enforced.
+    #[test]
+    fn build_card_with_bearer_publishes_bearer_scheme(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+        let card = build_card(addr, Some("secret-token"));
+        if !card.security_schemes.contains_key("bearer") {
+            return Err("expected a 'bearer' security scheme".into());
+        }
+        let scheme = &card.security_schemes["bearer"];
+        if let SecurityScheme::Http(http) = scheme {
+            if http.scheme.as_ref() != "bearer" {
+                return Err(format!(
+                    "expected http scheme 'bearer', got {:?}",
+                    http.scheme.as_ref()
+                )
+                .into());
+            }
+        } else {
+            return Err(format!(
+                "expected SecurityScheme::Http, got a different variant: {scheme:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `build_card` advertises the
+    /// `echo` skill with the same
+    /// description the example produces.
+    /// The skill is what a peer
+    /// discovery index uses to decide
+    /// whether this agent is the right
+    /// one for the user's task; a card
+    /// that mis-described it would send
+    /// peers to the wrong agent.
+    #[test]
+    fn build_card_advertises_echo_skill(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+        let card = build_card(addr, None);
+        let has_echo = card
+            .skills
+            .iter()
+            .any(|skill| skill.id.as_ref() == "echo");
+        if !has_echo {
+            return Err("card did not advertise the 'echo' skill".into());
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
