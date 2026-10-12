@@ -173,10 +173,21 @@ impl A2aRequestHandler for MinimalAgent {
                         .values()
                         .cloned()
                         .collect::<Vec<_>>();
+                    // The A2A v1.0 spec names `pageSize` as
+                    // REQUIRED and at least `1`; a response
+                    // with `pageSize: 0` is malformed. The
+                    // `.max(1)` floors the empty-store case
+                    // to the spec minimum so a freshly-
+                    // started agent ships a well-formed
+                    // envelope. The same floor is in
+                    // `paginate_tasks` in the example.
+                    let page_size = tasks.len().max(1);
+                    let total_size = tasks.len();
                     Ok(serde_json::json!({
                         "tasks": tasks,
                         "nextPageToken": "",
-                        "pageSize": tasks.len(),
+                        "pageSize": page_size,
+                        "totalSize": total_size,
                     }))
                 })
             }
@@ -773,6 +784,146 @@ async fn missing_required_param_field_returns_invalid_params_not_method_not_foun
         "missing required `id` field is `-32602` invalid params, not `-32601` method not found; got {body}"
     );
     assert_eq!(message, Some("Invalid params"));
+    Ok(())
+}
+
+/// `ListTasks` returns the tasks the
+/// agent owns. The test populates the
+/// store with two tasks via
+/// `SendMessage`, then calls
+/// `ListTasks` and asserts both task
+/// ids come back. The wire shape the
+/// peer reads is the
+/// `ListTasksResponse` shape: a `tasks`
+/// array, a `pageSize`, a
+/// `nextPageToken`, and a
+/// `totalSize`. The
+/// `MinimalAgent` here is the same
+/// one the other wire tests use, so
+/// the response shape is the contract
+/// every consumer sees.
+#[tokio::test]
+async fn list_tasks_returns_populated_tasks() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    // Populate the store with two
+    // tasks via SendMessage.
+    for n in 0..2 {
+        let send = json!({
+            "jsonrpc": "2.0",
+            "id": n,
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "hi"}]
+                }
+            }
+        });
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/a2a")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&send)?))?,
+            )
+            .await?;
+    }
+    // Now call ListTasks.
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "ListTasks",
+        "params": {}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&list)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let jsonrpc = body.pointer("/jsonrpc").and_then(Value::as_str);
+    let id = body.pointer("/id").and_then(Value::as_i64);
+    let tasks = body.pointer("/result/tasks").and_then(Value::as_array);
+    let page_size = body.pointer("/result/pageSize").and_then(Value::as_u64);
+    let next_page_token = body.pointer("/result/nextPageToken").and_then(Value::as_str);
+    assert_eq!(jsonrpc, Some("2.0"));
+    assert_eq!(id, Some(99));
+    let task_list = tasks.ok_or("expected /result/tasks to be an array")?;
+    if task_list.len() != 2 {
+        return Err(format!(
+            "expected 2 tasks, got {}",
+            task_list.len()
+        )
+        .into());
+    }
+    if page_size != Some(2) {
+        return Err(format!("expected pageSize 2, got {page_size:?}").into());
+    }
+    if next_page_token != Some("") {
+        return Err(format!(
+            "expected empty nextPageToken, got {next_page_token:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// `ListTasks` on an empty store
+/// returns an empty `tasks` array, a
+/// `pageSize: 1` (the spec floor), a
+/// zero `totalSize`, and an empty
+/// `nextPageToken`. The wire shape is
+/// what a freshly-started agent reads
+/// back; a regression that returned
+/// `null` for the `tasks` field would
+/// crash a peer that iterates without
+/// a null check.
+#[tokio::test]
+async fn list_tasks_on_empty_store_returns_empty_page(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app = router();
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ListTasks",
+        "params": {}
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&list)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = body_bytes(response.into_body()).await;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    let tasks = body.pointer("/result/tasks").and_then(Value::as_array);
+    let task_list = tasks.ok_or("expected /result/tasks to be an array")?;
+    if !task_list.is_empty() {
+        return Err(format!(
+            "expected empty tasks, got {} entries",
+            task_list.len()
+        )
+        .into());
+    }
+    let page_size = body.pointer("/result/pageSize").and_then(Value::as_u64);
+    if page_size != Some(1) {
+        return Err(format!(
+            "expected pageSize 1 (the spec floor) on an empty store, got {page_size:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
