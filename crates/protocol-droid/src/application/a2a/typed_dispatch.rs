@@ -515,9 +515,27 @@ mod tests {
         A2aError, A2aRequestContext, A2aRequestHandler,
     };
     use crate::adapters::secondary::a2a::A2aMethod;
+    use crate::domain::a2a::extended_agent_card::{
+        GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
+    };
+    use crate::domain::a2a::list_tasks::{
+        ListTasksRequest, ListTasksResponse,
+    };
+    use crate::domain::a2a::push_notification_methods::{
+        CreateTaskPushNotificationConfigRequest,
+        CreateTaskPushNotificationConfigResponse,
+        DeleteTaskPushNotificationConfigRequest,
+        DeleteTaskPushNotificationConfigResponse,
+        GetTaskPushNotificationConfigRequest,
+        GetTaskPushNotificationConfigResponse,
+        ListTaskPushNotificationConfigsRequest,
+        ListTaskPushNotificationConfigsResponse,
+    };
     use crate::domain::a2a::send_message::SendMessageRequest;
     use crate::domain::a2a::task::Task;
-    use crate::domain::a2a::task_lifecycle::GetTaskRequest;
+    use crate::domain::a2a::task_lifecycle::{
+        CancelTaskRequest, GetTaskRequest,
+    };
     use crate::domain::a2a::version::A2aVersion;
 
     type TestError = Box<dyn std::error::Error>;
@@ -621,6 +639,415 @@ mod tests {
         // path is being routed
         // correctly.
         let _ = Task::new("t-1"); // touch the type so the import is used
+        Ok(())
+    }
+
+    /// A handler that records the method
+    /// and params it was called with and
+    /// returns a caller-supplied response
+    /// value. Used by the typed-wrapper
+    /// tests below to assert that the
+    /// wrapper routed to the right method
+    /// with the right serialised request,
+    /// and that the deserialise round-trip
+    /// on a valid response shape succeeds.
+    struct RecordingHandler {
+        last_method: std::sync::Mutex<Option<A2aMethod>>,
+        last_params: std::sync::Mutex<Option<serde_json::Value>>,
+        response: serde_json::Value,
+    }
+
+    impl RecordingHandler {
+        fn new(response: serde_json::Value) -> Self {
+            Self {
+                last_method: std::sync::Mutex::new(None),
+                last_params: std::sync::Mutex::new(None),
+                response,
+            }
+        }
+
+        fn last_method(&self) -> Option<A2aMethod> {
+            // The `Mutex::lock` call returns a
+            // `Result` (poisoned on panic). A
+            // poisoned lock here means a previous
+            // test panicked inside the lock, and
+            // the only safe answer is to read
+            // whatever was there before the
+            // panic. That is what `lock().ok()`
+            // expresses.
+            self.last_method
+                .lock()
+                .ok()
+                .and_then(|guard| *guard)
+        }
+
+        fn last_params(&self) -> Option<serde_json::Value> {
+            self.last_params
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+        }
+    }
+
+    impl A2aRequestHandler for RecordingHandler {
+        fn dispatch(
+            &self,
+            method: A2aMethod,
+            params: Option<serde_json::Value>,
+            _context: &A2aRequestContext,
+        ) -> BoxFuture<'_, Result<serde_json::Value, A2aError>> {
+            if let Ok(mut guard) = self.last_method.lock() {
+                *guard = Some(method);
+            }
+            if let Ok(mut guard) = self.last_params.lock() {
+                *guard = params;
+            }
+            let response = self.response.clone();
+            Box::pin(async move { Ok(response) })
+        }
+    }
+
+    /// `cancel_task` routes to
+    /// `A2aMethod::CancelTask` and
+    /// serialises the request id into the
+    /// params.
+    #[tokio::test]
+    async fn cancel_task_routes_to_cancel_task_method(
+    ) -> Result<(), TestError> {
+        use crate::domain::a2a::task::Task;
+        let task = Task::new("t-cancel");
+        let response_value = serde_json::to_value(&task)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request = CancelTaskRequest::new("t-cancel");
+        // A2aError does not implement
+        // `std::error::Error`, so the
+        // result has to be matched by hand
+        // — the wrapper turns the
+        // dispatch's value into a
+        // `CancelTaskResponse`, and the
+        // assert is on the recorded
+        // method, not on the response.
+        handler
+            .cancel_task(request, &context)
+            .await
+            .map_err(|error| format!("cancel_task returned an error: {error:?}"))?;
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::CancelTask {
+            return Err(format!("expected CancelTask, got {recorded:?}").into());
+        }
+        let params = handler
+            .last_params()
+            .ok_or("dispatch was called with no params")?;
+        let id = params
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("params did not carry the task id")?;
+        if id != "t-cancel" {
+            return Err(format!("expected id 't-cancel', got {id:?}").into());
+        }
+        Ok(())
+    }
+
+    /// `list_tasks` routes to
+    /// `A2aMethod::ListTasks` and the
+    /// response deserialises through the
+    /// typed wrapper without error.
+    #[tokio::test]
+    async fn list_tasks_routes_to_list_tasks_method(
+    ) -> Result<(), TestError> {
+        let response = ListTasksResponse::new(Vec::<Task>::new())
+            .with_page_size(1)
+            .with_total_size(0)
+            .with_next_page_token(String::new());
+        let response_value = serde_json::to_value(&response)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request = ListTasksRequest::new();
+        let response = handler
+            .list_tasks(request, &context)
+            .await
+            .map_err(|error| format!("list_tasks returned an error: {error:?}"))?;
+        if response.page_size != 1 {
+            return Err(format!(
+                "expected page_size 1, got {}",
+                response.page_size
+            )
+            .into());
+        }
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::ListTasks {
+            return Err(format!("expected ListTasks, got {recorded:?}").into());
+        }
+        Ok(())
+    }
+
+    /// `get_extended_agent_card` routes to
+    /// `A2aMethod::GetExtendedAgentCard`
+    /// and the response deserialises
+    /// through the typed wrapper.
+    #[tokio::test]
+    async fn get_extended_agent_card_routes_to_method(
+    ) -> Result<(), TestError> {
+        use crate::domain::a2a::agent_card::{
+            AgentCapabilities, AgentCardBuilder, AgentInterface,
+            AgentSkill, ProtocolBinding,
+        };
+        // The card builder is the
+        // domain's typed entry point.
+        // `build` returns
+        // `Result<AgentCard, _>` because
+        // the spec marks some fields as
+        // REQUIRED; the builder refuses
+        // to ship a card that omits one.
+        // A test that builds a real card
+        // and feeds it back through the
+        // typed wrapper pins the
+        // round-trip on the wire shape.
+        let url = url::Url::parse("https://example.com/a2a")
+            .map_err(|error| format!("URL parse failed: {error}"))?;
+        let interface = AgentInterface {
+            url,
+            protocol_binding: ProtocolBinding::default(),
+            protocol_version: A2aVersion::V1_0,
+            tenant: None,
+        };
+        let mut capabilities = AgentCapabilities {
+            streaming: true,
+            ..AgentCapabilities::default()
+        };
+        capabilities.push_notifications = true;
+        let skill = AgentSkill {
+            id: "skill-1".into(),
+            name: "Echo".into(),
+            description: "echoes the input".into(),
+            tags: Vec::new(),
+        };
+        let card = AgentCardBuilder::new()
+            .with_name("test-agent")
+            .with_description("a test agent")
+            .with_version("1.0")
+            .with_interface(interface)
+            .with_capabilities(capabilities)
+            .with_input_mode("text/plain")
+            .with_output_mode("text/plain")
+            .with_skill(skill)
+            .build()
+            .map_err(|error| format!("card build failed: {error:?}"))?;
+        let response = GetExtendedAgentCardResponse(card);
+        let response_value = serde_json::to_value(&response)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request = GetExtendedAgentCardRequest::new();
+        handler
+            .get_extended_agent_card(request, &context)
+            .await
+            .map_err(|error| {
+                format!("get_extended_agent_card returned an error: {error:?}")
+            })?;
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::GetExtendedAgentCard {
+            return Err(format!(
+                "expected GetExtendedAgentCard, got {recorded:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `create_task_push_notification_config`
+    /// routes to the right method and the
+    /// response deserialises.
+    #[tokio::test]
+    async fn create_task_push_notification_config_routes_to_method(
+    ) -> Result<(), TestError> {
+        use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
+        let config = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/webhook".to_owned(),
+        );
+        let response =
+            CreateTaskPushNotificationConfigResponse(config);
+        let response_value = serde_json::to_value(&response)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let inner = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/webhook".to_owned(),
+        );
+        let request =
+            CreateTaskPushNotificationConfigRequest(inner);
+        handler
+            .create_task_push_notification_config(request, &context)
+            .await
+            .map_err(|error| {
+                format!("create returned an error: {error:?}")
+            })?;
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::CreateTaskPushNotificationConfig {
+            return Err(format!(
+                "expected CreateTaskPushNotificationConfig, got {recorded:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `get_task_push_notification_config`
+    /// routes to the right method and the
+    /// response deserialises.
+    #[tokio::test]
+    async fn get_task_push_notification_config_routes_to_method(
+    ) -> Result<(), TestError> {
+        use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
+        let config = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/webhook".to_owned(),
+        );
+        let response =
+            GetTaskPushNotificationConfigResponse(config);
+        let response_value = serde_json::to_value(&response)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request = GetTaskPushNotificationConfigRequest::new(
+            "pc-1",
+            "t-1",
+        );
+        handler
+            .get_task_push_notification_config(request, &context)
+            .await
+            .map_err(|error| {
+                format!("get returned an error: {error:?}")
+            })?;
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::GetTaskPushNotificationConfig {
+            return Err(format!(
+                "expected GetTaskPushNotificationConfig, got {recorded:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `list_task_push_notification_configs`
+    /// routes to the right method and the
+    /// response deserialises.
+    #[tokio::test]
+    async fn list_task_push_notification_configs_routes_to_method(
+    ) -> Result<(), TestError> {
+        use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
+        let configs: Vec<TaskPushNotificationConfig> = Vec::new();
+        let response = ListTaskPushNotificationConfigsResponse::new(configs);
+        let response_value = serde_json::to_value(&response)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request = ListTaskPushNotificationConfigsRequest::new("t-1");
+        handler
+            .list_task_push_notification_configs(request, &context)
+            .await
+            .map_err(|error| {
+                format!("list returned an error: {error:?}")
+            })?;
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::ListTaskPushNotificationConfigs {
+            return Err(format!(
+                "expected ListTaskPushNotificationConfigs, got {recorded:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `delete_task_push_notification_config`
+    /// routes to the right method and the
+    /// response (default) deserialises.
+    #[tokio::test]
+    async fn delete_task_push_notification_config_routes_to_method(
+    ) -> Result<(), TestError> {
+        let response = DeleteTaskPushNotificationConfigResponse::default();
+        let response_value = serde_json::to_value(&response)?;
+        let handler = RecordingHandler::new(response_value);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request =
+            DeleteTaskPushNotificationConfigRequest::new("pc-1", "t-1");
+        handler
+            .delete_task_push_notification_config(request, &context)
+            .await
+            .map_err(|error| {
+                format!("delete returned an error: {error:?}")
+            })?;
+        let recorded = handler
+            .last_method()
+            .ok_or("dispatch was not called")?;
+        if recorded != A2aMethod::DeleteTaskPushNotificationConfig {
+            return Err(format!(
+                "expected DeleteTaskPushNotificationConfig, got {recorded:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// When the handler returns an
+    /// `A2aError::MethodNotFound`, the
+    /// typed wrapper propagates the
+    /// error without trying to
+    /// deserialise. The test pins that
+    /// the typed shape does not turn
+    /// domain errors into internal
+    /// errors.
+    #[tokio::test]
+    async fn dispatch_error_is_propagated_not_swallowed(
+    ) -> Result<(), TestError> {
+        struct FailingHandler;
+        impl A2aRequestHandler for FailingHandler {
+            fn dispatch(
+                &self,
+                _method: A2aMethod,
+                _params: Option<serde_json::Value>,
+                _context: &A2aRequestContext,
+            ) -> BoxFuture<'_, Result<serde_json::Value, A2aError>> {
+                Box::pin(async move { Err(A2aError::MethodNotFound) })
+            }
+        }
+        let handler: Arc<dyn A2aRequestHandler> = Arc::new(FailingHandler);
+        let context = A2aRequestContext {
+            protocol_version: A2aVersion::V1_0,
+        };
+        let request = GetTaskRequest::new("t-1");
+        let result = handler.get_task(request, &context).await;
+        if result.is_ok() {
+            return Err("expected MethodNotFound to propagate".into());
+        }
         Ok(())
     }
 }
