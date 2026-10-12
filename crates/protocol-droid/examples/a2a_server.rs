@@ -431,14 +431,23 @@ impl EchoAgent {
         // ("the page size is at least 1"), so the
         // example always returns a positive
         // `page_size` even when the peer did not
-        // ask for pagination. The pagination math
-        // is a pure function (`paginate_tasks`)
-        // so a regression catches it in a unit
-        // test, not against a real server.
+        // ask for pagination. The `next_page_token`
+        // is non-empty when the page is not the
+        // last one, and empty otherwise, so a peer
+        // can decide when to stop without doing
+        // the math. The pagination math is a pure
+        // function (`paginate_tasks`) so a
+        // regression catches it in a unit test,
+        // not against a real server.
         let total_size = store.tasks.len();
         let filtered = store.list(request.context_id.as_deref(), request.status);
         drop(store);
-        paginate_tasks(filtered, request.page_size, total_size)
+        paginate_tasks(
+            filtered,
+            request.page_size,
+            request.page_token.as_deref(),
+            total_size,
+        )
     }
 
     /// Creates a push notification config for a task. The
@@ -718,8 +727,9 @@ impl EchoAgent {
 }
 
 /// Trims a filtered task list to the peer's page
-/// size and stamps the spec-required `page_size`
-/// and `total_size` metadata on the response.
+/// size and stamps the spec-required `page_size`,
+/// `total_size`, and `next_page_token` metadata on
+/// the response.
 ///
 /// The math is extracted into a pure function so a
 /// regression in the pagination invariants is
@@ -735,6 +745,13 @@ impl EchoAgent {
 ///   full count on every page.
 /// - The trimmed `tasks` vector has at most
 ///   `page_size` entries.
+/// - `next_page_token` is the empty string when
+///   the page is the last one, and a non-empty
+///   opaque token the peer can pass back to
+///   continue otherwise. The example encodes
+///   the token as the next offset, base-10;
+///   a real agent can choose any encoding as
+///   long as the round-trip is deterministic.
 ///
 /// A peer that sends `page_size: 0` is sending a
 /// request the spec does not allow; the example
@@ -742,17 +759,53 @@ impl EchoAgent {
 /// filtered count (clamped to a minimum of 1).
 /// Returning `-32602 InvalidParams` would be
 /// stricter; a real agent can choose.
+///
+/// A peer that sends a `page_token` the example
+/// cannot decode (anything that is not a base-10
+/// `usize`) is treated as offset `0`. A stricter
+/// server would return `InvalidParams`; the
+/// example chooses tolerance for the wire-shape
+/// reference, and a real agent can choose.
 fn paginate_tasks(
     filtered: Vec<Task>,
     request_page_size: Option<u32>,
+    request_page_token: Option<&str>,
     total_size: usize,
 ) -> ListTasksResponse {
-    let requested = request_page_size.filter(|size| *size > 0);
-    let page_size = requested
+    let requested_size = request_page_size.filter(|size| *size > 0);
+    // The page size is bounded by the filtered list — a peer
+    // that asks for a page larger than the result gets a
+    // single page that returns everything and an empty
+    // `next_page_token`. A page size of `0` falls back to
+    // the filtered count, clamped to a minimum of `1` to
+    // satisfy the spec floor.
+    let filtered_len = filtered.len();
+    let page_size = requested_size
         .and_then(|size| usize::try_from(size).ok())
-        .unwrap_or_else(|| filtered.len().max(1));
-    let trimmed: Vec<Task> = filtered.into_iter().take(page_size).collect();
+        .filter(|size| *size <= filtered_len.max(1))
+        .unwrap_or_else(|| filtered_len.max(1));
+    let offset = request_page_token
+        .and_then(|token| token.parse::<usize>().ok())
+        .unwrap_or(0);
+    // A token that points past the end is treated as the
+    // end of the list. Returning an empty page with a
+    // well-formed envelope is more useful than an
+    // error: the peer's next request with no token will
+    // see the actual data.
+    let effective_offset = offset.min(filtered_len);
+    let trimmed: Vec<Task> = filtered
+        .into_iter()
+        .skip(effective_offset)
+        .take(page_size)
+        .collect();
+    let next_offset = effective_offset.saturating_add(page_size);
+    let next_token = if next_offset < filtered_len {
+        next_offset.to_string()
+    } else {
+        String::new()
+    };
     ListTasksResponse::new(trimmed)
+        .with_next_page_token(next_token)
         .with_page_size(u32::try_from(page_size).unwrap_or(u32::MAX))
         .with_total_size(u32::try_from(total_size).unwrap_or(u32::MAX))
 }
@@ -991,7 +1044,7 @@ mod tests {
     /// response. This test pins the fix.
     #[test]
     fn paginate_tasks_sets_positive_page_size() -> Result<(), Box<dyn std::error::Error>> {
-        let response = paginate_tasks(vec![task("t-1")], None, 1);
+        let response = paginate_tasks(vec![task("t-1")], None, None, 1);
         if response.page_size == 0 {
             return Err(format!(
                 "page_size must be at least 1 per the A2A spec; got {}",
@@ -1001,6 +1054,13 @@ mod tests {
         }
         if response.total_size != 1 {
             return Err(format!("total_size must be 1, got {}", response.total_size).into());
+        }
+        if !response.next_page_token.is_empty() {
+            return Err(format!(
+                "next_page_token must be empty for a single page; got {:?}",
+                response.next_page_token
+            )
+            .into());
         }
         Ok(())
     }
@@ -1016,6 +1076,7 @@ mod tests {
         let response = paginate_tasks(
             vec![task("t-1"), task("t-2"), task("t-3"), task("t-4"), task("t-5")],
             Some(2),
+            None,
             5,
         );
         if response.tasks.len() != 2 {
@@ -1027,6 +1088,13 @@ mod tests {
         if response.total_size != 5 {
             return Err(format!("expected total_size 5, got {}", response.total_size).into());
         }
+        if response.next_page_token != "2" {
+            return Err(format!(
+                "expected next_page_token \"2\", got {:?}",
+                response.next_page_token
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -1035,16 +1103,24 @@ mod tests {
     /// spec floor) and `total_size: 0` (no tasks
     /// matched). The vector is empty; no
     /// `tasks` member is required beyond an
-    /// empty array.
+    /// empty array. The `next_page_token` is
+    /// the empty string (no more pages).
     #[test]
     fn paginate_tasks_empty_filter_keeps_page_size_at_one(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let response = paginate_tasks(Vec::new(), None, 0);
+        let response = paginate_tasks(Vec::new(), None, None, 0);
         if response.page_size == 0 {
             return Err("page_size must be at least 1 even for an empty result".into());
         }
         if response.total_size != 0 {
             return Err(format!("expected total_size 0, got {}", response.total_size).into());
+        }
+        if !response.next_page_token.is_empty() {
+            return Err(format!(
+                "next_page_token must be empty for an empty result; got {:?}",
+                response.next_page_token
+            )
+            .into());
         }
         Ok(())
     }
@@ -1065,6 +1141,7 @@ mod tests {
         let response = paginate_tasks(
             vec![task("t-1"), task("t-2")],
             Some(0),
+            None,
             2,
         );
         if response.page_size == 0 {
@@ -1074,6 +1151,146 @@ mod tests {
             return Err(format!(
                 "expected both tasks in the page, got {}",
                 response.tasks.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A peer-supplied `page_token` skips that
+    /// many entries and resumes from there.
+    /// The token the example accepts is the
+    /// next offset, base-10 — the same shape
+    /// `paginate_tasks` emits on the previous
+    /// page. The round-trip is the
+    /// `next_page_token → page_token` flow
+    /// the spec describes.
+    #[test]
+    fn paginate_tasks_resumes_from_page_token() -> Result<(), Box<dyn std::error::Error>> {
+        let tasks: Vec<Task> = (0..5)
+            .map(|i| task(&format!("t-{i}")))
+            .collect();
+        // First page: page_size 2, no token.
+        let first = paginate_tasks(tasks.clone(), Some(2), None, 5);
+        if first.tasks.len() != 2 {
+            return Err(format!("first page: expected 2, got {}", first.tasks.len()).into());
+        }
+        if first.next_page_token != "2" {
+            return Err(format!(
+                "first page: expected next_page_token \"2\", got {:?}",
+                first.next_page_token
+            )
+            .into());
+        }
+        // Second page: peer passes the token back.
+        let second = paginate_tasks(tasks.clone(), Some(2), Some(&first.next_page_token), 5);
+        if second.tasks.len() != 2 {
+            return Err(format!("second page: expected 2, got {}", second.tasks.len()).into());
+        }
+        if second.next_page_token != "4" {
+            return Err(format!(
+                "second page: expected next_page_token \"4\", got {:?}",
+                second.next_page_token
+            )
+            .into());
+        }
+        // Last page: the trimmed list has one entry
+        // remaining and the next token is empty.
+        let last = paginate_tasks(tasks, Some(2), Some(&second.next_page_token), 5);
+        if last.tasks.len() != 1 {
+            return Err(format!("last page: expected 1, got {}", last.tasks.len()).into());
+        }
+        if !last.next_page_token.is_empty() {
+            return Err(format!(
+                "last page: expected empty next_page_token, got {:?}",
+                last.next_page_token
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A `page_token` that points past the end
+    /// of the filtered list is treated as the
+    /// end of the list. Returning an empty page
+    /// with a well-formed envelope is more
+    /// useful than an error: the peer's next
+    /// request with no token will see the
+    /// actual data.
+    #[test]
+    fn paginate_tasks_past_end_token_returns_empty_page(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(vec![task("t-1"), task("t-2")], Some(2), Some("999"), 2);
+        if !response.tasks.is_empty() {
+            return Err(format!(
+                "expected empty tasks, got {} entries",
+                response.tasks.len()
+            )
+            .into());
+        }
+        if !response.next_page_token.is_empty() {
+            return Err(format!(
+                "expected empty next_page_token, got {:?}",
+                response.next_page_token
+            )
+            .into());
+        }
+        if response.total_size != 2 {
+            return Err(format!("expected total_size 2, got {}", response.total_size).into());
+        }
+        Ok(())
+    }
+
+    /// A `page_token` that is not a base-10
+    /// `usize` is treated as offset `0` (i.e.
+    /// the start of the list). A stricter
+    /// server would return `InvalidParams`;
+    /// the example chooses tolerance for the
+    /// wire-shape reference, and a real agent
+    /// can choose.
+    #[test]
+    fn paginate_tasks_invalid_token_falls_back_to_start(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2")],
+            Some(2),
+            Some("not-a-number"),
+            2,
+        );
+        if response.tasks.len() != 2 {
+            return Err(format!(
+                "expected 2 tasks (full page), got {}",
+                response.tasks.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A peer-supplied `page_size` larger than
+    /// the filtered list returns the whole
+    /// list and an empty `next_page_token` —
+    /// the trimmed vector is bounded by the
+    /// filtered count, not by the requested
+    /// size, so a peer that asks for "give me
+    /// everything in one page" gets everything
+    /// in one page.
+    #[test]
+    fn paginate_tasks_page_size_larger_than_filtered_returns_all(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2")],
+            Some(50),
+            None,
+            2,
+        );
+        if response.tasks.len() != 2 {
+            return Err(format!("expected 2 tasks, got {}", response.tasks.len()).into());
+        }
+        if !response.next_page_token.is_empty() {
+            return Err(format!(
+                "expected empty next_page_token, got {:?}",
+                response.next_page_token
             )
             .into());
         }
