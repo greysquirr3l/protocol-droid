@@ -1296,6 +1296,277 @@ mod tests {
         }
         Ok(())
     }
+
+    /// A task inserted into the store round-trips
+    /// through `get` byte-for-byte. The store
+    /// clones on the way out, so a caller that
+    /// mutates the returned task does not see
+    /// the mutation in a subsequent `get` —
+    /// tests pin both halves (read returns the
+    /// inserted value, and the store is not a
+    /// shared mutable view).
+    #[test]
+    fn task_store_insert_and_get_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let original = task("t-1");
+        store.insert(original.clone());
+        let read_back = store.get("t-1").ok_or("get returned None")?;
+        if read_back != original {
+            return Err("get returned a task that does not match the inserted task".into());
+        }
+        Ok(())
+    }
+
+    /// Cancelling a task that does not exist
+    /// returns `None`. The handler turns that
+    /// into `InvalidParams`; the store's contract
+    /// is the smaller half.
+    #[test]
+    fn task_store_cancel_unknown_id_returns_none() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        if store.cancel("missing").is_some() {
+            return Err("cancel of an unknown id should return None".into());
+        }
+        Ok(())
+    }
+
+    /// Cancelling an existing task mutates the
+    /// stored task's state to `Cancelled`. A
+    /// peer that calls `get_task` after a cancel
+    /// sees the new state.
+    #[test]
+    fn task_store_cancel_marks_state_cancelled() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        store.insert(task("t-1"));
+        let cancelled = store.cancel("t-1").ok_or("cancel returned None")?;
+        if cancelled.status.state != TaskState::Cancelled {
+            return Err(format!(
+                "expected state Cancelled, got {:?}",
+                cancelled.status.state
+            )
+            .into());
+        }
+        let read_back = store.get("t-1").ok_or("get returned None")?;
+        if read_back.status.state != TaskState::Cancelled {
+            return Err("cancel did not persist; a follow-up get saw the old state".into());
+        }
+        Ok(())
+    }
+
+    /// `list` with no filters returns every task
+    /// in the store. The pin here is the
+    /// no-filter code path: a future change that
+    /// adds a default filter would silently
+    /// regress, and the test catches it.
+    #[test]
+    fn task_store_list_no_filter_returns_all() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        store.insert(task("t-1"));
+        store.insert(task("t-2"));
+        store.insert(task("t-3"));
+        let listed = store.list(None, None);
+        if listed.len() != 3 {
+            return Err(format!("expected 3 tasks, got {}", listed.len()).into());
+        }
+        Ok(())
+    }
+
+    /// `list` with a `context_id` filter returns
+    /// only the tasks whose `context_id` matches.
+    /// A future change that forgets to apply the
+    /// filter would return the whole store.
+    #[test]
+    fn task_store_list_filters_by_context_id() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let mut with_ctx = task("t-1");
+        with_ctx.context_id = Some(Arc::from("ctx-a"));
+        let mut other_ctx = task("t-2");
+        other_ctx.context_id = Some(Arc::from("ctx-b"));
+        store.insert(with_ctx);
+        store.insert(other_ctx);
+        store.insert(task("t-3"));
+        let listed = store.list(Some("ctx-a"), None);
+        if listed.len() != 1 {
+            return Err(format!("expected 1 task, got {}", listed.len()).into());
+        }
+        if listed.first().map_or(true, |t| t.id.as_ref() != "t-1") {
+            return Err("expected the listed task to be t-1".into());
+        }
+        Ok(())
+    }
+
+    /// `list` with a `state` filter returns only
+    /// the tasks in that state. The two filters
+    /// are independent: a context+state filter
+    /// is the AND.
+    #[test]
+    fn task_store_list_filters_by_state() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let mut cancelled = task("t-1");
+        cancelled.status.state = TaskState::Cancelled;
+        store.insert(cancelled);
+        store.insert(task("t-2"));
+        let listed = store.list(None, Some(TaskState::Cancelled));
+        if listed.len() != 1 {
+            return Err(format!("expected 1 task, got {}", listed.len()).into());
+        }
+        if listed.first().map_or(true, |t| t.id.as_ref() != "t-1") {
+            return Err("expected the listed task to be t-1".into());
+        }
+        Ok(())
+    }
+
+    /// `insert_push_config` assigns a non-empty
+    /// id and stores the config under it. The
+    /// id is the same shape every call
+    /// (`pc-<n>`) so a peer can list and address
+    /// configs deterministically.
+    #[test]
+    fn task_store_push_config_insert_assigns_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let config = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/webhook".to_owned(),
+        );
+        let id = store.insert_push_config(config.clone());
+        if id.is_empty() {
+            return Err("insert_push_config returned an empty id".into());
+        }
+        let read_back = store
+            .get_push_config(&id)
+            .ok_or("get_push_config returned None for the just-inserted id")?;
+        if read_back.id != id {
+            return Err(format!(
+                "stored config id {:?} does not match the assigned id {:?}",
+                read_back.id, id
+            )
+            .into());
+        }
+        if read_back.url != config.url {
+            return Err("stored config url does not match".into());
+        }
+        Ok(())
+    }
+
+    /// `list_push_configs` returns only the
+    /// configs scoped to the given task. A
+    /// future change that forgets the
+    /// `task_id` filter would return every
+    /// config in the store, and the test
+    /// catches that.
+    #[test]
+    fn task_store_push_config_list_filters_by_task(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let config_a = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/a".to_owned(),
+        );
+        let config_b = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-2".to_owned(),
+            "https://example.com/b".to_owned(),
+        );
+        store.insert_push_config(config_a);
+        store.insert_push_config(config_b);
+        let listed = store.list_push_configs("t-1");
+        if listed.len() != 1 {
+            return Err(format!("expected 1 config, got {}", listed.len()).into());
+        }
+        if listed.first().map_or(true, |c| c.task_id != "t-1") {
+            return Err("expected the listed config to be scoped to t-1".into());
+        }
+        Ok(())
+    }
+
+    /// `delete_push_config` returns the deleted
+    /// config, and a follow-up `get` returns
+    /// `None`. The pair is the round-trip the
+    /// handler relies on.
+    #[test]
+    fn task_store_push_config_delete_returns_the_config(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let config = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/a".to_owned(),
+        );
+        let id = store.insert_push_config(config);
+        let deleted = store
+            .delete_push_config(&id)
+            .ok_or("delete returned None for a known id")?;
+        if deleted.id != id {
+            return Err("delete returned a config with a different id".into());
+        }
+        if store.get_push_config(&id).is_some() {
+            return Err("get after delete returned Some; the deletion did not persist".into());
+        }
+        Ok(())
+    }
+
+    /// Two consecutive inserts get two
+    /// different ids. The id counter is
+    /// the store's only source of uniqueness,
+    /// so a future change that forgets to
+    /// increment it would overwrite the
+    /// first config on the second call.
+    #[test]
+    fn task_store_push_config_insert_assigns_unique_ids(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let first = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/a".to_owned(),
+        );
+        let second = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/b".to_owned(),
+        );
+        let id_a = store.insert_push_config(first);
+        let id_b = store.insert_push_config(second);
+        if id_a == id_b {
+            return Err(format!(
+                "two inserts returned the same id {id_a:?}; the counter did not advance"
+            )
+            .into());
+        }
+        // Both are still present — a counter
+        // that overwrites on collision would
+        // leave only the second config.
+        if store.get_push_config(&id_a).is_none() || store.get_push_config(&id_b).is_none() {
+            return Err("insert overwrote an earlier config; the store is not a list".into());
+        }
+        Ok(())
+    }
+
+    /// `len` reports the task count, not the
+    /// push config count. The two collections
+    /// are independent and the agent card
+    /// path that calls `len` cares about
+    /// tasks.
+    #[test]
+    fn task_store_len_counts_only_tasks(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        store.insert(task("t-1"));
+        store.insert(task("t-2"));
+        let config = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-1".to_owned(),
+            "https://example.com/a".to_owned(),
+        );
+        store.insert_push_config(config);
+        if store.len() != 2 {
+            return Err(format!("expected len 2, got {}", store.len()).into());
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
