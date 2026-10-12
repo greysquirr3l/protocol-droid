@@ -110,8 +110,32 @@ struct RecordedFrame {
     /// caller's data being wrong, and the wrong line is reported
     /// and skipped, not fatal.
     version: String,
-    /// The JSON-RPC envelope. Any shape (request, response, notification).
+    /// The JSON-RPC envelope, as a JSON object.
+    ///
+    /// The recorder writes the frame as a JSON string to keep the
+    /// recorder free of JSON-parsing decisions — the string is
+    /// what crossed the wire, byte-for-byte. We re-parse it here
+    /// because the verdict needs a structured envelope to translate.
+    /// A line whose `frame` is not a string, or whose string is not
+    /// a JSON object, is reported and skipped the same way an
+    /// unknown version is.
+    #[serde(deserialize_with = "deserialize_frame_string")]
     frame: Map<String, Value>,
+}
+
+/// Parses a `frame` field that arrived as a JSON string into a JSON object.
+///
+/// `record` writes the frame as a string (the wire bytes, untouched) so the
+/// recorder does not have to take a position on what the frame is. `replay`
+/// does, so this is the place the string becomes a map. A line whose `frame`
+/// is a bare `null`, a number, or a parse error is reported by the caller
+/// the same way an unknown version is.
+fn deserialize_frame_string<'de, D>(deserializer: D) -> Result<Map<String, Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    serde_json::from_str(&raw).map_err(serde::de::Error::custom)
 }
 
 /// One line of the output JSONL stream.
@@ -540,7 +564,7 @@ mod tests {
     /// A simple text result is forwardable to every revision.
     #[test]
     fn text_result_is_forwarded_to_2024_11_05() -> anyhow::Result<()> {
-        let line = r#"{"version":"2024-11-05","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}}"#;
+        let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"}"#;
         let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
             .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
@@ -548,10 +572,48 @@ mod tests {
         Ok(())
     }
 
+    /// A line whose `frame` is what `record` actually writes — a JSON
+    /// string, not a JSON object — is the regression test for the
+    /// format mismatch between `record` and `replay`. Without the
+    /// `deserialize_frame_string` adapter, this line is reported as a
+    /// type error and the verdict is `Refused`; with it, the verdict
+    /// is `Forwarded` and the bytes round-trip.
+    #[test]
+    fn record_string_frame_round_trips() -> anyhow::Result<()> {
+        let line = r#"{"direction":"client→upstream","version":"2025-06-18","clock_ns":42,"frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"}"#;
+        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
+            .expect("a record-shape line produces a verdict");
+        assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
+        Ok(())
+    }
+
+    /// A line whose `frame` is a bare `null` is reported as
+    /// `Refused` with an error naming the parse failure. The
+    /// refactor to the `frame` deserialiser would have dropped
+    /// the error path silently if this test passed with a
+    /// `Forwarded` outcome.
+    #[test]
+    fn record_string_frame_with_null_is_refused() {
+        let line = r#"{"version":"2025-06-18","frame":null}"#;
+        let _verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))
+            .expect_err("a null frame is a parse error, not a verdict");
+    }
+
+    /// A line whose `frame` is a JSON string that does not parse
+    /// is reported as `Refused` with an error naming the parse
+    /// failure. The deserialiser forwards the parse error rather
+    /// than swallowing it.
+    #[test]
+    fn record_string_frame_with_unparseable_value_is_refused() {
+        let line = r#"{"version":"2025-06-18","frame":"not even json"}"#;
+        let _verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))
+            .expect_err("an unparseable frame is a parse error, not a verdict");
+    }
+
     /// A 2025-06-18 `structuredContent` cannot reach 2024-11-05.
     #[test]
     fn structured_content_is_downgraded_when_replayed_to_2024_11_05() -> anyhow::Result<()> {
-        let line = r#"{"version":"2025-06-18","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}],"structuredContent":{"key":"value"}}}}"#;
+        let line = r#"{"version":"2025-06-18","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"structuredContent\":{\"key\":\"value\"}}}"}"#;
         let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
             .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Downgraded);
@@ -568,7 +630,7 @@ mod tests {
     /// words about a request, not a result this layer has any opinion on).
     #[test]
     fn error_envelope_is_forwarded() -> anyhow::Result<()> {
-        let line = r#"{"version":"2024-11-05","frame":{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}}"#;
+        let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"}"#;
         let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
             .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
@@ -579,7 +641,7 @@ mod tests {
     /// A request envelope (no `result`, no `error`) is forwarded.
     #[test]
     fn request_envelope_is_forwarded() -> anyhow::Result<()> {
-        let line = r#"{"version":"2024-11-05","frame":{"jsonrpc":"2.0","id":1,"method":"ping"}}"#;
+        let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"}"#;
         let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
             .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
@@ -603,7 +665,7 @@ mod tests {
     /// a lie the build cannot back up.
     #[test]
     fn unknown_recorded_version_is_refused_not_silently_forwarded() -> anyhow::Result<()> {
-        let line = r#"{"version":"2099-01-01","frame":{"jsonrpc":"2.0","id":1,"result":{}}}"#;
+        let line = r#"{"version":"2099-01-01","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}"#;
         let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
             .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Refused);
@@ -617,9 +679,9 @@ mod tests {
     #[test]
     fn run_with_io_totals_match_the_frames() -> anyhow::Result<()> {
         let input = "\
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}}
-{\"version\":\"2025-06-18\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"structuredContent\":{\"k\":\"v\"}}}}
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}]}}\"}
+{\"version\":\"2025-06-18\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":2,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}],\\\"structuredContent\\\":{\\\"k\\\":\\\"v\\\"}}}\"}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":3,\\\"error\\\":{\\\"code\\\":-32601,\\\"message\\\":\\\"Method not found\\\"}}\"}
 ";
         let mut out: Vec<u8> = Vec::new();
         let mut summary: Vec<u8> = Vec::new();
@@ -648,9 +710,9 @@ mod tests {
     #[test]
     fn run_with_io_skips_a_malformed_line_and_keeps_going() -> anyhow::Result<()> {
         let input = "\
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}]}}\"}
 this is not json
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":2,\\\"error\\\":{\\\"code\\\":-32601,\\\"message\\\":\\\"Method not found\\\"}}\"}
 ";
         let mut out: Vec<u8> = Vec::new();
         let mut summary: Vec<u8> = Vec::new();

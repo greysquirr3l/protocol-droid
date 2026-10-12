@@ -75,7 +75,7 @@ fn write_session(name: &str, body: &str) -> String {
 fn forwarded_text_result_against_same_revision() {
     let session = write_session(
         "forwarded",
-        r#"{"version":"2024-11-05","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}}"#,
+        r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"}"#,
     );
     let (verdicts, summary) = replay_to_memory(&session, "2024-11-05");
     assert_eq!(verdicts.len(), 1);
@@ -92,7 +92,7 @@ fn forwarded_text_result_against_same_revision() {
 fn structured_content_is_downgraded_to_2024_11_05() {
     let session = write_session(
         "downgraded",
-        r#"{"version":"2025-06-18","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}],"structuredContent":{"key":"value"}}}}"#,
+        r#"{"version":"2025-06-18","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"structuredContent\":{\"key\":\"value\"}}}"}"#,
     );
     let (verdicts, summary) = replay_to_memory(&session, "2024-11-05");
     assert_eq!(verdicts.len(), 1);
@@ -112,7 +112,7 @@ fn structured_content_is_downgraded_to_2024_11_05() {
 fn legacy_result_replayed_against_modern_target_is_forwarded() {
     let session = write_session(
         "forwarded-against-modern",
-        r#"{"version":"2024-11-05","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}}"#,
+        r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"}"#,
     );
     let (verdicts, _summary) = replay_to_memory(&session, "2026-07-28");
     assert_eq!(verdicts.len(), 1);
@@ -127,9 +127,9 @@ fn multi_frame_session_totals_match() {
     let session = write_session(
         "multi",
         "\
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}}
-{\"version\":\"2025-06-18\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"structuredContent\":{\"k\":\"v\"}}}}
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}]}}\"}
+{\"version\":\"2025-06-18\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":2,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}],\\\"structuredContent\\\":{\\\"k\\\":\\\"v\\\"}}}\"}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":3,\\\"error\\\":{\\\"code\\\":-32601,\\\"message\\\":\\\"Method not found\\\"}}\"}
 ",
     );
     let (verdicts, summary) = replay_to_memory(&session, "2024-11-05");
@@ -150,9 +150,9 @@ fn malformed_line_is_reported_and_replay_continues() {
     let session = write_session(
         "malformed",
         "\
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}]}}\"}
 this is not json
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"x\"}}}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":2,\\\"error\\\":{\\\"code\\\":-32601,\\\"message\\\":\\\"x\\\"}}\"}
 ",
     );
     let (verdicts, summary) = replay_to_memory(&session, "2024-11-05");
@@ -173,8 +173,8 @@ fn unknown_recorded_version_is_reported_and_replay_continues() {
     let session = write_session(
         "unknown-version",
         "\
-{\"version\":\"2099-01-01\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}}
-{\"version\":\"2024-11-05\",\"frame\":{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}}
+{\"version\":\"2099-01-01\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{}}\"}
+{\"version\":\"2024-11-05\",\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":2,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}]}}\"}
 ",
     );
     let (verdicts, summary) = replay_to_memory(&session, "2024-11-05");
@@ -213,7 +213,7 @@ fn clap_args_are_well_formed() {
 fn binary_replay_subcommand_emits_jsonl_verdicts() {
     let session = write_session(
         "binary-roundtrip",
-        r#"{"version":"2024-11-05","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}}"#,
+        r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"}"#,
     );
     let output = std::process::Command::new(protocol_droid_bin())
         .args(["replay", &session, "--target", "2026-07-28"])
@@ -247,7 +247,7 @@ fn binary_replay_subcommand_emits_jsonl_verdicts() {
 fn binary_replay_exits_non_zero_on_refused_frame() {
     let session = write_session(
         "binary-refused",
-        r#"{"version":"2025-06-18","frame":{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}],"structuredContent":{"k":"v"}}}}"#,
+        r#"{"version":"2025-06-18","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"structuredContent\":{\"k\":\"v\"}}}"}"#,
     );
     let output = std::process::Command::new(protocol_droid_bin())
         .args(["replay", &session, "--target", "2024-11-05"])
