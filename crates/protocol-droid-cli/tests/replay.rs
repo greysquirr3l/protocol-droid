@@ -26,7 +26,7 @@
 use std::io::{BufRead as _, BufReader, Write as _};
 
 use protocol_droid::domain::DegradePolicy;
-use protocol_droid_cli::replay::{self, FrameVerdict, ReplayArgs, VerdictOutcome};
+use protocol_droid_cli::replay::{self, FrameVerdict, LineDiff, LineDiffOutcome, ReplayArgs, VerdictOutcome};
 
 /// Resolves the path to the `protocol-droid` binary.
 fn protocol_droid_bin() -> &'static std::path::Path {
@@ -60,9 +60,27 @@ fn replay_to_memory(session_path: &str, target: &str) -> (Vec<FrameVerdict>, Str
 
 /// Writes a session file in a tempdir and returns the path.
 fn write_session(name: &str, body: &str) -> String {
+    // The path includes the process id and an atomic counter so two
+    // tests running in parallel with the same `name` get distinct
+    // files. A path that two tests share would let one test's
+    // `File::create` truncate the other test's bytes while it is
+    // still being written, and the reader on the other side would
+    // see a half-empty file. The counter is per-process because
+    // parallel test threads share an address space.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir();
-    let path = dir.join(format!("protocol-droid-replay-{name}.jsonl"));
-    let mut file = std::fs::File::create(&path).expect("create session file");
+    let path = dir.join(format!(
+        "protocol-droid-replay-{}-{}-{}.jsonl",
+        name,
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst),
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("create session file");
     file.write_all(body.as_bytes())
         .expect("write session file");
     path.to_string_lossy().into_owned()
@@ -195,11 +213,12 @@ fn unknown_recorded_version_is_reported_and_replay_continues() {
 fn clap_args_are_well_formed() {
     let args = ReplayArgs {
         session: "session.jsonl".to_owned(),
-        target: "2024-11-05".to_owned(),
+        target: Some("2024-11-05".to_owned()),
         explain: true,
         allow_downgrade: true,
+        diff: None,
     };
-    assert_eq!(args.target, "2024-11-05");
+    assert_eq!(args.target.as_deref(), Some("2024-11-05"));
     assert!(args.explain);
     assert!(args.allow_downgrade);
 }
@@ -262,5 +281,124 @@ fn binary_replay_exits_non_zero_on_refused_frame() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("frame(s) refused"));
+}
+
+// -- Session-vs-session diff integration tests ---------------------------
+
+/// Writes two session files and runs `replay --diff` against them,
+/// returning the parsed `LineDiff` list and the human summary.
+fn diff_two_sessions(left: &str, right: &str) -> (Vec<LineDiff>, String) {
+    let left_path = write_session("diff-left", left);
+    let right_path = write_session("diff-right", right);
+    let left_file = std::fs::File::open(&left_path)
+        .unwrap_or_else(|error| panic!("opening left: {error}"));
+    let right_file = std::fs::File::open(&right_path)
+        .unwrap_or_else(|error| panic!("opening right: {error}"));
+    let mut out: Vec<u8> = Vec::new();
+    let mut summary: Vec<u8> = Vec::new();
+    replay::diff_with_io(
+        BufReader::new(left_file),
+        BufReader::new(right_file),
+        &mut out,
+        &mut summary,
+    )
+    .expect("diff runs end-to-end on a well-formed pair");
+    let output = String::from_utf8(out).expect("output is utf-8");
+    let lines: Vec<LineDiff> = output
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("the diff is well-formed JSONL"))
+        .collect();
+    let summary_text = String::from_utf8(summary).expect("summary is utf-8");
+    (lines, summary_text)
+}
+
+/// `replay --diff` against two identical sessions produces one
+/// `same` line per input line and exits cleanly. The T20 spec's
+/// "replay against the same server: zero diffs" property.
+#[test]
+fn diff_with_io_round_trips_through_files() {
+    let session = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+    let (lines, summary) = diff_two_sessions(session, session);
+    assert_eq!(lines.len(), 2);
+    let first = lines.first().expect("at least one diff record");
+    let second = lines.get(1).expect("the second line is present");
+    assert_eq!(first.outcome, LineDiffOutcome::Same);
+    assert_eq!(second.outcome, LineDiffOutcome::Same);
+    assert!(summary.contains("2 lines diffed"));
+    assert!(summary.contains("2 same"));
+}
+
+/// `replay --diff` against a mutated session produces a `changed`
+/// line at the index of the mutation, `same` everywhere else.
+/// The T20 spec's "replay against a mutated server: a precise diff".
+#[test]
+fn diff_with_io_pinpoints_a_single_line_change() {
+    let left = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+    let right = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"mutated\":true}}"}
+"#;
+    let (lines, _summary) = diff_two_sessions(left, right);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].outcome, LineDiffOutcome::Same);
+    assert_eq!(lines[1].outcome, LineDiffOutcome::Changed);
+}
+
+/// The binary's `replay --diff` subcommand, invoked as a subprocess,
+/// produces per-line JSONL the same way the in-process tests do.
+/// Pinned here so a clap-derive change that alters the wire surface
+/// shows up as a test failure, not a silently-broken CLI.
+#[test]
+fn binary_replay_diff_subcommand_emits_per_line_jsonl() {
+    let session = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+"#;
+    let left_path = write_session("bin-diff-left", session);
+    let right_path = write_session("bin-diff-right", session);
+    let output = std::process::Command::new(protocol_droid_bin())
+        .args(["replay", &left_path, "--diff", &right_path])
+        .output()
+        .expect("spawn the protocol-droid binary");
+    assert!(
+        output.status.success(),
+        "binary should exit zero on a clean diff; got {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<LineDiff> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("the diff is well-formed JSONL"))
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].outcome, LineDiffOutcome::Same);
+}
+
+/// The binary's `replay --diff` exits non-zero when the two
+/// sessions differ, mirroring the per-frame refusal contract.
+#[test]
+fn binary_replay_diff_exits_non_zero_on_mutation() {
+    let left = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+"#;
+    let right = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"mutated\":true}}"}
+"#;
+    let left_path = write_session("bin-diff-mut-left", left);
+    let right_path = write_session("bin-diff-mut-right", right);
+    let output = std::process::Command::new(protocol_droid_bin())
+        .args(["replay", &left_path, "--diff", &right_path])
+        .output()
+        .expect("spawn the protocol-droid binary");
+    assert!(
+        !output.status.success(),
+        "binary should exit non-zero on a mutated diff; got {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("the two sessions differ"));
 }
 

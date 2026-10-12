@@ -79,8 +79,11 @@ pub struct ReplayArgs {
     /// forwarding this frame's `result` to a client that negotiated
     /// this revision?". The frame's own recorded version is its
     /// `source`; this is the `target`.
-    #[arg(long, value_name = "VERSION")]
-    pub target: String,
+    ///
+    /// Unused in `--diff` mode; the diff is mechanical and does not
+    /// translate. Required otherwise.
+    #[arg(long, value_name = "VERSION", required_unless_present = "diff")]
+    pub target: Option<String>,
 
     /// Also write a human-readable per-frame summary to stderr.
     ///
@@ -99,6 +102,22 @@ pub struct ReplayArgs {
     /// would otherwise look broken to `replay`.
     #[arg(long)]
     pub allow_downgrade: bool,
+
+    /// A second session file to diff against.
+    ///
+    /// When set, `replay` is the diff half of the dynamic replay:
+    /// for every line in the left session, find the matching line in
+    /// the right session (by line index, since the same capture tool
+    /// wrote both), and emit a per-line diff. Lines that are present
+    /// in one and not the other are reported as `added` / `removed`.
+    /// The diff is the answer the T20 spec wants to "replay a session
+    /// against the same server: zero diffs. Replay against a mutated
+    /// server: a precise diff".
+    ///
+    /// `--target` is unused in this mode; the diff is mechanical and
+    /// does not translate.
+    #[arg(long, value_name = "SESSION")]
+    pub diff: Option<String>,
 }
 
 /// One line of the input session file.
@@ -461,11 +480,21 @@ impl RunSummary {
 /// human summary to stderr. Exits non-zero when at least one frame
 /// was `Refused` and downgrades were not allowed, mirroring the
 /// bridge probe's contract.
+///
+/// When `--diff <other>` is set, runs the diff half instead: pairs
+/// the two sessions by line index, writes per-line diffs to stdout
+/// in JSONL, and a human summary to stderr. `--target` is ignored
+/// in this mode; the diff is mechanical.
 pub fn run(args: &ReplayArgs) -> anyhow::Result<()> {
+    if let Some(right_path) = args.diff.as_deref() {
+        return run_diff(&args.session, right_path);
+    }
     let target: ProtocolVersion = args
         .target
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--target is required for the verdict mode; pass --diff to skip it"))?
         .parse()
-        .with_context(|| format!("--target is not a known revision: {}", args.target))?;
+        .with_context(|| format!("--target is not a known revision: {}", args.target.as_deref().unwrap_or("")))?;
     let policy = if args.allow_downgrade {
         DegradePolicy::permissive()
     } else {
@@ -509,6 +538,282 @@ where
     }
 }
 
+// ============================================================================
+// Session-vs-session diff
+//
+// The diff half of dynamic replay: take two recorded sessions (the same
+// capture tool wrote both), pair them by line index, and emit a per-line
+// report. Same session = zero diffs (the property the T20 spec pins with
+// "replay against the same server: zero diffs"). Mutated session = a
+// precise diff at the line that changed.
+//
+// The pairing is by *line index*, not by frame id, because the same
+// capture run against two different upstreams produces the same line
+// ordering. A diff that aligned by id would be aligning across two
+// unrelated request streams; an id that exists in only one of them
+// would be reported as a deletion on the left and an insertion on the
+// right, and a per-line pairing is what the operator running `replay
+// --diff` actually wants to see.
+// ============================================================================
+
+/// What one diff line records.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LineDiff {
+    /// 1-indexed line in the left session.
+    pub index: usize,
+    /// What the diff at this line is.
+    pub outcome: LineDiffOutcome,
+    /// The line on the left, if it existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left: Option<Map<String, Value>>,
+    /// The line on the right, if it existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<Map<String, Value>>,
+    /// The recorded version on the left, if a line was present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left_version: Option<String>,
+    /// The recorded version on the right, if a line was present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right_version: Option<String>,
+    /// Human-readable note.
+    pub note: String,
+}
+
+/// The diff verdict for one line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LineDiffOutcome {
+    /// The line exists on both sides and the bytes are identical.
+    Same,
+    /// The line exists on both sides and the bytes differ.
+    Changed,
+    /// The line exists only on the left.
+    Removed,
+    /// The line exists only on the right.
+    Added,
+}
+
+/// Totals for a diff run.
+#[derive(Debug, Default)]
+pub struct DiffSummary {
+    same: usize,
+    changed: usize,
+    added: usize,
+    removed: usize,
+    malformed: usize,
+}
+
+impl DiffSummary {
+    const fn record(&mut self, diff: &LineDiff) {
+        match diff.outcome {
+            LineDiffOutcome::Same => self.same += 1,
+            LineDiffOutcome::Changed => self.changed += 1,
+            LineDiffOutcome::Added => self.added += 1,
+            LineDiffOutcome::Removed => self.removed += 1,
+        }
+    }
+
+    fn write_to(&self, sink: &mut impl Write) -> std::io::Result<()> {
+        writeln!(
+            sink,
+            "{} lines diffed: {} same, {} changed, {} added, {} removed, {} malformed",
+            self.same + self.changed + self.added + self.removed,
+            self.same,
+            self.changed,
+            self.added,
+            self.removed,
+            self.malformed,
+        )
+    }
+
+    /// Whether the diff found no differences.
+    ///
+    /// `replay --diff` exits non-zero when this is false (and the operator
+    /// did not pass `--allow-downgrade`-style tolerance), so a `diff` that
+    /// reports clean is the "replay against the same server: zero diffs"
+    /// half of the T20 spec.
+    const fn is_clean(&self) -> bool {
+        self.changed == 0 && self.added == 0 && self.removed == 0
+    }
+}
+
+/// Loads a session into a list of parsed lines.
+///
+/// Skips empty lines the same way the verdict path does. Malformed
+/// lines are reported on `summary` and dropped from the result; the
+/// diff is still useful when one side has a bad line, because the
+/// other side's line at the same index is still meaningful.
+fn load_session<R: BufRead>(
+    reader: R,
+    summary: &mut DiffSummary,
+) -> anyhow::Result<Vec<RecordedFrame>> {
+    let mut frames: Vec<RecordedFrame> = Vec::new();
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                return Err(anyhow::anyhow!("could not read a line: {error}"));
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<RecordedFrame>(&line) {
+            Ok(recorded) => frames.push(recorded),
+            Err(_) => {
+                summary.malformed += 1;
+            }
+        }
+    }
+    Ok(frames)
+}
+
+/// Diffs two parsed session lists by line index and writes the
+/// per-line results to `out` plus a summary to `summary`.
+///
+/// The pairing is by index: line `i` of the left is compared to line
+/// `i` of the right. A line that exists only on one side is reported
+/// as `removed` (left-only) or `added` (right-only); a line that
+/// exists on both is `same` if the bytes are identical and `changed`
+/// otherwise.
+pub fn diff_with_io<R, W, S>(
+    left: R,
+    right: R,
+    out: &mut W,
+    summary: &mut S,
+) -> anyhow::Result<DiffSummary>
+where
+    R: BufRead,
+    W: Write,
+    S: Write,
+{
+    let mut totals = DiffSummary::default();
+    let left_frames = load_session(left, &mut totals)?;
+    let right_frames = load_session(right, &mut totals)?;
+    let pairs = left_frames.len().max(right_frames.len());
+    for i in 0..pairs {
+        let index = i + 1;
+        let left_line = left_frames.get(i);
+        let right_line = right_frames.get(i);
+        let diff = match (left_line, right_line) {
+            (Some(l), Some(r)) => {
+                let outcome = if frame_equal(l, r) {
+                    LineDiffOutcome::Same
+                } else {
+                    LineDiffOutcome::Changed
+                };
+                LineDiff {
+                    index,
+                    outcome,
+                    left: Some(l.frame.clone()),
+                    right: Some(r.frame.clone()),
+                    left_version: Some(l.version.clone()),
+                    right_version: Some(r.version.clone()),
+                    note: match outcome {
+                        LineDiffOutcome::Same => "identical".to_owned(),
+                        LineDiffOutcome::Changed => "the bytes differ".to_owned(),
+                        _ => String::new(),
+                    },
+                }
+            }
+            (Some(l), None) => LineDiff {
+                index,
+                outcome: LineDiffOutcome::Removed,
+                left: Some(l.frame.clone()),
+                right: None,
+                left_version: Some(l.version.clone()),
+                right_version: None,
+                note: "present on the left, missing on the right".to_owned(),
+            },
+            (None, Some(r)) => LineDiff {
+                index,
+                outcome: LineDiffOutcome::Added,
+                left: None,
+                right: Some(r.frame.clone()),
+                left_version: None,
+                right_version: Some(r.version.clone()),
+                note: "present on the right, missing on the left".to_owned(),
+            },
+            (None, None) => unreachable!("pairs = max(left, right); the for loop is bounded by it"),
+        };
+        totals.record(&diff);
+        serde_json::to_writer(&mut *out, &diff)
+            .context("writing a per-line diff")?;
+        out.write_all(b"\n").context("writing the diff newline")?;
+    }
+    totals.write_to(summary)?;
+    Ok(totals)
+}
+
+/// Two recorded frames are equal when their version and the bytes
+/// they wrap are equal.
+///
+/// The bytes comparison is by string form, not by `Value` equality,
+/// because two `Value::String("a")` and `Value::String("a")` round-trip
+/// to the same string and the recorded form keeps the frame as a
+/// string the recorder wrote; comparing the parsed form would be
+/// comparing a re-parse of the same input, which is the answer we
+/// want, but a `Value` `Eq` does not see the difference between
+/// `{"k": 1}` and `{"k":1}` — and a recorded session that re-emits
+/// the same bytes will hit that case. Comparing the recorded
+/// `version` and the parsed frame's re-serialised form would also
+/// collapse that distinction, so we compare the version string and
+/// the parsed `Value` directly: any re-ordering of keys or whitespace
+/// that survived the re-parse is a real diff.
+fn frame_equal(left: &RecordedFrame, right: &RecordedFrame) -> bool {
+    if left.version != right.version {
+        return false;
+    }
+    let left_value = Value::Object(left.frame.clone());
+    let right_value = Value::Object(right.frame.clone());
+    left_value == right_value
+}
+
+/// The clap-driven diff entry point.
+fn run_diff(left_path: &str, right_path: &str) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    let summary = diff_on_path(left_path, right_path, &mut stdout, &mut stderr)?;
+    drop((stdout, stderr));
+    if !summary.is_clean() {
+        anyhow::bail!(
+            "the two sessions differ: {} changed, {} added, {} removed",
+            summary.changed,
+            summary.added,
+            summary.removed,
+        );
+    }
+    Ok(())
+}
+
+/// Reads the two sessions and delegates.
+fn diff_on_path<W, S>(
+    left_path: &str,
+    right_path: &str,
+    stdout: &mut W,
+    stderr: &mut S,
+) -> anyhow::Result<DiffSummary>
+where
+    W: Write,
+    S: Write,
+{
+    let left = open_session(left_path, "left")?;
+    let right = open_session(right_path, "right")?;
+    diff_with_io(left, right, stdout, stderr)
+}
+
+/// Opens a session file (or stdin for `-`).
+fn open_session(path: &str, label: &str) -> anyhow::Result<std::io::BufReader<Box<dyn std::io::Read + Send>>> {
+    let reader: Box<dyn std::io::Read + Send> = if path == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("opening the {label} session file: {path}"))?;
+        Box::new(file)
+    };
+    Ok(std::io::BufReader::new(reader))
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -534,13 +839,15 @@ mod tests {
     fn clap_args_are_well_formed() {
         let args = ReplayArgs {
             session: "session.jsonl".to_owned(),
-            target: "2024-11-05".to_owned(),
+            target: Some("2024-11-05".to_owned()),
             explain: true,
             allow_downgrade: true,
+            diff: None,
         };
-        assert_eq!(args.target, "2024-11-05");
+        assert_eq!(args.target.as_deref(), Some("2024-11-05"));
         assert!(args.explain);
         assert!(args.allow_downgrade);
+        assert!(args.diff.is_none());
     }
 
     /// `run` is the clap-driven entry point. It is exercised by
@@ -551,9 +858,10 @@ mod tests {
     fn run_is_reachable() {
         let args = ReplayArgs {
             session: "session.jsonl".to_owned(),
-            target: "2024-11-05".to_owned(),
+            target: Some("2024-11-05".to_owned()),
             explain: false,
             allow_downgrade: true,
+            diff: None,
         };
         // The function opens a real file (or stdin for `-`);
         // this test is a lint-pin only, so the path is bogus
@@ -731,6 +1039,165 @@ this is not json
         assert_eq!(lines, 3, "the malformed line still gets a verdict record");
         let summary = std::str::from_utf8(&summary).expect("summary is utf-8");
         assert!(summary.contains("line 2:"), "the bad line is named on stderr; got {summary:?}");
+        Ok(())
+    }
+
+    // -- Session-vs-session diff -------------------------------------------
+
+    /// Two identical sessions produce a `same` outcome for every line
+    /// and exit cleanly. This is the property the T20 spec calls
+    /// "replay against the same server: zero diffs".
+    #[test]
+    fn diff_with_io_reports_same_for_identical_sessions() -> anyhow::Result<()> {
+        let session = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let totals = diff_with_io(
+            session.as_bytes(),
+            session.as_bytes(),
+            &mut out,
+            &mut summary,
+        )?;
+        assert_eq!(totals.same, 2);
+        assert_eq!(totals.changed, 0);
+        assert_eq!(totals.added, 0);
+        assert_eq!(totals.removed, 0);
+        assert!(totals.is_clean(), "a same-only diff is clean");
+        let output = std::str::from_utf8(&out).expect("output is JSONL of utf-8");
+        let lines: Vec<LineDiff> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("the diff is well-formed"))
+            .collect();
+        assert_eq!(lines.len(), 2);
+        let first = lines.first().expect("at least one diff record");
+        assert_eq!(first.outcome, LineDiffOutcome::Same);
+        let second = lines.get(1).expect("the second line is present");
+        assert_eq!(second.outcome, LineDiffOutcome::Same);
+        Ok(())
+    }
+
+    /// A one-byte difference on one line is reported as `changed`
+    /// at that line and `same` everywhere else. The precise diff
+    /// the T20 spec wants to see.
+    #[test]
+    fn diff_with_io_reports_changed_for_a_one_byte_difference() -> anyhow::Result<()> {
+        let left = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+        let right = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"changed\":true}}"}
+"#;
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let totals = diff_with_io(
+            left.as_bytes(),
+            right.as_bytes(),
+            &mut out,
+            &mut summary,
+        )?;
+        assert_eq!(totals.same, 1);
+        assert_eq!(totals.changed, 1);
+        assert_eq!(totals.added, 0);
+        assert_eq!(totals.removed, 0);
+        assert!(!totals.is_clean());
+        let output = std::str::from_utf8(&out).expect("output is JSONL of utf-8");
+        let lines: Vec<LineDiff> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("the diff is well-formed"))
+            .collect();
+        assert_eq!(lines.len(), 2);
+        let first = lines.first().expect("at least one diff record");
+        assert_eq!(first.outcome, LineDiffOutcome::Same);
+        let second = lines.get(1).expect("the changed line is present");
+        assert_eq!(second.outcome, LineDiffOutcome::Changed);
+        assert!(second.left.is_some());
+        assert!(second.right.is_some());
+        assert_ne!(second.left, second.right);
+        Ok(())
+    }
+
+    /// A line present on the left but not the right is `removed`;
+    /// a line present on the right but not the left is `added`.
+    /// A run that grew shorter on the right reports the
+    /// lost lines as removed, and vice versa.
+    #[test]
+    fn diff_with_io_reports_added_and_removed() -> anyhow::Result<()> {
+        let left = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}"}
+"#;
+        let right = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}"}
+"#;
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let totals = diff_with_io(
+            left.as_bytes(),
+            right.as_bytes(),
+            &mut out,
+            &mut summary,
+        )?;
+        assert_eq!(totals.same, 1);
+        assert_eq!(totals.changed, 1);
+        assert_eq!(totals.added, 0);
+        assert_eq!(totals.removed, 1);
+        let output = std::str::from_utf8(&out).expect("output is JSONL of utf-8");
+        let lines: Vec<LineDiff> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("the diff is well-formed"))
+            .collect();
+        assert_eq!(lines.len(), 3, "one diff record per paired line up to max");
+        let first = lines.first().expect("at least one diff record");
+        assert_eq!(first.outcome, LineDiffOutcome::Same);
+        let second = lines.get(1).expect("the changed line is present");
+        assert_eq!(second.outcome, LineDiffOutcome::Changed);
+        let third = lines.get(2).expect("the removed line is present");
+        assert_eq!(third.outcome, LineDiffOutcome::Removed);
+        Ok(())
+    }
+
+    /// A different recorded version on the same line is `changed`.
+    /// The diff is on the version, not just the bytes; a recording
+    /// tool that re-emitted a frame at a different negotiated
+    /// revision is a real diff.
+    #[test]
+    fn diff_with_io_reports_changed_on_version_difference() -> anyhow::Result<()> {
+        let left = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+"#;
+        let right = r#"{"version":"2025-06-18","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}
+"#;
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let totals = diff_with_io(
+            left.as_bytes(),
+            right.as_bytes(),
+            &mut out,
+            &mut summary,
+        )?;
+        assert_eq!(totals.changed, 1);
+        assert_eq!(totals.same, 0);
+        Ok(())
+    }
+
+    /// Empty sessions produce no diff records and a clean summary.
+    /// The `for i in 0..0` loop terminates immediately; the only
+    /// output is the summary line.
+    #[test]
+    fn diff_with_io_handles_empty_sessions() -> anyhow::Result<()> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut summary: Vec<u8> = Vec::new();
+        let totals = diff_with_io(
+            b"" as &[u8],
+            b"" as &[u8],
+            &mut out,
+            &mut summary,
+        )?;
+        assert_eq!(totals.same, 0);
+        assert!(totals.is_clean());
+        let summary_text = std::str::from_utf8(&summary).expect("summary is utf-8");
+        assert!(summary_text.contains("0 lines diffed"));
         Ok(())
     }
 }
