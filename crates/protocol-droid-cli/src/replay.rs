@@ -88,6 +88,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::check;
+use crate::record::Direction;
 
 /// What the operator asked `replay` to do.
 #[derive(Debug, Args)]
@@ -100,6 +101,17 @@ pub struct ReplayArgs {
     #[arg(value_name = "SESSION")]
     pub session: String,
 
+    /// The server command to spawn when `--as-client` is set.
+    ///
+    /// Positional and trailing — clap's `trailing_var_arg` means
+    /// "everything from this position on is a literal". The first
+    /// element is the program, the rest are its arguments; they
+    /// are passed to a `StdioClient` as a child process. Empty in
+    /// every other mode; the validator in `run` rejects a
+    /// non-`--as-client` invocation that sets it.
+    #[arg(value_name = "SERVER", trailing_var_arg = true, num_args = 0..)]
+    pub server: Vec<String>,
+
     /// The revision to replay the session against.
     ///
     /// Every frame's verdict is computed as "what would the bridge do
@@ -107,13 +119,14 @@ pub struct ReplayArgs {
     /// this revision?". The frame's own recorded version is its
     /// `source`; this is the `target`.
     ///
-    /// Unused in `--diff` and `--as-server` modes; the diff is
-    /// mechanical and the mock answers from the recording
-    /// byte-for-byte. Required otherwise.
+    /// Unused in `--diff`, `--as-server`, and `--as-client` modes;
+    /// the diff is mechanical, the mock answers from the recording
+    /// byte-for-byte, and the client driver just passes through.
+    /// Required otherwise.
     #[arg(
         long,
         value_name = "VERSION",
-        required_unless_present_any = ["diff", "as_server"]
+        required_unless_present_any = ["diff", "as_server", "as_client"]
     )]
     pub target: Option<String>,
 
@@ -166,13 +179,43 @@ pub struct ReplayArgs {
     /// `--target` and `--diff` are unused in this mode; the mock
     /// answers from the recording byte-for-byte and does not
     /// translate.
-    #[arg(long, conflicts_with_all = ["target", "diff"])]
+    #[arg(long, conflicts_with_all = ["target", "diff", "as_client"])]
     pub as_server: bool,
+
+    /// Drive a live stdio MCP server with the recorded requests and
+    /// diff its responses against the recorded replies.
+    ///
+    /// The recorded `client→upstream` lines are sent to a server
+    /// process that the operator passes after `--`; the server's
+    /// responses are paired with the recorded `upstream→client`
+    /// lines (the next line in the session), and the diff is
+    /// emitted in the same per-line JSONL shape `--diff` writes.
+    /// Same server = zero diffs; mutated server = a precise diff
+    /// at the request whose response changed.
+    ///
+    /// The server command is a positional after `--`, exactly as
+    /// `npm test` and `cargo run --` accept: a leading
+    /// `<program> [args...]` that the binary spawns as a child
+    /// process. The session file is the second positional, and
+    /// the help text is the place to read the order.
+    #[arg(long, conflicts_with_all = ["target", "diff", "as_server"])]
+    pub as_client: bool,
 }
 
 /// One line of the input session file.
 #[derive(Debug, Deserialize)]
 struct RecordedFrame {
+    /// Which way the frame crossed the bridge.
+    ///
+    /// Optional in the on-disk shape so the per-frame verdict
+    /// path's tests (which write a `{version, frame}` line
+    /// without `direction`) keep working without a fixture
+    /// rewrite. `replay --as-client` requires the field —
+    /// pairing `client→upstream` with the next
+    /// `upstream→client` is the whole point of the mode — and
+    /// bails on a session that omits it.
+    #[serde(default)]
+    direction: Option<Direction>,
     /// The revision the frame was captured at.
     ///
     /// Parsed once, on the way in. An unknown revision is the
@@ -535,17 +578,33 @@ impl RunSummary {
 /// the two sessions by line index, writes per-line diffs to stdout
 /// in JSONL, and a human summary to stderr. `--target` is ignored
 /// in this mode; the diff is mechanical.
-pub fn run(args: &ReplayArgs) -> anyhow::Result<()> {
+///
+/// When `--as-server` is set, stands up a mock MCP server on
+/// stdin/stdout that answers from the recorded `upstream→client`
+/// frames, matched by the request's `id`.
+///
+/// When `--as-client` is set, drives a server process (passed as
+/// positional `SERVER [args...]`) with the recorded
+/// `client→upstream` lines, captures the responses, and diffs
+/// them against the recorded `upstream→client` lines. The diff
+/// is emitted in the same JSONL shape `--diff` writes.
+pub async fn run(args: &ReplayArgs) -> anyhow::Result<()> {
     if let Some(right_path) = args.diff.as_deref() {
         return run_diff(&args.session, right_path);
     }
     if args.as_server {
         return run_as_server(&args.session);
     }
+    if args.as_client {
+        if args.server.is_empty() {
+            anyhow::bail!("--as-client requires a server command after the session, e.g. `replay --as-client session.jsonl -- python server.py`");
+        }
+        return run_as_client_async(&args.session, &args.server).await;
+    }
     let target: ProtocolVersion = args
         .target
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--target is required for the verdict mode; pass --diff to skip it"))?
+        .ok_or_else(|| anyhow::anyhow!("--target is required for the verdict mode; pass --diff or --as-server to skip it"))?
         .parse()
         .with_context(|| format!("--target is not a known revision: {}", args.target.as_deref().unwrap_or("")))?;
     let policy = if args.allow_downgrade {
@@ -1080,6 +1139,311 @@ fn looks_like_response(frame: &Map<String, Value>) -> bool {
     frame.contains_key("result") || frame.contains_key("error")
 }
 
+// ============================================================================
+// Dynamic replay: --as-client
+//
+// The other half of the dynamic replay. Reads a recorded session,
+// spawns a server process the operator passes as a positional
+// argument, and replays the recorded `client→upstream` frames
+// against the live server, capturing each response and diffing it
+// against the recorded `upstream→client` frame at the next
+// position. Same server = zero diffs; mutated server = a precise
+// diff at the request whose response changed.
+//
+// Pairing is by (request line, next response line), not by
+// line index. The session is a single time-ordered stream: the
+// request at index `2k` is the input the bridge saw, the
+// response at index `2k+1` is the answer the bridge served.
+// The recorded session is the contract; the as-client engine
+// re-issues the requests and verifies the responses.
+// ============================================================================
+
+/// What the client driver reports for one replayed turn.
+#[derive(Debug, Default)]
+pub struct ClientReport {
+    sent: usize,
+    matched: usize,
+    diffed: usize,
+    malformed: usize,
+    /// A recorded request that the live server did not answer.
+    /// The server is hung, or the request was malformed, or the
+    /// server crashed mid-flight. Either way, the diff cannot
+    /// continue past this turn.
+    unanswered: usize,
+    /// A line that arrived on the wire that was not paired with
+    /// a recorded request. The server wrote more than the
+    /// recording expected.
+    unexpected: usize,
+}
+
+impl ClientReport {
+    /// Whether the diff found no differences and matched every
+    /// sent request with a recorded response.
+    const fn is_clean(&self) -> bool {
+        self.matched == self.sent && self.diffed == 0 && self.unexpected == 0 && self.unanswered == 0
+    }
+
+    fn write_to(&self, sink: &mut impl Write) -> std::io::Result<()> {
+        writeln!(
+            sink,
+            "{} turns replayed: {} sent, {} matched, {} diffed, {} unanswered, {} unexpected, {} malformed",
+            self.sent,
+            self.sent,
+            self.matched,
+            self.diffed,
+            self.unanswered,
+            self.unexpected,
+            self.malformed,
+        )
+    }
+}
+
+/// What one paired turn looks like after the client driver has
+/// collected a response.
+#[derive(Debug)]
+pub struct CapturedTurn {
+    /// The recorded request that was sent.
+    pub request: Map<String, Value>,
+    /// The response the live server returned, re-serialised to
+    /// the canonical wire shape.
+    pub captured: Option<Map<String, Value>>,
+    /// The recorded expected response.
+    pub expected: Map<String, Value>,
+    /// 1-indexed line in the session where the request was.
+    pub request_index: usize,
+}
+
+/// Pairs the recorded lines in the order the bridge saw them.
+///
+/// The recorded session is a single time-ordered stream: the
+/// request at index `2k` is the input, the response at index
+/// `2k+1` is the answer. A response without a preceding
+/// request is "unexpected"; a request without a following
+/// response is "unanswered". Notifications (requests with no
+/// `id`) are recorded as `client→upstream` and skipped by the
+/// client driver because the bridge's answer is silence and
+/// silence has nothing to diff against.
+fn pair_recorded_turns(lines: &[RecordedFrame]) -> (Vec<CapturedTurn>, ClientReport) {
+    let mut report = ClientReport::default();
+    let mut turns: Vec<CapturedTurn> = Vec::new();
+    let mut iter = lines.iter().enumerate();
+    while let Some((request_idx, frame)) = iter.next() {
+        let Some(direction) = frame.direction else {
+            // A line without a direction is the old
+            // verdict-path shape (`{version, frame}` only). The
+            // client driver needs direction; skip with a
+            // malformed count and continue.
+            report.malformed += 1;
+            continue;
+        };
+        if direction != Direction::ClientToUpstream {
+            // A response without a preceding request is
+            // unexpected. The recording starts with a
+            // request by construction, so a leading response
+            // is a malformed session.
+            report.unexpected += 1;
+            continue;
+        }
+        let request = frame.frame.clone();
+        let next = iter.next();
+        let Some((_response_idx, response_frame)) = next else {
+            // A request with no following response: the
+            // recording ended mid-turn. Mark as unanswered
+            // and stop — there is nothing more to pair.
+            report.unanswered += 1;
+            break;
+        };
+        let response_direction = response_frame.direction;
+        if response_direction != Some(Direction::UpstreamToClient) {
+            // The line after a request was not a response.
+            // Either it was another request (the recording
+            // interleaved notifications or the capture
+            // missed a turn) or it has no direction at all.
+            // Either way, the pairing breaks and the loop
+            // cannot continue usefully.
+            report.unexpected += 1;
+            report.malformed += 1;
+            continue;
+        }
+        let request_index = request_idx + 1;
+        let expected = response_frame.frame.clone();
+        turns.push(CapturedTurn {
+            request,
+            captured: None,
+            expected,
+            request_index,
+        });
+    }
+    report.sent = turns.len();
+    (turns, report)
+}
+
+/// Compares a captured response with the recorded expected
+/// response and returns a per-line diff.
+fn diff_turn(turn: &CapturedTurn) -> Option<LineDiff> {
+    let captured = turn.captured.as_ref()?;
+    Some(LineDiff {
+        index: turn.request_index,
+        outcome: if captured == &turn.expected {
+            LineDiffOutcome::Same
+        } else {
+            LineDiffOutcome::Changed
+        },
+        left: Some(turn.request.clone()),
+        right: Some(captured.clone()),
+        left_version: None,
+        right_version: None,
+        note: if captured == &turn.expected {
+            "identical".to_owned()
+        } else {
+            "the live response differs from the recorded reply".to_owned()
+        },
+    })
+}
+
+/// The full client-driver turn-by-turn diff.
+pub fn drive_session(
+    turns: &mut [CapturedTurn],
+    captured: Vec<Option<Map<String, Value>>>,
+    out: &mut impl Write,
+) -> anyhow::Result<ClientReport> {
+    if captured.len() != turns.len() {
+        anyhow::bail!(
+            "the client driver captured {} responses for {} recorded turns; an off-by-one here means a request that the live server never answered",
+            captured.len(),
+            turns.len(),
+        );
+    }
+    let mut report = ClientReport::default();
+    for (turn, captured) in turns.iter_mut().zip(captured) {
+        report.sent += 1;
+        turn.captured = captured;
+        if let Some(diff) = diff_turn(turn) {
+            match diff.outcome {
+                LineDiffOutcome::Same => report.matched += 1,
+                LineDiffOutcome::Changed => report.diffed += 1,
+                _ => {}
+            }
+            serde_json::to_writer(&mut *out, &diff).context("writing a per-turn diff")?;
+            out.write_all(b"\n").context("writing the diff newline")?;
+        }
+    }
+    Ok(report)
+}
+
+/// The async client driver.
+///
+/// `main` is the only caller; it dispatches the `replay` future
+/// from inside the tokio runtime it built. The integration tests
+/// (which run inside a `#[tokio::test]`) reuse the same entry
+/// without re-entering a runtime.
+async fn run_as_client_async(session_path: &str, server: &[String]) -> anyhow::Result<()> {
+    use protocol_droid::adapters::primary::stdio::Diagnostics;
+    use protocol_droid::adapters::secondary::stdio::{ChildSpec, ClientConfig, StdioClient};
+
+    let (program, args) = server
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("--as-client needs at least one positional (the program); the trailing_var_arg was empty"))?;
+    let spec = ChildSpec::new(program.as_str())
+        .with_context(|| format!("building the child spec for {program}"))?;
+    let spec = spec.with_args(args.iter().map(std::ffi::OsString::from))
+        .with_context(|| format!("building the child args for {program}"))?;
+    let config = ClientConfig::default();
+    let diagnostics = Diagnostics::stderr();
+    let client = StdioClient::spawn(&spec, config, diagnostics)
+        .await
+        .with_context(|| format!("spawning the server process {program}"))?;
+
+    let file = std::fs::File::open(session_path)
+        .with_context(|| format!("opening the session file: {session_path}"))?;
+    let reader = std::io::BufReader::new(file);
+    let lines: Vec<RecordedFrame> = {
+        let mut collected: Vec<RecordedFrame> = Vec::new();
+        for line in std::io::BufRead::lines(reader) {
+            let Ok(line) = line else { continue };
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(recorded) = serde_json::from_str::<RecordedFrame>(&line) {
+                collected.push(recorded);
+            }
+        }
+        collected
+    };
+    let (mut turns, mut report) = pair_recorded_turns(&lines);
+    if turns.is_empty() {
+        anyhow::bail!(
+            "the session at {session_path} contains no client->upstream/upstream->client pairs; the client driver has nothing to replay"
+        );
+    }
+
+    // Drive the recorded turns through the live server,
+    // capturing each response.
+    let mut captured_responses: Vec<Option<Map<String, Value>>> = Vec::with_capacity(turns.len());
+    for turn in &turns {
+        let document = serde_json::to_string(&Value::Object(turn.request.clone()))
+            .context("re-serialising a recorded request")?;
+        if let Err(error) = client.send_document(&document).await {
+            eprintln!(
+                "the live server refused the request for turn {}: {error}",
+                turn.request_index
+            );
+            report.unanswered += 1;
+            captured_responses.push(None);
+            continue;
+        }
+        match client.next_frame().await {
+            Ok(Some(reply)) => {
+                let parsed: Map<String, Value> = match serde_json::from_str(&reply) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        eprintln!(
+                            "the live server returned a frame that is not a JSON object for turn {}: {error}",
+                            turn.request_index
+                        );
+                        report.malformed += 1;
+                        captured_responses.push(None);
+                        continue;
+                    }
+                };
+                captured_responses.push(Some(parsed));
+            }
+            Ok(None) => {
+                eprintln!(
+                    "the live server closed its stdout before answering turn {}",
+                    turn.request_index
+                );
+                report.unanswered += 1;
+                captured_responses.push(None);
+            }
+            Err(error) => {
+                eprintln!(
+                    "the live server did not answer the request for turn {}: {error}",
+                    turn.request_index
+                );
+                report.unanswered += 1;
+                captured_responses.push(None);
+            }
+        }
+    }
+
+    let mut stdout = std::io::stdout().lock();
+    let inner_report = drive_session(&mut turns, captured_responses, &mut stdout)?;
+    report.matched = inner_report.matched;
+    report.diffed = inner_report.diffed;
+    drop(stdout);
+    report.write_to(&mut std::io::stderr().lock())?;
+    if !report.is_clean() {
+        anyhow::bail!(
+            "the live server diverged from the recording: {} diffed, {} unanswered, {} unexpected",
+            report.diffed,
+            report.unanswered,
+            report.unexpected,
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -1105,17 +1469,21 @@ mod tests {
     fn clap_args_are_well_formed() {
         let args = ReplayArgs {
             session: "session.jsonl".to_owned(),
+            server: Vec::new(),
             target: Some("2024-11-05".to_owned()),
             explain: true,
             allow_downgrade: true,
             diff: None,
             as_server: false,
+            as_client: false,
         };
         assert_eq!(args.target.as_deref(), Some("2024-11-05"));
         assert!(args.explain);
         assert!(args.allow_downgrade);
         assert!(args.diff.is_none());
         assert!(!args.as_server);
+        assert!(!args.as_client);
+        assert!(args.server.is_empty());
     }
 
     /// `run` is the clap-driven entry point. It is exercised by
@@ -1126,16 +1494,22 @@ mod tests {
     fn run_is_reachable() {
         let args = ReplayArgs {
             session: "session.jsonl".to_owned(),
+            server: Vec::new(),
             target: Some("2024-11-05".to_owned()),
             explain: false,
             allow_downgrade: true,
             diff: None,
             as_server: false,
+            as_client: false,
         };
         // The function opens a real file (or stdin for `-`);
         // this test is a lint-pin only, so the path is bogus
         // and the call is expected to fail.
-        let _ = run(&args);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build the test runtime");
+        let _ = runtime.block_on(run(&args));
     }
 
     /// A simple text result is forwardable to every revision.
@@ -1617,5 +1991,202 @@ this is not json
         assert_eq!(report.unreadable, 1);
         assert_eq!(report.answered, 1);
         Ok(())
+    }
+
+    // -- Dynamic replay: --as-client ---------------------------------------
+
+    /// Builds a `RecordedFrame` for a test fixture.
+    ///
+    /// The field list mirrors the `record` module's on-disk
+    /// shape; `serde_json::from_str` round-trips through the
+    /// same fields the production path sees. The helper lives
+    /// next to the tests because every as-client test needs
+    /// paired (request, response) frames and a hand-rolled
+    /// literal per test is noise.
+    fn recorded(direction: Direction, frame: Map<String, Value>, version: &str) -> RecordedFrame {
+        RecordedFrame {
+            direction: Some(direction),
+            version: version.to_owned(),
+            frame,
+        }
+    }
+
+    /// The recorded session is a single time-ordered stream;
+    /// `pair_recorded_turns` returns one `CapturedTurn` per
+    /// `(c→u, u→c)` pair. This is the T20 spec's "same session
+    /// produces one turn per recorded request" property.
+    #[test]
+    fn pair_recorded_turns_pairs_requests_with_responses() {
+        let lines = vec![
+            recorded(
+                Direction::ClientToUpstream,
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize"}).as_object().cloned().expect("an object"),
+                "2024-11-05",
+            ),
+            recorded(
+                Direction::UpstreamToClient,
+                json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}}).as_object().cloned().expect("an object"),
+                "2024-11-05",
+            ),
+            recorded(
+                Direction::ClientToUpstream,
+                json!({"jsonrpc":"2.0","id":2,"method":"ping"}).as_object().cloned().expect("an object"),
+                "2024-11-05",
+            ),
+            recorded(
+                Direction::UpstreamToClient,
+                json!({"jsonrpc":"2.0","id":2,"result":{}}).as_object().cloned().expect("an object"),
+                "2024-11-05",
+            ),
+        ];
+        let (turns, report) = pair_recorded_turns(&lines);
+        assert_eq!(turns.len(), 2);
+        let first = turns.first().expect("at least one turn");
+        let second = turns.get(1).expect("the second turn");
+        assert_eq!(first.request_index, 1);
+        assert_eq!(second.request_index, 3);
+        assert!(first.captured.is_none());
+        assert_eq!(report.sent, 2);
+        assert_eq!(report.unexpected, 0);
+        assert_eq!(report.unanswered, 0);
+        assert_eq!(report.malformed, 0);
+    }
+
+    /// A request without a following response is `unanswered`
+    /// and the loop stops — there is nothing more to pair.
+    #[test]
+    fn pair_recorded_turns_marks_a_trailing_request_as_unanswered() {
+        let lines = vec![recorded(
+            Direction::ClientToUpstream,
+            json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+            "2024-11-05",
+        )];
+        let (turns, report) = pair_recorded_turns(&lines);
+        assert!(turns.is_empty());
+        assert_eq!(report.unanswered, 1);
+    }
+
+    /// A response without a preceding request is `unexpected`
+    /// and the loop continues — the recording starts with a
+    /// request by construction, so a leading response is a
+    /// session shape problem, not a fatal one.
+    #[test]
+    fn pair_recorded_turns_marks_a_leading_response_as_unexpected() {
+        let lines = vec![recorded(
+            Direction::UpstreamToClient,
+            json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            "2024-11-05",
+        )];
+        let (turns, report) = pair_recorded_turns(&lines);
+        assert!(turns.is_empty());
+        assert_eq!(report.unexpected, 1);
+    }
+
+    /// A line without a `direction` field (the verdict-path
+    /// shape `{version, frame}`) is `malformed` and skipped.
+    /// The client driver requires direction; an old-shape
+    /// session is a user error, not a bug to silently
+    /// translate.
+    #[test]
+    fn pair_recorded_turns_marks_directionless_lines_as_malformed() {
+        let lines = vec![RecordedFrame {
+            direction: None,
+            version: "2024-11-05".to_owned(),
+            frame: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+        }];
+        let (turns, report) = pair_recorded_turns(&lines);
+        assert!(turns.is_empty());
+        assert_eq!(report.malformed, 1);
+    }
+
+    /// `diff_turn` returns `Same` when the captured response
+    /// equals the recorded expected; `Changed` when it does
+    /// not. The captured response replaces the `Option<None>`
+    /// left in the test fixture, then `diff_turn` is the
+    /// shape of a per-turn diff entry.
+    #[test]
+    fn diff_turn_reports_same_when_captured_matches_expected() {
+        let mut turn = CapturedTurn {
+            request: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+            captured: None,
+            expected: json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            request_index: 1,
+        };
+        turn.captured = Some(turn.expected.clone());
+        let diff = diff_turn(&turn).expect("a captured response produces a diff");
+        assert_eq!(diff.outcome, LineDiffOutcome::Same);
+    }
+
+    /// A captured response that differs from the expected is
+    /// `Changed`. The per-turn diff is the operator's way to
+    /// see "this request returned something different from
+    /// the recording".
+    #[test]
+    fn diff_turn_reports_changed_when_captured_differs_from_expected() {
+        let turn = CapturedTurn {
+            request: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+            captured: Some(json!({"jsonrpc":"2.0","id":1,"result":{"mutated":true}}).as_object().cloned().expect("an object")),
+            expected: json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            request_index: 1,
+        };
+        let diff = diff_turn(&turn).expect("a captured response produces a diff");
+        assert_eq!(diff.outcome, LineDiffOutcome::Changed);
+        assert!(diff.note.contains("live response differs"));
+    }
+
+    /// `drive_session` takes the captured responses and
+    /// writes one `LineDiff` per turn to the sink. The
+    /// report's matched/diffed counts add up to the turn
+    /// count.
+    #[test]
+    fn drive_session_writes_one_line_per_turn() -> anyhow::Result<()> {
+        let mut turns = vec![
+            CapturedTurn {
+                request: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+                captured: Some(json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object")),
+                expected: json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+                request_index: 1,
+            },
+            CapturedTurn {
+                request: json!({"jsonrpc":"2.0","id":2,"method":"y"}).as_object().cloned().expect("an object"),
+                captured: Some(json!({"jsonrpc":"2.0","id":2,"result":{"mutated":true}}).as_object().cloned().expect("an object")),
+                expected: json!({"jsonrpc":"2.0","id":2,"result":{}}).as_object().cloned().expect("an object"),
+                request_index: 3,
+            },
+        ];
+        let captured = vec![
+            turns.first().and_then(|t| t.captured.clone()),
+            turns.get(1).and_then(|t| t.captured.clone()),
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        let report = drive_session(&mut turns, captured, &mut out)?;
+        assert_eq!(report.sent, 2);
+        assert_eq!(report.matched, 1);
+        assert_eq!(report.diffed, 1);
+        let output = std::str::from_utf8(&out).expect("output is utf-8");
+        let lines: Vec<LineDiff> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("well-formed"))
+            .collect();
+        assert_eq!(lines.len(), 2);
+        let first = lines.first().expect("at least one diff");
+        assert_eq!(first.outcome, LineDiffOutcome::Same);
+        let second = lines.get(1).expect("the second line");
+        assert_eq!(second.outcome, LineDiffOutcome::Changed);
+        Ok(())
+    }
+
+    /// `ClientReport::is_clean` is true when every sent turn
+    /// was matched and no turn diffed. The binary's exit-zero
+    /// decision reads from this flag.
+    #[test]
+    fn client_report_is_clean_only_when_every_turn_matched() {
+        let mut report = ClientReport::default();
+        assert!(report.is_clean(), "an empty report is vacuously clean");
+        report.matched = 1;
+        report.sent = 1;
+        assert!(report.is_clean());
+        report.diffed = 1;
+        assert!(!report.is_clean(), "a diffed turn breaks clean");
     }
 }

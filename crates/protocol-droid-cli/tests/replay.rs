@@ -213,11 +213,13 @@ fn unknown_recorded_version_is_reported_and_replay_continues() {
 fn clap_args_are_well_formed() {
     let args = ReplayArgs {
         session: "session.jsonl".to_owned(),
+        server: Vec::new(),
         target: Some("2024-11-05".to_owned()),
         explain: true,
         allow_downgrade: true,
         diff: None,
         as_server: false,
+        as_client: false,
     };
     assert_eq!(args.target.as_deref(), Some("2024-11-05"));
     assert!(args.explain);
@@ -477,5 +479,109 @@ fn binary_replay_as_server_returns_method_not_found_for_unknown_id() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("-32601"), "the spec's method-not-found code; got {stdout:?}");
     assert!(stdout.contains("\"id\":99"), "the unknown id is echoed back; got {stdout:?}");
+}
+
+// -- --as-client integration tests ---------------------------------------
+
+/// Spawns a tiny Python stdio MCP server, replays a recorded
+/// session against it, and asserts every turn matches. The
+/// Python server is the `consumer path` test — it exercises
+/// the same path a real Rust client would take, just with
+/// the JSON-RPC parser written in Python.
+#[test]
+fn binary_replay_as_client_replays_against_a_live_server() {
+    let server = r#"
+import sys
+import json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if "id" in msg and "method" in msg:
+        method = msg["method"]
+        if method == "initialize":
+            print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"echo","version":"0"}}}), flush=True)
+        elif method == "ping":
+            print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{}}), flush=True)
+"#;
+    let server_path = write_session("bin-as-client-server", server);
+    let session = r#"{"direction":"client→upstream","version":"2024-11-05","clock_ns":42,"frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}"}
+{"direction":"upstream→client","version":"2024-11-05","clock_ns":50,"frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"serverInfo\":{\"name\":\"echo\",\"version\":\"0\"}}}"}
+{"direction":"client→upstream","version":"2024-11-05","clock_ns":100,"frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}"}
+{"direction":"upstream→client","version":"2024-11-05","clock_ns":105,"frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+    let session_path = write_session("bin-as-client", session);
+    let output = std::process::Command::new(protocol_droid_bin())
+        .args(["replay", &session_path, "--as-client", "python3", &server_path])
+        .output()
+        .expect("spawn the protocol-droid binary");
+    assert!(
+        output.status.success(),
+        "binary should exit zero on a clean replay; got {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"outcome\":\"same\""), "the diff is `same` for both turns; got {stdout:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("2 matched"), "the summary reports the matched count; got {stderr:?}");
+    assert!(stderr.contains("0 diffed"), "the diffed count is zero; got {stderr:?}");
+}
+
+/// A live server that returns a different response than the
+/// recording produces a `changed` per-turn diff and a
+/// non-zero exit. The T20 spec's "replay against a mutated
+/// server: a precise diff at the request whose response
+/// changed" property, exercised end-to-end through a real
+/// subprocess.
+#[test]
+fn binary_replay_as_client_exits_non_zero_on_a_mutated_response() {
+    let server = r#"
+import sys
+import json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if "id" in msg and "method" in msg:
+        # Always answer "ping" with a mutated payload, regardless
+        # of what the recording expects. The diff should fire on
+        # this turn and on this turn only.
+        if msg["method"] == "initialize":
+            print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"echo","version":"0"}}}), flush=True)
+        elif msg["method"] == "ping":
+            print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{"mutated":True}}), flush=True)
+"#;
+    let server_path = write_session("bin-as-client-mut-server", server);
+    let session = r#"{"direction":"client→upstream","version":"2024-11-05","clock_ns":42,"frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}"}
+{"direction":"upstream→client","version":"2024-11-05","clock_ns":50,"frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"serverInfo\":{\"name\":\"echo\",\"version\":\"0\"}}}"}
+{"direction":"client→upstream","version":"2024-11-05","clock_ns":100,"frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}"}
+{"direction":"upstream→client","version":"2024-11-05","clock_ns":105,"frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}
+"#;
+    let session_path = write_session("bin-as-client-mut", session);
+    let output = std::process::Command::new(protocol_droid_bin())
+        .args(["replay", &session_path, "--as-client", "python3", &server_path])
+        .output()
+        .expect("spawn the protocol-droid binary");
+    assert!(
+        !output.status.success(),
+        "binary should exit non-zero on a mutated response; got {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"outcome\":\"changed\""), "the mutated turn is reported; got {stdout:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("the live server diverged from the recording"));
 }
 

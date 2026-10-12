@@ -131,7 +131,7 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
         Command::Conformance(args) => conformance::run(&args).await,
         Command::Inspect(args) => inspect::run(&args).await,
         Command::Probe(args) => probe::run(&args).await,
-        Command::Replay(args) => replay::run(&args),
+        Command::Replay(args) => replay::run(&args).await,
         Command::Record(args) => record::run(&args).await,
     }
 }

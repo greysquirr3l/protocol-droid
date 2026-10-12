@@ -55,7 +55,7 @@ use anyhow::Context as _;
 use clap::Args;
 use protocol_droid::application::jsonrpc::{FrameSource, SourceError};
 use protocol_droid::application::session::{FrameSink, SinkError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A redactor turns a frame's JSON-RPC envelope into the form the recorder
 /// persists.
@@ -231,7 +231,14 @@ impl<W: Write + Send> core::fmt::Debug for JsonlRecorder<W> {
 }
 
 /// Which way a frame crossed the bridge.
-#[derive(Debug, Clone, Copy, Serialize)]
+///
+/// `Deserialize` is derived alongside `Serialize` so `replay
+/// --as-client` (and any future consumer of a recorded session) can
+/// pair the recorded `client→upstream` lines with the recorded
+/// `upstream→client` lines in the order the bridge saw them. The
+/// recorded format is the contract; both ends have to read and
+/// write the same shape.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Direction {
     /// The client sent it, the bridge is about to forward it.
     #[serde(rename = "client→upstream")]
