@@ -6,7 +6,7 @@
 //! of its own.
 
 use clap::{Parser, Subcommand};
-use protocol_droid_cli::{bridge, conformance, record, replay};
+use protocol_droid_cli::{bridge, conformance, probe, record, replay};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///
@@ -57,6 +57,13 @@ struct Cli {
 enum Command {
     /// Validate and report a version-translating bridge between two peers.
     Bridge(bridge::BridgeArgs),
+    /// Fingerprint what revisions an MCP server actually speaks.
+    ///
+    /// Tries `initialize` (or `server/discover` on `2026-07-28`) at every
+    /// revision this build has wire types for, reports a version ×
+    /// capability matrix on stdout, and exits non-zero when nothing was
+    /// accepted.
+    Probe(probe::ProbeArgs),
     /// Run the official MCP conformance suite against a server or client.
     ///
     /// Three modes: `server` (suite → your server URL), `client` (suite →
@@ -113,6 +120,7 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Bridge(args) => bridge::run(&args).await,
         Command::Conformance(args) => conformance::run(&args).await,
+        Command::Probe(args) => probe::run(&args).await,
         Command::Replay(args) => replay::run(&args),
         Command::Record(args) => record::run(&args).await,
     }
