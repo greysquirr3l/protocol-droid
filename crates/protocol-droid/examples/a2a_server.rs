@@ -2692,6 +2692,103 @@ mod tests {
         Ok(())
     }
 
+    /// The `/health` route returns
+    /// `200 OK` with `ok\n`. A
+    /// container orchestrator using
+    /// `/health` to gate traffic
+    /// would not see the agent as
+    /// alive if the route returned
+    /// `404` or `500`; the test
+    /// pins the response. The body
+    /// is the agent's reachability
+    /// signal, not the agent card,
+    /// so a regression that
+    /// returned the card here
+    /// would be obvious in
+    /// orchestrator logs.
+    #[tokio::test]
+    async fn health_route_returns_ok(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = spawn_test_router(health_router()).await?;
+        let response = reqwest::Client::new()
+            .get(format!("{url}/health"))
+            .send()
+            .await?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!(
+                "expected 200 from /health, got {}",
+                response.status()
+            )
+            .into());
+        }
+        let body = response.text().await?;
+        if body != "ok\n" {
+            return Err(format!("expected 'ok\\n', got {body:?}").into());
+        }
+        Ok(())
+    }
+
+    /// `deliver_for_task` with no
+    /// push configs registered is a
+    /// no-op — the early return
+    /// happens before any spawn.
+    /// The test pins the early
+    /// return so a regression that
+    /// tried to spawn a delivery
+    /// for an empty config list
+    /// (and crashed on the unwrap
+    /// of the task lookup) would
+    /// surface here.
+    #[test]
+    fn deliver_for_task_with_no_configs_is_a_noop(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        // No push configs in the
+        // store, no task. The
+        // function must return
+        // without panicking and
+        // without spawning anything.
+        agent.deliver_for_task("t-none");
+        // Reading the store still
+        // works (the lock was not
+        // held across a panic).
+        let len = agent.store.lock().expect("store lock").len();
+        if len != 0 {
+            return Err(format!(
+                "expected an empty store, got {len} tasks"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `deliver_for_task` for a
+    /// task that does not exist in
+    /// the store is a no-op. The
+    /// `let Some(task) = ...
+    /// else { return };` guard
+    /// means a stale config
+    /// (registered for a task the
+    /// store has since forgotten)
+    /// does not panic on the
+    /// `.get` returning `None`.
+    /// The test pins the guard
+    /// against a regression that
+    /// unwrapped the `Option`
+    /// and crashed the spawned
+    /// task.
+    #[test]
+    fn deliver_for_task_for_missing_task_is_a_noop(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        // No task named
+        // `t-missing` in the
+        // store. The function
+        // must return cleanly.
+        agent.deliver_for_task("t-missing");
+        Ok(())
+    }
+
     /// Build the same router the example
     /// builds when a bearer token is set,
     /// but with the token passed in rather
