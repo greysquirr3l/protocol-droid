@@ -36,7 +36,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///
 /// Ordered by `major` then `minor`, oldest to newest. See the module docs for
 /// why that is an invariant rather than a coincidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// `Ord` and `PartialOrd` are *hand-written* (the derive is removed) for the
+/// reason in the module docs: a derived `Ord` orders enum variants by
+/// declaration order first, which would put `V1_0` (the first variant) before
+/// `Unknown { major: 1, minor: 0 }` even though they carry the same wire
+/// value. The hand impl compares by `(major, minor)` only, so the two are
+/// `Ordering::Equal`. The 1.98 derive fast path that assumes a derived
+/// `PartialOrd` agrees with a hand-written `Ord` does not apply here — this
+/// is the case the rule was written for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum A2aVersion {
     /// The first A2A version with the `A2A-Version` header. Establishes the
     /// JSON-RPC binding the protocol-neutral core already speaks, plus the
@@ -54,6 +63,31 @@ pub enum A2aVersion {
         /// The peer-named minor version.
         minor: u16,
     },
+}
+
+/// The `(major, minor)` pair a version carries, in a form the
+/// comparison can use. `V1_0` is `(1, 0)`; an `Unknown` is its
+/// own fields. The helper exists so the `Ord` impl is one
+/// expression, and so a future variant that adds a new field to
+/// `Unknown` (a build-flag, a build date) cannot silently change
+/// the comparison.
+const fn parts(version: A2aVersion) -> (u16, u16) {
+    match version {
+        A2aVersion::V1_0 => (1, 0),
+        A2aVersion::Unknown { major, minor } => (major, minor),
+    }
+}
+
+impl PartialOrd for A2aVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for A2aVersion {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        parts(*self).cmp(&parts(*other))
+    }
 }
 
 impl A2aVersion {
