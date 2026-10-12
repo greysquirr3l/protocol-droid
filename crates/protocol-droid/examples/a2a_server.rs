@@ -1034,6 +1034,22 @@ mod tests {
         })
     }
 
+    /// A `user_text_message` is the
+    /// common input shape the
+    /// `SendMessage` handler reads.
+    /// The `Message` builder takes
+    /// one `Part` per call; a
+    /// regression that expected a
+    /// `Vec<Part>` (i.e. iterates
+    /// and re-joins) would lose the
+    /// text on a single-part input.
+    fn user_text_message(text: &str) -> Message {
+        Message::new(MessageRole::User).with_part(Part::Text(TextPart {
+            text: text.to_owned(),
+            metadata: std::collections::BTreeMap::new(),
+        }))
+    }
+
     /// A `ListTasks` response with at least one
     /// task has a positive `page_size`. A
     /// `page_size` of `0` is a malformed
@@ -2202,6 +2218,319 @@ mod tests {
         if error != supplied {
             return Err(format!(
                 "expected the same error back, got {error:?} vs {supplied:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Build a minimal `EchoAgent`
+    /// with an empty store, a real
+    /// tokio handle, and no push
+    /// notification configs. The
+    /// handle is needed because the
+    /// `EchoAgent` struct holds one;
+    /// the spawn it would do at
+    /// delivery time is never reached
+    /// because an empty config list
+    /// returns early. The card is the
+    /// one the example would publish,
+    /// so the `GetExtendedAgentCard`
+    /// test reads back the same shape
+    /// a peer would.
+    fn minimal_agent() -> Result<EchoAgent, Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+        let delivery = WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let agent = EchoAgent {
+            store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
+            delivery: Arc::new(delivery),
+            handle: runtime.handle().clone(),
+            card: build_card(addr, None),
+        };
+        // Drop the runtime but keep the
+        // handle. `Handle` outlives the
+        // runtime; calls to `handle.spawn`
+        // would fail at *use* time, but
+        // the tests below never trigger
+        // that path because the store
+        // starts with no push configs.
+        drop(runtime);
+        Ok(agent)
+    }
+
+    /// `handle_send_message` creates a
+    /// task, stores it, and returns
+    /// the task with a `completed`
+    /// state. The reply text is the
+    /// echo of the input. The test
+    /// pins the contract: the handler
+    /// is the only place a task gets
+    /// a `t-<n>` id, so a regression
+    /// that bypassed the allocator
+    /// would surface here as a
+    /// missing or wrong id.
+    #[test]
+    fn handle_send_message_creates_a_completed_task_with_echo_reply(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        let request = SendMessageRequest::new(user_text_message("hello"));
+        let response = agent.handle_send_message(&request);
+        let SendMessageResponse::Task(task) = response else {
+            return Err("expected SendMessageResponse::Task".into());
+        };
+        if !task.id.as_ref().starts_with("t-") {
+            return Err(format!(
+                "expected id to start with 't-', got {:?}",
+                task.id.as_ref()
+            )
+            .into());
+        }
+        if task.status.state != TaskState::Completed {
+            return Err(format!(
+                "expected state Completed, got {:?}",
+                task.status.state
+            )
+            .into());
+        }
+        let reply_text = task
+            .status
+            .message
+            .as_ref()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                Part::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .ok_or("expected a text reply")?;
+        if reply_text != "echo: hello" {
+            return Err(format!("expected 'echo: hello', got {reply_text:?}").into());
+        }
+        Ok(())
+    }
+
+    /// `handle_get_task` returns the
+    /// task the request names. The
+    /// test sends a `SendMessage` to
+    /// get a real id, then reads the
+    /// task back. The round-trip is
+    /// what a peer calling
+    /// `SendMessage` then
+    /// `GetTask` would observe.
+    #[test]
+    fn handle_get_task_returns_a_known_task(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        let sent = agent.handle_send_message(&SendMessageRequest::new(
+            user_text_message("first"),
+        ));
+        let SendMessageResponse::Task(sent_task) = sent else {
+            return Err("expected SendMessageResponse::Task".into());
+        };
+        let id = sent_task.id.to_string();
+        let got = agent
+            .handle_get_task(&GetTaskRequest::new(id.clone()))
+            .map_err(|error| format!("handle_get_task failed: {error:?}"))?;
+        if got.id.as_ref() != id {
+            return Err(format!(
+                "expected id {id:?}, got {:?}",
+                got.id.as_ref()
+            )
+            .into());
+        }
+        if got.status.state != TaskState::Completed {
+            return Err(format!(
+                "expected state Completed, got {:?}",
+                got.status.state
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `handle_get_task` for a missing
+    /// id returns `InvalidParams` —
+    /// not `InternalError`, not
+    /// `MethodNotFound`. The
+    /// `MethodNotFound` shape is
+    /// reserved for the method-level
+    /// case (the peer named a method
+    /// that isn't in the table), and
+    /// `InternalError` is reserved
+    /// for the server's own
+    /// failures. "The task id is
+    /// unknown" is a *params* shape
+    /// mismatch from the handler's
+    /// point of view, and the wire
+    /// code is `-32602`.
+    #[test]
+    fn handle_get_task_missing_id_is_invalid_params(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        let result = agent.handle_get_task(&GetTaskRequest::new("t-missing"));
+        match result {
+            Err(A2aError::InvalidParams { reason }) => {
+                if !reason.contains("t-missing") {
+                    return Err(format!(
+                        "expected reason to name the missing id, got {reason:?}"
+                    )
+                    .into());
+                }
+            }
+            Ok(_) => return Err("expected an InvalidParams error".into()),
+            Err(other) => {
+                return Err(format!("expected InvalidParams, got {other:?}").into())
+            }
+        }
+        Ok(())
+    }
+
+    /// `handle_cancel_task` flips the
+    /// state of an existing task to
+    /// `Cancelled` and returns the
+    /// mutated task. A regression
+    /// that returned the unchanged
+    /// task (forgot the mutation)
+    /// would surface here as a
+    /// state mismatch.
+    #[test]
+    fn handle_cancel_task_flips_state_to_cancelled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        let sent = agent.handle_send_message(&SendMessageRequest::new(
+            user_text_message("to-cancel"),
+        ));
+        let SendMessageResponse::Task(sent_task) = sent else {
+            return Err("expected SendMessageResponse::Task".into());
+        };
+        let id = sent_task.id.to_string();
+        let cancelled = agent
+            .handle_cancel_task(&CancelTaskRequest::new(id.clone()))
+            .map_err(|error| format!("handle_cancel_task failed: {error:?}"))?;
+        if cancelled.status.state != TaskState::Cancelled {
+            return Err(format!(
+                "expected state Cancelled, got {:?}",
+                cancelled.status.state
+            )
+            .into());
+        }
+        // The follow-up read sees the
+        // mutated state — the handler
+        // is the mutation, not just a
+        // response.
+        let read_back = agent
+            .handle_get_task(&GetTaskRequest::new(id.clone()))
+            .map_err(|error| format!("handle_get_task failed: {error:?}"))?;
+        if read_back.status.state != TaskState::Cancelled {
+            return Err(format!(
+                "expected GetTask to read Cancelled, got {:?}",
+                read_back.status.state
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `handle_cancel_task` for a
+    /// missing id returns
+    /// `InvalidParams`, mirroring
+    /// the `handle_get_task` shape.
+    #[test]
+    fn handle_cancel_task_missing_id_is_invalid_params(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        let result = agent.handle_cancel_task(&CancelTaskRequest::new("t-missing"));
+        match result {
+            Err(A2aError::InvalidParams { reason }) => {
+                if !reason.contains("t-missing") {
+                    return Err(format!(
+                        "expected reason to name the missing id, got {reason:?}"
+                    )
+                    .into());
+                }
+            }
+            Ok(_) => return Err("expected an InvalidParams error".into()),
+            Err(other) => {
+                return Err(format!("expected InvalidParams, got {other:?}").into())
+            }
+        }
+        Ok(())
+    }
+
+    /// `handle_list_tasks` reports
+    /// the number of tasks the agent
+    /// has. The test populates the
+    /// store via two `SendMessage`
+    /// calls, then lists with no
+    /// filters. The list shape
+    /// (`page_size`, `total_size`,
+    /// `next_page_token`) is the
+    /// `paginate_tasks` contract; the
+    /// test pins the integration
+    /// between the handler and the
+    /// pagination math.
+    #[test]
+    fn handle_list_tasks_reports_total_size_of_populated_store(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        for text in ["one", "two"] {
+            let _ = agent.handle_send_message(&SendMessageRequest::new(
+                user_text_message(text),
+            ));
+        }
+        let response = agent.handle_list_tasks(&ListTasksRequest {
+            context_id: None,
+            status: None,
+            page_size: None,
+            page_token: None,
+            history_length: None,
+            status_timestamp_after: None,
+            metadata: std::collections::BTreeMap::new(),
+        });
+        if response.total_size != 2 {
+            return Err(format!(
+                "expected total_size 2, got {}",
+                response.total_size
+            )
+            .into());
+        }
+        if response.tasks.len() != 2 {
+            return Err(format!(
+                "expected 2 tasks in the page, got {}",
+                response.tasks.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `handle_get_extended_agent_card`
+    /// returns the agent's card so a
+    /// peer that authenticated can
+    /// discover the post-auth card.
+    /// The test pins that the card
+    /// the agent holds is the card
+    /// the handler hands back, with
+    /// the same name and version.
+    #[test]
+    fn handle_get_extended_agent_card_returns_the_agent_card(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let agent = minimal_agent()?;
+        let response = agent
+            .handle_get_extended_agent_card(&GetExtendedAgentCardRequest::new());
+        if response.0.name != agent.card.name {
+            return Err(format!(
+                "expected name {:?}, got {:?}",
+                agent.card.name, response.0.name
+            )
+            .into());
+        }
+        if response.0.version != agent.card.version {
+            return Err(format!(
+                "expected version {:?}, got {:?}",
+                agent.card.version, response.0.version
             )
             .into());
         }
