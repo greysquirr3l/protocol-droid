@@ -1297,6 +1297,146 @@ mod tests {
         Ok(())
     }
 
+    /// `total_size` is reported as supplied,
+    /// not derived from the filtered list.
+    /// The caller's filter might have
+    /// narrowed the result (e.g. a `state =
+    /// Working` filter that drops
+    /// `Completed` tasks), and the peer
+    /// needs to see the *pre-filter* count
+    /// on every page to know when to stop
+    /// paginating. A regression that used
+    /// `filtered.len()` as `total_size`
+    /// would ship a count the peer cannot
+    /// reason about, and the peer's
+    /// stop-condition would diverge from
+    /// the server's.
+    #[test]
+    fn paginate_tasks_total_size_reflects_caller_supplied_value(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // The filtered list has 2 tasks,
+        // but the caller's filter narrowed
+        // from a 100-task store. The peer
+        // should see `total_size: 100` so
+        // it can decide to keep paginating.
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2")],
+            Some(1),
+            None,
+            100,
+        );
+        if response.total_size != 100 {
+            return Err(format!(
+                "expected total_size 100 (caller-supplied), got {}",
+                response.total_size
+            )
+            .into());
+        }
+        if response.tasks.len() != 1 {
+            return Err(format!(
+                "expected 1 task in the page, got {}",
+                response.tasks.len()
+            )
+            .into());
+        }
+        if response.next_page_token != "1" {
+            return Err(format!(
+                "expected next_page_token '1' (offset 1), got {:?}",
+                response.next_page_token
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A `page_size` exactly equal to
+    /// `filtered.len()` returns the whole
+    /// list on this page, and the
+    /// `next_page_token` is empty because
+    /// the next offset is past the end.
+    /// The boundary case is what makes
+    /// "give me everything in one page"
+    /// and "give me N items" agree when
+    /// N happens to equal the filter
+    /// count.
+    #[test]
+    fn paginate_tasks_page_size_equal_to_filtered_returns_whole_list(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2"), task("t-3")],
+            Some(3),
+            None,
+            3,
+        );
+        if response.tasks.len() != 3 {
+            return Err(format!(
+                "expected 3 tasks, got {}",
+                response.tasks.len()
+            )
+            .into());
+        }
+        if !response.next_page_token.is_empty() {
+            return Err(format!(
+                "expected empty next_page_token, got {:?}",
+                response.next_page_token
+            )
+            .into());
+        }
+        if response.page_size != 3 {
+            return Err(format!(
+                "expected page_size 3, got {}",
+                response.page_size
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A `page_size: 1` returns a
+    /// singleton page. The first page
+    /// of a long list should be a
+    /// single task with a non-empty
+    /// `next_page_token`, so a peer
+    /// paginating through a long list
+    /// gets a single task per page and
+    /// continues from the next offset.
+    /// The boundary case of
+    /// `page_size: 1` is the
+    /// "smallest possible page" the
+    /// spec allows.
+    #[test]
+    fn paginate_tasks_page_size_one_returns_singleton(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(
+            vec![task("t-1"), task("t-2"), task("t-3")],
+            Some(1),
+            None,
+            3,
+        );
+        if response.tasks.len() != 1 {
+            return Err(format!(
+                "expected 1 task, got {}",
+                response.tasks.len()
+            )
+            .into());
+        }
+        if response.next_page_token != "1" {
+            return Err(format!(
+                "expected next_page_token '1', got {:?}",
+                response.next_page_token
+            )
+            .into());
+        }
+        if response.page_size != 1 {
+            return Err(format!(
+                "expected page_size 1, got {}",
+                response.page_size
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// A task inserted into the store round-trips
     /// through `get` byte-for-byte. The store
     /// clones on the way out, so a caller that
