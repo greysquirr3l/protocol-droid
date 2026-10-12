@@ -196,3 +196,249 @@ pub enum ParseA2aVersionError {
         error: core::num::ParseIntError,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use core::str::FromStr;
+
+    use super::{A2aVersion, ParseA2aVersionError};
+
+    /// `V1_0.as_str()` is the wire form
+    /// `"1.0"`. The wire form is what
+    /// crosses the `A2A-Version` header
+    /// and the `protocolVersion` field
+    /// on the agent card; a regression
+    /// that returned `"v1.0"` or
+    /// `"1.0.0"` would break the
+    /// protocol.
+    #[test]
+    fn v1_0_as_str_is_the_wire_form() {
+        assert_eq!(A2aVersion::V1_0.as_str(), "1.0");
+    }
+
+    /// `Unknown { .. }.as_str()` returns
+    /// `"unknown"`, not a formatted
+    /// `Major.Minor`. The doc comment
+    /// on `as_str` notes that
+    /// formatting an `Unknown` into a
+    /// `&'static str` is impossible —
+    /// the value is not a literal —
+    /// so the function is a debug
+    /// marker rather than a wire form.
+    /// A peer-supplied `Unknown`
+    /// version is formatted through
+    /// `Display`, not `as_str`.
+    #[test]
+    fn unknown_as_str_is_the_literal_unknown() {
+        let version = A2aVersion::Unknown {
+            major: 2,
+            minor: 5,
+        };
+        assert_eq!(version.as_str(), "unknown");
+    }
+
+    /// `is_known()` is `true` for
+    /// `V1_0` and `false` for any
+    /// `Unknown`. A peer that names a
+    /// version this build does not
+    /// speak gets `Unknown`, and the
+    /// dispatcher's `KNOWN` table
+    /// decides what to do with it.
+    #[test]
+    fn is_known_matches_the_variant() {
+        assert!(A2aVersion::V1_0.is_known());
+        assert!(!A2aVersion::Unknown { major: 1, minor: 0 }.is_known());
+        assert!(!A2aVersion::Unknown { major: 2, minor: 0 }.is_known());
+    }
+
+    /// `Display` formats `V1_0` as
+    /// `"1.0"`. The wire form is the
+    /// same string the `Serialize`
+    /// impl writes.
+    #[test]
+    fn display_for_v1_0_is_dot_zero() {
+        assert_eq!(A2aVersion::V1_0.to_string(), "1.0");
+    }
+
+    /// `Display` formats an `Unknown`
+    /// as `"<major>.<minor>"`. This is
+    /// the wire form for forward-
+    /// compatible version negotiation:
+    /// a peer that names `"2.5"`
+    /// carries an `Unknown { major: 2,
+    /// minor: 5 }` whose wire form is
+    /// `"2.5"`.
+    #[test]
+    fn display_for_unknown_is_major_dot_minor() {
+        let version = A2aVersion::Unknown {
+            major: 2,
+            minor: 5,
+        };
+        assert_eq!(version.to_string(), "2.5");
+    }
+
+    /// `FromStr` parses `"1.0"` as
+    /// `V1_0`. The wire form is the
+    /// exact match.
+    #[test]
+    fn from_str_parses_v1_0() -> Result<(), ParseA2aVersionError> {
+        let version = A2aVersion::from_str("1.0")?;
+        assert_eq!(version, A2aVersion::V1_0);
+        Ok(())
+    }
+
+    /// `FromStr` parses a future
+    /// version as `Unknown` with the
+    /// same `Major.Minor`. A peer that
+    /// speaks `"2.5"` (a build newer
+    /// than this one) is an `Unknown`,
+    /// not an error.
+    #[test]
+    fn from_str_parses_unknown_with_known_fields(
+    ) -> Result<(), ParseA2aVersionError> {
+        let version = A2aVersion::from_str("2.5")?;
+        assert_eq!(
+            version,
+            A2aVersion::Unknown {
+                major: 2,
+                minor: 5,
+            }
+        );
+        Ok(())
+    }
+
+    /// A version string with no `.`
+    /// separator is `MissingMinor`.
+    /// The variant names the part
+    /// that was wrong (`the `.Minor`
+    /// part`), not the string, so a
+    /// peer that sent `"1"` gets a
+    /// message about the missing
+    /// `Minor`.
+    #[test]
+    fn from_str_rejects_missing_minor_with_named_variant()
+    -> Result<(), String> {
+        let result = A2aVersion::from_str("1");
+        match result {
+            Err(ParseA2aVersionError::MissingMinor { input }) => {
+                if input != "1" {
+                    return Err(format!(
+                        "expected input '1', got {input:?}"
+                    ));
+                }
+                Ok(())
+            }
+            other => {
+                Err(format!("expected MissingMinor, got {other:?}"))
+            }
+        }
+    }
+
+    /// A non-numeric `Major` is
+    /// `InvalidMajor`. The variant
+    /// carries the verbatim input and
+    /// the parse error.
+    #[test]
+    fn from_str_rejects_non_numeric_major_with_named_variant()
+    -> Result<(), String> {
+        let result = A2aVersion::from_str("foo.bar");
+        match result {
+            Err(ParseA2aVersionError::InvalidMajor { input, .. }) => {
+                if input != "foo.bar" {
+                    return Err(format!(
+                        "expected input 'foo.bar', got {input:?}"
+                    ));
+                }
+                Ok(())
+            }
+            other => {
+                Err(format!("expected InvalidMajor, got {other:?}"))
+            }
+        }
+    }
+
+    /// A non-numeric `Minor` is
+    /// `InvalidMinor`. The variant
+    /// names the offending part, not
+    /// the string.
+    #[test]
+    fn from_str_rejects_non_numeric_minor_with_named_variant()
+    -> Result<(), String> {
+        let result = A2aVersion::from_str("1.foo");
+        match result {
+            Err(ParseA2aVersionError::InvalidMinor { input, .. }) => {
+                if input != "1.foo" {
+                    return Err(format!(
+                        "expected input '1.foo', got {input:?}"
+                    ));
+                }
+                Ok(())
+            }
+            other => {
+                Err(format!("expected InvalidMinor, got {other:?}"))
+            }
+        }
+    }
+
+    /// Ordering is numeric, not
+    /// lexicographic. `"0.9" < "0.10"`
+    /// in the wire form is false
+    /// lexicographically, true
+    /// numerically; the `Ord` derive
+    /// must agree with the spec's
+    /// "latest minor per major" rule
+    /// (an `Unknown { major: 0, minor:
+    /// 9 }` is older than `Unknown {
+    /// major: 0, minor: 10 }`).
+    #[test]
+    fn unknown_ordering_is_numeric_not_lexicographic() {
+        let nine = A2aVersion::Unknown {
+            major: 0,
+            minor: 9,
+        };
+        let ten = A2aVersion::Unknown {
+            major: 0,
+            minor: 10,
+        };
+        assert!(nine < ten, "0.9 must sort before 0.10 numerically");
+    }
+
+    /// An `Unknown { major: 1, minor: 0
+    /// }` sorts equal to `V1_0`. The
+    /// module doc promises this; a
+    /// future minor that bumps the
+    /// major without a code change
+    /// must end up at the same
+    /// ordering point. A regression
+    /// that gave `V1_0` and its
+    /// `Unknown` peer different
+    /// ordering would silently change
+    /// the dispatcher's
+    /// "best-match" table.
+    #[test]
+    fn unknown_versions_sort_with_their_known_equivalent() {
+        let known = A2aVersion::V1_0;
+        let unknown_equivalent = A2aVersion::Unknown {
+            major: 1,
+            minor: 0,
+        };
+        assert_eq!(known.cmp(&unknown_equivalent), core::cmp::Ordering::Equal);
+        assert_eq!(unknown_equivalent.cmp(&known), core::cmp::Ordering::Equal);
+    }
+
+    /// `KNOWN` lists every revision
+    /// this build has wire types for,
+    /// oldest first. A future commit
+    /// that adds a new revision must
+    /// update this array; the
+    /// dispatcher's table is keyed on
+    /// it. The test pins the current
+    /// shape: one revision, `V1_0`.
+    /// When a new revision lands, this
+    /// test must change to match the
+    /// new array.
+    #[test]
+    fn known_array_lists_v1_0() {
+        assert_eq!(A2aVersion::KNOWN, [A2aVersion::V1_0]);
+    }
+}
