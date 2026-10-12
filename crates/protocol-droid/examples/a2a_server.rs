@@ -2536,6 +2536,244 @@ mod tests {
         }
         Ok(())
     }
+
+    /// The `a2a_server` example's bearer
+    /// middleware protects JSON-RPC
+    /// and streaming but leaves the
+    /// well-known card unauthenticated.
+    /// A `route_layer` placed after
+    /// the full merge chain would
+    /// protect the well-known too, and
+    /// a peer that knows nothing about
+    /// the server would have no way to
+    /// learn what to send. The test
+    /// spawns a real `axum::serve` on
+    /// a random port with a
+    /// `Some("top-secret")` token,
+    /// then reads the well-known card
+    /// without a header. The expected
+    /// status is `200 OK` with a
+    /// `Content-Type: application/json`
+    /// body, regardless of the token.
+    /// A regression that protected the
+    /// well-known too would surface as
+    /// a `401` here.
+    #[tokio::test]
+    async fn well_known_card_is_unauthenticated_when_bearer_is_required(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let router = build_protected_router("top-secret")?;
+        let url = spawn_test_router(router).await?;
+        let response = reqwest::Client::new()
+            .get(format!("{url}/.well-known/agent-card.json"))
+            .send()
+            .await?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!(
+                "the well-known card is the discovery endpoint; an unauthenticated GET must \
+                 return 200 so a peer can learn the bearer scheme, got {}",
+                response.status()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// The `a2a_server` example's bearer
+    /// middleware protects JSON-RPC.
+    /// A `POST` to `/a2a` without a
+    /// `Bearer` header returns `401`
+    /// (or, equivalently, never
+    /// reaches the JSON-RPC handler).
+    /// The test pins the rejection
+    /// shape from the example's own
+    /// `build_router` composition —
+    /// not just the abstract
+    /// middleware in the wire
+    /// tests.
+    #[tokio::test]
+    async fn jsonrpc_without_bearer_is_a_401(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let router = build_protected_router("top-secret")?;
+        let url = spawn_test_router(router).await?;
+        let body = jsonrpc_send_message_body();
+        let response = reqwest::Client::new()
+            .post(format!("{url}/a2a"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&body)?)
+            .send()
+            .await?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Err(format!(
+                "expected 401 without a bearer token, got {}",
+                response.status()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// The `a2a_server` example's bearer
+    /// middleware accepts a `POST` to
+    /// `/a2a` with the right
+    /// `Authorization: Bearer` header.
+    /// The `401` path is pinned by
+    /// `jsonrpc_without_bearer_is_a_401`;
+    /// this pins the success path so a
+    /// regression that broke the
+    /// `route_layer` composition (e.g.
+    /// a `route_layer` placed *before*
+    /// the `merge` so the JSON-RPC
+    /// route was unprotected) would
+    /// surface here as a `401` (or
+    /// worse, a malformed envelope).
+    #[tokio::test]
+    async fn jsonrpc_with_bearer_succeeds(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let router = build_protected_router("top-secret")?;
+        let url = spawn_test_router(router).await?;
+        let body = jsonrpc_send_message_body();
+        let response = reqwest::Client::new()
+            .post(format!("{url}/a2a"))
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer top-secret")
+            .body(serde_json::to_vec(&body)?)
+            .send()
+            .await?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!(
+                "expected 200 with the right bearer token, got {}",
+                response.status()
+            )
+            .into());
+        }
+        let body_bytes = response.bytes().await?;
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes)?;
+        let state = body
+            .pointer("/result/status/state")
+            .and_then(serde_json::Value::as_str);
+        if state != Some("completed") {
+            return Err(format!(
+                "expected completed state, got body {body}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A `POST` to `/a2a` with a
+    /// bearer token that does not
+    /// match the configured one
+    /// returns `401`. The bearer
+    /// middleware compares the
+    /// supplied token to the
+    /// configured one in constant
+    /// time, and any mismatch is
+    /// rejected.
+    #[tokio::test]
+    async fn jsonrpc_with_wrong_bearer_is_a_401(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let router = build_protected_router("top-secret")?;
+        let url = spawn_test_router(router).await?;
+        let body = jsonrpc_send_message_body();
+        let response = reqwest::Client::new()
+            .post(format!("{url}/a2a"))
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer wrong-token")
+            .body(serde_json::to_vec(&body)?)
+            .send()
+            .await?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Err(format!(
+                "expected 401 with a wrong bearer token, got {}",
+                response.status()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Build the same router the example
+    /// builds when a bearer token is set,
+    /// but with the token passed in rather
+    /// than read from the environment. The
+    /// token is wired into the same
+    /// `check_bearer` middleware the
+    /// example uses, so the rejection
+    /// path is the one the example
+    /// publishes.
+    fn build_protected_router(
+        token: &str,
+    ) -> Result<Router, Box<dyn std::error::Error>> {
+        let addr: SocketAddr = "127.0.0.1:0".parse()?;
+        let card = build_card(addr, Some(token));
+        let delivery = WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER));
+        let handle = tokio::runtime::Handle::current();
+        let agent = EchoAgent {
+            store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
+            delivery: Arc::new(delivery),
+            handle: handle.clone(),
+            card: Arc::clone(&card),
+        };
+        let request_handler: Arc<dyn A2aRequestHandler> = Arc::new(agent);
+        let streaming_handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(EchoAgent {
+            store: Arc::new(std::sync::Mutex::new(TaskStore::default())),
+            delivery: Arc::new(WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER))),
+            handle: handle.clone(),
+            card: Arc::clone(&card),
+        });
+        let mut protected = Router::new()
+            .merge(serve_jsonrpc("/a2a", request_handler, A2aVersion::V1_0))
+            .merge(serve_streaming(
+                "/a2a/stream",
+                streaming_handler,
+                A2aVersion::V1_0,
+            ));
+        protected = protected.route_layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::from(token),
+            check_bearer,
+        ));
+        Ok(serve_well_known(card).merge(protected))
+    }
+
+    /// Bind `router` to a random port on
+    /// `127.0.0.1`, return the URL a peer
+    /// would point at, and let the server
+    /// live until the test function
+    /// returns. The `axum::serve` is run
+    /// in a `tokio::spawn` task; the
+    /// runtime shutdown at test exit
+    /// closes the listener.
+    async fn spawn_test_router(
+        router: Router,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let bound_addr = listener.local_addr()?;
+        let url = format!("http://{bound_addr}");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        Ok(url)
+    }
+
+    /// A `SendMessage` JSON-RPC body
+    /// with a `user` text part. The
+    /// test bodies share this shape so
+    /// the test functions are about
+    /// the bearer middleware, not the
+    /// request body.
+    fn jsonrpc_send_message_body() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "hi"}]
+                }
+            }
+        })
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
