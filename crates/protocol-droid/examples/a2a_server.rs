@@ -1809,6 +1809,160 @@ mod tests {
         }
         Ok(())
     }
+
+    /// `serialise_error` wraps a
+    /// `serde_json::Error` from the
+    /// response side of the dispatch
+    /// into the typed `InternalError`
+    /// the JSON-RPC envelope expects.
+    /// A regression that returned
+    /// `InvalidParams` (the params-side
+    /// error) would put the wrong
+    /// `code` on the wire: response
+    /// failures are `-32603 Internal`,
+    /// not `-32602 Invalid Params`.
+    #[test]
+    fn serialise_error_wraps_serde_error_as_internal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // A real `serde_json::Error` is
+        // the only way to construct one
+        // — `serde_json::from_str::<Value>`
+        // on invalid JSON is the
+        // canonical way to get one.
+        let result: Result<serde_json::Value, _> =
+            serde_json::from_str("not json");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => return Err("expected a parse error".into()),
+        };
+        let wrapped = serialise_error(&error);
+        match wrapped {
+            A2aError::InternalError { message } => {
+                if !message.starts_with("serialise:") {
+                    return Err(format!(
+                        "expected 'serialise:' prefix, got {message:?}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!(
+                    "expected InternalError, got {other:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// `decode_params` decodes a
+    /// `serde_json::Value` into the
+    /// caller's typed request. A
+    /// well-formed value yields the
+    /// typed request; a malformed one
+    /// yields `InvalidParams` with a
+    /// message that names the
+    /// underlying `serde_json` error
+    /// so a peer can find the bad
+    /// field.
+    #[test]
+    fn decode_params_yields_typed_request_for_well_formed_value(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let params = Some(serde_json::json!({ "id": "t-1" }));
+        let request: GetTaskRequest = decode_params(params)
+            .map_err(|error| format!("decode failed: {error:?}"))?;
+        if request.id != "t-1" {
+            return Err(format!("expected id 't-1', got {:?}", request.id).into());
+        }
+        Ok(())
+    }
+
+    /// `decode_params` on a value that
+    /// does not match the request
+    /// shape returns `InvalidParams`
+    /// (not `InternalError`). The
+    /// params-side failure is `-32602`,
+    /// the code the spec names for bad
+    /// inputs.
+    #[test]
+    fn decode_params_yields_invalid_params_for_malformed_value(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // A value that is the right
+        // shape but missing the
+        // required `id` field. A
+        // `GetTaskRequest` requires
+        // `id: String`; `{}` does not
+        // supply it.
+        let params = Some(serde_json::json!({}));
+        let result: Result<GetTaskRequest, A2aError> = decode_params(params);
+        match result {
+            Err(A2aError::InvalidParams { reason }) => {
+                if !reason.starts_with("params do not match") {
+                    return Err(format!(
+                        "expected 'params do not match' prefix, got {reason:?}"
+                    )
+                    .into());
+                }
+            }
+            Ok(_) => {
+                return Err("expected decode to fail for missing field".into());
+            }
+            Err(other) => {
+                return Err(format!("expected InvalidParams, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// `decode_params` on `None`
+    /// substitutes `Value::Null` and
+    /// tries to decode it. A
+    /// `GetTaskRequest` requires an
+    /// `id`, so `Null` does not match
+    /// — the test pins the
+    /// `None → Null` substitution
+    /// path that the dispatch arm
+    /// relies on.
+    #[test]
+    fn decode_params_treats_none_as_null_and_fails(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let result: Result<GetTaskRequest, A2aError> = decode_params(None);
+        if result.is_ok() {
+            return Err("expected decode_params(None) to fail".into());
+        }
+        Ok(())
+    }
+
+    /// `decode_failed` returns a
+    /// ready-failed future carrying
+    /// the supplied error. Awaiting
+    /// the future yields the same
+    /// error. The dispatch arm uses
+    /// this as the early-exit when
+    /// params decode fails, and the
+    /// future shape is the contract
+    /// the dispatch's return type
+    /// expects.
+    #[tokio::test]
+    async fn decode_failed_returns_a_future_with_the_supplied_error(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let supplied = A2aError::InvalidParams {
+            reason: "test reason".to_owned(),
+        };
+        let future = decode_failed(supplied.clone());
+        let result = future.await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => return Err("expected the future to resolve to Err".into()),
+        };
+        if error != supplied {
+            return Err(format!(
+                "expected the same error back, got {error:?} vs {supplied:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
