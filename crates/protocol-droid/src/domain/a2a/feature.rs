@@ -183,3 +183,152 @@ const fn _ensure_feature_match_is_exhaustive(feature: Feature) -> usize {
         Feature::GetExtendedAgentCard => 7,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{A2aFeatureProfile, Feature};
+    use crate::domain::a2a::version::A2aVersion;
+
+    /// `Feature::ALL` is the source of
+    /// truth for the matrix column
+    /// count and ordering. A new
+    /// variant appended to the enum
+    /// must also be appended to `ALL`
+    /// for the matrix to pick it up;
+    /// the test pins the current
+    /// shape (eight features, in the
+    /// order the spec introduces
+    /// them).
+    #[test]
+    fn feature_all_lists_eight_features_in_order() {
+        assert_eq!(Feature::ALL.len(), 8);
+        assert_eq!(Feature::ALL[0], Feature::SendMessage);
+        assert_eq!(Feature::ALL[1], Feature::SendStreamingMessage);
+        assert_eq!(Feature::ALL[2], Feature::GetTask);
+        assert_eq!(Feature::ALL[3], Feature::ListTasks);
+        assert_eq!(Feature::ALL[4], Feature::CancelTask);
+        assert_eq!(Feature::ALL[5], Feature::SubscribeToTask);
+        assert_eq!(Feature::ALL[6], Feature::PushNotificationConfig);
+        assert_eq!(Feature::ALL[7], Feature::GetExtendedAgentCard);
+    }
+
+    /// `label()` returns a non-empty
+    /// string per variant. The label
+    /// is the column header in the
+    /// matrix snapshot and the
+    /// `Display` form for diagnostics;
+    /// a regression that returned the
+    /// empty string would render an
+    /// empty cell.
+    #[test]
+    fn feature_label_is_non_empty_for_every_variant() {
+        for feature in Feature::ALL {
+            assert!(!feature.label().is_empty(), "{feature:?} has an empty label");
+        }
+    }
+
+    /// `A2aFeatureProfile::for_known_version(V1_0)`
+    /// enables every feature. The
+    /// v1.0 row in the matrix is the
+    /// all-`true` row, and a future
+    /// revision that adds a feature
+    /// will add a column with the
+    /// right value for v1.0.
+    #[test]
+    fn v1_0_profile_enables_every_feature() {
+        let profile = A2aFeatureProfile::for_known_version(A2aVersion::V1_0);
+        for feature in Feature::ALL {
+            assert!(
+                profile.is_enabled(feature),
+                "{feature:?} should be enabled in V1_0"
+            );
+        }
+    }
+
+    /// `A2aFeatureProfile::for_known_version(Unknown)`
+    /// disables every feature. An
+    /// unknown version is a peer the
+    /// matrix has not been updated
+    /// for; the conservative default
+    /// is "no features" so a
+    /// feature-specific code path is
+    /// never silently enabled for a
+    /// version the consumer has not
+    /// audited. A regression that
+    /// enabled features for an
+    /// `Unknown` would ship a wire
+    /// shape the build cannot encode.
+    #[test]
+    fn unknown_version_profile_disables_every_feature() {
+        let profile = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
+            major: 2,
+            minor: 5,
+        });
+        for feature in Feature::ALL {
+            assert!(
+                !profile.is_enabled(feature),
+                "{feature:?} should be disabled for an Unknown version"
+            );
+        }
+    }
+
+    /// `is_enabled` returns the
+    /// bitset value at the feature's
+    /// index in `Feature::ALL`. A
+    /// regression that returned the
+    /// wrong bit (e.g. `SendMessage`
+    /// reporting the value of
+    /// `GetTask`) would silently
+    /// route requests the build
+    /// cannot serve.
+    #[test]
+    fn is_enabled_returns_the_bit_at_the_feature_index() {
+        let profile = A2aFeatureProfile::for_known_version(A2aVersion::V1_0);
+        // The V1_0 row is all `true`,
+        // so a spot check that every
+        // feature reports enabled
+        // catches an index mix-up.
+        assert!(profile.is_enabled(Feature::SendMessage));
+        assert!(profile.is_enabled(Feature::GetExtendedAgentCard));
+        // An unknown version is all
+        // `false`; the same check
+        // catches a constant-return
+        // regression.
+        let unknown = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
+            major: 2,
+            minor: 0,
+        });
+        assert!(!unknown.is_enabled(Feature::SendMessage));
+        assert!(!unknown.is_enabled(Feature::GetExtendedAgentCard));
+    }
+
+    /// `version()` returns the
+    /// version the profile was
+    /// derived for. The
+    /// dispatcher's
+    /// `VersionNotSupportedError`
+    /// includes this, so a peer that
+    /// did not negotiate sees which
+    /// version it landed on. A
+    /// regression that returned
+    /// `V1_0` for an `Unknown` would
+    /// lie to the peer about what the
+    /// server actually speaks.
+    #[test]
+    fn version_returns_the_profile_version() {
+        let v1 = A2aFeatureProfile::for_known_version(A2aVersion::V1_0);
+        assert_eq!(v1.version(), A2aVersion::V1_0);
+
+        let unknown = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
+            major: 2,
+            minor: 5,
+        });
+        assert_eq!(
+            unknown.version(),
+            A2aVersion::Unknown {
+                major: 2,
+                minor: 5,
+            }
+        );
+    }
+}
