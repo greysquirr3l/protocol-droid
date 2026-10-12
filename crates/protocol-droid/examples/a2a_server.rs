@@ -1556,6 +1556,110 @@ mod tests {
         Ok(())
     }
 
+    /// `list` with both `context_id` and `state`
+    /// filters returns the AND — the task must
+    /// match both. A regression that OR'd the
+    /// filters (or short-circuited) would return
+    /// every task in the context or every task in
+    /// the state, and the test catches it.
+    #[test]
+    fn task_store_list_combines_context_and_state_as_and(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        // t-1: context-a, cancelled — matches both
+        let mut both = task("t-1");
+        both.context_id = Some(Arc::from("ctx-a"));
+        both.status.state = TaskState::Cancelled;
+        // t-2: context-a, completed — only matches context
+        let mut ctx_only = task("t-2");
+        ctx_only.context_id = Some(Arc::from("ctx-a"));
+        // t-3: no context, cancelled — only matches state
+        store.insert(both);
+        store.insert(ctx_only);
+        store.insert(task("t-3"));
+        let listed = store.list(Some("ctx-a"), Some(TaskState::Cancelled));
+        if listed.len() != 1 {
+            return Err(format!(
+                "expected 1 task (the AND), got {}",
+                listed.len()
+            )
+            .into());
+        }
+        if listed.first().map_or(true, |t| t.id.as_ref() != "t-1") {
+            return Err("expected the listed task to be t-1".into());
+        }
+        Ok(())
+    }
+
+    /// `list` with a `context_id` that matches no
+    /// task returns an empty list, not an error.
+    /// A regression that panicked on "no matches"
+    /// would crash a peer that asked for an
+    /// empty slice of the store.
+    #[test]
+    fn task_store_list_with_no_match_returns_empty(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        store.insert(task("t-1"));
+        store.insert(task("t-2"));
+        let listed = store.list(Some("ctx-missing"), None);
+        if !listed.is_empty() {
+            return Err(format!(
+                "expected empty list, got {} tasks",
+                listed.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `list_push_configs` on a task with no
+    /// configs returns an empty list. A
+    /// regression that returned every config in
+    /// the store (forgetting the task_id filter)
+    /// would leak configs across tasks.
+    #[test]
+    fn task_store_push_config_list_on_unconfigured_task_returns_empty(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let config = TaskPushNotificationConfig::new(
+            String::new(),
+            "t-other".to_owned(),
+            "https://example.com/a".to_owned(),
+        );
+        store.insert_push_config(config);
+        let listed = store.list_push_configs("t-1");
+        if !listed.is_empty() {
+            return Err(format!(
+                "expected empty list for unconfigured task, got {} configs",
+                listed.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `delete_push_config` on an id that
+    /// doesn't exist returns `None`, not an
+    /// error. The handler relies on this to
+    /// tell "already deleted" from "real
+    /// error" — a regression that returned
+    /// `Result::Err` for missing ids would
+    /// turn a normal peer behaviour (delete
+    /// what exists) into a wire-level error.
+    #[test]
+    fn task_store_push_config_delete_missing_id_returns_none(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = TaskStore::default();
+        let deleted = store.delete_push_config("pc-missing");
+        if deleted.is_some() {
+            return Err(
+                "expected None for a missing push config id".into(),
+            );
+        }
+        Ok(())
+    }
+
     /// `insert_push_config` assigns a non-empty
     /// id and stores the config under it. The
     /// id is the same shape every call
