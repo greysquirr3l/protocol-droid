@@ -13,12 +13,24 @@ mod serve;
 mod unsolicited;
 mod upstream;
 
+#[cfg(feature = "a2a")]
+mod a2a_mcp_codec;
+#[cfg(feature = "a2a")]
+mod cross_protocol;
+
 pub use content::{ToolResultCodec, Translated, Translator};
 pub use downstream::{Downstream, DownstreamConfig, DownstreamError, Identity};
 pub use forward::{Bridge, BridgeError, BridgePeer, Forwarded, SendFuture};
 pub use serve::{BridgeLoop, LoopError, LoopReport, Wiring};
 pub use unsolicited::Unsolicited;
 pub use upstream::{BridgeClientError, OpenedUpstream, Upstream, UpstreamError, run_client};
+
+#[cfg(feature = "a2a")]
+pub use a2a_mcp_codec::A2aMcpCodec;
+#[cfg(feature = "a2a")]
+pub use cross_protocol::{
+    CrossProtocolCodec, CrossProtocolError, ProtocolSide, RequestCodecReport, RequestCodecStep,
+};
 
 /// Settles the downstream leg of a handshake.
 ///
