@@ -66,7 +66,7 @@ impl ProtocolSide {
     /// # Examples
     ///
     /// ```
-    /// use protocol_droid::application::bridge::cross_protocol::ProtocolSide;
+    /// use protocol_droid::application::bridge::ProtocolSide;
     ///
     /// assert_eq!(
     ///     ProtocolSide::A2a.wire_method("SendMessage"),
@@ -227,7 +227,7 @@ pub enum CrossProtocolError {
 /// it re-reads `raw_envelope` rather than trying to re-derive the shape
 /// from the IR. The bridge already has both — the IR for routing, the
 /// raw envelope for translation.
-pub trait CrossProtocolCodec: Send + Sync {
+pub trait CrossProtocolCodec: Send + Sync + core::fmt::Debug {
     /// The protocol this codec expects the downstream leg to speak.
     fn downstream_protocol(&self) -> ProtocolSide;
 

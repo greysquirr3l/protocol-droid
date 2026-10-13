@@ -155,8 +155,14 @@ impl CrossProtocolCodec for A2aMcpCodec {
         };
 
         *result = match downstream_side {
-            ProtocolSide::A2a => a2a_to_mcp_result(result),
-            ProtocolSide::Mcp => mcp_to_a2a_result(result),
+            // The reply arrived in the upstream's language (MCP for an
+            // A2A downstream, A2A for an MCP downstream) and must be
+            // lowered into the downstream's language. The naming
+            // `*_to_<side>_result` reads "incoming upstream shape to
+            // <side> shape", so the `Mcp` arm produces an A2A reply
+            // and the `A2a` arm produces an MCP reply.
+            ProtocolSide::A2a => mcp_to_a2a_result(result),
+            ProtocolSide::Mcp => a2a_to_mcp_result(result),
         };
 
         report.record(RequestCodecStep::ReplyTranslated {
@@ -676,7 +682,10 @@ mod tests {
                 ]
             }
         }));
-        let out = codec.decode_reply(ProtocolSide::A2a, "SendMessage", &reply, &mut rep)?;
+        // An MCP client called `tools/call`; the bridge turned it
+        // into an A2A `SendMessage`; the upstream answered with a
+        // Task. The reply must come back as an MCP `content` block.
+        let out = codec.decode_reply(ProtocolSide::Mcp, "tools/call", &reply, &mut rep)?;
         let result = out
             .get("result")
             .and_then(Value::as_object)
@@ -701,7 +710,11 @@ mod tests {
                 "isError": false
             }
         }));
-        let out = codec.decode_reply(ProtocolSide::Mcp, "tools/call", &reply, &mut rep)?;
+        // An A2A client called `SendMessage`; the bridge turned it
+        // into MCP `tools/call`; the upstream answered with a
+        // `CallToolResult`. The reply must come back as an A2A
+        // `Message`.
+        let out = codec.decode_reply(ProtocolSide::A2a, "SendMessage", &reply, &mut rep)?;
         let result = out
             .get("result")
             .and_then(Value::as_object)

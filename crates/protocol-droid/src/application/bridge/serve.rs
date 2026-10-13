@@ -678,6 +678,17 @@ const fn refusal(error: &BridgeError) -> (i64, &'static str) {
             METHOD_NOT_FOUND,
             "the bridge cannot deliver this result at the revision you negotiated",
         ),
+        // The same code on the wire as `FeatureUnavailable`; the operator
+        // distinguishes the two by reading the loop's `BridgeReport`, not by
+        // giving them different codes. A dedicated code would invite clients
+        // to write a branch for "not bridged yet" that no client can usefully
+        // act on, and would be inventing protocol to express a follow-up
+        // commit.
+        #[cfg(feature = "a2a")]
+        BridgeError::MethodNotBridged { .. } => (
+            METHOD_NOT_FOUND,
+            "the bridge has no rule for this method on the cross-protocol codec",
+        ),
     }
 }
 

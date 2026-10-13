@@ -305,6 +305,32 @@ pub enum BridgeError {
     /// the operator can tell a missing capability from a bug.
     #[error("the downstream client cannot read the reply: {0}")]
     NotReadable(#[from] LowerError),
+
+    /// The method is one this bridge's cross-protocol codec has no rule for.
+    ///
+    /// Distinct from [`FeatureUnavailable`](Self::FeatureUnavailable):
+    /// `FeatureUnavailable` means the two peers share no feature for the
+    /// method at all; `MethodNotBridged` means the bridge could in principle
+    /// carry it (the codec for the relevant protocol pair exists) but the
+    /// specific method is not modelled yet. The loop renders both as
+    /// `-32601 Method not found`, but the *operator* needs to tell them
+    /// apart: a `FeatureUnavailable` is a configuration gap, a
+    /// `MethodNotBridged` is a follow-up commit.
+    ///
+    /// Gated behind the `a2a` feature because the only bridge that
+    /// surfaces it is a cross-protocol one, and the type it carries
+    /// (`ProtocolSide`) is itself feature-gated. A default-features
+    /// build has no cross-protocol bridge and therefore no way to
+    /// produce this variant, so it is omitted from the enum rather
+    /// than carrying a degenerate form.
+    #[cfg(feature = "a2a")]
+    #[error("method {method:?} is not bridged on the {downstream:?} leg")]
+    MethodNotBridged {
+        /// The method the client called, by the wire name it sent.
+        method: String,
+        /// The protocol side the call came in on.
+        downstream: crate::application::bridge::ProtocolSide,
+    },
 }
 
 /// What one forward produced.

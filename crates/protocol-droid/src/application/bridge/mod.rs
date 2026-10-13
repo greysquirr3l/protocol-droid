@@ -16,6 +16,8 @@ mod upstream;
 #[cfg(feature = "a2a")]
 mod a2a_mcp_codec;
 #[cfg(feature = "a2a")]
+mod cross_bridge_peer;
+#[cfg(feature = "a2a")]
 mod cross_protocol;
 
 pub use content::{ToolResultCodec, Translated, Translator};
@@ -27,6 +29,8 @@ pub use upstream::{BridgeClientError, OpenedUpstream, Upstream, UpstreamError, r
 
 #[cfg(feature = "a2a")]
 pub use a2a_mcp_codec::A2aMcpCodec;
+#[cfg(feature = "a2a")]
+pub use cross_bridge_peer::CrossBridgePeer;
 #[cfg(feature = "a2a")]
 pub use cross_protocol::{
     CrossProtocolCodec, CrossProtocolError, ProtocolSide, RequestCodecReport, RequestCodecStep,
