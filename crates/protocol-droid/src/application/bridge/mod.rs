@@ -26,3 +26,9 @@ pub use upstream::{BridgeClientError, OpenedUpstream, Upstream, UpstreamError, r
 /// reachable together: this needs an upstream [`Agreement`](crate::domain::Agreement),
 /// which is what the client half of the connection produced.
 pub use downstream::negotiate as negotiate_downstream;
+
+#[cfg(feature = "a2a")]
+pub use crate::domain::bridge::a2a_mcp::{
+    a2a_message_to_mcp_content, a2a_message_to_mcp_text, a2a_skill_to_mcp_tool,
+    mcp_content_to_a2a_part, CrossProtocolReport, Direction, Protocol, Step, StepKind,
+};

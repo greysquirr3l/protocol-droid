@@ -9,7 +9,7 @@
 //! lifecycle, in-flight requests, cancellation, progress) and T11 (the registry's
 //! pure half: primitives, visibility, snapshots).
 
-mod bridge;
+pub mod bridge;
 mod capability;
 // T27. The A2A domain value objects: version negotiation, the
 // per-revision feature profile, the `AgentCard`, and the well-known

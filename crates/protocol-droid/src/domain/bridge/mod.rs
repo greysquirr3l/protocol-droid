@@ -38,6 +38,9 @@ use core::fmt;
 
 use crate::domain::{Feature, FeatureProfile, ProtocolVersion, resolve};
 
+#[cfg(feature = "a2a")]
+pub mod a2a_mcp;
+
 /// The two sides of a bridge, each having negotiated with it independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Leg {
