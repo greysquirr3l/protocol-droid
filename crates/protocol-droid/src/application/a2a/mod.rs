@@ -10,6 +10,8 @@ mod push_notification;
 mod typed_dispatch;
 mod url_filter;
 
+pub mod conformance;
+
 pub use handler::{A2aError, A2aRequestContext, A2aRequestHandler};
 pub use push_notification::{
     NotificationConfig, NotificationConfigError, PushNotificationDelivery, WebhookUrl,
