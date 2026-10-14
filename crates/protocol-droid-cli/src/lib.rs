@@ -18,10 +18,19 @@
 //! 500-line file the project's own file-structure rules disallow.
 
 pub mod bridge;
+// The A2A leg of `bridge` lives behind the same feature the
+// `A2aJsonRpcPeer` is behind. The MCP-only build does not
+// compile it.
+#[cfg(feature = "a2a")]
+pub mod bridge_a2a;
 pub mod check;
 pub mod conformance;
 pub mod inspect;
 pub mod probe;
+// A2A's well-known card lives in the A2A domain, so the A2A probe
+// is feature-gated to match.
+#[cfg(feature = "a2a")]
+pub mod probe_a2a;
 pub mod record;
 pub mod replay;
 // The serving path needs both transports the library speaks as a client. The

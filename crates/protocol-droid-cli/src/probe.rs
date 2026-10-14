@@ -43,6 +43,19 @@ pub struct ProbeArgs {
     #[arg(long, value_name = "VERSIONS", value_delimiter = ',')]
     pub versions: Vec<String>,
 
+    /// Fingerprint an A2A agent instead of probing the MCP matrix.
+    ///
+    /// Fetches `server + /.well-known/agent-card.json`, parses the
+    /// body as an [`AgentCard`](protocol_droid::domain::a2a::agent_card::AgentCard),
+    /// and reports the agent's name, declared protocol version,
+    /// skill count, and security schemes. A server that does not
+    /// serve a well-known card is reported as `not an A2A agent`,
+    /// not as a probe failure — the operator most wants to know
+    /// when they have the wrong URL.
+    #[cfg(feature = "a2a")]
+    #[arg(long)]
+    pub a2a: bool,
+
     /// Machine-readable JSON on stdout, with the human summary on stderr.
     #[arg(long)]
     pub json: bool,
@@ -101,6 +114,10 @@ impl std::fmt::Display for ProbeReport {
 /// open, or a JSON write. A refused row is not an error — the command
 /// exits non-zero only when **no** row is accepted.
 pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
+    #[cfg(feature = "a2a")]
+    if args.a2a {
+        return run_a2a(args).await;
+    }
     let spec: TransportSpec = args
         .server
         .parse()
@@ -121,6 +138,27 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
 
     if report.rows.iter().all(|row| !row.accepted) {
         anyhow::bail!("no revision was accepted by {spec}");
+    }
+    Ok(())
+}
+
+/// Fingerprints an A2A agent and reports the result.
+///
+/// The fetch and parse are isolated in
+/// [`probe_a2a::A2aProbeReport::for_server`]; this function
+/// picks the output sink and maps the `NotA2a` arm to a
+/// non-zero exit so an operator who named the wrong URL
+/// does not get a silent pass.
+#[cfg(feature = "a2a")]
+async fn run_a2a(args: &ProbeArgs) -> anyhow::Result<()> {
+    let report = crate::probe_a2a::A2aProbeReport::for_server(&args.server).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!("{report}");
+    }
+    if matches!(report, crate::probe_a2a::A2aProbeReport::NotA2a { .. }) {
+        anyhow::bail!("{} is not an A2A agent", args.server);
     }
     Ok(())
 }
@@ -725,6 +763,8 @@ mod tests {
         let args = ProbeArgs {
             server: "no-colon-here".to_owned(),
             versions: Vec::new(),
+            #[cfg(feature = "a2a")]
+            a2a: false,
             json: false,
         };
         let outcome = run(&args).await;

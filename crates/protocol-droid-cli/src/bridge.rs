@@ -57,8 +57,25 @@ pub struct BridgeArgs {
     pub listen: String,
 
     /// Where the bridge forwards to, same grammar.
+    ///
+    /// Optional when `--peer` is set: the A2A bridge has no
+    /// MCP upstream to name, and requiring it would force a
+    /// `kind:target` the A2A path never reads.
     #[arg(long, value_name = "SPEC")]
-    pub upstream: String,
+    pub upstream: Option<String>,
+
+    /// Run the bridge against an A2A agent instead of an MCP upstream.
+    ///
+    /// Mutually exclusive with `--upstream`: an A2A agent is a
+    /// JSON-RPC peer at an HTTP URL, not a typed `TransportSpec`,
+    /// and the cross-protocol bridge builds the codec + peer
+    /// itself. The bridge listens on `--listen` and translates
+    /// each `tools/call` from the MCP downstream into the agent's
+    /// `SendMessage`, with `bridge_skill` carrying the skill
+    /// name through A2A `metadata`.
+    #[cfg(feature = "a2a")]
+    #[arg(long, value_name = "URL", conflicts_with = "upstream")]
+    pub peer: Option<String>,
 
     /// Report what the bridge would do with a reply, and exit.
     ///
@@ -147,8 +164,20 @@ pub async fn run(args: &BridgeArgs) -> anyhow::Result<()> {
         return probe(args, path);
     }
 
+    #[cfg(feature = "a2a")]
+    if let Some(peer) = args.peer.as_deref() {
+        return crate::bridge_a2a::run(crate::bridge_a2a::A2aBridgeArgs {
+            peer: peer.to_owned(),
+            json: args.json,
+        })
+        .await;
+    }
+
     let listen = parse(&args.listen, "--listen")?;
-    let upstream = parse(&args.upstream, "--upstream")?;
+    let Some(upstream_text) = args.upstream.as_deref() else {
+        anyhow::bail!("--upstream is required when --peer is not set");
+    };
+    let upstream = parse(upstream_text, "--upstream")?;
 
     let plan = plan(&listen, &upstream);
     if args.json {
@@ -412,7 +441,9 @@ mod tests {
     fn args(listen: &str, upstream: &str) -> BridgeArgs {
         BridgeArgs {
             listen: listen.to_owned(),
-            upstream: upstream.to_owned(),
+            upstream: Some(upstream.to_owned()),
+            #[cfg(feature = "a2a")]
+            peer: None,
             check_result: None,
             client_version: None,
             server_version: None,
