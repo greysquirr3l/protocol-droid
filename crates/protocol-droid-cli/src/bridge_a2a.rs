@@ -138,6 +138,53 @@ const fn latest_version() -> ProtocolVersion {
 /// reflected in the summary's `failed` counter, not
 /// here.
 pub async fn run(args: A2aBridgeArgs) -> anyhow::Result<()> {
+    let framing = StdioConfig::new(MaxFrameSize::DEFAULT);
+    let summary = run_with_io(
+        &args,
+        StdioSource::new(io::stdin(), framing),
+        StdioSink::new(io::stdout(), framing),
+    )
+    .await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        eprintln!("{summary}");
+    }
+    Ok(())
+}
+
+/// Runs the A2A bridge against caller-supplied IO streams,
+/// returning the loop's summary as a typed value.
+///
+/// Split from [`run`] so a test can drive the bridge with
+/// a `tokio::io::DuplexStream` pair instead of the
+/// process's own stdin/stdout — `tokio::io::stdin()` is
+/// the process's stdin, and a `#[tokio::test]` cannot
+/// reach in and replace it. The test owns the streams,
+/// the bridge owns the loop, and the seam is here.
+///
+/// The streams are taken by value (not by `&mut`) so the
+/// bridge can move them into the loop's `BridgeLoop`,
+/// which `Send`s each frame to the sink. A test that
+/// needs to read what the bridge wrote is also the
+/// stream's other half, and the loop returns the sink
+/// end of the duplex when the loop is done.
+///
+/// # Errors
+///
+/// The same as [`run`]: peer construction, upstream
+/// open, or a loop error. The summary is returned
+/// only when the loop completed normally; a
+/// mid-loop error short-circuits with `?`.
+pub async fn run_with_io<R, W>(
+    args: &A2aBridgeArgs,
+    source: StdioSource<R>,
+    sink: StdioSink<W>,
+) -> anyhow::Result<LoopSummary>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let peer = A2aJsonRpcPeer::new(&args.peer)
         .with_context(|| format!("could not build the A2A peer for {}", args.peer))?;
     let upstream = A2aUpstream::new(peer);
@@ -145,7 +192,6 @@ pub async fn run(args: A2aBridgeArgs) -> anyhow::Result<()> {
     let policy = DegradePolicy::default();
     let versions = SupportedVersions::all()?;
 
-    let framing = StdioConfig::new(MaxFrameSize::DEFAULT);
     let report = run_client(
         &upstream,
         policy,
@@ -158,33 +204,27 @@ pub async fn run(args: A2aBridgeArgs) -> anyhow::Result<()> {
             TransportKind::Stdio,
         ),
         WireToolResults,
-        StdioSource::new(io::stdin(), framing),
-        StdioSink::new(io::stdout(), framing),
+        source,
+        sink,
     )
     .await?;
 
-    let summary = LoopSummary::from(report);
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        eprintln!("{summary}");
-    }
-    Ok(())
+    Ok(LoopSummary::from(report))
 }
 
 /// The bridge summary, in the shape the rest of the CLI
 /// uses so the JSON and human forms stay the same
 /// between `--upstream` and `--peer`.
-#[derive(Debug, Serialize)]
-struct LoopSummary {
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct LoopSummary {
     /// Whether a client completed a handshake.
-    handshaken: bool,
+    pub handshaken: bool,
     /// Envelopes forwarded to the agent.
-    forwarded: u64,
+    pub forwarded: u64,
     /// Notifications forwarded to the agent.
-    notified: u64,
+    pub notified: u64,
     /// Frames refused, each answered to the client.
-    failed: u64,
+    pub failed: u64,
 }
 
 impl From<protocol_droid::application::bridge::LoopReport> for LoopSummary {
