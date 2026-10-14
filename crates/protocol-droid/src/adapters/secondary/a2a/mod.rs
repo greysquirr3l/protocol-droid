@@ -7,10 +7,12 @@
 //! designed to give T27 for free.
 
 pub mod client;
+pub mod jsonrpc_peer;
 pub mod method_table;
 pub mod ssrf_denylist;
 pub mod webhook_delivery;
 
 pub use client::{A2aClient, A2aClientError};
+pub use jsonrpc_peer::{A2aJsonRpcPeer, A2aPeerError};
 pub use method_table::{A2aMethod, A2aMethodTable};
 pub use ssrf_denylist::SsrfDenylist;
