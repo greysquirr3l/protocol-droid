@@ -6,6 +6,8 @@
 //! of its own.
 
 use clap::{Parser, Subcommand};
+#[cfg(feature = "a2a")]
+use protocol_droid_cli::a2a_conformance;
 use protocol_droid_cli::{bridge, conformance, inspect, probe, record, replay};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
@@ -79,6 +81,18 @@ enum Command {
     /// your client subprocess), and `self` (suite → this crate's own
     /// fixtures — wired by T21 phase 2).
     Conformance(conformance::ConformanceArgs),
+    /// Drive the in-tree A2A v1.0 conformance vectors against a server.
+    ///
+    /// Reads a JSONL of `{name, request, expected}` vectors from the
+    /// path the operator names, POSTs each `request` to the server's
+    /// `/a2a` endpoint, compares the response to `expected`, and
+    /// writes a JSONL report to stdout (one `{name, outcome, ...}` per
+    /// line). A human summary lands on stderr. A third-party
+    /// implementer running their own A2A server uses this to verify
+    /// that it speaks the same wire shape the reference impl does.
+    /// Off when the `a2a` feature is disabled.
+    #[cfg(feature = "a2a")]
+    A2aConformance(a2a_conformance::A2aConformanceArgs),
     /// Replay a captured session against a target revision, frame by frame.
     ///
     /// Reads a JSONL session file (one `{version, frame}` per line),
@@ -129,6 +143,8 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Bridge(args) => bridge::run(&args).await,
         Command::Conformance(args) => conformance::run(&args).await,
+        #[cfg(feature = "a2a")]
+        Command::A2aConformance(args) => a2a_conformance::run(&args).await,
         Command::Inspect(args) => inspect::run(&args).await,
         Command::Probe(args) => probe::run(&args).await,
         Command::Replay(args) => replay::run(&args).await,

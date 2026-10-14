@@ -31,6 +31,13 @@ pub mod probe;
 // is feature-gated to match.
 #[cfg(feature = "a2a")]
 pub mod probe_a2a;
+// The A2A conformance runner is the third-party-implementer
+// entry point: the same vectors the integration test drives
+// in-process are what an external server is judged against
+// over HTTP. Feature-gated to match the lib's `a2a` module,
+// which the runner depends on.
+#[cfg(feature = "a2a")]
+pub mod a2a_conformance;
 pub mod record;
 pub mod replay;
 // The serving path needs both transports the library speaks as a client. The
