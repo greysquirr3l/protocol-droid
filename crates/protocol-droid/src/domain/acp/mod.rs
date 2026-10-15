@@ -50,9 +50,11 @@
 
 #![cfg(feature = "acp-experimental")]
 
+pub mod content;
 pub mod feature;
 pub mod implementation;
 pub mod initialize;
 pub mod method;
 pub mod protocol_version;
+pub mod session;
 pub mod version;
