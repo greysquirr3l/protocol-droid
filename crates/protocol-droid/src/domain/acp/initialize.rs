@@ -252,6 +252,12 @@ pub struct AuthMethodAgent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthMethodTerminal {
+    /// A unique identifier for this auth method.
+    /// The schema names every `AuthMethod`
+    /// carries an `id`; the value is opaque to
+    /// the wire and meaningful only to the
+    /// agent and editor that negotiated it.
+    pub id: String,
     /// A human-readable display name.
     pub name: String,
     /// A human-readable description.
@@ -348,6 +354,7 @@ mod tests {
             description: "An auth method".to_owned(),
         });
         let terminal = AuthMethod::Terminal(AuthMethodTerminal {
+            id: "dev-terminal".to_owned(),
             name: "Terminal".to_owned(),
             description: "A terminal auth method".to_owned(),
         });
@@ -399,6 +406,7 @@ mod tests {
             protocol_version: AcpProtocolVersion::CURRENT,
             agent_capabilities: AgentCapabilities::default(),
             auth_methods: Some(vec![AuthMethod::Terminal(AuthMethodTerminal {
+                id: "dev-terminal".to_owned(),
                 name: "Terminal".to_owned(),
                 description: "Sign in via the terminal".to_owned(),
             })]),
