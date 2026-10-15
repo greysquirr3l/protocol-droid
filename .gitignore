@@ -50,3 +50,5 @@ crates/protocol-droid/fuzz/artifacts/
 crates/protocol-droid/fuzz/fuzz/
 target/book/
 .papertowel/
+assets/img/protocol-droid.jpeg
+assets/.DS_Store
