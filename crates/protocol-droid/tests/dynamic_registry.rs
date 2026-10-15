@@ -176,6 +176,245 @@ async fn hot_add_tool_leaves_in_flight_calls_on_the_old_snapshot() -> TestResult
     Ok(())
 }
 
+/// The symmetric scenario for [`unregister`](RegistryStore::unregister).
+///
+/// The capability description says primitives can be "added, replaced, and
+/// removed at runtime" but the named scenario is `hot-add-tool`. Removal
+/// has a different shape from addition: a caller that resolved a primitive
+/// before the unregister holds an `Arc<Registered>` and may still be
+/// running its tool body, and the registry's claim is that the held `Arc`
+/// survives the unregister. The next list, of course, must not show the
+/// removed primitive, and eligible sessions get one notification.
+#[tokio::test]
+async fn hot_remove_tool_leaves_in_flight_calls_on_the_old_snapshot() -> TestResult {
+    let store = RegistryStore::new();
+    store.register(tool("victim")?);
+    store.register(tool("bystander")?);
+
+    let profile = with_list_changed();
+    let alice = AuthContext::unrestricted("alice");
+    let bob = AuthContext::unrestricted("bob");
+    let carol = AuthContext::unrestricted("carol");
+
+    // Three sessions are mid-call: each has resolved a listing and is
+    // holding the snapshot it resolved against. The "victim" tool is in
+    // all of them.
+    let in_flight = [
+        store.list_visible(&alice, &profile, PrimitiveKind::Tool),
+        store.list_visible(&bob, &profile, PrimitiveKind::Tool),
+        store.list_visible(&carol, &profile, PrimitiveKind::Tool),
+    ];
+    for listing in &in_flight {
+        assert_eq!(listing.visible().len(), 2, "the victim is in the listing");
+    }
+
+    // The unregister lands while all three are still holding their
+    // snapshot. The store should report the kind it touched so a
+    // notification can be sent.
+    let published = store.unregister(PrimitiveKind::Tool, &"victim".into());
+    assert_eq!(published.changed(), [PrimitiveKind::Tool]);
+    assert!(!published.is_noop(), "removing a present tool is not a no-op");
+
+    // Clause one: the in-flight listings finish against what they started
+    // with, and the held `Arc<Registered>` for the victim is still there.
+    for listing in &in_flight {
+        let names: Vec<&str> = listing
+            .visible()
+            .iter()
+            .map(|held| held.id().as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["victim", "bystander"],
+            "an in-flight listing must keep the tool it resolved"
+        );
+    }
+
+    // Clause two: the next list does not show the removed tool. The
+    // bystander survives because the unregister targeted one id.
+    let next = store.list_visible(&alice, &profile, PrimitiveKind::Tool);
+    let names: Vec<&str> = next
+        .visible()
+        .iter()
+        .map(|held| held.id().as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["bystander"],
+        "the next list must omit the removed tool but keep the bystander"
+    );
+
+    Ok(())
+}
+
+/// The "call routing" half of the lock-free-snapshot-reads claim.
+///
+/// `tools/call` resolves through [`get_visible`](RegistryStore::get_visible),
+/// not [`list_visible`](RegistryStore::list_visible). A caller that
+/// resolved one primitive before a publish must still see it as `Some` and
+/// still see the same `Arc<Registered>` payload, because the tool body it
+/// is about to run was the one it resolved. The next call, of course, sees
+/// the post-publish world.
+#[test]
+fn get_visible_resolves_to_the_same_arc_across_publishes() -> TestResult {
+    let store = RegistryStore::new();
+    let _registered = store.register(tool("lookup")?);
+
+    let session = AuthContext::unrestricted("alice");
+    let profile = FeatureProfile::empty().with(Feature::Tools);
+
+    // Clause one: an in-flight `get_visible` resolution survives an
+    // unrelated publish. The held `Arc<Registered>` is unchanged.
+    let Some(resolved) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "lookup")
+    else {
+        return Err("the tool is in the store".into());
+    };
+    let resolved_id = resolved.id().clone();
+
+    let _ = store.register(tool("unrelated")?);
+    assert!(
+        store.snapshot().generation() > 1,
+        "the unrelated publish advanced the generation"
+    );
+
+    let Some(still_resolved) =
+        store.get_visible(&session, &profile, PrimitiveKind::Tool, "lookup")
+    else {
+        return Err("a re-resolve after an unrelated publish must still find it".into());
+    };
+    assert_eq!(
+        still_resolved.id(),
+        &resolved_id,
+        "the resolved id is stable across unrelated publishes"
+    );
+
+    // Clause two: removing the primitive the caller resolved makes a
+    // re-resolve a miss, but the `Arc` it already holds is still
+    // pointing at the registered payload it captured. That is the
+    // promise that lets the call body run to completion.
+    store.unregister(PrimitiveKind::Tool, &"lookup".into());
+    let re_resolved = store.get_visible(&session, &profile, PrimitiveKind::Tool, "lookup");
+    assert!(
+        re_resolved.is_none(),
+        "a removed primitive is a miss on the next call"
+    );
+    assert_eq!(
+        resolved.id(),
+        &resolved_id,
+        "the held Arc is unaffected by the unregister"
+    );
+
+    Ok(())
+}
+
+/// The visibility predicate is a pure function of three inputs and reads
+/// no shared state.
+///
+/// A test that registers tool A, observes its visibility, registers an
+/// unrelated tool B, and observes A's visibility again. The two
+/// observations must be `Some` with the same id, and the *same* `Arc`
+/// payload: a predicate that secretly read from the store or from a
+/// mutable cache would return a different pointer for a freshly-built
+/// `Arc<Registered>`. `Arc::ptr_eq` is the assertion.
+#[test]
+fn visibility_for_one_primitive_is_independent_of_unrelated_primitives() -> TestResult {
+    let store = RegistryStore::new();
+    store.register(tool("a")?);
+
+    let session = AuthContext::unrestricted("alice");
+    let profile = FeatureProfile::empty().with(Feature::Tools);
+
+    let Some(first) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "a")
+    else {
+        return Err("a is in the store".into());
+    };
+
+    // Register several unrelated primitives. None of them should affect
+    // the visibility of `a` — the predicate is a function of (auth,
+    // profile, meta), not of the store's contents.
+    for name in ["x", "y", "z"] {
+        store.register(tool(name)?);
+    }
+
+    let Some(second) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "a")
+    else {
+        return Err("a is still in the store".into());
+    };
+
+    assert_eq!(first.id(), second.id());
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "a predicate that rebuilt the Arc would be a different pointer"
+    );
+
+    Ok(())
+}
+
+/// A reader that observes two generations on the same thread always sees
+/// a non-decreasing value.
+///
+/// `a_reader_never_sees_a_torn_snapshot` proves the listing and index
+/// agree, which is one consequence of an atomic publish. The other
+/// consequence — a single thread never reads a generation older than
+/// one it already saw — is a separate invariant, and a register that
+/// rewound the generation counter would pass the first test and fail
+/// this one. The test races a writer against a reader and asserts the
+/// reader's local `last_seen` is monotonically non-decreasing.
+#[test]
+fn a_reader_never_observes_a_rewound_generation() -> TestResult {
+    const ROUNDS: usize = 1_000;
+    const WRITERS: usize = 4;
+
+    let store = Arc::new(RegistryStore::new());
+    let rewound = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let mut writers = Vec::new();
+    for writer in 0..WRITERS {
+        let store = Arc::clone(&store);
+        writers.push(std::thread::spawn(move || {
+            for round in 0..ROUNDS {
+                let name = format!("w{writer}-r{round}");
+                let parsed = Tool::new(name.as_str(), r#"{"type":"object"}"#)?;
+                store.register(Primitive::from(parsed));
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        }));
+    }
+
+    let reader = {
+        let store = Arc::clone(&store);
+        let rewound = Arc::clone(&rewound);
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut last_seen: u64 = 0;
+            while !stop.load(Ordering::Relaxed) {
+                let observed = store.generation();
+                if observed < last_seen {
+                    rewound.fetch_add(1, Ordering::Relaxed);
+                }
+                last_seen = observed;
+            }
+        })
+    };
+
+    for writer in writers {
+        writer
+            .join()
+            .map_err(|_| "a writer panicked")?
+            .map_err(|error| error.to_string())?;
+    }
+    stop.store(true, Ordering::Relaxed);
+    reader.join().map_err(|_| "the reader panicked")?;
+
+    assert_eq!(
+        rewound.load(Ordering::Relaxed),
+        0,
+        "the reader observed a generation smaller than one it had already seen"
+    );
+    Ok(())
+}
+
 /// The "exactly one" clause on its own, so a failure names the count rather
 /// than the shape.
 #[tokio::test]
