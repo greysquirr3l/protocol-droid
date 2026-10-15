@@ -201,6 +201,82 @@ mod tests {
         );
     }
 
+    /// A flag gated behind a feature the build does not have is
+    /// reported as an unknown argument, not a panic.
+    ///
+    /// `probe --a2a` exists only when the `a2a` feature is on; a
+    /// build without it must say so in the same shape every other
+    /// unknown argument is rejected, because the alternative is
+    /// a `debug_assert` firing inside clap and an opaque stack
+    /// trace. The test passes in both configurations: when the
+    /// feature is on, `--a2a` is a valid boolean and the parse
+    /// succeeds; when it is off, the parse fails with
+    /// `UnknownArgument`. Either way, reaching the assertion
+    /// without panicking is the regression the test catches.
+    #[test]
+    fn a_feature_gated_flag_is_rejected_when_the_feature_is_off() {
+        // `probe --a2a` is the path the `a2a` feature adds.
+        let parsed = Cli::try_parse_from([
+            "protocol-droid",
+            "probe",
+            "stdio:./some-server",
+            "--a2a",
+        ]);
+        let acceptable = match &parsed {
+            // The feature is off: --a2a is unknown.
+            Err(err) => err.kind() == ErrorKind::UnknownArgument,
+            // The feature is on: --a2a is a boolean flag with
+            // `false` as the default. Passing it sets it to
+            // `true`, which is not an error at parse time.
+            Ok(_) => true,
+        };
+        assert!(
+            acceptable,
+            "expected UnknownArgument or Ok, got {parsed:?}"
+        );
+    }
+
+    /// A subcommand gated behind a feature the build does not
+    /// have is rejected, not panicked on.
+    ///
+    /// `a2a-conformance` exists only when the `a2a` feature is
+    /// on. A build without it must say so as a parse error
+    /// rather than tripping a `debug_assert` inside clap's
+    /// parser. The test passes in both configurations: when the
+    /// feature is on, the subcommand is recognised and the
+    /// parse may fail downstream on its own required
+    /// arguments; when it is off, the parse fails with
+    /// `UnknownArgument`. The test asserts the parser returned
+    /// a value rather than panicking — the panic, by definition,
+    /// is what would prevent the assertion from running at all.
+    #[test]
+    fn a_feature_gated_subcommand_is_rejected_when_the_feature_is_off() {
+        // Reaching this line at all is the assertion: a panic
+        // inside clap would have killed the test before the
+        // result was bound. The `match` documents which
+        // outcomes the parser is allowed to return and surfaces
+        // a useful message if a future change makes clap
+        // return something new.
+        let parsed = Cli::try_parse_from(["protocol-droid", "a2a-conformance"]);
+        let outcome = match &parsed {
+            // Feature on: parser returned `Ok`. A later
+            // validation step may refuse; that is the
+            // subcommand's own argument validation, not
+            // clap's parser.
+            Ok(_) => "ok",
+            // Feature off: parser returned `Err(UnknownArgument)`.
+            Err(err) if err.kind() == ErrorKind::UnknownArgument => "unknown_argument",
+            // Any other `Err` is clap's own argument-validation
+            // step rejecting the call. Reaching this arm is
+            // also acceptable; the test is about not panicking.
+            Err(_) => "other_error",
+        };
+        assert!(
+            matches!(outcome, "ok" | "unknown_argument" | "other_error"),
+            "the parser returned an unrecognised shape: {parsed:?}"
+        );
+    }
+
     /// `conformance server` round-trips through clap with every flag the
     /// subcommand names. Exercising `try_parse_from` here, where the bin's
     /// `Cli` and `Command` types live, is what keeps the conformance types

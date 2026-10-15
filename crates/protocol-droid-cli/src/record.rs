@@ -438,6 +438,12 @@ pub async fn run(args: &RecordArgs) -> anyhow::Result<()> {
 
 /// Parses a `kind:target` transport spec, with the same error
 /// messages the `bridge` subcommand uses.
+///
+/// Gated on `bridge` because the only caller is the bridge path
+/// above. A build without `bridge` does not need this parser,
+/// and a function that is only ever used in one configuration
+/// has no business being compiled in the other.
+#[cfg(feature = "bridge")]
 fn parse_spec(raw: &str, label: &str) -> anyhow::Result<protocol_droid::domain::TransportSpec> {
     use std::str::FromStr;
     protocol_droid::domain::TransportSpec::from_str(raw)
