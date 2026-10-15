@@ -364,7 +364,7 @@ async fn a_session_update_notification_round_trips() -> Result<(), String> {
     let node = ensure_node()?;
     let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
         .with_timeout(Duration::from_secs(10));
-    let mut peer = AcpStdioPeer::spawn(&spec)
+    let peer = AcpStdioPeer::spawn(&spec)
         .map_err(|error| format!("spawning the peer: {error}"))?;
 
     let request = NewSessionRequest {
@@ -460,7 +460,7 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
     let node = ensure_node()?;
     let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
         .with_timeout(Duration::from_secs(10));
-    let mut peer = AcpStdioPeer::spawn(&spec)
+    let peer = AcpStdioPeer::spawn(&spec)
         .map_err(|error| format!("spawning the peer: {error}"))?;
 
     // Hand the agent an `initialize`
@@ -523,6 +523,22 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
     // test filters for the
     // `agent_message_chunk`s and
     // reconstructs the agent's text.
+    //
+    // The consumer's main loop races the
+    // typed reply against the next
+    // notification in a
+    // `tokio::select!`. The agent streams
+    // the two `agent_message_chunk`
+    // notifications BEFORE the reply
+    // arrives, so the test arms the
+    // select with `biased` to prefer
+    // draining the notification stream
+    // first. In production the
+    // `biased` arm is dropped and the
+    // order is whatever the runtime
+    // chooses; the test uses
+    // `biased` so the assertions are
+    // deterministic.
     let mut assembled_text = String::new();
     let mut chunks_seen: u8 = 0;
     while chunks_seen < 2 {
@@ -556,6 +572,114 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
             }
         }
     }
+    assert_eq!(assembled_text, "Hello, world!");
+
+    Ok(())
+}
+
+/// The consumer's main loop races the
+/// typed reply against the next
+/// notification in a `tokio::select!`.
+/// This test exercises the live `select!`
+/// pattern: a single task holds the
+/// peer by value, awaits both the reply
+/// and the next notification, and
+/// dispatches based on which arrives
+/// first. The reference agent streams
+/// two `agent_message_chunk`
+/// notifications before the reply;
+/// `biased` makes the test
+/// deterministic.
+#[tokio::test]
+async fn a_select_loop_renders_notifications_and_returns_a_reply() -> Result<(), String> {
+    let node = ensure_node()?;
+    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
+        .with_timeout(Duration::from_secs(10));
+    let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
+
+    let _: protocol_droid::domain::acp::initialize::InitializeResponse = peer
+        .send_typed_request(AcpMethod::Agent(AgentMethod::Initialize), sample_initialize_request())
+        .await
+        .map_err(|error| format!("initialize reply: {error}"))?;
+    let new_session: protocol_droid::domain::acp::session::NewSessionResponse = peer
+        .send_typed_request(
+            AcpMethod::Agent(AgentMethod::SessionNew),
+            NewSessionRequest {
+                cwd: "/tmp/example".to_owned(),
+                additional_directories: None,
+                mcp_servers: vec![],
+            },
+        )
+        .await
+        .map_err(|error| format!("session/new reply: {error}"))?;
+    let session_id = new_session.session_id;
+
+    // The consumer's main loop. The two
+    // arms are the same shape a real
+    // editor uses: drain the next
+    // notification or await the reply.
+    // `&self` on both methods is what
+    // makes the `select!` ergonomics
+    // land.
+    //
+    // The prompt is sent ONCE. The
+    // `select!` races the reply against
+    // the next notification, and the
+    // loop drains the notifications
+    // while the prompt's oneshot is
+    // still pending. The reply is the
+    // exit condition.
+    let prompt = PromptRequest {
+        session_id: session_id.clone(),
+        prompt: vec![protocol_droid::domain::acp::content::ContentBlock::Text(
+            protocol_droid::domain::acp::content::TextContent {
+                text: "hi".to_owned(),
+                annotations: None,
+                meta: std::collections::BTreeMap::new(),
+            },
+        )],
+    };
+    let prompt_fut = peer.send_typed_request::<_, PromptResponse>(
+        AcpMethod::Agent(AgentMethod::SessionPrompt),
+        prompt,
+    );
+    tokio::pin!(prompt_fut);
+    let mut assembled_text = String::new();
+    let mut chunks_seen: u8 = 0;
+    let response: PromptResponse = loop {
+        // A fresh notification future
+        // each iteration: the previous
+        // one resolved with one
+        // notification; the next call
+        // races the reply against the
+        // next notification.
+        let notif_fut = peer.recv_notification();
+        tokio::pin!(notif_fut);
+        tokio::select! {
+            biased;
+            notification = &mut notif_fut => {
+                match notification {
+                    Some(notification) => {
+                        assert_eq!(notification.session_id, session_id);
+                        if let protocol_droid::domain::acp::notification::SessionUpdate::AgentMessageChunk(chunk) = notification.update {
+                            use protocol_droid::domain::acp::content::ContentBlock;
+                            if let ContentBlock::Text(text) = chunk.content {
+                                assembled_text.push_str(&text.text);
+                                chunks_seen = chunks_seen.saturating_add(1);
+                            }
+                        }
+                        // Loop and race again.
+                    }
+                    None => return Err("the notification stream closed".to_owned()),
+                }
+            }
+            response = &mut prompt_fut => {
+                break response.map_err(|error| format!("session/prompt reply: {error}"))?;
+            }
+        }
+    };
+    assert_eq!(response.stop_reason, protocol_droid::domain::acp::session::StopReason::EndTurn);
+    assert_eq!(chunks_seen, 2);
     assert_eq!(assembled_text, "Hello, world!");
 
     Ok(())

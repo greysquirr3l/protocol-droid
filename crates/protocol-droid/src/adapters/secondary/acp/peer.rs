@@ -192,9 +192,23 @@ pub struct AcpStdioPeer {
     /// application layer awaits the next
     /// notification with
     /// [`recv_notification`][Self::recv_notification].
-    /// `&mut self` is the borrow the
-    /// `mpsc::Receiver::recv` method needs.
-    notifications_rx: mpsc::Receiver<SessionNotification>,
+    ///
+    /// The receiver is behind a
+    /// `tokio::sync::Mutex` so the
+    /// `recv_notification` method can take
+    /// `&self` and the consumer can race
+    /// the typed reply against the next
+    /// notification in a
+    /// `tokio::select!`. The lock is held
+    /// across the inner `recv().await`,
+    /// which is safe for the consumer's
+    /// main loop: only one task owns the
+    /// peer at a time, and the reader
+    /// task pushes to the matching
+    /// `notifications_tx` (not the
+    /// receiver) so the consumer never
+    /// blocks the agent.
+    notifications_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<SessionNotification>>>,
     /// The default request timeout.
     timeout: Duration,
     /// The child process. The `kill_on_drop`
@@ -272,8 +286,13 @@ impl AcpStdioPeer {
         // `recv_notification`. A bounded
         // channel (32) gives the consumer a
         // moment to catch up before the agent
-        // starts to back-pressure.
+        // starts to back-pressure. The receiver
+        // is wrapped in a `tokio::sync::Mutex`
+        // so `recv_notification` can take
+        // `&self` and race against the typed
+        // reply in a `tokio::select!`.
         let (notifications_tx, notifications_rx) = mpsc::channel::<SessionNotification>(32);
+        let notifications_rx = Arc::new(tokio::sync::Mutex::new(notifications_rx));
 
         // The reader task. Owns the child's
         // stdout. Reads one line at a time
@@ -457,20 +476,43 @@ impl AcpStdioPeer {
     /// Await the next [`SessionNotification`]
     /// the agent streams.
     ///
-    /// `&mut self` is the borrow
-    /// `mpsc::Receiver::recv` needs. The
-    /// caller is the single consumer; a
-    /// future increment that wants a
-    /// `Stream` wrapper can hand out a
-    /// borrowed `&mut Receiver` instead.
+    /// `&self` (not `&mut self`) so the
+    /// consumer can race the typed reply
+    /// against the next notification in a
+    /// `tokio::select!`:
+    ///
+    /// ```ignore
+    /// tokio::select! {
+    ///     biased;
+    ///     Some(notification) = peer.recv_notification() => {
+    ///         render(notification);
+    ///     }
+    ///     response = peer.send_typed_request(...) => {
+    ///         return response;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The receiver is behind a
+    /// `tokio::sync::Mutex`; the lock is
+    /// held across the inner
+    /// `recv().await`. That is safe for
+    /// the consumer's main loop because
+    /// only the consumer's task holds
+    /// the lock — the agent's reader
+    /// task pushes to the matching
+    /// `notifications_tx` (not the
+    /// receiver) and never contends for
+    /// the receiver lock.
     ///
     /// Returns `None` when the reader task
     /// is gone (the child has exited and
-    /// the channel is closed). The consumer
-    /// is expected to drop the peer at that
-    /// point.
-    pub async fn recv_notification(&mut self) -> Option<SessionNotification> {
-        self.notifications_rx.recv().await
+    /// the channel is closed). The
+    /// consumer is expected to drop the
+    /// peer at that point.
+    pub async fn recv_notification(&self) -> Option<SessionNotification> {
+        let mut guard = self.notifications_rx.lock().await;
+        guard.recv().await
     }
 }
 
