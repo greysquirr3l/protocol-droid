@@ -47,6 +47,10 @@ use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, GetTaskRequ
 const PEER: &str = "http://127.0.0.1:8080";
 
 #[tokio::main(flavor = "current_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the example walks the consumer through every typed A2A method on a single connection; splitting it into per-method helper functions would obscure the one-line shape the example is meant to teach. The function is an example, not production code."
+)]
 async fn main() -> Result<(), Box<dyn Error>> {
     // The peer is started with `A2A_BEARER_TOKEN=secret`
     // when an auth demonstration is wanted. The

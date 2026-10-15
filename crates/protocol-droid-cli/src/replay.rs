@@ -1428,39 +1428,7 @@ async fn run_as_client_async(session_path: &str, server: &[String]) -> anyhow::R
             captured_responses.push(None);
             continue;
         }
-        match client.next_frame().await {
-            Ok(Some(reply)) => {
-                let parsed: Map<String, Value> = match serde_json::from_str(&reply) {
-                    Ok(parsed) => parsed,
-                    Err(error) => {
-                        eprintln!(
-                            "the live server returned a frame that is not a JSON object for turn {}: {error}",
-                            turn.request_index
-                        );
-                        report.malformed += 1;
-                        captured_responses.push(None);
-                        continue;
-                    }
-                };
-                captured_responses.push(Some(parsed));
-            }
-            Ok(None) => {
-                eprintln!(
-                    "the live server closed its stdout before answering turn {}",
-                    turn.request_index
-                );
-                report.unanswered += 1;
-                captured_responses.push(None);
-            }
-            Err(error) => {
-                eprintln!(
-                    "the live server did not answer the request for turn {}: {error}",
-                    turn.request_index
-                );
-                report.unanswered += 1;
-                captured_responses.push(None);
-            }
-        }
+        captured_responses.push(capture_one_response(&client, turn.request_index, &mut report).await);
     }
 
     let mut stdout = std::io::stdout().lock();
@@ -1478,6 +1446,63 @@ async fn run_as_client_async(session_path: &str, server: &[String]) -> anyhow::R
         );
     }
     Ok(())
+}
+
+/// Reads the next frame from the live server, parses
+/// it as a JSON object, and updates the report on
+/// the four ways a turn can fail to produce a
+/// captured response (the server closes stdout,
+/// returns a non-object frame, errors on `next_frame`,
+/// or — handled by the caller — refuses the request
+/// the loop just sent). Returned `Some` carries a
+/// parsed response; `None` is recorded against the
+/// `unanswered` / `malformed` counters in the report.
+///
+/// Generic over the `StdioClient<DW>` sink type so
+/// the helper does not lock the caller into a
+/// specific writer — replay is the only caller
+/// today, and it always uses `SinkDefault` (the
+/// default type parameter of `StdioClient`).
+///
+/// The `DW` bound mirrors the one on
+/// `StdioClient<DW>::next_frame`, which is the
+/// only method the helper calls. `next_frame` is
+/// in the `where DW: AsyncWrite + Unpin + Send +
+/// 'static` block; the helper inherits the bound.
+async fn capture_one_response<DW>(
+    client: &protocol_droid::adapters::secondary::stdio::StdioClient<DW>,
+    request_index: usize,
+    report: &mut ClientReport,
+) -> Option<Map<String, Value>>
+where
+    DW: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    match client.next_frame().await {
+        Ok(Some(reply)) => match serde_json::from_str(&reply) {
+            Ok(parsed) => Some(parsed),
+            Err(error) => {
+                eprintln!(
+                    "the live server returned a frame that is not a JSON object for turn {request_index}: {error}"
+                );
+                report.malformed += 1;
+                None
+            }
+        },
+        Ok(None) => {
+            eprintln!(
+                "the live server closed its stdout before answering turn {request_index}"
+            );
+            report.unanswered += 1;
+            None
+        }
+        Err(error) => {
+            eprintln!(
+                "the live server did not answer the request for turn {request_index}: {error}"
+            );
+            report.unanswered += 1;
+            None
+        }
+    }
 }
 
 #[cfg(test)]

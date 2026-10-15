@@ -179,18 +179,50 @@ impl AgentCardBuilder {
     /// [`AgentCardError`] on the first invariant failure. The
     /// error names the field so the caller can fix the input.
     pub fn build(self) -> Result<AgentCard, AgentCardError> {
-        let name = self.name.ok_or(AgentCardError::EmptyName)?;
+        let name = self.name.as_ref().ok_or(AgentCardError::EmptyName)?.clone();
         if name.is_empty() {
             return Err(AgentCardError::EmptyName);
         }
-        let description = self.description.ok_or(AgentCardError::EmptyDescription)?;
+        let description = self
+            .description
+            .as_ref()
+            .ok_or(AgentCardError::EmptyDescription)?
+            .clone();
         if description.is_empty() {
             return Err(AgentCardError::EmptyDescription);
         }
-        let version = self.version.ok_or(AgentCardError::EmptyVersion)?;
+        let version = self
+            .version
+            .as_ref()
+            .ok_or(AgentCardError::EmptyVersion)?
+            .clone();
         if version.is_empty() {
             return Err(AgentCardError::EmptyVersion);
         }
+        self.validate_top_level()?;
+        self.validate_skills()?;
+        self.validate_provider_extensions_and_security()?;
+        Ok(AgentCard {
+            name,
+            description,
+            version,
+            supported_interfaces: self.supported_interfaces,
+            provider: self.provider,
+            documentation_url: self.documentation_url,
+            icon_url: self.icon_url,
+            capabilities: self.capabilities,
+            default_input_modes: self.default_input_modes,
+            default_output_modes: self.default_output_modes,
+            skills: self.skills,
+            security_schemes: self.security_schemes,
+            security_requirements: self.security_requirements,
+        })
+    }
+
+    /// Validates the "top-level" fields that are not
+    /// part of a sub-list: the supported interfaces,
+    /// the input modes, and the output modes.
+    const fn validate_top_level(&self) -> Result<(), AgentCardError> {
         if self.supported_interfaces.is_empty() {
             return Err(AgentCardError::NoSupportedInterfaces);
         }
@@ -200,6 +232,12 @@ impl AgentCardBuilder {
         if self.default_output_modes.is_empty() {
             return Err(AgentCardError::NoOutputModes);
         }
+        Ok(())
+    }
+
+    /// Validates the `skills` list — every skill's
+    /// `id`, `name`, and `description` are non-empty.
+    fn validate_skills(&self) -> Result<(), AgentCardError> {
         for (index, skill) in self.skills.iter().enumerate() {
             if skill.id.is_empty() {
                 return Err(AgentCardError::EmptySkillField { index, field: "id" });
@@ -217,6 +255,18 @@ impl AgentCardBuilder {
                 });
             }
         }
+        Ok(())
+    }
+
+    /// Validates the optional `provider`, the
+    /// capability `extensions`, and the
+    /// `security_schemes` map. The three are grouped
+    /// because they share the "is this map / option
+    /// shape" pre-condition — every entry the
+    /// consumer added needs at least one non-empty
+    /// field — and the per-section pattern would
+    /// duplicate the early-return on empty.
+    fn validate_provider_extensions_and_security(&self) -> Result<(), AgentCardError> {
         if let Some(provider) = &self.provider
             && provider.organization.is_empty()
         {
@@ -273,21 +323,7 @@ impl AgentCardBuilder {
                 }
             }
         }
-        Ok(AgentCard {
-            name,
-            description,
-            version,
-            supported_interfaces: self.supported_interfaces,
-            provider: self.provider,
-            documentation_url: self.documentation_url,
-            icon_url: self.icon_url,
-            capabilities: self.capabilities,
-            default_input_modes: self.default_input_modes,
-            default_output_modes: self.default_output_modes,
-            skills: self.skills,
-            security_schemes: self.security_schemes,
-            security_requirements: self.security_requirements,
-        })
+        Ok(())
     }
 }
 
