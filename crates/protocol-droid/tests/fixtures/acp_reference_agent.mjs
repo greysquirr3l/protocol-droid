@@ -150,6 +150,38 @@ function handleLine(line) {
     );
     return;
   }
+  // A reply to the agent-originating
+  // request. Match the id, then write
+  // the test reply (the prompt's
+  // reply, carrying the file content
+  // preview).
+  if (id === pendingAgentRequestId && pendingPromptId !== null) {
+    const contentPreview =
+      typeof request.result === 'object' &&
+      request.result !== null &&
+      'content' in request.result
+        ? String(request.result.content).slice(0, 64)
+        : '';
+    process.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: pendingPromptId,
+        result: {
+          stopReason: 'end_turn',
+          // The test asserts on this
+          // field: the client's
+          // reply was received and
+          // the agent's reply
+          // carries the content
+          // preview.
+          agentReply: { contentPreview },
+        },
+      }) + '\n',
+    );
+    pendingAgentRequestId = null;
+    pendingPromptId = null;
+    return;
+  }
   switch (request.method) {
     case 'initialize':
       process.stdout.write(JSON.stringify(makeInitializeResponse(id)) + '\n');
@@ -167,6 +199,14 @@ function handleLine(line) {
       return;
   }
 }
+
+// Set by the agent-originating-request
+// driver when it posts the request to
+// the client. The handler reads the
+// reply from stdin and matches it
+// against `pendingAgentRequestId`.
+let pendingAgentRequestId = null;
+let pendingPromptId = null;
 
 // A `session/prompt` handler. The fixture
 // streams two `session/update` notifications
@@ -186,6 +226,44 @@ function handlePrompt(request) {
     process.stdout.write(
       JSON.stringify(makeJsonRpcError(id, -32602, 'missing sessionId')) + '\n',
     );
+    return;
+  }
+  // The agent-originating-request
+  // test driver piggybacks on
+  // `session/prompt` with a
+  // marker text the test sends.
+  // When the prompt text is
+  // `__test_agent_reads_file__`,
+  // the handler posts an
+  // `fs/read_text_file` request
+  // to the client, awaits the
+  // reply, and replies to the
+  // prompt with `stopReason:
+  // end_turn` and the file
+  // content preview.
+  const promptText = Array.isArray(request.params?.prompt)
+    ? request.params.prompt
+        .filter((block) => block?.type === 'text')
+        .map((block) => String(block?.text ?? ''))
+        .join('')
+    : '';
+  if (promptText === '__test_agent_reads_file__') {
+    // Send the outgoing request,
+    // stash the prompt's id, and
+    // let the reply handler pair
+    // the client's reply with the
+    // prompt's reply.
+    const request_to_client = {
+      jsonrpc: '2.0',
+      id: 9001,
+      method: 'fs/read_text_file',
+      params: {
+        path: process.argv[1],
+      },
+    };
+    process.stdout.write(JSON.stringify(request_to_client) + '\n');
+    pendingAgentRequestId = 9001;
+    pendingPromptId = id;
     return;
   }
   // The two notifications are scheduled

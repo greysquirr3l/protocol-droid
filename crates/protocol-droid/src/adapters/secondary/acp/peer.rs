@@ -79,10 +79,14 @@
 //! the rule was written for.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
+
+use super::AgentRequest;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -209,6 +213,42 @@ pub struct AcpStdioPeer {
     /// receiver) so the consumer never
     /// blocks the agent.
     notifications_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<SessionNotification>>>,
+    /// The set of request ids the peer has
+    /// sent. The reader task uses this set
+    /// to differentiate client-originating
+    /// replies (the `id` is in the set) from
+    /// agent-originating requests (the
+    /// `id` is NOT in the set, because the
+    /// agent allocated it). The set is
+    /// pruned on every reply: the reader
+    /// removes the id once the reply is
+    /// dispatched to the pending oneshot.
+    ///
+    /// `std::sync::Mutex` is the right
+    /// choice: the lock is held for a
+    /// few microseconds (a `HashSet`
+    /// insert or remove), not across
+    /// an await, and a tokio mutex
+    /// would be a heavier allocation
+    /// for the same critical section.
+    sent_ids: Arc<StdMutex<HashSet<u64>>>,
+    /// The agent-originating request
+    /// stream. The agent sends requests
+    /// like `fs/read_text_file` and
+    /// `terminal/create` to the client;
+    /// the consumer reads them with
+    /// [`recv_agent_request`][Self::recv_agent_request]
+    /// and replies with
+    /// [`send_reply`][Self::send_reply].
+    ///
+    /// The receiver is behind a
+    /// `tokio::sync::Mutex` for the
+    /// same reason as `notifications_rx`:
+    /// the consumer can race the typed
+    /// reply against the next
+    /// agent-originating request in a
+    /// `tokio::select!`.
+    agent_requests_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<AgentRequest>>>,
     /// The default request timeout.
     timeout: Duration,
     /// The child process. The `kill_on_drop`
@@ -294,17 +334,46 @@ impl AcpStdioPeer {
         let (notifications_tx, notifications_rx) = mpsc::channel::<SessionNotification>(32);
         let notifications_rx = Arc::new(tokio::sync::Mutex::new(notifications_rx));
 
+        // The agent-originating request
+        // stream. The agent sends requests
+        // like `fs/read_text_file` and
+        // `terminal/create` to the client;
+        // the consumer reads them with
+        // `recv_agent_request` and replies
+        // with `send_reply`. A bounded
+        // channel (8) is enough: the
+        // consumer's handler is synchronous
+        // with the request's arrival, and
+        // agent-originating requests are
+        // rare compared to the consumer's
+        // own request rate.
+        let (agent_requests_tx, agent_requests_rx) = mpsc::channel::<AgentRequest>(8);
+        let agent_requests_rx = Arc::new(tokio::sync::Mutex::new(agent_requests_rx));
+
+        // The set of request ids the peer
+        // has sent. Empty at start; the
+        // peer inserts on every
+        // `send_request` and the reader
+        // removes on every reply.
+        let sent_ids: Arc<StdMutex<HashSet<u64>>> =
+            Arc::new(StdMutex::new(HashSet::new()));
+
         // The reader task. Owns the child's
         // stdout. Reads one line at a time
         // (newline-delimited JSON-RPC), parses,
         // and dispatches to the matching
-        // pending reply. Notifications (no
-        // `id` field) go to the
-        // `notifications_tx` instead.
+        // pending reply (for client-originating
+        // requests) or to the
+        // `agent_requests_tx` (for
+        // agent-originating requests).
+        // Notifications (no `id` field) go
+        // to the `notifications_tx`.
         spawn_reader(
             BufReader::new(stdout),
             Arc::clone(&pending),
             notifications_tx,
+            agent_requests_tx,
+            Arc::clone(&sent_ids),
         );
 
         // The writer task. Owns the child's
@@ -330,6 +399,8 @@ impl AcpStdioPeer {
             next_id: AtomicU64::new(1),
             write_tx,
             notifications_rx,
+            sent_ids,
+            agent_requests_rx,
             timeout: spec.timeout.unwrap_or(Duration::from_secs(30)),
             child,
         })
@@ -360,6 +431,36 @@ impl AcpStdioPeer {
         P: Serialize,
     {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        // Register the id synchronously
+        // before the envelope hits the
+        // wire. The reader checks
+        // `sent_ids` to differentiate
+        // client-originating replies
+        // from agent-originating
+        // requests; if the id is not
+        // in the set when the reply
+        // arrives, the reader will
+        // route it to the
+        // agent-originating request
+        // channel by mistake. The
+        // insert is a few-nanosecond
+        // critical section. A poisoned
+        // mutex is a logic error: the
+        // peer has corrupted its own
+        // state, and the conservative
+        // response is a `Decode`
+        // error (the caller is the
+        // only one holding the
+        // poison; nobody else can
+        // recover).
+        self.sent_ids
+            .lock()
+            .map_err(|error| {
+                AcpPeerError::Decode(serde_json::Error::io(io_other(&format!(
+                    "sent_ids lock poisoned: {error}"
+                ))))
+            })?
+            .insert(id);
         let params_value: Value =
             serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
         let envelope = serde_json::json!({
@@ -387,13 +488,26 @@ impl AcpStdioPeer {
                 },
             );
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                // The reply arrived. Remove
+                // the id from `sent_ids` so
+                // the set does not grow
+                // unboundedly over the
+                // peer's lifetime.
+                if let Ok(mut sent_ids) = self.sent_ids.lock() {
+                    sent_ids.remove(&id);
+                }
+                result
+            }
             Ok(Err(_oneshot_dropped)) => {
                 // The reader dropped the oneshot without sending: the
                 // child exited. The exit status is not available on
                 // this path (we do not hold the `Child` handle here);
                 // a future increment that wants the status can store
                 // the handle in an `Arc<Mutex<_>>` and read it.
+                if let Ok(mut sent_ids) = self.sent_ids.lock() {
+                    sent_ids.remove(&id);
+                }
                 Err(AcpPeerError::Timeout(self.timeout))
             }
             Err(_elapsed) => {
@@ -401,6 +515,9 @@ impl AcpStdioPeer {
                 // reader task will see a closed sender when (if) the
                 // reply does come.
                 self.pending.lock().await.remove(&id);
+                if let Ok(mut sent_ids) = self.sent_ids.lock() {
+                    sent_ids.remove(&id);
+                }
                 Err(AcpPeerError::Timeout(self.timeout))
             }
         }
@@ -514,12 +631,101 @@ impl AcpStdioPeer {
         let mut guard = self.notifications_rx.lock().await;
         guard.recv().await
     }
+
+    /// Await the next agent-originating
+    /// request the agent sends to the
+    /// client. The agent's
+    /// `fs/read_text_file`,
+    /// `fs/write_text_file`,
+    /// `terminal/create`,
+    /// `terminal/output`,
+    /// `terminal/release`,
+    /// `terminal/wait_for_exit`,
+    /// `terminal/kill`, and
+    /// `session/request_permission` are
+    /// the canonical examples.
+    ///
+    /// `&self` (not `&mut self`) so the
+    /// consumer can race the typed
+    /// reply against the next
+    /// agent-originating request in a
+    /// `tokio::select!`, the same shape
+    /// `recv_notification` supports.
+    /// The receiver is behind a
+    /// `tokio::sync::Mutex`; the lock
+    /// is held across the inner
+    /// `recv().await`, which is safe
+    /// for the consumer's main loop
+    /// because only the consumer's
+    /// task holds the lock — the
+    /// reader task pushes to the
+    /// matching `agent_requests_tx`
+    /// (not the receiver) and never
+    /// contends for the receiver
+    /// lock.
+    ///
+    /// Returns `None` when the reader
+    /// task is gone (the child has
+    /// exited and the channel is
+    /// closed). The consumer is
+    /// expected to drop the peer at
+    /// that point.
+    pub async fn recv_agent_request(&self) -> Option<AgentRequest> {
+        let mut guard = self.agent_requests_rx.lock().await;
+        guard.recv().await
+    }
+
+    /// Reply to an agent-originating
+    /// request. The peer hands a
+    /// well-formed JSON-RPC 2.0 success
+    /// reply to the writer task; the
+    /// agent correlates the reply with
+    /// the request by the `id` (passed
+    /// through unchanged from the
+    /// [`AgentRequest`][crate::adapters::secondary::acp::AgentRequest]
+    /// the agent sent).
+    ///
+    /// The result is the typed value
+    /// the agent expects for the
+    /// method. The peer's role is
+    /// transport: it serialises the
+    /// value with `serde_json` and
+    /// hands the bytes to the writer;
+    /// the consumer's handler is what
+    /// constructs the typed value.
+    ///
+    /// `&self` because the writer
+    /// task owns the child's stdin
+    /// and the application layer
+    /// only hands a serialised
+    /// envelope to the channel.
+    pub async fn send_reply(
+        &self,
+        id: Value,
+        result: Value,
+    ) -> Result<(), AcpPeerError> {
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        });
+        let bytes = serde_json::to_vec(&envelope).map_err(AcpPeerError::Decode)?;
+        let mut framed = bytes;
+        framed.push(b'\n');
+        self.write_tx
+            .send(framed)
+            .await
+            .map_err(|_| AcpPeerError::Write(io_other("the writer task is gone")))?;
+        Ok(())
+    }
 }
 
 fn spawn_reader(
     mut reader: BufReader<ChildStdout>,
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
     notifications_tx: mpsc::Sender<SessionNotification>,
+    agent_requests_tx: mpsc::Sender<AgentRequest>,
+    sent_ids: Arc<StdMutex<HashSet<u64>>>,
 ) {
     tokio::spawn(async move {
         let mut line = String::new();
@@ -546,14 +752,47 @@ fn spawn_reader(
                 Err(_) => continue,
             };
             if value.get("id").is_some() {
-                // Reply: parse, look up the
-                // pending oneshot, hand the
-                // result over.
-                let (id, result) = parse_and_dispatch_value(value);
-                let entry = pending.lock().await.remove(&id);
-                if id != 0 && let Some(entry) = entry {
-                    let _ = entry.tx.send(result);
+                // Reply-or-agent-request:
+                // the `id` is present in
+                // both. The wire form does
+                // not distinguish them;
+                // the peer's
+                // `sent_ids` set is the
+                // differentiator. If the
+                // peer allocated the id,
+                // the reply is dispatched
+                // to the pending oneshot;
+                // if the agent allocated
+                // the id, the request is
+                // pushed to the
+                // `agent_requests_tx` for
+                // the consumer's handler.
+                let (id, result) = parse_and_dispatch_value(value.clone());
+                let is_client_reply = id != 0
+                    && sent_ids
+                        .lock()
+                        .is_ok_and(|set| set.contains(&id));
+                if is_client_reply {
+                    let entry = pending.lock().await.remove(&id);
+                    if let Some(entry) = entry {
+                        let _ = entry.tx.send(result);
+                    }
+                } else if id != 0
+                    && value.get("method").is_some()
+                    && let Some(request) = parse_agent_request(&value)
+                {
+                    let _ = agent_requests_tx.send(request).await;
                 }
+                // Envelopes with `id == 0`
+                // (the sentinel for an
+                // unparseable id) and
+                // envelopes with an id that
+                // the client did not send
+                // AND no `method` field
+                // (a malformed reply) are
+                // dropped: the wire is
+                // ambiguous and the peer
+                // cannot dispatch.
             } else {
                 // Notification: decode the
                 // `params` as a typed
@@ -575,6 +814,24 @@ fn spawn_reader(
             }
         }
     });
+}
+
+/// Parse a JSON-RPC 2.0 envelope as an
+/// agent-originating request. The function
+/// never fails to produce a struct: a
+/// missing `method` or `id` field returns
+/// `None` and the caller drops the
+/// envelope. The wire form is the same as
+/// the client side: `{ jsonrpc, id, method,
+/// params }`.
+fn parse_agent_request(value: &Value) -> Option<AgentRequest> {
+    let id = value.get("id")?.clone();
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)?
+        .to_owned();
+    let params = value.get("params").cloned().unwrap_or(Value::Null);
+    Some(AgentRequest { id, method, params })
 }
 
 /// Parse a single JSON-RPC 2.0 reply envelope

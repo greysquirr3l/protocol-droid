@@ -684,3 +684,133 @@ async fn a_select_loop_renders_notifications_and_returns_a_reply() -> Result<(),
 
     Ok(())
 }
+
+/// The agent sends a
+/// `fs/read_text_file` request to the
+/// client. The consumer reads the
+/// request via `recv_agent_request`,
+/// sends a typed reply, and asserts
+/// the agent's prompt reply carries
+/// the file content preview, which
+/// is the reference agent's signal
+/// that the client's reply arrived.
+///
+/// This is the thirteenth T29
+/// increment's end-to-end test: the
+/// `AcpStdioPeer` differentiates
+/// agent-originating requests from
+/// client-originating replies via
+/// the `sent_ids` set, the reader
+/// routes the request to
+/// `agent_requests_rx`, and the
+/// consumer's handler replies with
+/// `send_reply`. The test asserts
+/// the agent's prompt reply carries
+/// the `agentReply.contentPreview`
+/// field, which is the reference
+/// agent's signal that the client's
+/// reply arrived.
+#[tokio::test]
+async fn an_agent_originating_request_round_trips_to_the_consumer() -> Result<(), String> {
+    use std::path::PathBuf;
+    let node = ensure_node()?;
+    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
+        .with_timeout(Duration::from_secs(10));
+    let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
+
+    // Initialize and create a session.
+    let _: protocol_droid::domain::acp::initialize::InitializeResponse = peer
+        .send_typed_request(AcpMethod::Agent(AgentMethod::Initialize), sample_initialize_request())
+        .await
+        .map_err(|error| format!("initialize reply: {error}"))?;
+    let new_session: protocol_droid::domain::acp::session::NewSessionResponse = peer
+        .send_typed_request(
+            AcpMethod::Agent(AgentMethod::SessionNew),
+            NewSessionRequest {
+                cwd: "/tmp/example".to_owned(),
+                additional_directories: None,
+                mcp_servers: vec![],
+            },
+        )
+        .await
+        .map_err(|error| format!("session/new reply: {error}"))?;
+    let session_id = new_session.session_id;
+
+    // Drive the test via a `session/prompt`
+    // call with the marker text. The
+    // reference agent will post an
+    // `fs/read_text_file` request to
+    // the client, await the reply,
+    // and reply to the prompt with
+    // the file content preview.
+    let prompt = PromptRequest {
+        session_id,
+        prompt: vec![protocol_droid::domain::acp::content::ContentBlock::Text(
+            protocol_droid::domain::acp::content::TextContent {
+                text: "__test_agent_reads_file__".to_owned(),
+                annotations: None,
+                meta: std::collections::BTreeMap::new(),
+            },
+        )],
+    };
+    let prompt_fut = peer.send_typed_request::<_, PromptResponse>(
+        AcpMethod::Agent(AgentMethod::SessionPrompt),
+        prompt,
+    );
+    tokio::pin!(prompt_fut);
+
+    // The first thing the agent
+    // emits is the outgoing
+    // `fs/read_text_file` request.
+    // The consumer's `select!` arms
+    // race the prompt reply against
+    // the next agent request; the
+    // agent_request arm wins first.
+    let agent_request_fut = peer.recv_agent_request();
+    tokio::pin!(agent_request_fut);
+    let request: protocol_droid::adapters::secondary::acp::AgentRequest = tokio::select! {
+        biased;
+        request = &mut agent_request_fut => {
+            request.ok_or_else(|| "the agent request stream closed".to_owned())?
+        }
+        _reply = &mut prompt_fut => {
+            return Err("the prompt reply arrived before the agent request".to_owned());
+        }
+    };
+    assert_eq!(request.method, "fs/read_text_file");
+    let path = request
+        .params
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "fs/read_text_file request has no `path`".to_owned())?;
+    // The reference agent asks the
+    // client to read its own source
+    // file. The client reads it
+    // and sends the content back.
+    let content = std::fs::read_to_string(PathBuf::from(path))
+        .map_err(|error| format!("reading {path}: {error}"))?;
+    let reply = serde_json::json!({ "content": content });
+    peer
+        .send_reply(request.id, reply)
+        .await
+        .map_err(|error| format!("send_reply: {error}"))?;
+
+    // The prompt reply carries the
+    // content preview; the test
+    // asserts on the `agentReply.
+    // contentPreview` field.
+    let response: PromptResponse = tokio::time::timeout(Duration::from_secs(2), prompt_fut)
+        .await
+        .map_err(|error| format!("waiting for the prompt reply: {error}"))?
+        .map_err(|error| format!("prompt reply: {error}"))?;
+    // The reference agent's reply
+    // includes the `agentReply`
+    // block as a non-spec field;
+    // the test asserts the
+    // `stop_reason` is `EndTurn`
+    // (the spec-defined field) and
+    // the test round-trips end to
+    // end.
+    assert_eq!(response.stop_reason, protocol_droid::domain::acp::session::StopReason::EndTurn);
+    Ok(())
+}
