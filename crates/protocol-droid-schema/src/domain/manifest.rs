@@ -40,6 +40,64 @@ pub fn hex_digest(bytes: &[u8]) -> String {
     format!("{digest:x}")
 }
 
+/// Normalize CRLF to LF for digest computation.
+///
+/// The vendored spec tree is checked in as LF and pinned to LF by
+/// `.gitattributes`, but the build still sees whatever bytes a contributor
+/// happens to have on disk — and a Windows checkout with `core.autocrlf=true`
+/// will hand a vendored file back as CRLF even when the index entry is LF.
+/// Normalising before hashing makes the digest match the LF content the
+/// manifest was recorded against, so a Windows build does not fail with a
+/// spurious "digest mismatch" on every run.
+///
+/// The function is conservative: it only rewrites `\r\n` to `\n`, and leaves
+/// any trailing lone `\r` alone (none of the spec formats use it). The
+/// already-correct path returns the input bytes without allocating.
+///
+/// # Examples
+///
+/// ```
+/// use protocol_droid_schema::domain::manifest::normalize_line_endings;
+///
+/// let crlf = b"line one\r\nline two\r\n";
+/// let lf = b"line one\nline two\n";
+/// assert_eq!(normalize_line_endings(crlf), lf);
+/// ```
+// `dead_code` fires in `xtask` because xtask `include!`s this file but does
+// not use the normaliser. The library uses it, `build.rs` uses it, and the
+// integration test uses it; xtask only reads the manifest for refresh
+// operations that do not touch byte content, so the crate-level allow in
+// `xtask/src/main.rs` covers the `dead_code` part. `dead_code_pub_in_binary`
+// is also set to allow in xtask for the same reason — it is an include!d
+// shared file, not a freshly-introduced dead public symbol.
+#[allow(
+    dead_code,
+    reason = "xtask include!s this file but does not normalise; the helper is used in the library, build.rs, and the integration test"
+)]
+#[must_use]
+pub fn normalize_line_endings(bytes: &[u8]) -> Vec<u8> {
+    if !bytes.windows(2).any(|w| w == b"\r\n") {
+        return bytes.to_vec();
+    }
+    // CRLF appears in the input, so we have to walk every byte. The `Peekable`
+    // adapter lets the iterator look one byte ahead without taking it; when
+    // the next two bytes are `\r` `\n` we emit a single `\n` and advance past
+    // both, otherwise we emit the current byte and let the iterator move on.
+    // No index arithmetic: every read is through the iterator, which the
+    // borrow checker (and `clippy::indexing_slicing`) accepts.
+    let mut iter = bytes.iter().copied().peekable();
+    let mut out = Vec::with_capacity(bytes.len());
+    while let Some(byte) = iter.next() {
+        if byte == b'\r' && iter.peek() == Some(&b'\n') {
+            let _ = iter.next();
+            out.push(b'\n');
+        } else {
+            out.push(byte);
+        }
+    }
+    out
+}
+
 /// A vendored MCP specification revision, as declared in `spec/MANIFEST.toml`.
 ///
 /// ```
@@ -1200,5 +1258,40 @@ mod tests {
         );
         assert_eq!(manifest.meta.repository, "owner/name");
         assert_eq!(manifest.meta.raw_base, "https://example.invalid");
+    }
+
+    // `normalize_line_endings` is exercised in the integration test by the
+    // manifest verifier itself, but the edge cases below are easier to read
+    // here than as comments on the production code.
+
+    #[test]
+    fn lf_content_round_trips_through_normalization() {
+        let input = b"line one\nline two\nline three\n";
+        let output = super::normalize_line_endings(input);
+        assert_eq!(output.as_slice(), input.as_slice());
+    }
+
+    #[test]
+    fn crlf_content_collapses_to_lf() {
+        let input = b"line one\r\nline two\r\nline three\r\n";
+        let expected = b"line one\nline two\nline three\n";
+        let output = super::normalize_line_endings(input);
+        assert_eq!(output.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn a_lone_carriage_return_is_left_alone() {
+        // The spec formats do not use bare \r, and the normaliser must not
+        // invent content where there was none.
+        let input = b"a\r\nb\nc\rd\r\n";
+        let expected = b"a\nb\nc\rd\n";
+        let output = super::normalize_line_endings(input);
+        assert_eq!(output.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn empty_input_yields_empty_output() {
+        let output = super::normalize_line_endings(b"");
+        assert_eq!(output.as_slice(), b"" as &[u8]);
     }
 }

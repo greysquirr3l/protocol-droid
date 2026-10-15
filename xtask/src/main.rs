@@ -8,6 +8,21 @@
 //! nothing here mutates a vendored file without also updating the manifest — a
 //! mismatch between the two fails verification, which is the point of T02.
 
+// `xtask` `include!`s the manifest module from the schema crate, and the
+// manifest module exposes `normalize_line_endings` for the library, the build
+// script, and the integration test. xtask refreshes the manifest, so it never
+// needs to normalise line endings. The function is `pub` because the
+// library's API requires it, and `include!` copies it verbatim — a
+// `pub(crate)` would not survive the cross-crate boundary. Two
+// allow-by-name attributes are narrower than the alternative of gating the
+// function on a cfg flag in the shared file, which would add noise to the
+// code every reader has to parse.
+#![allow(
+    dead_code,
+    dead_code_pub_in_binary,
+    reason = "manifest is include!d from the schema crate; normalize_line_endings is used by the library, build.rs, and the integration test, not by xtask"
+)]
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 

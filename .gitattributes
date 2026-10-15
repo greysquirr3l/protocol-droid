@@ -1,0 +1,16 @@
+# Vendored spec files. The build script verifies their SHA-256 digests at
+# every build, and the digests were computed over LF content. Pinning the
+# checkout to LF prevents a Windows runner from converting to CRLF and
+# triggering a digest mismatch on every CI run.
+crates/protocol-droid-schema/spec/** text eol=lf
+
+# Source files: keep whatever the contributor has, but default to LF so
+# a fresh clone on a Windows runner does not introduce CRLF in new files.
+*.rs         text eol=lf
+*.toml       text eol=lf
+*.md         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.json       text eol=lf
+*.ts         text eol=lf
+*.js         text eol=lf

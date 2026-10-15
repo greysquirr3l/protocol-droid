@@ -33,7 +33,7 @@ pub mod schema_model;
 #[path = "src/generator/emit.rs"]
 pub mod emit;
 
-use manifest::{Manifest, hex_digest};
+use manifest::{Manifest, hex_digest, normalize_line_endings};
 
 fn main() {
     let spec_root = Path::new("spec");
@@ -120,7 +120,7 @@ fn main() {
         |revision, file| {
             let path = spec_root.join(revision).join(file);
             fs::read(&path)
-                .map(|bytes| hex_digest(&bytes))
+                .map(|bytes| hex_digest(&normalize_line_endings(&bytes)))
                 .map_err(|err| format!("{}: {err}", path.display()))
         },
         |revision| {
@@ -163,7 +163,7 @@ fn verify_cited_documents(manifest: &Manifest, cited_dir: &Path) {
         |file| {
             let path = cited_dir.join(file);
             fs::read(&path)
-                .map(|bytes| hex_digest(&bytes))
+                .map(|bytes| hex_digest(&normalize_line_endings(&bytes)))
                 .map_err(|err| format!("{}: {err}", path.display()))
         },
         || {

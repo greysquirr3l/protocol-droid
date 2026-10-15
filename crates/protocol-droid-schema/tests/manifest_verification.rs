@@ -21,7 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use protocol_droid_schema::domain::manifest::RevisionSpec;
-use protocol_droid_schema::domain::manifest::hex_digest;
+use protocol_droid_schema::domain::manifest::{hex_digest, normalize_line_endings};
 use protocol_droid_schema::verify_vendored_specs;
 
 /// Every revision this project vendors, including the floating one.
@@ -68,13 +68,16 @@ fn every_vendored_file_matches_its_recorded_digest() {
         .expect("the vendored spec tree must match MANIFEST.toml");
 
     // Recomputed independently of the verification path, so a bug in the
-    // verifier cannot make the test that exercises it pass.
+    // verifier cannot make the test that exercises it pass. The CRLF-to-LF
+    // normalisation matches what `build.rs` does, so this test asserts the
+    // same invariant the build does: digests are over LF content regardless
+    // of what the contributor has on disk.
     let mut checked = 0_usize;
     for (revision, spec) in &manifest.revisions {
         for (file, expected) in &spec.files {
             let path = spec_root().join(revision).join(file);
             let bytes = std::fs::read(&path).expect("vendored file must be readable");
-            let actual = hex_digest(&bytes);
+            let actual = hex_digest(&normalize_line_endings(&bytes));
             assert_eq!(
                 &actual, expected,
                 "{revision}/{file} does not match its recorded digest"
