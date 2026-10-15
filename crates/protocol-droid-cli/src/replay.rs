@@ -1428,7 +1428,8 @@ async fn run_as_client_async(session_path: &str, server: &[String]) -> anyhow::R
             captured_responses.push(None);
             continue;
         }
-        captured_responses.push(capture_one_response(&client, turn.request_index, &mut report).await);
+        captured_responses
+            .push(capture_one_response(&client, turn.request_index, &mut report).await);
     }
 
     let mut stdout = std::io::stdout().lock();
@@ -1489,9 +1490,7 @@ where
             }
         },
         Ok(None) => {
-            eprintln!(
-                "the live server closed its stdout before answering turn {request_index}"
-            );
+            eprintln!("the live server closed its stdout before answering turn {request_index}");
             report.unanswered += 1;
             None
         }

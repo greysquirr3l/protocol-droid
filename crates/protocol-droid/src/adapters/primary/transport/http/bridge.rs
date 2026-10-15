@@ -430,10 +430,7 @@ where
     /// [`BridgeServeError::Router`] on the bind path.
     pub fn into_router(
         self,
-    ) -> Result<
-        axum::Router,
-        crate::adapters::primary::transport::http::router::RouterError,
-    > {
+    ) -> Result<axum::Router, crate::adapters::primary::transport::http::router::RouterError> {
         McpRouter::new(self.config, self.sessions, self.handler).into_router()
     }
 

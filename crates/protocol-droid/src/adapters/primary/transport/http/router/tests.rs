@@ -30,8 +30,8 @@ use super::{
 };
 use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::{
-    AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
-    ServerConfig, SessionStore, Streaming,
+    AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders, ServerConfig,
+    SessionStore, Streaming,
 };
 use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::application::session::IdSource;
@@ -482,13 +482,9 @@ async fn a_wrong_credential_is_refused_exactly_as_a_missing_one() -> Result<(), 
 #[test]
 fn an_explicit_authenticator_with_the_default_public_policy_is_refused() -> Result<(), TestError> {
     let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
-    let error = McpRouter::new(
-        ServerConfig::new()?,
-        sessions,
-        dummy_echo(),
-    )
-    .with_authenticator(Arc::new(OneToken))
-    .into_router();
+    let error = McpRouter::new(ServerConfig::new()?, sessions, dummy_echo())
+        .with_authenticator(Arc::new(OneToken))
+        .into_router();
     match error {
         Err(super::RouterError::UnprotectedAuthenticator) => Ok(()),
         Err(other) => Err(fail(format!(
@@ -506,14 +502,10 @@ fn an_explicit_authenticator_with_the_default_public_policy_is_refused() -> Resu
 #[test]
 fn an_explicit_authenticator_with_a_require_policy_mounts() -> Result<(), TestError> {
     let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
-    let _router = McpRouter::new(
-        ServerConfig::new()?,
-        sessions,
-        dummy_echo(),
-    )
-    .with_authenticator(Arc::new(OneToken))
-    .with_policy(AuthPolicy::Require(ScopeSet::all()))
-    .into_router()?;
+    let _router = McpRouter::new(ServerConfig::new()?, sessions, dummy_echo())
+        .with_authenticator(Arc::new(OneToken))
+        .with_policy(AuthPolicy::Require(ScopeSet::all()))
+        .into_router()?;
     Ok(())
 }
 
@@ -601,13 +593,7 @@ async fn the_security_header_values_are_the_configured_ones() -> Result<(), Test
     let config =
         ServerConfig::new()?.with_security(SecurityHeaders::default().with_x_frame_options("DENY"));
     let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
-    let harness = Harness::from_parts(
-        config,
-        sessions,
-        true,
-        AuthPolicy::default(),
-        None,
-    )?;
+    let harness = Harness::from_parts(config, sessions, true, AuthPolicy::default(), None)?;
 
     let response = harness.send(post("{}")?).await?;
     let frame = response
@@ -1006,13 +992,7 @@ async fn the_streaming_mode_never_changes_the_get_route() -> Result<(), TestErro
     for mode in [Streaming::Json, Streaming::EventStream] {
         let config = ServerConfig::new()?.with_streaming(mode);
         let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
-        let harness = Harness::from_parts(
-            config,
-            sessions,
-            false,
-            AuthPolicy::default(),
-            None,
-        )?;
+        let harness = Harness::from_parts(config, sessions, false, AuthPolicy::default(), None)?;
         let id = harness.open()?;
         let response = harness.send(with_session(get()?, id)?).await?;
 

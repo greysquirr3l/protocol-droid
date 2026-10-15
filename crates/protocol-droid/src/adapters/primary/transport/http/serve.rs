@@ -35,12 +35,15 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::adapters::primary::transport::http::config::ServerConfig;
+use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::router::{
     EventSource, Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned,
 };
 use crate::adapters::primary::transport::http::session_store::SessionStore;
 use crate::adapters::primary::transport::http::stream::EventTail;
+use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
+use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::application::server::Server;
 use crate::application::server::context::{
     DynExchange, ExchangeError, PeerSession, RequestContext,
@@ -546,6 +549,20 @@ pub struct HttpBuilder {
     config: Option<ServerConfig>,
     /// Where session ids come from.
     ids: Option<Ids>,
+    /// The authenticator the router is built with.
+    ///
+    /// Absent means the router's default `Anonymous` authenticator; the
+    /// `with_authenticator` setter records the choice so the route builder
+    /// can pair it with the policy in the right order. See
+    /// `McpRouter::with_authenticator` for the issue #11 fail-closed
+    /// contract this is the consumer entry point for.
+    authenticator: Option<Arc<dyn Authenticator + Send + Sync>>,
+    /// The auth policy the router is built with.
+    policy: Option<AuthPolicy>,
+    /// The `Origin` allow-list the router enforces.
+    origin_policy: Option<OriginPolicy>,
+    /// The per-subject request allowance.
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl core::fmt::Debug for HttpBuilder {
@@ -581,6 +598,10 @@ impl HttpBuilder {
             ceiling: default_ceiling(),
             config: None,
             ids: None,
+            authenticator: None,
+            policy: None,
+            origin_policy: None,
+            rate_limiter: None,
         }
     }
 
@@ -621,6 +642,58 @@ impl HttpBuilder {
         self
     }
 
+    /// Replaces the anonymous default with a real implementation.
+    ///
+    /// Pair with [`with_policy`](Self::with_policy); a wired authenticator
+    /// under the default `AuthPolicy::Public` is the silent fail-open the
+    /// router's `into_router` refuses at mount time. The same contract
+    /// applies here, surfaced one layer up: a deployment that sets this
+    /// without `with_policy` will see the misconfiguration at
+    /// [`serve`](Self::serve) rather than at the first request.
+    #[must_use]
+    pub fn with_authenticator(
+        mut self,
+        authenticator: Arc<dyn Authenticator + Send + Sync>,
+    ) -> Self {
+        self.authenticator = Some(authenticator);
+        self
+    }
+
+    /// Replaces the default `AuthPolicy::Public` policy.
+    ///
+    /// A deployment that wired an authenticator above must also set
+    /// `Require(scopes)` here, or `into_router` will refuse to build the
+    /// route table. See `McpRouter::with_policy` for the matching
+    /// contract.
+    #[must_use]
+    pub const fn with_policy(mut self, policy: AuthPolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Replaces the default `Origin` allow-list.
+    ///
+    /// The default is `OriginPolicy::strict(None)`, which refuses every
+    /// `Origin` header sent and allows a request that sent none — see
+    /// `OriginPolicy::check` for why absent is not the same as foreign.
+    /// A deployment serving a browser over a non-loopback address will
+    /// need to widen this to the page's origin.
+    #[must_use]
+    pub fn with_origin_policy(mut self, origin: OriginPolicy) -> Self {
+        self.origin_policy = Some(origin);
+        self
+    }
+
+    /// Replaces the per-subject request allowance.
+    ///
+    /// Defaults to `ServerConfig::rate_limit()`, so a configuration that
+    /// set one does not have to set it twice.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
+        self.rate_limiter = Some(limiter);
+        self
+    }
+
     /// Binds the listener without serving it.
     ///
     /// Split from serving because a caller terminating TLS itself needs the
@@ -649,21 +722,14 @@ impl HttpBuilder {
     /// request this server cannot serve is answered on the wire rather than
     /// raised here.
     pub async fn serve(self) -> Result<ServeReport, ServeError> {
-        let Self {
-            server,
-            addr,
-            ceiling,
-            config,
-            ids,
-        } = self;
-        let router = routes(server, ceiling, config, ids)?;
-        let (listener, bound) = bind(addr).await?;
-        axum::serve(listener, router)
+        let parts = routes(self)?;
+        let (listener, bound) = bind(parts.addr).await?;
+        axum::serve(listener, parts.router)
             .await
             .map_err(ServeError::Accept)?;
         Ok(ServeReport {
             addr: bound,
-            ceiling,
+            ceiling: parts.ceiling,
         })
     }
 
@@ -683,25 +749,32 @@ impl HttpBuilder {
         self,
         listener: tokio::net::TcpListener,
     ) -> Result<ServeReport, ServeError> {
-        let Self {
-            server,
-            addr,
-            ceiling,
-            config,
-            ids,
-        } = self;
-        let router = routes(server, ceiling, config, ids)?;
-        let bound = listener
-            .local_addr()
-            .map_err(|source| ServeError::Bind { addr, source })?;
-        axum::serve(listener, router)
+        let parts = routes(self)?;
+        let bound = listener.local_addr().map_err(|source| ServeError::Bind {
+            addr: parts.addr,
+            source,
+        })?;
+        axum::serve(listener, parts.router)
             .await
             .map_err(ServeError::Accept)?;
         Ok(ServeReport {
             addr: bound,
-            ceiling,
+            ceiling: parts.ceiling,
         })
     }
+}
+
+/// What `routes` returns: the assembled router and the two builder fields
+/// the calling method still needs after the table is built.
+#[derive(Debug)]
+struct BuilderOutput {
+    /// The mounted `axum::Router`.
+    router: axum::Router,
+    /// The address the caller is binding. Preserved for `ServeReport` and
+    /// for the `Bind` error path.
+    addr: SocketAddr,
+    /// The pre-handshake revision. Preserved for `ServeReport`.
+    ceiling: ProtocolVersion,
 }
 
 /// The route table this builder describes, and nothing that binds a socket.
@@ -710,12 +783,18 @@ impl HttpBuilder {
 /// the same table from the same parts. A second implementation here would be a
 /// second answer to "what routes does this server have", and the two would
 /// differ the first time either was edited.
-fn routes(
-    server: Server,
-    ceiling: ProtocolVersion,
-    config: Option<ServerConfig>,
-    ids: Option<Ids>,
-) -> Result<axum::Router, ServeError> {
+fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
+    let HttpBuilder {
+        server,
+        addr,
+        ceiling,
+        config,
+        ids,
+        authenticator,
+        policy,
+        origin_policy,
+        rate_limiter,
+    } = builder;
     let ids = match ids {
         Some(ids) => ids,
         None => default_ids()?,
@@ -730,9 +809,57 @@ fn routes(
         Arc::clone(&sessions),
         ceiling,
     );
-    McpRouter::new(config, sessions, handler)
-        .into_router()
-        .map_err(ServeError::from)
+    let mut router = McpRouter::new(config, sessions, handler);
+    if let Some(authenticator) = authenticator {
+        router = router.with_authenticator(authenticator);
+    }
+    if let Some(policy) = policy {
+        router = router.with_policy(policy);
+    }
+    if let Some(origin) = origin_policy {
+        router = router.with_origin_policy(origin);
+    }
+    if let Some(limiter) = rate_limiter {
+        router = router.with_rate_limiter(limiter);
+    }
+    Ok(BuilderOutput {
+        router: router.into_router().map_err(ServeError::from)?,
+        addr,
+        ceiling,
+    })
+}
+
+/// Test-only pass-through that builds a `BuilderOutput` from the four
+/// arguments the original `routes` took, so the existing tests keep their
+/// one-line call site while the production path goes through the
+/// builder.
+///
+/// Not `#[cfg(test)]` because the tests live in this module and need
+/// `pub(crate)`, but the function is documented and named so a future
+/// reader does not confuse it with the production entry point.
+#[cfg(test)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the function is test-only; `pub(crate)` is needed in test builds for the tests to reach it, but in lib builds nothing outside the crate can see it, and the lint does not have a per-cfg answer."
+)]
+pub(crate) fn test_routes(
+    server: Server,
+    ceiling: ProtocolVersion,
+    config: Option<ServerConfig>,
+    ids: Option<Ids>,
+) -> Result<axum::Router, ServeError> {
+    routes(HttpBuilder {
+        server,
+        addr: SocketAddr::from(([127, 0, 0, 1], 3000)),
+        ceiling,
+        config,
+        ids,
+        authenticator: None,
+        policy: None,
+        origin_policy: None,
+        rate_limiter: None,
+    })
+    .map(|parts| parts.router)
 }
 
 /// Listens on `addr`, and reports what the OS actually gave.
@@ -790,13 +917,17 @@ fn default_ceiling() -> ProtocolVersion {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use super::{HttpBuilder, ServeError, default_ceiling};
+    use super::{HttpBuilder, ServeError, default_ceiling, routes};
+    use crate::adapters::primary::transport::http::router::RouterError;
+    use crate::adapters::primary::transport::http::{Anonymous, AuthPolicy};
     use crate::application::server::Server;
+    use crate::domain::registry::auth::ScopeSet;
 
     /// Anything a test here can fail at, gathered so a test can `?` through
     /// unrelated error types without unwrapping.
@@ -923,7 +1054,7 @@ mod tests {
     /// happily — which reads as a broken server rather than a missing header.
     #[tokio::test]
     async fn initialize_answers_and_mints_a_session() -> Result<(), Failure> {
-        let router = crate::adapters::primary::transport::http::serve::routes(
+        let router = crate::adapters::primary::transport::http::serve::test_routes(
             server(),
             default_ceiling(),
             None,
@@ -970,7 +1101,7 @@ mod tests {
     /// retry it the same way forever.
     #[tokio::test]
     async fn a_stateful_call_with_no_session_is_refused() -> Result<(), Failure> {
-        let router = crate::adapters::primary::transport::http::serve::routes(
+        let router = crate::adapters::primary::transport::http::serve::test_routes(
             server(),
             default_ceiling(),
             None,
@@ -1005,7 +1136,7 @@ mod tests {
     /// retry a request that will never succeed.
     #[tokio::test]
     async fn a_body_that_is_not_jsonrpc_is_refused() -> Result<(), Failure> {
-        let router = crate::adapters::primary::transport::http::serve::routes(
+        let router = crate::adapters::primary::transport::http::serve::test_routes(
             server(),
             default_ceiling(),
             None,
@@ -1029,5 +1160,53 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #10: the builder can express the documented builder path —
+    // a deployment that wires an authenticator and a `Require` policy
+    // does not have to drop `HttpBuilder` and hand-assemble the
+    // router. The pass-throughs land in `routes` so the assembly path
+    // is single, not two.
+    // -----------------------------------------------------------------
+
+    /// The new builder methods do not have to be called — the default
+    /// builder still builds. This is the path every consumer that
+    /// has not wired auth takes, and changing the default would be a
+    /// silent breaking change.
+    #[tokio::test]
+    async fn the_default_builder_still_mounts() -> Result<(), Failure> {
+        let parts = routes(HttpBuilder::new(server()))?;
+        // Mounted. The test passes if `routes` returns `Ok`.
+        let _ = parts.router;
+        Ok(())
+    }
+
+    /// A builder with `with_authenticator` + `with_policy(Require)` is
+    /// the safe combination (issue #11): a deployment that wants a
+    /// credential can now say so on the builder, without dropping to
+    /// the hand-assembled router.
+    #[tokio::test]
+    async fn builder_authenticator_with_require_policy_mounts() -> Result<(), Failure> {
+        let parts = routes(
+            HttpBuilder::new(server())
+                .with_authenticator(Arc::new(Anonymous))
+                .with_policy(AuthPolicy::Require(ScopeSet::all())),
+        )?;
+        let _ = parts.router;
+        Ok(())
+    }
+
+    /// The unsafe combination (issue #11) is now caught at the builder
+    /// too: `with_authenticator` without `with_policy` returns
+    /// `Routes` at build time rather than serving a publicly-readable
+    /// endpoint.
+    #[tokio::test]
+    async fn builder_authenticator_without_policy_fails_closed() -> Result<(), Failure> {
+        match routes(HttpBuilder::new(server()).with_authenticator(Arc::new(Anonymous))) {
+            Err(ServeError::Routes(RouterError::UnprotectedAuthenticator)) => Ok(()),
+            Err(other) => Err(Failure::Serve(other)),
+            Ok(_) => Err(Failure::Expectation("the unsafe combination was accepted")),
+        }
     }
 }
