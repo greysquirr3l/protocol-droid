@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -34,10 +35,16 @@ pub fn hex_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
-    // `LowerHex` on a SHA-256 output already emits lowercase hex, one byte as
-    // two digits, which is exactly the manifest's format. Formatting the whole
-    // digest at once avoids a per-nibble lookup table indexed by a masked byte.
-    format!("{digest:x}")
+    // `sha2 0.11` replaced the `Output` type alias with a newtype that does
+    // not implement `LowerHex` directly, so the previous `format!("{digest:x}")`
+    // shortcut no longer works. We have to format the underlying byte slice
+    // instead. The output is fixed at 32 bytes for `Sha256`, which is exactly
+    // the manifest's format, so a single allocation is fine.
+    let mut hex = String::with_capacity(64);
+    for byte in digest.as_slice() {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 /// Normalize CRLF to LF for digest computation.
