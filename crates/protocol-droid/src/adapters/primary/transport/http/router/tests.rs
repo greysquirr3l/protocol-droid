@@ -30,7 +30,7 @@ use super::{
 };
 use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::{
-    Anonymous, AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
+    AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders,
     ServerConfig, SessionStore, Streaming,
 };
 use crate::adapters::primary::transport::origin::OriginPolicy;
@@ -201,14 +201,22 @@ struct Harness {
 }
 
 impl Harness {
+    /// The default for a test that does not care about auth: the
+    /// `AuthPolicy::Public` policy with no authenticator wired.
+    ///
+    /// Note that after issue #11 this is the **only** `Public` combination
+    /// the production code lets through `into_router`: `with_authenticator`
+    /// paired with `Public` now fails closed. A test that wants to exercise
+    /// a real authenticator passes it through
+    /// [`Harness::with`] alongside a `Require` policy.
     fn build(establish: bool) -> Result<Self, TestError> {
-        Self::with(establish, AuthPolicy::default(), Arc::new(OneToken))
+        Self::with(establish, AuthPolicy::Public, None)
     }
 
     fn with(
         establish: bool,
         policy: AuthPolicy,
-        authenticator: Arc<dyn Authenticator + Send + Sync>,
+        authenticator: Option<Arc<dyn Authenticator + Send + Sync>>,
     ) -> Result<Self, TestError> {
         let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
         Self::from_parts(
@@ -225,7 +233,7 @@ impl Harness {
         sessions: Arc<SessionStore<EventTail<Value>>>,
         establish: bool,
         policy: AuthPolicy,
-        authenticator: Arc<dyn Authenticator + Send + Sync>,
+        authenticator: Option<Arc<dyn Authenticator + Send + Sync>>,
     ) -> Result<Self, TestError> {
         Self::from_shape(config, sessions, establish, false, policy, authenticator)
     }
@@ -237,14 +245,7 @@ impl Harness {
         config: ServerConfig,
         sessions: Arc<SessionStore<EventTail<Value>>>,
     ) -> Result<Self, TestError> {
-        Self::from_shape(
-            config,
-            sessions,
-            false,
-            true,
-            AuthPolicy::default(),
-            Arc::new(Anonymous),
-        )
+        Self::from_shape(config, sessions, false, true, AuthPolicy::default(), None)
     }
 
     fn from_shape(
@@ -253,10 +254,10 @@ impl Harness {
         establish: bool,
         stateless: bool,
         policy: AuthPolicy,
-        authenticator: Arc<dyn Authenticator + Send + Sync>,
+        authenticator: Option<Arc<dyn Authenticator + Send + Sync>>,
     ) -> Result<Self, TestError> {
         let recorder = Arc::new(Recorder::default());
-        let router = McpRouter::new(
+        let mut router = McpRouter::new(
             config,
             Arc::clone(&sessions),
             Echo {
@@ -265,9 +266,11 @@ impl Harness {
                 stateless,
             },
         )
-        .with_policy(policy)
-        .with_authenticator(authenticator)
-        .into_router()?;
+        .with_policy(policy);
+        if let Some(authenticator) = authenticator {
+            router = router.with_authenticator(authenticator);
+        }
+        let router = router.into_router()?;
         Ok(Self {
             router,
             sessions,
@@ -400,7 +403,7 @@ async fn auth_is_refused_before_the_session_store_is_touched() -> Result<(), Tes
     let harness = Harness::with(
         true,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let id = harness.open()?;
     let response = harness.send(with_session(post("{}")?, id)?).await?;
@@ -422,7 +425,7 @@ async fn a_credential_the_policy_accepts_reaches_the_handler() -> Result<(), Tes
     let harness = Harness::with(
         true,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let id = harness.open()?;
     let request = with_session(right_token()?, id)?;
@@ -445,7 +448,7 @@ async fn a_wrong_credential_is_refused_exactly_as_a_missing_one() -> Result<(), 
     let harness = Harness::with(
         true,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let id = harness.open()?;
 
@@ -461,6 +464,80 @@ async fn a_wrong_credential_is_refused_exactly_as_a_missing_one() -> Result<(), 
         return Err(fail("the handler ran for a refused credential"));
     }
     Ok(())
+}
+
+// -------------------------------------------------------------------------
+// Issue #11: an authenticator paired with the default `Public` policy fails
+// open silently. `into_router` is the only point at which the misconfiguration
+// can be turned into a startup error, and it must be loud.
+// -------------------------------------------------------------------------
+
+/// Wiring a real authenticator but leaving the policy at the default
+/// `AuthPolicy::Public` is the exact fail-open the issue #11 review
+/// described: the authenticator is consulted, a valid token produces a
+/// scoped context, but `refuse` short-circuits on an empty `required()` and
+/// the endpoint is served to anonymous callers. The fix is to fail closed
+/// at `into_router` time, not to ship an endpoint that quietly does not
+/// have the permission boundary its configuration claims.
+#[test]
+fn an_explicit_authenticator_with_the_default_public_policy_is_refused() -> Result<(), TestError> {
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let error = McpRouter::new(
+        ServerConfig::new()?,
+        sessions,
+        dummy_echo(),
+    )
+    .with_authenticator(Arc::new(OneToken))
+    .into_router();
+    match error {
+        Err(super::RouterError::UnprotectedAuthenticator) => Ok(()),
+        Err(other) => Err(fail(format!(
+            "expected UnprotectedAuthenticator, got {other:?}"
+        ))),
+        Ok(_) => Err(fail("the unsafe combination was accepted")),
+    }
+}
+
+/// The safe combination — authenticator wired **and** a `Require` policy —
+/// passes. The previous test pins the closed-by-default behaviour; this
+/// test pins that the closed gate is not a blanket denial, so a future
+/// commit that "simplifies" the check by also refusing `Require` is
+/// caught on the way through.
+#[test]
+fn an_explicit_authenticator_with_a_require_policy_mounts() -> Result<(), TestError> {
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let _router = McpRouter::new(
+        ServerConfig::new()?,
+        sessions,
+        dummy_echo(),
+    )
+    .with_authenticator(Arc::new(OneToken))
+    .with_policy(AuthPolicy::Require(ScopeSet::all()))
+    .into_router()?;
+    Ok(())
+}
+
+/// The default `McpRouter::new` — no `with_authenticator` call — still
+/// mounts under the default `Public` policy. This is the path every
+/// `HttpBuilder` user takes today, and changing it would be a silent
+/// breaking change for every consumer that has not yet wired auth.
+#[test]
+fn the_default_router_mounts_under_the_default_public_policy() -> Result<(), TestError> {
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let _router = McpRouter::new(ServerConfig::new()?, sessions, dummy_echo()).into_router()?;
+    Ok(())
+}
+
+/// A no-op `Echo` for the issue #11 tests. Reuses the existing `Echo`
+/// shape — the tests are not exercising the handler, only the
+/// `into_router` mount path — and shares its `Recorder` (which stays
+/// empty because no request ever reaches the handler).
+fn dummy_echo() -> Echo {
+    Echo {
+        recorder: Arc::new(Recorder::default()),
+        establish: false,
+        stateless: true,
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -529,7 +606,7 @@ async fn the_security_header_values_are_the_configured_ones() -> Result<(), Test
         sessions,
         true,
         AuthPolicy::default(),
-        Arc::new(OneToken),
+        None,
     )?;
 
     let response = harness.send(post("{}")?).await?;
@@ -719,7 +796,7 @@ async fn a_get_is_refused_without_a_credential() -> Result<(), TestError> {
     let harness = Harness::with(
         false,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let id = harness.open()?;
     let response = harness.send(with_session(get()?, id)?).await?;
@@ -794,7 +871,7 @@ async fn a_get_forwards_last_event_id_into_the_replay() -> Result<(), TestError>
         sessions,
         false,
         AuthPolicy::default(),
-        Arc::new(OneToken),
+        None,
     )?;
 
     let mut quoted = with_session(get()?, id)?;
@@ -833,7 +910,7 @@ async fn a_get_with_no_cursor_replays_everything() -> Result<(), TestError> {
         sessions,
         false,
         AuthPolicy::default(),
-        Arc::new(OneToken),
+        None,
     )?;
 
     let body = replayed_body(harness.send(with_session(get()?, id)?).await?).await?;
@@ -880,7 +957,7 @@ async fn an_unknown_session_is_a_401_and_not_a_404_without_a_credential() -> Res
     let harness = Harness::with(
         true,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let forged = McpSessionId::from(SessionId::new(9_999));
     // No credential: the gate must be the only thing that answers.
@@ -934,7 +1011,7 @@ async fn the_streaming_mode_never_changes_the_get_route() -> Result<(), TestErro
             sessions,
             false,
             AuthPolicy::default(),
-            Arc::new(OneToken),
+            None,
         )?;
         let id = harness.open()?;
         let response = harness.send(with_session(get()?, id)?).await?;
@@ -968,7 +1045,7 @@ async fn an_over_limit_body_is_a_refusal_rather_than_a_bare_413() -> Result<(), 
         sessions,
         true,
         AuthPolicy::default(),
-        Arc::new(OneToken),
+        None,
     )?;
 
     let huge = "x".repeat(8 * 1024 * 1024);
@@ -1264,7 +1341,7 @@ async fn a_401_carries_the_resource_metadata_challenge() -> Result<(), TestError
         Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
         true,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let id = harness.open()?;
     // No `Authorization` header, so the policy refuses an anonymous context.
@@ -1294,7 +1371,7 @@ async fn a_403_carries_no_challenge() -> Result<(), TestError> {
         Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
         true,
         AuthPolicy::Require(ScopeSet::empty().with(Scope::Admin)),
-        Arc::new(ReadOnly),
+        Some(Arc::new(ReadOnly)),
     )?;
     let id = harness.open()?;
     let mut request = with_session(post("{}")?, id)?;
@@ -1323,7 +1400,7 @@ async fn a_401_without_published_metadata_is_unadorned() -> Result<(), TestError
     let harness = Harness::with(
         true,
         AuthPolicy::Require(ScopeSet::all()),
-        Arc::new(OneToken),
+        Some(Arc::new(OneToken)),
     )?;
     let id = harness.open()?;
     let response = harness.send(with_session(post("{}")?, id)?).await?;

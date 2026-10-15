@@ -110,8 +110,8 @@ pub use frame_payload::FramePayload;
 pub use refusal::Refusal;
 pub use resume::{Resume, decide, plan};
 pub use router::{
-    EventSource, Inbound, InvalidHeaderValue, McpRouter, RequestHandler, SessionHandle,
-    Unsessioned, with_security,
+    EventSource, Inbound, InvalidHeaderValue, McpRouter, RequestHandler, RouterError,
+    SessionHandle, Unsessioned, with_security,
 };
 // Re-exported for the `2024-11-05` transport rather than duplicated there: a
 // second implementation of "authenticate, then refuse" is a second place to get

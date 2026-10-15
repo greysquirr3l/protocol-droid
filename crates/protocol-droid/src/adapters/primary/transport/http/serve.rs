@@ -37,7 +37,7 @@ use serde_json::Value;
 use crate::adapters::primary::transport::http::config::ServerConfig;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::router::{
-    EventSource, Inbound, InvalidHeaderValue, McpRouter, RequestHandler, SessionHandle, Unsessioned,
+    EventSource, Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned,
 };
 use crate::adapters::primary::transport::http::session_store::SessionStore;
 use crate::adapters::primary::transport::http::stream::EventTail;
@@ -119,11 +119,13 @@ pub enum ServeError {
     /// The route table could not be built.
     ///
     /// In practice a configured security header that is not a legal HTTP
-    /// header value. Failing here rather than at the first request is the
-    /// point: the alternative is a server that starts and then answers every
-    /// request with a header set it cannot write.
+    /// header value, or the issue #11 fail-open combination of a wired
+    /// authenticator and the default `AuthPolicy::Public` policy. Failing
+    /// here rather than at the first request is the point: the alternative
+    /// is a server that starts and then answers every request with a
+    /// permission boundary that does not exist.
     #[error("the route table could not be built: {0}")]
-    Routes(#[from] InvalidHeaderValue),
+    Routes(#[from] crate::adapters::primary::transport::http::router::RouterError),
 
     /// No session-id source is available in this build.
     #[error(
@@ -728,7 +730,9 @@ fn routes(
         Arc::clone(&sessions),
         ceiling,
     );
-    Ok(McpRouter::new(config, sessions, handler).into_router()?)
+    McpRouter::new(config, sessions, handler)
+        .into_router()
+        .map_err(ServeError::from)
 }
 
 /// Listens on `addr`, and reports what the OS actually gave.

@@ -41,7 +41,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::adapters::primary::transport::http::router::{
-    EventSource, Inbound, InvalidHeaderValue, RequestHandler, Unsessioned,
+    EventSource, Inbound, RequestHandler, Unsessioned,
 };
 use crate::adapters::primary::transport::http::{
     EventTail, McpRouter, Refusal, ServerConfig, SessionHandle, SessionStore,
@@ -347,8 +347,12 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeServeError {
     /// The router refused to build.
+    ///
+    /// In practice a configured security header that is not a legal HTTP
+    /// value, or the issue #11 fail-open combination of a wired
+    /// authenticator and the default `AuthPolicy::Public` policy.
     #[error("the router could not be built: {0}")]
-    Router(#[from] InvalidHeaderValue),
+    Router(#[from] crate::adapters::primary::transport::http::router::RouterError),
     /// The downstream leg could not be built.
     #[error(transparent)]
     Downstream(#[from] DownstreamError),
@@ -418,10 +422,18 @@ where
     ///
     /// # Errors
     ///
-    /// [`InvalidHeaderValue`] if a configured security header is not legal — a caller's
-    /// configuration fault, and the same one the MCP server's own builder
-    /// reports.
-    pub fn into_router(self) -> Result<axum::Router, InvalidHeaderValue> {
+    /// [`RouterError`](crate::adapters::primary::transport::http::router::RouterError)
+    /// — a configured security header that is not a legal HTTP value, or
+    /// the issue #11 fail-open combination of a wired authenticator and
+    /// the default `AuthPolicy::Public` policy. The same errors the MCP
+    /// server's own builder reports, surfaced through
+    /// [`BridgeServeError::Router`] on the bind path.
+    pub fn into_router(
+        self,
+    ) -> Result<
+        axum::Router,
+        crate::adapters::primary::transport::http::router::RouterError,
+    > {
         McpRouter::new(self.config, self.sessions, self.handler).into_router()
     }
 

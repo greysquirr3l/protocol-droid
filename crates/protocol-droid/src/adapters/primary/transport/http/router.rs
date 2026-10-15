@@ -402,6 +402,59 @@ pub trait RequestHandler<S>: Send + Sync + 'static {
 
 /// The Streamable HTTP route table.
 ///
+/// The error returned by [`McpRouter::into_router`].
+///
+/// Two failure modes, both at mount time rather than at the first request:
+/// a configured security header that is not a legal HTTP value
+/// ([`Header`](Self::Header)), and the silent-fail-open combination
+/// described in issue #11
+/// ([`UnprotectedAuthenticator`](Self::UnprotectedAuthenticator)). The
+/// router was previously typed `Result<_, InvalidHeaderValue>` and the
+/// new variant widens it; callers that used `?` continue to work because
+/// the existing [`ServeError::Routes`] wraps `InvalidHeaderValue` and
+/// [`BridgeServeError::Router`] does the same.
+#[derive(Debug, thiserror::Error)]
+pub enum RouterError {
+    /// A configured security header is not a legal HTTP header value.
+    ///
+    /// Surfaces a malformed `SecurityHeaders` at mount time rather than
+    /// at the first response. The alternative is a server that starts and
+    /// then answers every request with a header set it cannot write.
+    #[error("a configured security header is not a legal HTTP header value: {0}")]
+    Header(#[source] InvalidHeaderValue),
+
+    /// A real authenticator was wired but the policy is still the default
+    /// [`AuthPolicy::Public`].
+    ///
+    /// The combination is the exact fail-open the issue #11 review
+    /// described: `with_authenticator` is consulted, a valid token
+    /// produces a scoped `AuthContext`, but `AuthPolicy::refuse` answers
+    /// `None` on an empty `required()` and the endpoint is served to
+    /// anonymous callers. Failing closed here means a deployment that
+    /// wired a token authenticator but forgot the `with_policy` call
+    /// gets a startup error, not a permission boundary that does not
+    /// exist.
+    ///
+    /// The fix is to follow `with_authenticator` with
+    /// `with_policy(AuthPolicy::Require(scopes))` — or, for a deployment
+    /// that genuinely wants anonymous callers, drop the
+    /// `with_authenticator` call entirely.
+    #[error(
+        "with_authenticator was wired but the policy is still AuthPolicy::Public; \
+         a real authenticator paired with the default public policy fails open \
+         silently. Add .with_policy(AuthPolicy::Require(scopes)) after \
+         .with_authenticator(...), or drop the .with_authenticator(...) call if \
+         the endpoint is meant to be anonymous."
+    )]
+    UnprotectedAuthenticator,
+}
+
+impl From<InvalidHeaderValue> for RouterError {
+    fn from(value: InvalidHeaderValue) -> Self {
+        Self::Header(value)
+    }
+}
+
 /// Generic over the stored session `S` and the protocol layer `H`, so swapping
 /// either does not change the router's own type.
 pub struct McpRouter<S, H> {
@@ -412,6 +465,17 @@ pub struct McpRouter<S, H> {
     authenticator: Arc<dyn Authenticator + Send + Sync>,
     origin: OriginPolicy,
     rate_limiter: RateLimiter,
+    /// True iff [`with_authenticator`](Self::with_authenticator) was called.
+    ///
+    /// The struct's default `authenticator` is the unit [`Anonymous`], and
+    /// a caller that wires a real authenticator but leaves the policy at
+    /// the default [`AuthPolicy::Public`] is the exact configuration
+    /// described in GitHub issue #11: the server starts, the token check
+    /// is consulted, but `refuse` short-circuits on an empty `required()`
+    /// and the endpoint is served to anonymous callers. The field exists
+    /// so [`into_router`](Self::into_router) can fail closed on the
+    /// combination.
+    authenticator_was_explicit: bool,
 }
 
 /// Hand-written rather than derived, and for two reasons.
@@ -455,6 +519,7 @@ where
             handler,
             policy: AuthPolicy::Public,
             authenticator: Arc::new(Anonymous),
+            authenticator_was_explicit: false,
         }
     }
 
@@ -494,6 +559,7 @@ where
         authenticator: Arc<dyn Authenticator + Send + Sync>,
     ) -> Self {
         self.authenticator = authenticator;
+        self.authenticator_was_explicit = true;
         self
     }
 
@@ -508,11 +574,24 @@ where
     ///
     /// # Errors
     ///
-    /// [`InvalidHeaderValue`] if a configured security header is not a legal
-    /// HTTP header value. Failing here is the point: the alternative is a
-    /// server that starts and then answers every request with a header set it
-    /// cannot write.
-    pub fn into_router(self) -> Result<AxumRouter, InvalidHeaderValue> {
+    /// [`RouterError::Header`] if a configured security header is not a
+    /// legal HTTP header value. Failing here is the point: the alternative
+    /// is a server that starts and then answers every request with a header
+    /// set it cannot write.
+    ///
+    /// [`RouterError::UnprotectedAuthenticator`] if a real authenticator was
+    /// wired with [`with_authenticator`](Self::with_authenticator) but the
+    /// policy is still the default [`AuthPolicy::Public`]. The combination
+    /// is the silent fail-open the issue #11 review described: the
+    /// authenticator is consulted, a valid token produces a scoped context,
+    /// but `refuse` short-circuits on an empty `required()` and the
+    /// endpoint is served to anonymous callers. Failing closed at mount
+    /// time turns the misconfiguration into a startup error the operator
+    /// sees, rather than a permission boundary that quietly does not exist.
+    pub fn into_router(self) -> Result<AxumRouter, RouterError> {
+        if self.authenticator_was_explicit && matches!(self.policy, AuthPolicy::Public) {
+            return Err(RouterError::UnprotectedAuthenticator);
+        }
         let endpoint = self.config.endpoint().as_str().to_owned();
         let security = self.config.security().clone();
         let max_concurrency = self.config.max_concurrency();
@@ -547,7 +626,10 @@ where
         // wrote; load shedding inside them, so a shed request still carries
         // them. `apply_layers` is last because it is the only layer that
         // decides not to run the inner ones at all.
-        with_security(hardening::apply_layers(router, max_concurrency), &security)
+        Ok(with_security(
+            hardening::apply_layers(router, max_concurrency),
+            &security,
+        )?)
     }
 }
 
