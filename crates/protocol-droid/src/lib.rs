@@ -1,3 +1,13 @@
+// `dead_code_pub_in_binary` was promoted to library crates in rust 1.98. The
+// library exposes types that downstream users (e.g. an editor that spawns an
+// ACP agent and needs an MCP client to talk to its tool servers) consume; the
+// workspace's own bin does not use every public type, and the library's own
+// test build does not see the integration test crate as a dependent. The
+// allow is necessary for the library's test build to pass; it is a no-op for
+// the library's normal build (where the lint is "unused" — see
+// `unused_attributes` below) and does not propagate to dependents.
+#![allow(dead_code_pub_in_binary, unused_attributes)]
+
 //! The `protocol-droid` library: one canonical IR, many per-revision codecs.
 //!
 //! Application code in this crate speaks a version-agnostic superset IR. Each

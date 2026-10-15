@@ -5,6 +5,10 @@
 //! adapter sits beside it rather than inside it, which is the property that
 //! makes T27 and T29 additions rather than a fork.
 
+pub mod client;
 pub mod method_table;
 
+pub use client::{default_client_capabilities, initialize_request_template, CallToolRequest,
+                CallToolResult, ClientCapabilities, ContentBlock, Implementation, InitializeRequest,
+                InitializeResult, ListToolsResult, McpPeerError, McpStdioPeer, SpawnSpec, Tool};
 pub use method_table::{McpMethod, McpMethodTable};
