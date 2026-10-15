@@ -216,12 +216,8 @@ mod tests {
     #[test]
     fn a_feature_gated_flag_is_rejected_when_the_feature_is_off() {
         // `probe --a2a` is the path the `a2a` feature adds.
-        let parsed = Cli::try_parse_from([
-            "protocol-droid",
-            "probe",
-            "stdio:./some-server",
-            "--a2a",
-        ]);
+        let parsed =
+            Cli::try_parse_from(["protocol-droid", "probe", "stdio:./some-server", "--a2a"]);
         let acceptable = match &parsed {
             // The feature is off: --a2a is unknown.
             Err(err) => err.kind() == ErrorKind::UnknownArgument,
@@ -230,10 +226,7 @@ mod tests {
             // `true`, which is not an error at parse time.
             Ok(_) => true,
         };
-        assert!(
-            acceptable,
-            "expected UnknownArgument or Ok, got {parsed:?}"
-        );
+        assert!(acceptable, "expected UnknownArgument or Ok, got {parsed:?}");
     }
 
     /// A subcommand gated behind a feature the build does not

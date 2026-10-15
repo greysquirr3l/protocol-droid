@@ -213,7 +213,10 @@ async fn hot_remove_tool_leaves_in_flight_calls_on_the_old_snapshot() -> TestRes
     // notification can be sent.
     let published = store.unregister(PrimitiveKind::Tool, &"victim".into());
     assert_eq!(published.changed(), [PrimitiveKind::Tool]);
-    assert!(!published.is_noop(), "removing a present tool is not a no-op");
+    assert!(
+        !published.is_noop(),
+        "removing a present tool is not a no-op"
+    );
 
     // Clause one: the in-flight listings finish against what they started
     // with, and the held `Arc<Registered>` for the victim is still there.
@@ -277,8 +280,7 @@ fn get_visible_resolves_to_the_same_arc_across_publishes() -> TestResult {
         "the unrelated publish advanced the generation"
     );
 
-    let Some(still_resolved) =
-        store.get_visible(&session, &profile, PrimitiveKind::Tool, "lookup")
+    let Some(still_resolved) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "lookup")
     else {
         return Err("a re-resolve after an unrelated publish must still find it".into());
     };
@@ -324,8 +326,7 @@ fn visibility_for_one_primitive_is_independent_of_unrelated_primitives() -> Test
     let session = AuthContext::unrestricted("alice");
     let profile = FeatureProfile::empty().with(Feature::Tools);
 
-    let Some(first) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "a")
-    else {
+    let Some(first) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "a") else {
         return Err("a is in the store".into());
     };
 
@@ -336,8 +337,7 @@ fn visibility_for_one_primitive_is_independent_of_unrelated_primitives() -> Test
         store.register(tool(name)?);
     }
 
-    let Some(second) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "a")
-    else {
+    let Some(second) = store.get_visible(&session, &profile, PrimitiveKind::Tool, "a") else {
         return Err("a is still in the store".into());
     };
 
