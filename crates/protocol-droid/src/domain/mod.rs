@@ -19,6 +19,15 @@ mod capability;
 // A2A should not pull it in.
 #[cfg(feature = "a2a")]
 pub mod a2a;
+// T29. The ACP (Agent Client Protocol) domain value objects:
+// version, method table, per-feature profile. The schema and the
+// types in this module are pure data; gating is on the experimental
+// flag because the spec is pre-1.0 (`schema-v1.25.0`) and the
+// task explicitly excludes the module from semver guarantees. The
+// schema is data and stays compiled in a lean build; the *types*
+// are gated.
+#[cfg(feature = "acp-experimental")]
+pub mod acp;
 pub mod feature;
 pub mod idempotency;
 pub mod ir;

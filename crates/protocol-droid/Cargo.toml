@@ -76,6 +76,14 @@ random-ids = ["dep:getrandom"]
 # save nothing. The `url` dep is here (not in the unconditional list) because
 # only the SSRF filter needs it, and the SSRF filter is A2A-specific.
 a2a = ["dep:url", "url/serde"]
+# T29. The ACP (Agent Client Protocol) module — Zed's editor↔agent
+# JSON-RPC binding. The feature is `acp-experimental` (not `acp`)
+# because the spec is pre-1.0 (`schema-v1.25.0` is the pin) and the
+# task explicitly excludes it from semver guarantees. The gate is
+# what keeps the experimental module out of a consumer's lean
+# build; the schema is still compiled because the type names live
+# in the protocol-neutral IR.
+acp-experimental = []
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not

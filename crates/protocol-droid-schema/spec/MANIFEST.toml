@@ -225,3 +225,30 @@ spec_prefix = "specification"
 # without a version header; the negotiation model in domain/a2a
 # does not cover them. They are deliberately not vendored; a consumer
 # who needs them implements the v1 wire format and translates.
+
+# ─── ACP protocol ─────────────────────────────────────────────────────────────
+# Phase 9 added ACP. The agent-client-protocol project's canonical wire
+# definition is the JSON Schema at
+# `agentclientprotocol/agent-client-protocol/schema/v1/schema.json`,
+# pinned by release tag (the release tag is `schema-v<version>` to
+# disambiguate from the JSON-RPC namespace). The schema is published
+# alongside a hand-written `meta.json` that names every method
+# (the schema is method-agnostic; methods are layered on top by the
+# `meta.json`).
+#
+# ACP is pre-1.0 (the first release was `schema-v0.0.1` in late 2024; the
+# current pin is `schema-v1.25.0`). Per the task's experimental carve-out,
+# the version stays pinned to a single release; future bumps are
+# separate tasks that re-verify the wire contract.
+#
+# `repo` mirrors the A2A entry: `agentclientprotocol/agent-client-protocol`.
+
+[acp_revisions."v1.25.0"]
+tag = "schema-v1.25.0"
+commit = "4cf3dd858c819fc3ab99ae53f76883ede0345a10"
+spec_prefix = "schema/v1"
+
+[acp_revisions."v1.25.0".files]
+"schema.json"  = "4bcd1d2051ff7ed379bd9b234fb9b09c5ab9245478698e9fab805bd9b52a33a6"
+"meta.json"    = "061edb6efa8fb2aa2792459a86ec7268de5fe665bba48b2ffe7939df01481f88"
+"CHANGELOG.md" = "c0d3aa8303b9ffea59f1def821083ba487ccca0b5d04c64c3a9fb5d8a2481470"

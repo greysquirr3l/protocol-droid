@@ -255,6 +255,34 @@ pub struct A2aRevisionSpec {
     pub files: BTreeMap<String, String>,
 }
 
+/// Per-revision entry for the ACP table.
+///
+/// The shape is the same as [`A2aRevisionSpec`] without the
+/// proto `package` field (ACP is a JSON Schema, not a proto)
+/// and with the `meta.json` filename constraint lifted: the
+/// A2A entry is a single proto, the ACP entry is the schema
+/// plus a hand-written `meta.json` plus a `CHANGELOG.md`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AcpRevisionSpec {
+    /// Upstream git tag, e.g. `schema-v1.25.0`. The `schema-v`
+    /// prefix is the agent-client-protocol repo's
+    /// release-tagging convention; the tag is what the
+    /// manifest pins, not the part after the `v`.
+    pub tag: String,
+    /// Full commit SHA the schema was fetched from. Never a
+    /// branch name.
+    pub commit: String,
+    /// Upstream directory holding the schema, relative to the
+    /// repository root. The `schema/v1` prefix is the path
+    /// inside the agent-client-protocol repo.
+    pub spec_prefix: String,
+    /// File name to SHA-256, lowercase hex. A file absent
+    /// from this map is not digest-locked and is not verified.
+    /// The same provenance story as [`A2aRevisionSpec::files`].
+    #[serde(default)]
+    pub files: BTreeMap<String, String>,
+}
+
 /// The whole of `spec/MANIFEST.toml`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,6 +310,13 @@ pub struct Manifest {
     /// difference.
     #[serde(default)]
     pub a2a_revisions: BTreeMap<String, A2aRevisionSpec>,
+    /// ACP protocol revisions. Defaults to empty so a manifest
+    /// predating Phase 9 keeps parsing. Same "what is vendored"
+    /// rationale as the A2A field above; ACP is a JSON Schema
+    /// plus a hand-written `meta.json` plus a `CHANGELOG.md`,
+    /// and the per-table `files` map names the three.
+    #[serde(default)]
+    pub acp_revisions: BTreeMap<String, AcpRevisionSpec>,
 }
 
 /// Ways a manifest can fail to parse or to match the tree it describes.
