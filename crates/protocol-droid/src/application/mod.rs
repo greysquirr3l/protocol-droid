@@ -16,6 +16,15 @@
 // speaks A2A should not pay it.
 #[cfg(feature = "a2a")]
 pub mod a2a;
+
+// T29. The ACP use cases: the request-handler port
+// for the agent side, plus the typed per-method
+// wrappers. Gated on `acp-experimental` because the
+// spec is pre-1.0 and the dependency surface is
+// independent of MCP — a consumer that never speaks
+// ACP pays no cost.
+#[cfg(feature = "acp-experimental")]
+pub mod acp;
 pub mod bridge;
 pub mod client;
 pub mod idempotency;
