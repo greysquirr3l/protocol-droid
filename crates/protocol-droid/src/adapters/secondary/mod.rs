@@ -6,6 +6,17 @@
 
 pub mod codec;
 pub mod idempotency;
+// T29. The ACP stdio peer — the driven adapter that
+// talks newline-delimited JSON-RPC 2.0 to a child
+// process. The peer is the seam a future application
+// layer dispatches `initialize` (and the session
+// lifecycle methods) through. Gated on
+// `acp-experimental` because the spec is pre-1.0 and
+// the task lists the module as experimental; the
+// gate is what keeps the `tokio` runtime out of a
+// lean build that never speaks ACP.
+#[cfg(feature = "acp-experimental")]
+pub mod acp;
 // T16. A session id source that does not enumerate. `IdSource` has been a port
 // with no production implementation since T10 — every test writes its own
 // `fetch_add`, which is the obvious thing to copy into production by accident.

@@ -83,7 +83,28 @@ a2a = ["dep:url", "url/serde"]
 # what keeps the experimental module out of a consumer's lean
 # build; the schema is still compiled because the type names live
 # in the protocol-neutral IR.
-acp-experimental = []
+#
+# Pulls in `tokio` (with `process`, `io-std`, `io-util`, `rt`,
+# `sync`, `time`) because the stdio transport is the only ACP
+# adapter that runs an executor. The `acp-stdio` sub-module is
+# gated on the same flag so a consumer that pulls in
+# `acp-experimental` for the typed `initialize` shape but never
+# spawns a child process pays for the typed envelope and not the
+# runtime. The feature interaction with the crate-wide `stdio`
+# flag is `acp-experimental` *adds* the deps; turning the crate
+# `stdio` on does not turn `acp-experimental` on. A consumer that
+# wants both the typed envelope and the stdio peer enables both
+# flags.
+acp-experimental = [
+    "dep:tokio",
+    "tokio/io-std",
+    "tokio/io-util",
+    "tokio/process",
+    "tokio/rt",
+    "tokio/sync",
+    "tokio/time",
+    "tokio/macros",
+]
 
 [dependencies]
 # The registry publishes a new immutable snapshot by swapping the `Arc`. Not
