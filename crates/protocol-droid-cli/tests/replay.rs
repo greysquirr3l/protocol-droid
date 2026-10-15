@@ -26,7 +26,9 @@
 use std::io::{BufRead as _, BufReader, Write as _};
 
 use protocol_droid::domain::DegradePolicy;
-use protocol_droid_cli::replay::{self, FrameVerdict, LineDiff, LineDiffOutcome, ReplayArgs, VerdictOutcome};
+use protocol_droid_cli::replay::{
+    self, FrameVerdict, LineDiff, LineDiffOutcome, ReplayArgs, VerdictOutcome,
+};
 
 /// Resolves the path to the `protocol-droid` binary.
 fn protocol_droid_bin() -> &'static std::path::Path {
@@ -81,8 +83,7 @@ fn write_session(name: &str, body: &str) -> String {
         .create_new(true)
         .open(&path)
         .expect("create session file");
-    file.write_all(body.as_bytes())
-        .expect("write session file");
+    file.write_all(body.as_bytes()).expect("write session file");
     path.to_string_lossy().into_owned()
 }
 
@@ -117,7 +118,10 @@ fn structured_content_is_downgraded_to_2024_11_05() {
     assert_eq!(verdicts[0].outcome, VerdictOutcome::Downgraded);
     assert!(!verdicts[0].unchanged);
     assert!(
-        verdicts[0].steps.iter().any(|s| s.contains("StructuredContent")),
+        verdicts[0]
+            .steps
+            .iter()
+            .any(|s| s.contains("StructuredContent")),
         "expected a `StructuredContent` step, got {:?}",
         verdicts[0].steps,
     );
@@ -174,7 +178,11 @@ this is not json
 ",
     );
     let (verdicts, summary) = replay_to_memory(&session, "2024-11-05");
-    assert_eq!(verdicts.len(), 3, "every input line gets a verdict, even malformed ones");
+    assert_eq!(
+        verdicts.len(),
+        3,
+        "every input line gets a verdict, even malformed ones"
+    );
     assert_eq!(verdicts[1].outcome, VerdictOutcome::Refused);
     assert_eq!(verdicts[1].index, 2);
     assert!(verdicts[1].error.is_some());
@@ -199,7 +207,11 @@ fn unknown_recorded_version_is_reported_and_replay_continues() {
     assert_eq!(verdicts.len(), 2);
     assert_eq!(verdicts[0].outcome, VerdictOutcome::Refused);
     assert!(verdicts[0].error.is_some());
-    assert!(verdicts[0].note.contains("not a revision this build can read"));
+    assert!(
+        verdicts[0]
+            .note
+            .contains("not a revision this build can read")
+    );
     assert_eq!(verdicts[1].outcome, VerdictOutcome::Forwarded);
     assert!(summary.contains("1 refused"));
     assert!(summary.contains("1 forwarded"));
@@ -293,10 +305,10 @@ fn binary_replay_exits_non_zero_on_refused_frame() {
 fn diff_two_sessions(left: &str, right: &str) -> (Vec<LineDiff>, String) {
     let left_path = write_session("diff-left", left);
     let right_path = write_session("diff-right", right);
-    let left_file = std::fs::File::open(&left_path)
-        .unwrap_or_else(|error| panic!("opening left: {error}"));
-    let right_file = std::fs::File::open(&right_path)
-        .unwrap_or_else(|error| panic!("opening right: {error}"));
+    let left_file =
+        std::fs::File::open(&left_path).unwrap_or_else(|error| panic!("opening left: {error}"));
+    let right_file =
+        std::fs::File::open(&right_path).unwrap_or_else(|error| panic!("opening right: {error}"));
     let mut out: Vec<u8> = Vec::new();
     let mut summary: Vec<u8> = Vec::new();
     replay::diff_with_io(
@@ -442,11 +454,23 @@ fn binary_replay_as_server_answers_recorded_replies() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"id\":1"), "the recorded reply for id 1 is served; got {stdout:?}");
-    assert!(stdout.contains("\"id\":2"), "the recorded reply for id 2 is served; got {stdout:?}");
-    assert!(stdout.contains("\"name\":\"mock\""), "the recorded result is byte-identical; got {stdout:?}");
+    assert!(
+        stdout.contains("\"id\":1"),
+        "the recorded reply for id 1 is served; got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("\"id\":2"),
+        "the recorded reply for id 2 is served; got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("\"name\":\"mock\""),
+        "the recorded result is byte-identical; got {stdout:?}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("2 answered"), "the summary reports the served count; got {stderr:?}");
+    assert!(
+        stderr.contains("2 answered"),
+        "the summary reports the served count; got {stderr:?}"
+    );
 }
 
 /// A request whose id is not in the recording gets a typed
@@ -477,8 +501,14 @@ fn binary_replay_as_server_returns_method_not_found_for_unknown_id() {
     // contract: typed refusal, not a hang.
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("-32601"), "the spec's method-not-found code; got {stdout:?}");
-    assert!(stdout.contains("\"id\":99"), "the unknown id is echoed back; got {stdout:?}");
+    assert!(
+        stdout.contains("-32601"),
+        "the spec's method-not-found code; got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("\"id\":99"),
+        "the unknown id is echoed back; got {stdout:?}"
+    );
 }
 
 // -- --as-client integration tests ---------------------------------------
@@ -516,7 +546,13 @@ for line in sys.stdin:
 "#;
     let session_path = write_session("bin-as-client", session);
     let output = std::process::Command::new(protocol_droid_bin())
-        .args(["replay", &session_path, "--as-client", "python3", &server_path])
+        .args([
+            "replay",
+            &session_path,
+            "--as-client",
+            "python3",
+            &server_path,
+        ])
         .output()
         .expect("spawn the protocol-droid binary");
     assert!(
@@ -527,10 +563,19 @@ for line in sys.stdin:
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"outcome\":\"same\""), "the diff is `same` for both turns; got {stdout:?}");
+    assert!(
+        stdout.contains("\"outcome\":\"same\""),
+        "the diff is `same` for both turns; got {stdout:?}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("2 matched"), "the summary reports the matched count; got {stderr:?}");
-    assert!(stderr.contains("0 diffed"), "the diffed count is zero; got {stderr:?}");
+    assert!(
+        stderr.contains("2 matched"),
+        "the summary reports the matched count; got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("0 diffed"),
+        "the diffed count is zero; got {stderr:?}"
+    );
 }
 
 /// A live server that returns a different response than the
@@ -569,7 +614,13 @@ for line in sys.stdin:
 "#;
     let session_path = write_session("bin-as-client-mut", session);
     let output = std::process::Command::new(protocol_droid_bin())
-        .args(["replay", &session_path, "--as-client", "python3", &server_path])
+        .args([
+            "replay",
+            &session_path,
+            "--as-client",
+            "python3",
+            &server_path,
+        ])
         .output()
         .expect("spawn the protocol-droid binary");
     assert!(
@@ -580,8 +631,10 @@ for line in sys.stdin:
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"outcome\":\"changed\""), "the mutated turn is reported; got {stdout:?}");
+    assert!(
+        stdout.contains("\"outcome\":\"changed\""),
+        "the mutated turn is reported; got {stdout:?}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("the live server diverged from the recording"));
 }
-

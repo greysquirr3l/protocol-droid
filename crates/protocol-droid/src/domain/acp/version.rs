@@ -68,7 +68,11 @@ pub enum AcpVersion {
 const fn parts(version: AcpVersion) -> (u16, u16, u16) {
     match version {
         AcpVersion::V1_25_0 => (1, 25, 0),
-        AcpVersion::Unknown { major, minor, patch } => (major, minor, patch),
+        AcpVersion::Unknown {
+            major,
+            minor,
+            patch,
+        } => (major, minor, patch),
     }
 }
 
@@ -94,7 +98,11 @@ pub struct AcpVersionParseError {
 
 impl fmt::Display for AcpVersionParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "ACP version {:?} is invalid: {}", self.input, self.reason)
+        write!(
+            formatter,
+            "ACP version {:?} is invalid: {}",
+            self.input, self.reason
+        )
     }
 }
 
@@ -149,7 +157,11 @@ impl FromStr for AcpVersion {
         if (1, 25, 0) == (major, minor, patch) {
             Ok(Self::V1_25_0)
         } else {
-            Ok(Self::Unknown { major, minor, patch })
+            Ok(Self::Unknown {
+                major,
+                minor,
+                patch,
+            })
         }
     }
 }
@@ -240,7 +252,10 @@ mod tests {
             };
             assert_eq!(error.reason, expected_reason, "input: {input:?}");
             let text = format!("{error}");
-            assert!(text.contains(input), "the text should carry the input: {text}");
+            assert!(
+                text.contains(input),
+                "the text should carry the input: {text}"
+            );
         }
         Ok(())
     }

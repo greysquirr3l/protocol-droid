@@ -157,23 +157,23 @@ impl FromStr for A2aVersion {
         // recognised A2A practice but a pre-1.0 convention that this
         // build's codec does not model. Reject anything that is not
         // a clean two-part number.
-        let (major, minor) = s.split_once('.').ok_or_else(|| {
-            ParseA2aVersionError::MissingMinor {
-                input: s.to_owned(),
-            }
-        })?;
-        let major: u16 = major.parse().map_err(|error| {
-            ParseA2aVersionError::InvalidMajor {
-                input: s.to_owned(),
-                error,
-            }
-        })?;
-        let minor: u16 = minor.parse().map_err(|error| {
-            ParseA2aVersionError::InvalidMinor {
+        let (major, minor) =
+            s.split_once('.')
+                .ok_or_else(|| ParseA2aVersionError::MissingMinor {
+                    input: s.to_owned(),
+                })?;
+        let major: u16 = major
+            .parse()
+            .map_err(|error| ParseA2aVersionError::InvalidMajor {
                 input: s.to_owned(),
                 error,
-            }
-        })?;
+            })?;
+        let minor: u16 = minor
+            .parse()
+            .map_err(|error| ParseA2aVersionError::InvalidMinor {
+                input: s.to_owned(),
+                error,
+            })?;
 
         // Map a parsed (major, minor) to a known variant where one
         // exists; otherwise hold the parsed form. The match is
@@ -264,10 +264,7 @@ mod tests {
     /// `Display`, not `as_str`.
     #[test]
     fn unknown_as_str_is_the_literal_unknown() {
-        let version = A2aVersion::Unknown {
-            major: 2,
-            minor: 5,
-        };
+        let version = A2aVersion::Unknown { major: 2, minor: 5 };
         assert_eq!(version.as_str(), "unknown");
     }
 
@@ -304,10 +301,7 @@ mod tests {
     /// `"2.5"`.
     #[test]
     fn display_for_unknown_is_major_dot_minor() {
-        let version = A2aVersion::Unknown {
-            major: 2,
-            minor: 5,
-        };
+        let version = A2aVersion::Unknown { major: 2, minor: 5 };
         assert_eq!(version.to_string(), "2.5");
     }
 
@@ -328,16 +322,9 @@ mod tests {
     /// than this one) is an `Unknown`,
     /// not an error.
     #[test]
-    fn from_str_parses_unknown_with_known_fields(
-    ) -> Result<(), ParseA2aVersionError> {
+    fn from_str_parses_unknown_with_known_fields() -> Result<(), ParseA2aVersionError> {
         let version = A2aVersion::from_str("2.5")?;
-        assert_eq!(
-            version,
-            A2aVersion::Unknown {
-                major: 2,
-                minor: 5,
-            }
-        );
+        assert_eq!(version, A2aVersion::Unknown { major: 2, minor: 5 });
         Ok(())
     }
 
@@ -350,21 +337,16 @@ mod tests {
     /// message about the missing
     /// `Minor`.
     #[test]
-    fn from_str_rejects_missing_minor_with_named_variant()
-    -> Result<(), String> {
+    fn from_str_rejects_missing_minor_with_named_variant() -> Result<(), String> {
         let result = A2aVersion::from_str("1");
         match result {
             Err(ParseA2aVersionError::MissingMinor { input }) => {
                 if input != "1" {
-                    return Err(format!(
-                        "expected input '1', got {input:?}"
-                    ));
+                    return Err(format!("expected input '1', got {input:?}"));
                 }
                 Ok(())
             }
-            other => {
-                Err(format!("expected MissingMinor, got {other:?}"))
-            }
+            other => Err(format!("expected MissingMinor, got {other:?}")),
         }
     }
 
@@ -373,21 +355,16 @@ mod tests {
     /// carries the verbatim input and
     /// the parse error.
     #[test]
-    fn from_str_rejects_non_numeric_major_with_named_variant()
-    -> Result<(), String> {
+    fn from_str_rejects_non_numeric_major_with_named_variant() -> Result<(), String> {
         let result = A2aVersion::from_str("foo.bar");
         match result {
             Err(ParseA2aVersionError::InvalidMajor { input, .. }) => {
                 if input != "foo.bar" {
-                    return Err(format!(
-                        "expected input 'foo.bar', got {input:?}"
-                    ));
+                    return Err(format!("expected input 'foo.bar', got {input:?}"));
                 }
                 Ok(())
             }
-            other => {
-                Err(format!("expected InvalidMajor, got {other:?}"))
-            }
+            other => Err(format!("expected InvalidMajor, got {other:?}")),
         }
     }
 
@@ -396,21 +373,16 @@ mod tests {
     /// names the offending part, not
     /// the string.
     #[test]
-    fn from_str_rejects_non_numeric_minor_with_named_variant()
-    -> Result<(), String> {
+    fn from_str_rejects_non_numeric_minor_with_named_variant() -> Result<(), String> {
         let result = A2aVersion::from_str("1.foo");
         match result {
             Err(ParseA2aVersionError::InvalidMinor { input, .. }) => {
                 if input != "1.foo" {
-                    return Err(format!(
-                        "expected input '1.foo', got {input:?}"
-                    ));
+                    return Err(format!("expected input '1.foo', got {input:?}"));
                 }
                 Ok(())
             }
-            other => {
-                Err(format!("expected InvalidMinor, got {other:?}"))
-            }
+            other => Err(format!("expected InvalidMinor, got {other:?}")),
         }
     }
 
@@ -426,10 +398,7 @@ mod tests {
     /// major: 0, minor: 10 }`).
     #[test]
     fn unknown_ordering_is_numeric_not_lexicographic() {
-        let nine = A2aVersion::Unknown {
-            major: 0,
-            minor: 9,
-        };
+        let nine = A2aVersion::Unknown { major: 0, minor: 9 };
         let ten = A2aVersion::Unknown {
             major: 0,
             minor: 10,
@@ -452,10 +421,7 @@ mod tests {
     #[test]
     fn unknown_versions_sort_with_their_known_equivalent() {
         let known = A2aVersion::V1_0;
-        let unknown_equivalent = A2aVersion::Unknown {
-            major: 1,
-            minor: 0,
-        };
+        let unknown_equivalent = A2aVersion::Unknown { major: 1, minor: 0 };
         assert_eq!(known.cmp(&unknown_equivalent), core::cmp::Ordering::Equal);
         assert_eq!(unknown_equivalent.cmp(&known), core::cmp::Ordering::Equal);
     }

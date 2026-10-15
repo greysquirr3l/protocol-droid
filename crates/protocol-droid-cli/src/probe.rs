@@ -187,7 +187,9 @@ async fn open_transport(
     match spec.kind() {
         #[cfg(feature = "bridge")]
         TransportKind::StreamableHttp => {
-            use protocol_droid::adapters::secondary::transport::http::{HttpClient, HttpClientConfig};
+            use protocol_droid::adapters::secondary::transport::http::{
+                HttpClient, HttpClientConfig,
+            };
             let config = HttpClientConfig::new(spec.target())
                 .with_context(|| "the Streamable HTTP URL is not usable")?;
             let client = HttpClient::new(config)
@@ -207,9 +209,7 @@ async fn open_transport(
             Ok((Arc::new(client), TransportKind::LegacySse))
         }
         kind => {
-            anyhow::bail!(
-                "no client adapter for `{kind}` in this build; pick http: or legacy-sse:"
-            )
+            anyhow::bail!("no client adapter for `{kind}` in this build; pick http: or legacy-sse:")
         }
     }
 }
@@ -287,9 +287,7 @@ fn describe(error: &HandshakeError) -> String {
 
 #[doc(hidden)]
 pub mod __for_tests {
-    use super::{
-        ClientTransport, Future, JsonObject, Pin, ProtocolVersion, TransportError,
-    };
+    use super::{ClientTransport, Future, JsonObject, Pin, ProtocolVersion, TransportError};
 
     /// A `ClientTransport` that responds to `initialize` and
     /// `server/discover` with a fixed version set.
@@ -303,16 +301,13 @@ pub mod __for_tests {
             &self,
             method: &str,
             params: &JsonObject,
-        ) -> Pin<Box<dyn Future<Output = Result<JsonObject, TransportError>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Result<JsonObject, TransportError>> + Send + '_>> {
             let accepted = self.accepted.clone();
             let method = method.to_owned();
             let text = params.as_str().to_owned();
             Box::pin(async move {
-                let value: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|error| {
-                        TransportError::Unavailable(format!("bad params: {error}"))
-                    })?;
+                let value: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|error| TransportError::Unavailable(format!("bad params: {error}")))?;
                 match method.as_str() {
                     protocol_droid::application::client::INITIALIZE => {
                         let offered = value
@@ -424,8 +419,7 @@ mod tests {
     /// Probe against an in-process server pinned to `[2025-03-26, 2025-06-18]`
     /// reports exactly those revisions.
     #[tokio::test]
-    async fn matrix_against_an_in_process_server_pinned_to_two_revisions()
-    -> Result<(), Failure> {
+    async fn matrix_against_an_in_process_server_pinned_to_two_revisions() -> Result<(), Failure> {
         let server = ScriptedServer {
             accepted: vec![ProtocolVersion::V2025_03_26, ProtocolVersion::V2025_06_18],
         };
@@ -668,8 +662,7 @@ mod tests {
     /// Probing with a single revision that is NOT in `accepted` yields one
     /// refused row that names the server's counter-offer.
     #[tokio::test]
-    async fn matrix_with_no_accepted_revisions_marks_every_row_refused()
-    -> Result<(), Failure> {
+    async fn matrix_with_no_accepted_revisions_marks_every_row_refused() -> Result<(), Failure> {
         let server = ScriptedServer {
             accepted: vec![ProtocolVersion::V2025_06_18],
         };
@@ -691,10 +684,7 @@ mod tests {
             return Err(Failure::Row("row was accepted", row.clone()));
         }
         if row.note.is_empty() {
-            return Err(Failure::Row(
-                "refused row did not say why",
-                row.clone(),
-            ));
+            return Err(Failure::Row("refused row did not say why", row.clone()));
         }
         Ok(())
     }

@@ -1053,9 +1053,7 @@ mod tests {
     #[test]
     fn stdio_connect_error_names_the_stage() {
         use super::StdioConnectError;
-        let err = StdioConnectError::Versions(
-            crate::domain::SupportedVersionsError::Empty,
-        );
+        let err = StdioConnectError::Versions(crate::domain::SupportedVersionsError::Empty);
         let rendered = format!("{err}");
         assert!(
             rendered.contains("revision table"),

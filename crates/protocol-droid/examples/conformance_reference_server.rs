@@ -212,7 +212,9 @@ impl ConformanceFixture {
 fn parse_addr() -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--addr" && let Some(value) = args.next() {
+        if arg == "--addr"
+            && let Some(value) = args.next()
+        {
             return Ok(value.parse()?);
         }
     }
@@ -228,7 +230,9 @@ fn parse_addr() -> Result<SocketAddr, Box<dyn std::error::Error>> {
 /// `io::Error` for a bind failure, an `axum::Error` for an accept
 /// failure. All are reported on the way out with their own chain.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(serve())
 }
 

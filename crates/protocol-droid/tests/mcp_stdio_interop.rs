@@ -180,11 +180,7 @@ async fn initialize_tools_list_and_call_round_trip() -> Result<(), String> {
     };
     match first {
         ContentBlock::Text { text } => assert_eq!(text, "echo: hello"),
-        other => {
-            return Err(format!(
-                "expected a `Text` content block, got: {other:?}"
-            ))
-        }
+        other => return Err(format!("expected a `Text` content block, got: {other:?}")),
     }
     Ok(())
 }

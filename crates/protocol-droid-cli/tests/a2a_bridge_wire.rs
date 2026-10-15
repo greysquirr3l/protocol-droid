@@ -66,10 +66,23 @@ async fn a_tools_call_round_trips_through_the_bridge() -> Result<(), Failure> {
     let (summary, reply) = harness.run_through(tools_call).await?;
     Harness::assert_initialize_was_ok(&summary)?;
     Harness::assert_tools_call_was_a_call_result(&reply, 7, "echo: ok")?;
-    assert_eq!(summary.forwarded, 1, "the loop should have forwarded one envelope");
-    assert_eq!(summary.failed, 0, "the loop should not have refused any envelope");
-    assert!(summary.handshaken, "the loop should report a successful handshake");
-    assert_eq!(harness.requests_seen(), 1, "the bridge should have crossed the wire exactly once");
+    assert_eq!(
+        summary.forwarded, 1,
+        "the loop should have forwarded one envelope"
+    );
+    assert_eq!(
+        summary.failed, 0,
+        "the loop should not have refused any envelope"
+    );
+    assert!(
+        summary.handshaken,
+        "the loop should report a successful handshake"
+    );
+    assert_eq!(
+        harness.requests_seen(),
+        1,
+        "the bridge should have crossed the wire exactly once"
+    );
     Ok(())
 }
 
@@ -96,7 +109,10 @@ async fn an_unmodelled_method_is_refused_not_crashed() -> Result<(), Failure> {
             "expected the refusal to be -32601, got {error:?}"
         )));
     }
-    assert_eq!(summary.failed, 1, "the loop should have refused exactly one envelope");
+    assert_eq!(
+        summary.failed, 1,
+        "the loop should have refused exactly one envelope"
+    );
     Ok(())
 }
 
@@ -215,10 +231,14 @@ impl Harness {
         let init_line = read_line_within(&mut lines, "the initialize reply").await?;
         let reply_line = read_line_within(&mut lines, "the caller's reply").await?;
         let _init: Value = serde_json::from_str(&init_line).map_err(|err| {
-            Failure::Bridge(format!("the initialize reply is not JSON: {err}; {init_line:?}"))
+            Failure::Bridge(format!(
+                "the initialize reply is not JSON: {err}; {init_line:?}"
+            ))
         })?;
         let reply: Value = serde_json::from_str(&reply_line).map_err(|err| {
-            Failure::Bridge(format!("the caller's reply is not JSON: {err}; {reply_line:?}"))
+            Failure::Bridge(format!(
+                "the caller's reply is not JSON: {err}; {reply_line:?}"
+            ))
         })?;
         let summary = bridge
             .await
@@ -286,10 +306,7 @@ impl Harness {
 /// Reads the next non-empty line from the bridge's
 /// "stdout" within the test's wait window, with the
 /// caller's name in the error message.
-async fn read_line_within<R>(
-    lines: &mut tokio::io::Lines<R>,
-    name: &str,
-) -> Result<String, Failure>
+async fn read_line_within<R>(lines: &mut tokio::io::Lines<R>, name: &str) -> Result<String, Failure>
 where
     R: tokio::io::AsyncBufRead + Unpin,
 {
@@ -331,8 +348,16 @@ impl A2aFakeServer {
             .map_err(|err| Failure::Bridge(format!("local_addr: {err}")))?;
         let requests = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        tokio::spawn(server_loop(listener, Arc::clone(&requests), Arc::clone(&stop)));
-        Ok(Self { addr, requests, stop })
+        tokio::spawn(server_loop(
+            listener,
+            Arc::clone(&requests),
+            Arc::clone(&stop),
+        ));
+        Ok(Self {
+            addr,
+            requests,
+            stop,
+        })
     }
 
     fn requests_seen(&self) -> usize {
@@ -348,11 +373,7 @@ impl Drop for A2aFakeServer {
 
 /// The accept loop. Returns when `stop` is set,
 /// or when the listener fails to accept.
-async fn server_loop(
-    listener: TcpListener,
-    requests: Arc<AtomicUsize>,
-    stop: Arc<AtomicBool>,
-) {
+async fn server_loop(listener: TcpListener, requests: Arc<AtomicUsize>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
         let next = listener.accept().await;
         let Ok((mut socket, _)) = next else {

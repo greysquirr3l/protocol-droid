@@ -68,8 +68,8 @@ use axum::Router;
 use futures_core::Stream;
 use protocol_droid::adapters::primary::a2a::serve_agent::serve_a2a_agent;
 use protocol_droid::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
-use protocol_droid::application::a2a::A2aRequestHandler;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
+use protocol_droid::application::a2a::A2aRequestHandler;
 use protocol_droid::application::a2a::{A2aError, A2aRequestContext};
 use protocol_droid::domain::a2a::agent_card::{
     AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, JSONRPC,
@@ -91,12 +91,9 @@ impl A2aRequestHandler for Echo {
         method: A2aMethod,
         _params: Option<Value>,
         _context: &A2aRequestContext,
-    ) -> std::pin::Pin<
-        Box<dyn futures_core::Future<Output = Result<Value, A2aError>> + Send + '_>,
-    > {
-        Box::pin(async move {
-            Err(A2aError::MethodNotImplemented { method })
-        })
+    ) -> std::pin::Pin<Box<dyn futures_core::Future<Output = Result<Value, A2aError>> + Send + '_>>
+    {
+        Box::pin(async move { Err(A2aError::MethodNotImplemented { method }) })
     }
 }
 
@@ -147,7 +144,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = bind_addr()?;
     let card = build_card(addr)?;
     let app: Router = serve_a2a_agent("/a2a", Arc::new(Echo), Arc::new(Echo), card);
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(serve(app, addr))
 }
 
@@ -173,7 +172,9 @@ fn bind_addr() -> Result<SocketAddr, Box<dyn std::error::Error>> {
     match raw.parse() {
         Ok(addr) => Ok(addr),
         Err(error) => {
-            eprintln!("a2a_minimal_server: A2A_ADDR={raw:?} is not a valid socket address: {error}");
+            eprintln!(
+                "a2a_minimal_server: A2A_ADDR={raw:?} is not a valid socket address: {error}"
+            );
             Ok("127.0.0.1:8080".parse()?)
         }
     }

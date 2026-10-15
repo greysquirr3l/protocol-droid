@@ -322,9 +322,9 @@ mod tests {
         });
         let value = serde_json::to_value(&block)?;
         assert_eq!(value.get("type"), Some(&json!("resource")));
-        let resource = value
-            .get("resource")
-            .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing `resource` field")))?;
+        let resource = value.get("resource").ok_or_else(|| {
+            serde_json::Error::io(std::io::Error::other("missing `resource` field"))
+        })?;
         assert_eq!(resource.get("text"), Some(&json!("inline content")));
         Ok(())
     }

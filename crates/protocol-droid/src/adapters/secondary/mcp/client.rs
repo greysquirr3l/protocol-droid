@@ -64,8 +64,8 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -73,7 +73,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// The MCP wire form's
 /// `initialize` request. Sent by
@@ -635,8 +635,7 @@ impl McpStdioPeer {
             McpPeerError::Spawn(std::io::Error::other("child stdout was not piped"))
         })?;
 
-        let pending: Arc<Mutex<HashMap<u64, Pending>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(32);
         spawn_reader(BufReader::new(stdout), Arc::clone(&pending));
         spawn_writer(stdin, write_rx);
@@ -689,17 +688,12 @@ impl McpStdioPeer {
     /// problem to decode; the
     /// typed wrapper is
     /// [`send_typed_request`][Self::send_typed_request].
-    pub async fn send_request<Req>(
-        &self,
-        method: &str,
-        params: Req,
-    ) -> Result<Value, McpPeerError>
+    pub async fn send_request<Req>(&self, method: &str, params: Req) -> Result<Value, McpPeerError>
     where
         Req: Serialize,
     {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let params_value: Value =
-            serde_json::to_value(&params).map_err(McpPeerError::Decode)?;
+        let params_value: Value = serde_json::to_value(&params).map_err(McpPeerError::Decode)?;
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -714,15 +708,7 @@ impl McpStdioPeer {
             .await
             .map_err(|_| McpPeerError::Write(io_other("the writer task is gone")))?;
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(
-                id,
-                Pending {
-                    tx,
-                },
-            );
+        self.pending.lock().await.insert(id, Pending { tx });
         match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_oneshot_dropped)) => {
@@ -759,25 +745,22 @@ fn spawn_writer(mut stdin: ChildStdin, mut write_rx: mpsc::Receiver<Vec<u8>>) {
                 // through the next
                 // `send_request` returning
                 // a `Write` error.
-                let _ = std::io::stderr().lock().write_all(
-                    format!("mcp writer task: write failed: {error}\n").as_bytes(),
-                );
+                let _ = std::io::stderr()
+                    .lock()
+                    .write_all(format!("mcp writer task: write failed: {error}\n").as_bytes());
                 return;
             }
             if let Err(error) = stdin.flush().await {
-                let _ = std::io::stderr().lock().write_all(
-                    format!("mcp writer task: flush failed: {error}\n").as_bytes(),
-                );
+                let _ = std::io::stderr()
+                    .lock()
+                    .write_all(format!("mcp writer task: flush failed: {error}\n").as_bytes());
                 return;
             }
         }
     });
 }
 
-fn spawn_reader(
-    mut reader: BufReader<ChildStdout>,
-    pending: Arc<Mutex<HashMap<u64, Pending>>>,
-) {
+fn spawn_reader(mut reader: BufReader<ChildStdout>, pending: Arc<Mutex<HashMap<u64, Pending>>>) {
     tokio::spawn(async move {
         let mut line = String::new();
         loop {
@@ -794,10 +777,7 @@ fn spawn_reader(
                 Ok(value) => value,
                 Err(_) => continue,
             };
-            let id = value
-                .get("id")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let id = value.get("id").and_then(Value::as_u64).unwrap_or(0);
             if id == 0 {
                 // Notification or
                 // malformed reply; the
@@ -822,10 +802,7 @@ fn spawn_reader(
                         })
                 },
                 |error_value| {
-                    let code = error_value
-                        .get("code")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0);
+                    let code = error_value.get("code").and_then(Value::as_i64).unwrap_or(0);
                     let message = error_value
                         .get("message")
                         .and_then(Value::as_str)
@@ -957,7 +934,10 @@ mod typed_shape_round_trip {
                 "the default form omits `roots`"
             );
         } else {
-            assert!(value.is_object(), "the serialised value should be an object");
+            assert!(
+                value.is_object(),
+                "the serialised value should be an object"
+            );
         }
         Ok(())
     }
@@ -979,7 +959,10 @@ mod typed_shape_round_trip {
         if let Some(object) = value.as_object() {
             assert!(!object.contains_key("roots"));
         } else {
-            assert!(value.is_object(), "the serialised value should be an object");
+            assert!(
+                value.is_object(),
+                "the serialised value should be an object"
+            );
         }
         Ok(())
     }
@@ -999,7 +982,10 @@ mod typed_shape_round_trip {
         if let Some(object) = value.as_object() {
             assert!(!object.contains_key("title"));
         } else {
-            assert!(value.is_object(), "the serialised value should be an object");
+            assert!(
+                value.is_object(),
+                "the serialised value should be an object"
+            );
         }
         let decoded: Implementation = serde_json::from_value(value)?;
         assert_eq!(impl_value, decoded);
@@ -1047,7 +1033,10 @@ mod typed_shape_round_trip {
             assert!(object.contains_key("protocolVersion"));
             assert!(!object.contains_key("protocol_version"));
         } else {
-            assert!(value.is_object(), "the serialised value should be an object");
+            assert!(
+                value.is_object(),
+                "the serialised value should be an object"
+            );
         }
         Ok(())
     }

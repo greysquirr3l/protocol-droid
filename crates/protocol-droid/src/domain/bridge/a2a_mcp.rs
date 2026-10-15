@@ -38,8 +38,8 @@ use serde_json::Value;
 use crate::domain::a2a::agent_card::AgentSkill;
 use crate::domain::a2a::message::{DataPart, FilePart, Message, Part, TextPart};
 use crate::domain::ir::{
-    AudioContent, Content, EmbeddedResource, ExtensionValue, Extensions, ImageContent,
-    JsonObject, JsonObjectError, ResourceLinkContent, TextContent,
+    AudioContent, Content, EmbeddedResource, ExtensionValue, Extensions, ImageContent, JsonObject,
+    JsonObjectError, ResourceLinkContent, TextContent,
 };
 use crate::domain::registry::primitive::{Tool, ToolAnnotations};
 
@@ -244,7 +244,9 @@ pub fn a2a_skill_to_mcp_tool(
     report.record(
         Direction::ToMcp,
         Some(Protocol::A2a),
-        StepKind::Synthesised { to: Some("inputSchema") },
+        StepKind::Synthesised {
+            to: Some("inputSchema"),
+        },
     );
 
     let mut extensions = Extensions::empty();
@@ -299,15 +301,13 @@ pub fn a2a_skill_to_mcp_tool(
         report.record(
             Direction::ToMcp,
             Some(Protocol::A2a),
-            StepKind::Dropped { from: Some("description") },
+            StepKind::Dropped {
+                from: Some("description"),
+            },
         );
         None
     } else {
-        report.record(
-            Direction::ToMcp,
-            Some(Protocol::A2a),
-            StepKind::PassThrough,
-        );
+        report.record(Direction::ToMcp, Some(Protocol::A2a), StepKind::PassThrough);
         Some(skill.description.to_string())
     };
 
@@ -338,11 +338,7 @@ pub fn a2a_message_to_mcp_content(
         match part {
             Part::Text(text) => {
                 out.push(Content::Text(TextContent::new(text.text.clone())));
-                report.record(
-                    Direction::ToMcp,
-                    Some(Protocol::A2a),
-                    StepKind::PassThrough,
-                );
+                report.record(Direction::ToMcp, Some(Protocol::A2a), StepKind::PassThrough);
             }
             Part::File(file) => {
                 if let Some(block) = a2a_file_to_mcp_content(file, report) {
@@ -374,10 +370,7 @@ pub fn a2a_message_to_mcp_content(
     out
 }
 
-fn a2a_file_to_mcp_content(
-    file: &FilePart,
-    report: &mut CrossProtocolReport,
-) -> Option<Content> {
+fn a2a_file_to_mcp_content(file: &FilePart, report: &mut CrossProtocolReport) -> Option<Content> {
     if let Some(uri) = &file.file.uri {
         let mut link = ResourceLinkContent::new(uri.clone(), uri.clone());
         link.mime_type.clone_from(&file.file.mime_type);
@@ -391,7 +384,11 @@ fn a2a_file_to_mcp_content(
         );
         Some(Content::ResourceLink(link))
     } else if let Some(bytes) = &file.file.bytes {
-        let mime = file.file.mime_type.as_deref().unwrap_or("application/octet-stream");
+        let mime = file
+            .file
+            .mime_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
         if mime.starts_with("image/") {
             report.record(
                 Direction::ToMcp,
@@ -401,7 +398,10 @@ fn a2a_file_to_mcp_content(
                     to: Some("ImageContent"),
                 },
             );
-            Some(Content::Image(ImageContent::new(bytes.clone(), mime.to_owned())))
+            Some(Content::Image(ImageContent::new(
+                bytes.clone(),
+                mime.to_owned(),
+            )))
         } else if mime.starts_with("audio/") {
             report.record(
                 Direction::ToMcp,
@@ -411,7 +411,10 @@ fn a2a_file_to_mcp_content(
                     to: Some("AudioContent"),
                 },
             );
-            Some(Content::Audio(AudioContent::new(bytes.clone(), mime.to_owned())))
+            Some(Content::Audio(AudioContent::new(
+                bytes.clone(),
+                mime.to_owned(),
+            )))
         } else {
             report.record(
                 Direction::ToMcp,
@@ -426,7 +429,9 @@ fn a2a_file_to_mcp_content(
         report.record(
             Direction::ToMcp,
             Some(Protocol::A2a),
-            StepKind::Dropped { from: Some("FilePart (empty)") },
+            StepKind::Dropped {
+                from: Some("FilePart (empty)"),
+            },
         );
         None
     }
@@ -465,14 +470,18 @@ pub fn a2a_message_to_mcp_text(
         report.record(
             Direction::ToMcp,
             Some(Protocol::A2a),
-            StepKind::Dropped { from: Some("non-text parts") },
+            StepKind::Dropped {
+                from: Some("non-text parts"),
+            },
         );
     }
     if joined.is_empty() {
         report.record(
             Direction::ToMcp,
             Some(Protocol::A2a),
-            StepKind::Dropped { from: Some("text parts") },
+            StepKind::Dropped {
+                from: Some("text parts"),
+            },
         );
         return None;
     }
@@ -492,11 +501,7 @@ pub fn mcp_content_to_a2a_part(
 ) -> Option<Part> {
     match content {
         Content::Text(text) => {
-            report.record(
-                Direction::ToA2a,
-                Some(Protocol::Mcp),
-                StepKind::PassThrough,
-            );
+            report.record(Direction::ToA2a, Some(Protocol::Mcp), StepKind::PassThrough);
             Some(Part::Text(TextPart {
                 text: text.text.clone(),
                 metadata: BTreeMap::new(),
@@ -582,7 +587,9 @@ pub fn mcp_content_to_a2a_part(
             report.record(
                 Direction::ToA2a,
                 Some(Protocol::Mcp),
-                StepKind::Dropped { from: Some("Unknown") },
+                StepKind::Dropped {
+                    from: Some("Unknown"),
+                },
             );
             None
         }
@@ -598,7 +605,10 @@ const fn a2a_bytes_file(mime: String, bytes: String) -> crate::domain::a2a::mess
     }
 }
 
-const fn a2a_uri_file(uri: String, mime: Option<String>) -> crate::domain::a2a::message::FileContent {
+const fn a2a_uri_file(
+    uri: String,
+    mime: Option<String>,
+) -> crate::domain::a2a::message::FileContent {
     crate::domain::a2a::message::FileContent {
         name: None,
         mime_type: mime,
@@ -705,10 +715,14 @@ mod tests {
         if tool.title.is_some() {
             return Err(Failure::Mismatch("expected title to be None".to_owned()));
         }
-        if !report.steps().iter().any(|s| {
-            matches!(&s.note, StepKind::Dropped { from: Some("name") })
-        }) {
-            return Err(Failure::Mismatch("expected a Dropped(name) step".to_owned()));
+        if !report
+            .steps()
+            .iter()
+            .any(|s| matches!(&s.note, StepKind::Dropped { from: Some("name") }))
+        {
+            return Err(Failure::Mismatch(
+                "expected a Dropped(name) step".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -719,10 +733,17 @@ mod tests {
         let mut report = CrossProtocolReport::new();
         let tool = a2a_skill_to_mcp_tool(&s, &mut report)?;
         if tool.description.is_some() {
-            return Err(Failure::Mismatch("expected description to be None".to_owned()));
+            return Err(Failure::Mismatch(
+                "expected description to be None".to_owned(),
+            ));
         }
         if !report.steps().iter().any(|s| {
-            matches!(&s.note, StepKind::Dropped { from: Some("description") })
+            matches!(
+                &s.note,
+                StepKind::Dropped {
+                    from: Some("description")
+                }
+            )
         }) {
             return Err(Failure::Mismatch(
                 "expected a Dropped(description) step".to_owned(),
@@ -755,9 +776,7 @@ mod tests {
             ));
         };
         let Content::Text(t) = first else {
-            return Err(Failure::Mismatch(format!(
-                "expected Text, got {first:?}"
-            )));
+            return Err(Failure::Mismatch(format!("expected Text, got {first:?}")));
         };
         if t.text != "hello" {
             return Err(Failure::Mismatch(format!(
@@ -766,9 +785,7 @@ mod tests {
             )));
         }
         if report.is_empty() {
-            return Err(Failure::Mismatch(
-                "expected a pass-through step".to_owned(),
-            ));
+            return Err(Failure::Mismatch("expected a pass-through step".to_owned()));
         }
         Ok(())
     }
@@ -863,7 +880,12 @@ mod tests {
             )));
         }
         if !report.steps().iter().any(|s| {
-            matches!(&s.note, StepKind::Dropped { from: Some("FilePart.bytes") })
+            matches!(
+                &s.note,
+                StepKind::Dropped {
+                    from: Some("FilePart.bytes")
+                }
+            )
         }) {
             return Err(Failure::Mismatch(
                 "expected a Dropped(FilePart.bytes) step".to_owned(),
@@ -934,7 +956,12 @@ mod tests {
             )));
         }
         if !report.steps().iter().any(|s| {
-            matches!(&s.note, StepKind::Dropped { from: Some("non-text parts") })
+            matches!(
+                &s.note,
+                StepKind::Dropped {
+                    from: Some("non-text parts")
+                }
+            )
         }) {
             return Err(Failure::Mismatch(
                 "expected a Dropped(non-text parts) step".to_owned(),
@@ -1037,11 +1064,7 @@ mod tests {
     #[test]
     fn report_merge_combines_steps() -> Result<(), Failure> {
         let mut a = CrossProtocolReport::new();
-        a.record(
-            Direction::ToMcp,
-            Some(Protocol::A2a),
-            StepKind::PassThrough,
-        );
+        a.record(Direction::ToMcp, Some(Protocol::A2a), StepKind::PassThrough);
         let mut b = CrossProtocolReport::new();
         b.record(
             Direction::ToA2a,

@@ -140,11 +140,7 @@ pub trait UrlFilter: Send + Sync {
     /// # Errors
     ///
     /// [`FilterDenial`] on rejection, with the class of the refusal.
-    fn check_at_config(
-        &self,
-        url: &Url,
-        version: A2aVersion,
-    ) -> Result<(), FilterDenial>;
+    fn check_at_config(&self, url: &Url, version: A2aVersion) -> Result<(), FilterDenial>;
 
     /// Checks a URL *and* its resolved IP at delivery time.
     ///
@@ -184,13 +180,21 @@ mod tests {
         // contain raw URLs (which could echo attacker-controlled content
         // into logs), and do not name internal files.
         for d in [
-            FilterDenial::UnsupportedScheme { scheme: "file".into() },
+            FilterDenial::UnsupportedScheme {
+                scheme: "file".into(),
+            },
             FilterDenial::MissingHost,
             FilterDenial::Malformed,
-            FilterDenial::DeniedIpLiteral { literal: "10.1.2.3".into() },
-            FilterDenial::DeniedResolvedIp { ip: "127.0.0.1".parse()? },
+            FilterDenial::DeniedIpLiteral {
+                literal: "10.1.2.3".into(),
+            },
+            FilterDenial::DeniedResolvedIp {
+                ip: "127.0.0.1".parse()?,
+            },
             FilterDenial::UserinfoNotAllowed,
-            FilterDenial::ReservedNamespace { path: "/.well-known/agent-card.json".into() },
+            FilterDenial::ReservedNamespace {
+                path: "/.well-known/agent-card.json".into(),
+            },
         ] {
             let s = d.to_string();
             assert!(s.len() < 200, "denial string is too long: {s}");

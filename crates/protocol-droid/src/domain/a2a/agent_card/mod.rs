@@ -62,6 +62,6 @@ pub use security_scheme::{
     OpenIdConnectSecurityScheme, SecurityScheme,
 };
 pub use types::{
-    AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill,
-    ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
+    AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentProvider, AgentSkill, GRPC,
+    HTTP_JSON, JSONRPC, ProtocolBinding,
 };

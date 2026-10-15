@@ -182,7 +182,10 @@ pub struct TaskArtifactUpdateEvent {
 // `skip_serializing_if` requires
 // `fn(&T) -> bool`; the clippy lint is a
 // false positive for serde-internal helpers.
-#[expect(clippy::trivially_copy_pass_by_ref, reason = "required by skip_serializing_if")]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "required by skip_serializing_if"
+)]
 const fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -261,9 +264,7 @@ impl From<TaskArtifactUpdateEvent> for StreamingEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        StreamingEvent, TaskArtifactUpdateEvent, TaskStatusUpdateEvent,
-    };
+    use super::{StreamingEvent, TaskArtifactUpdateEvent, TaskStatusUpdateEvent};
     use crate::domain::a2a::message::{Part, TextPart};
     use crate::domain::a2a::task::{Artifact, TaskState, TaskStatus};
 
@@ -377,8 +378,7 @@ mod tests {
     // --- StreamingEvent untagged enum ------------------------------
 
     #[test]
-    fn streaming_event_untagged_discrimination_works_both_ways(
-    ) -> Result<(), TestError> {
+    fn streaming_event_untagged_discrimination_works_both_ways() -> Result<(), TestError> {
         // A status event JSON object
         // decodes to `StreamingEvent::Status`,
         // not `::Artifact`. An artifact
@@ -386,7 +386,8 @@ mod tests {
         // `::Artifact`.
         let status_json =
             r#"{"taskId":"t-1","contextId":"c-1","status":{"state":"working"},"final":false}"#;
-        let artifact_json = r#"{"taskId":"t-1","contextId":"c-1","artifact":{"parts":[{"text":"x"}]}}"#;
+        let artifact_json =
+            r#"{"taskId":"t-1","contextId":"c-1","artifact":{"parts":[{"text":"x"}]}}"#;
         let from_status: StreamingEvent = serde_json::from_str(status_json)
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
         let from_artifact: StreamingEvent = serde_json::from_str(artifact_json)

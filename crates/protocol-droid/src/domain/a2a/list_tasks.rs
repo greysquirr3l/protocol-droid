@@ -161,10 +161,7 @@ impl ListTasksRequest {
 
     /// Sets the status timestamp filter.
     #[must_use]
-    pub fn with_status_timestamp_after(
-        mut self,
-        timestamp: impl Into<String>,
-    ) -> Self {
+    pub fn with_status_timestamp_after(mut self, timestamp: impl Into<String>) -> Self {
         self.status_timestamp_after = Some(timestamp.into());
         self
     }
@@ -236,10 +233,7 @@ impl ListTasksResponse {
     /// string is the spec's "no more pages"
     /// signal.
     #[must_use]
-    pub fn with_next_page_token(
-        mut self,
-        next_page_token: impl Into<String>,
-    ) -> Self {
+    pub fn with_next_page_token(mut self, next_page_token: impl Into<String>) -> Self {
         self.next_page_token = next_page_token.into();
         self
     }
@@ -321,13 +315,10 @@ mod tests {
 
     #[test]
     fn list_response_round_trips_with_tasks_and_pagination() -> Result<(), TestError> {
-        let response = ListTasksResponse::new([
-            Task::new("task-1"),
-            Task::new("task-2"),
-        ])
-        .with_next_page_token("next")
-        .with_page_size(50)
-        .with_total_size(123);
+        let response = ListTasksResponse::new([Task::new("task-1"), Task::new("task-2")])
+            .with_next_page_token("next")
+            .with_page_size(50)
+            .with_total_size(123);
         let json = serde_json::to_string(&response)?;
         let parsed: ListTasksResponse = serde_json::from_str(&json)?;
         assert_eq!(parsed, response);

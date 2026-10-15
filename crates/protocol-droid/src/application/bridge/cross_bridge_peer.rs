@@ -145,10 +145,7 @@ impl<U: BridgePeer + ?Sized> BridgePeer for CrossBridgePeer<U> {
         })
     }
 
-    fn notify(
-        &self,
-        envelope: Map<String, Value>,
-    ) -> SendFuture<'_, Result<(), BridgeError>> {
+    fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async move {
             let ir_method = ir_method_of(&envelope);
             let mut report = RequestCodecReport::empty();
@@ -182,10 +179,7 @@ impl<U: BridgePeer + ?Sized> BridgePeer for CrossBridgePeer<U> {
 /// already passed through the inner peer; the codec will see it on
 /// `decode_reply`, not here.
 fn ir_method_of(envelope: &Map<String, Value>) -> &str {
-    envelope
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or("")
+    envelope.get("method").and_then(Value::as_str).unwrap_or("")
 }
 
 /// Map a codec error into a bridge error the loop can answer.
@@ -316,10 +310,7 @@ mod tests {
             Box::pin(async move { Ok(reply) })
         }
 
-        fn notify(
-            &self,
-            envelope: Map<String, Value>,
-        ) -> SendFuture<'_, Result<(), BridgeError>> {
+        fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
             let Ok(()) = self.record(envelope) else {
                 return Box::pin(async {
                     Err(BridgeError::Close("recorder mutex poisoned".to_owned()))
@@ -441,7 +432,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_method_the_codec_does_not_bridge_is_refused_with_method_not_bridged() -> Result<(), TestError> {
+    async fn a_method_the_codec_does_not_bridge_is_refused_with_method_not_bridged()
+    -> Result<(), TestError> {
         let peer = Arc::new(RecorderPeer::default());
         let codec = codec_renaming_send_message_to_tools_call();
         let wrapper = CrossBridgePeer::new(ProtocolSide::A2a, codec, peer.clone())?;
@@ -621,9 +613,7 @@ mod tests {
 
         // The reply came back shaped like an A2A Message, not an MCP
         // CallToolResult.
-        let result = reply
-            .get("result")
-            .ok_or(Failure::ReplyMissingResult)?;
+        let result = reply.get("result").ok_or(Failure::ReplyMissingResult)?;
         let message = result
             .as_object()
             .and_then(|m| m.get("message"))

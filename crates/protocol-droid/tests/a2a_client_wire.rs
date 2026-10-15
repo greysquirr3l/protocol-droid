@@ -45,9 +45,7 @@ use protocol_droid::domain::a2a::push_notification_methods::{
     GetTaskPushNotificationConfigRequest, ListTaskPushNotificationConfigsRequest,
 };
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
-use protocol_droid::domain::a2a::streaming_events::{
-    StreamingEvent, TaskStatusUpdateEvent,
-};
+use protocol_droid::domain::a2a::streaming_events::{StreamingEvent, TaskStatusUpdateEvent};
 use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
 use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, GetTaskRequest};
 use serde_json::Value;
@@ -88,9 +86,11 @@ impl A2aRequestHandler for MinimalAgent {
             match method {
                 A2aMethod::SendMessage => {
                     let params = params.unwrap_or(Value::Null);
-                    let _request: SendMessageRequest = serde_json::from_value(params)
-                        .map_err(|error| A2aError::InvalidParams {
-                            reason: error.to_string(),
+                    let _request: SendMessageRequest =
+                        serde_json::from_value(params).map_err(|error| {
+                            A2aError::InvalidParams {
+                                reason: error.to_string(),
+                            }
                         })?;
                     let next_id = {
                         let mut guard = store.lock().expect("store lock");
@@ -119,12 +119,12 @@ impl A2aRequestHandler for MinimalAgent {
                     })
                 }
                 A2aMethod::GetTask => {
-                    let request: GetTaskRequest = serde_json::from_value(
-                        params.unwrap_or(Value::Null),
-                    )
-                    .map_err(|error| A2aError::InvalidParams {
-                        reason: error.to_string(),
-                    })?;
+                    let request: GetTaskRequest =
+                        serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| {
+                            A2aError::InvalidParams {
+                                reason: error.to_string(),
+                            }
+                        })?;
                     let guard = store.lock().expect("store lock");
                     let Some(task) = guard.tasks.get(&request.id).cloned() else {
                         return Err(A2aError::InvalidParams {
@@ -139,12 +139,12 @@ impl A2aRequestHandler for MinimalAgent {
                     })
                 }
                 A2aMethod::CancelTask => {
-                    let request: CancelTaskRequest = serde_json::from_value(
-                        params.unwrap_or(Value::Null),
-                    )
-                    .map_err(|error| A2aError::InvalidParams {
-                        reason: error.to_string(),
-                    })?;
+                    let request: CancelTaskRequest =
+                        serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| {
+                            A2aError::InvalidParams {
+                                reason: error.to_string(),
+                            }
+                        })?;
                     let mut guard = store.lock().expect("store lock");
                     let Some(task) = guard.tasks.get_mut(&request.id) else {
                         return Err(A2aError::InvalidParams {
@@ -158,9 +158,7 @@ impl A2aRequestHandler for MinimalAgent {
                     });
                     *task = cancelled.clone();
                     serde_json::to_value(
-                        protocol_droid::domain::a2a::task_lifecycle::CancelTaskResponse(
-                            cancelled,
-                        ),
+                        protocol_droid::domain::a2a::task_lifecycle::CancelTaskResponse(cancelled),
                     )
                     .map_err(|error| A2aError::InternalError {
                         message: error.to_string(),
@@ -287,14 +285,14 @@ impl A2aRequestHandler for MinimalAgent {
                 }
                 A2aMethod::GetExtendedAgentCard => {
                     let _request: GetExtendedAgentCardRequest =
-                        serde_json::from_value(params.unwrap_or(Value::Null)).map_err(
-                            |error| A2aError::InvalidParams {
+                        serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| {
+                            A2aError::InvalidParams {
                                 reason: error.to_string(),
-                            },
-                        )?;
-                    serde_json::to_value(GetExtendedAgentCardResponse(
-                        Arc::unwrap_or_clone(Arc::clone(&card)),
-                    ))
+                            }
+                        })?;
+                    serde_json::to_value(GetExtendedAgentCardResponse(Arc::unwrap_or_clone(
+                        Arc::clone(&card),
+                    )))
                     .map_err(|error| A2aError::InternalError {
                         message: error.to_string(),
                     })
@@ -434,7 +432,9 @@ async fn spawn_test_peer_with_bearer(
     }
     let router = serve_well_known(Arc::clone(&card)).merge(protected);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
@@ -594,12 +594,7 @@ async fn with_paths_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     // honored, not that the path is
     // non-conventional.
     let (url, _handle) = spawn_test_peer().await;
-    let client = A2aClient::with_paths(
-        url,
-        "/.well-known/agent-card.json",
-        "/a2a",
-        "/a2a/stream",
-    )?;
+    let client = A2aClient::with_paths(url, "/.well-known/agent-card.json", "/a2a", "/a2a/stream")?;
     let card = client.card().await?;
     assert_eq!(card.name.as_ref(), "a2a_client_wire_agent");
     Ok(())
@@ -644,9 +639,7 @@ async fn missing_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error
     // thing to pin, not its `Display` text.
     match result {
         Ok(_) => {
-            return Err(
-                "a missing token must be a wire-level rejection".into(),
-            );
+            return Err("a missing token must be a wire-level rejection".into());
         }
         Err(error) => {
             let is_transport = matches!(
@@ -665,8 +658,8 @@ async fn missing_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error
 }
 
 #[tokio::test]
-async fn the_well_known_card_is_unauthenticated_even_when_bearer_is_required(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn the_well_known_card_is_unauthenticated_even_when_bearer_is_required()
+-> Result<(), Box<dyn std::error::Error>> {
     // A2A v1.0 §8 names the well-known card
     // as the discovery endpoint a peer reads
     // to learn the security scheme, so a
@@ -725,8 +718,8 @@ async fn wrong_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[tokio::test]
-async fn get_extended_agent_card_round_trips_with_a_bearer_token(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn get_extended_agent_card_round_trips_with_a_bearer_token()
+-> Result<(), Box<dyn std::error::Error>> {
     // `GetExtendedAgentCard` is the
     // authenticated read of the agent card;
     // the A2A spec splits the card into a
@@ -751,8 +744,8 @@ async fn get_extended_agent_card_round_trips_with_a_bearer_token(
 }
 
 #[tokio::test]
-async fn get_extended_agent_card_is_a_401_without_a_bearer_token(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn get_extended_agent_card_is_a_401_without_a_bearer_token()
+-> Result<(), Box<dyn std::error::Error>> {
     // Same peer, no token. The wire-level
     // assertion is that the request is
     // rejected — the public well-known

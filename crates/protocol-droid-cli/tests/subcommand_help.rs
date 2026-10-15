@@ -51,7 +51,9 @@ fn assert_help_contains(subcommand: &str, expected_fragment: &str) -> Result<(),
         .arg(subcommand)
         .arg("--help")
         .output()
-        .map_err(|error| format!("failed to spawn `protocol-droid {subcommand} --help`: {error}"))?;
+        .map_err(|error| {
+            format!("failed to spawn `protocol-droid {subcommand} --help`: {error}")
+        })?;
 
     let status = output.status;
     let stdout = String::from_utf8_lossy(&output.stdout);

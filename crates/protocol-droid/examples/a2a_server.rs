@@ -86,7 +86,7 @@ use axum::Router;
 use futures_util::stream;
 use protocol_droid::adapters::primary::a2a::jsonrpc_serve::serve_jsonrpc;
 use protocol_droid::adapters::primary::a2a::streaming_serve::{
-    serve_streaming, A2aStreamingRequestHandler,
+    A2aStreamingRequestHandler, serve_streaming,
 };
 use protocol_droid::adapters::primary::a2a::well_known_serve::serve_well_known;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
@@ -98,12 +98,13 @@ use protocol_droid::application::a2a::{
 };
 use protocol_droid::domain::a2a::A2aVersion;
 use protocol_droid::domain::a2a::agent_card::{
-    AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill, HTTPAuthSecurityScheme,
-    JSONRPC, SecurityScheme,
+    AgentCapabilities, AgentCard, AgentCardBuilder, AgentInterface, AgentSkill,
+    HTTPAuthSecurityScheme, JSONRPC, SecurityScheme,
 };
 use protocol_droid::domain::a2a::extended_agent_card::{
     GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
 };
+use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
 use protocol_droid::domain::a2a::push_notification_methods::{
@@ -118,7 +119,6 @@ use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
 use protocol_droid::domain::a2a::task_lifecycle::{
     CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
 };
-use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 
 /// The in-memory task store. A real agent would put a database
 /// here, or a queue fronting a worker pool. The shape — keyed
@@ -160,9 +160,7 @@ impl TaskStore {
     fn list(&self, context: Option<&str>, state: Option<TaskState>) -> Vec<Task> {
         self.tasks
             .values()
-            .filter(|task| {
-                context.is_none_or(|ctx| task.context_id.as_deref() == Some(ctx))
-            })
+            .filter(|task| context.is_none_or(|ctx| task.context_id.as_deref() == Some(ctx)))
             .filter(|task| state.is_none_or(|s| task.status.state == s))
             .cloned()
             .collect()
@@ -276,7 +274,8 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::CreateTaskPushNotificationConfig => {
-                let request = match decode_params::<CreateTaskPushNotificationConfigRequest>(params) {
+                let request = match decode_params::<CreateTaskPushNotificationConfigRequest>(params)
+                {
                     Ok(request) => request,
                     Err(error) => return decode_failed(error),
                 };
@@ -296,7 +295,8 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::ListTaskPushNotificationConfigs => {
-                let request = match decode_params::<ListTaskPushNotificationConfigsRequest>(params) {
+                let request = match decode_params::<ListTaskPushNotificationConfigsRequest>(params)
+                {
                     Ok(request) => request,
                     Err(error) => return decode_failed(error),
                 };
@@ -306,7 +306,8 @@ impl A2aRequestHandler for EchoAgent {
                 })
             }
             A2aMethod::DeleteTaskPushNotificationConfig => {
-                let request = match decode_params::<DeleteTaskPushNotificationConfigRequest>(params) {
+                let request = match decode_params::<DeleteTaskPushNotificationConfigRequest>(params)
+                {
                     Ok(request) => request,
                     Err(error) => return decode_failed(error),
                 };
@@ -372,10 +373,7 @@ fn decode_params<T: serde::de::DeserializeOwned>(
 // methods on `EchoAgent` and call those from `dispatch`.
 
 impl EchoAgent {
-    fn handle_send_message(
-        &self,
-        request: &SendMessageRequest,
-    ) -> SendMessageResponse {
+    fn handle_send_message(&self, request: &SendMessageRequest) -> SendMessageResponse {
         let reply = reply_for(&request.message);
         let next_id = {
             let mut store = self.store.lock().expect("store lock");
@@ -466,12 +464,18 @@ impl EchoAgent {
         // of silently dropping deliveries. The same
         // `WebhookUrl::new` runs at delivery time as
         // defense-in-depth.
-        let url: url::Url = request.0.url.parse().map_err(|error| A2aError::InvalidParams {
-            reason: format!("webhook URL is not a valid URL: {error}"),
-        })?;
-        let _validated = WebhookUrl::new(&SsrfDenylist::FILTER, url, A2aVersion::V1_0)
-            .map_err(|denial| A2aError::InvalidParams {
-                reason: format!("webhook URL was rejected: {denial}"),
+        let url: url::Url = request
+            .0
+            .url
+            .parse()
+            .map_err(|error| A2aError::InvalidParams {
+                reason: format!("webhook URL is not a valid URL: {error}"),
+            })?;
+        let _validated =
+            WebhookUrl::new(&SsrfDenylist::FILTER, url, A2aVersion::V1_0).map_err(|denial| {
+                A2aError::InvalidParams {
+                    reason: format!("webhook URL was rejected: {denial}"),
+                }
             })?;
         let id = {
             let mut store = self.store.lock().expect("store lock");
@@ -561,12 +565,8 @@ impl EchoAgent {
     fn handle_streaming_send(
         &self,
         request: &SendMessageRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    > {
+    ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>> + Send>>
+    {
         let store = self.store.clone();
         let next_id = {
             let mut store = store.lock().expect("store lock");
@@ -613,29 +613,29 @@ impl EchoAgent {
     fn handle_subscribe_to_task(
         &self,
         request: &GetTaskRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    > {
+    ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>> + Send>>
+    {
         let store = self.store.clone();
-        let event = store.lock().expect("store lock").get(&request.id).map_or_else(
-            || {
-                Err(A2aError::InvalidParams {
-                    reason: format!("no task with id '{}'", request.id),
-                })
-            },
-            |task| {
-                Ok(StreamingEvent::Status(TaskStatusUpdateEvent {
-                    task_id: task.id.to_string(),
-                    context_id: String::new(),
-                    status: task.status,
-                    is_final: true,
-                    metadata: std::collections::BTreeMap::new(),
-                }))
-            },
-        );
+        let event = store
+            .lock()
+            .expect("store lock")
+            .get(&request.id)
+            .map_or_else(
+                || {
+                    Err(A2aError::InvalidParams {
+                        reason: format!("no task with id '{}'", request.id),
+                    })
+                },
+                |task| {
+                    Ok(StreamingEvent::Status(TaskStatusUpdateEvent {
+                        task_id: task.id.to_string(),
+                        context_id: String::new(),
+                        status: task.status,
+                        is_final: true,
+                        metadata: std::collections::BTreeMap::new(),
+                    }))
+                },
+            );
         Box::pin(stream::iter([event]))
     }
 }
@@ -649,12 +649,8 @@ impl A2aStreamingRequestHandler for EchoAgent {
         method: A2aMethod,
         params: Option<serde_json::Value>,
         _context: &A2aRequestContext,
-    ) -> std::pin::Pin<
-        Box<
-            dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    > {
+    ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<StreamingEvent, A2aError>> + Send>>
+    {
         match method {
             A2aMethod::SendStreamingMessage => {
                 let request: SendMessageRequest = match decode_params(params) {
@@ -708,9 +704,7 @@ impl EchoAgent {
             let Ok(url) = config.url.parse::<url::Url>() else {
                 continue;
             };
-            let Ok(webhook) =
-                WebhookUrl::new(&SsrfDenylist::FILTER, url, A2aVersion::V1_0)
-            else {
+            let Ok(webhook) = WebhookUrl::new(&SsrfDenylist::FILTER, url, A2aVersion::V1_0) else {
                 continue;
             };
             let notification = NotificationConfig {
@@ -951,11 +945,10 @@ fn build_router(addr: SocketAddr) -> Router {
         // JSON-RPC and the streaming route, so
         // a peer that does not present the
         // token sees a 401 from either.
-        protected = protected
-            .route_layer(axum::middleware::from_fn_with_state(
-                std::sync::Arc::from(token),
-                check_bearer,
-            ));
+        protected = protected.route_layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::from(token),
+            check_bearer,
+        ));
     }
     serve_well_known(card)
         .merge(protected)
@@ -1090,7 +1083,13 @@ mod tests {
     #[test]
     fn paginate_tasks_trims_to_requested_page_size() -> Result<(), Box<dyn std::error::Error>> {
         let response = paginate_tasks(
-            vec![task("t-1"), task("t-2"), task("t-3"), task("t-4"), task("t-5")],
+            vec![
+                task("t-1"),
+                task("t-2"),
+                task("t-3"),
+                task("t-4"),
+                task("t-5"),
+            ],
             Some(2),
             None,
             5,
@@ -1122,8 +1121,8 @@ mod tests {
     /// empty array. The `next_page_token` is
     /// the empty string (no more pages).
     #[test]
-    fn paginate_tasks_empty_filter_keeps_page_size_at_one(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn paginate_tasks_empty_filter_keeps_page_size_at_one() -> Result<(), Box<dyn std::error::Error>>
+    {
         let response = paginate_tasks(Vec::new(), None, None, 0);
         if response.page_size == 0 {
             return Err("page_size must be at least 1 even for an empty result".into());
@@ -1152,16 +1151,12 @@ mod tests {
     /// the example chooses tolerance for
     /// the wire-shape reference.
     #[test]
-    fn paginate_tasks_treats_zero_page_size_as_unset(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let response = paginate_tasks(
-            vec![task("t-1"), task("t-2")],
-            Some(0),
-            None,
-            2,
-        );
+    fn paginate_tasks_treats_zero_page_size_as_unset() -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(vec![task("t-1"), task("t-2")], Some(0), None, 2);
         if response.page_size == 0 {
-            return Err("page_size must be at least 1; a peer-supplied 0 is treated as unset".into());
+            return Err(
+                "page_size must be at least 1; a peer-supplied 0 is treated as unset".into(),
+            );
         }
         if response.tasks.len() != 2 {
             return Err(format!(
@@ -1183,9 +1178,7 @@ mod tests {
     /// the spec describes.
     #[test]
     fn paginate_tasks_resumes_from_page_token() -> Result<(), Box<dyn std::error::Error>> {
-        let tasks: Vec<Task> = (0..5)
-            .map(|i| task(&format!("t-{i}")))
-            .collect();
+        let tasks: Vec<Task> = (0..5).map(|i| task(&format!("t-{i}"))).collect();
         // First page: page_size 2, no token.
         let first = paginate_tasks(tasks.clone(), Some(2), None, 5);
         if first.tasks.len() != 2 {
@@ -1234,15 +1227,13 @@ mod tests {
     /// request with no token will see the
     /// actual data.
     #[test]
-    fn paginate_tasks_past_end_token_returns_empty_page(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn paginate_tasks_past_end_token_returns_empty_page() -> Result<(), Box<dyn std::error::Error>>
+    {
         let response = paginate_tasks(vec![task("t-1"), task("t-2")], Some(2), Some("999"), 2);
         if !response.tasks.is_empty() {
-            return Err(format!(
-                "expected empty tasks, got {} entries",
-                response.tasks.len()
-            )
-            .into());
+            return Err(
+                format!("expected empty tasks, got {} entries", response.tasks.len()).into(),
+            );
         }
         if !response.next_page_token.is_empty() {
             return Err(format!(
@@ -1265,8 +1256,8 @@ mod tests {
     /// wire-shape reference, and a real agent
     /// can choose.
     #[test]
-    fn paginate_tasks_invalid_token_falls_back_to_start(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn paginate_tasks_invalid_token_falls_back_to_start() -> Result<(), Box<dyn std::error::Error>>
+    {
         let response = paginate_tasks(
             vec![task("t-1"), task("t-2")],
             Some(2),
@@ -1274,11 +1265,9 @@ mod tests {
             2,
         );
         if response.tasks.len() != 2 {
-            return Err(format!(
-                "expected 2 tasks (full page), got {}",
-                response.tasks.len()
-            )
-            .into());
+            return Err(
+                format!("expected 2 tasks (full page), got {}", response.tasks.len()).into(),
+            );
         }
         Ok(())
     }
@@ -1292,14 +1281,9 @@ mod tests {
     /// everything in one page" gets everything
     /// in one page.
     #[test]
-    fn paginate_tasks_page_size_larger_than_filtered_returns_all(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let response = paginate_tasks(
-            vec![task("t-1"), task("t-2")],
-            Some(50),
-            None,
-            2,
-        );
+    fn paginate_tasks_page_size_larger_than_filtered_returns_all()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let response = paginate_tasks(vec![task("t-1"), task("t-2")], Some(50), None, 2);
         if response.tasks.len() != 2 {
             return Err(format!("expected 2 tasks, got {}", response.tasks.len()).into());
         }
@@ -1328,19 +1312,14 @@ mod tests {
     /// stop-condition would diverge from
     /// the server's.
     #[test]
-    fn paginate_tasks_total_size_reflects_caller_supplied_value(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn paginate_tasks_total_size_reflects_caller_supplied_value()
+    -> Result<(), Box<dyn std::error::Error>> {
         // The filtered list has 2 tasks,
         // but the caller's filter narrowed
         // from a 100-task store. The peer
         // should see `total_size: 100` so
         // it can decide to keep paginating.
-        let response = paginate_tasks(
-            vec![task("t-1"), task("t-2")],
-            Some(1),
-            None,
-            100,
-        );
+        let response = paginate_tasks(vec![task("t-1"), task("t-2")], Some(1), None, 100);
         if response.total_size != 100 {
             return Err(format!(
                 "expected total_size 100 (caller-supplied), got {}",
@@ -1349,11 +1328,9 @@ mod tests {
             .into());
         }
         if response.tasks.len() != 1 {
-            return Err(format!(
-                "expected 1 task in the page, got {}",
-                response.tasks.len()
-            )
-            .into());
+            return Err(
+                format!("expected 1 task in the page, got {}", response.tasks.len()).into(),
+            );
         }
         if response.next_page_token != "1" {
             return Err(format!(
@@ -1376,8 +1353,8 @@ mod tests {
     /// N happens to equal the filter
     /// count.
     #[test]
-    fn paginate_tasks_page_size_equal_to_filtered_returns_whole_list(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn paginate_tasks_page_size_equal_to_filtered_returns_whole_list()
+    -> Result<(), Box<dyn std::error::Error>> {
         let response = paginate_tasks(
             vec![task("t-1"), task("t-2"), task("t-3")],
             Some(3),
@@ -1385,11 +1362,7 @@ mod tests {
             3,
         );
         if response.tasks.len() != 3 {
-            return Err(format!(
-                "expected 3 tasks, got {}",
-                response.tasks.len()
-            )
-            .into());
+            return Err(format!("expected 3 tasks, got {}", response.tasks.len()).into());
         }
         if !response.next_page_token.is_empty() {
             return Err(format!(
@@ -1399,11 +1372,7 @@ mod tests {
             .into());
         }
         if response.page_size != 3 {
-            return Err(format!(
-                "expected page_size 3, got {}",
-                response.page_size
-            )
-            .into());
+            return Err(format!("expected page_size 3, got {}", response.page_size).into());
         }
         Ok(())
     }
@@ -1421,8 +1390,7 @@ mod tests {
     /// "smallest possible page" the
     /// spec allows.
     #[test]
-    fn paginate_tasks_page_size_one_returns_singleton(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn paginate_tasks_page_size_one_returns_singleton() -> Result<(), Box<dyn std::error::Error>> {
         let response = paginate_tasks(
             vec![task("t-1"), task("t-2"), task("t-3")],
             Some(1),
@@ -1430,11 +1398,7 @@ mod tests {
             3,
         );
         if response.tasks.len() != 1 {
-            return Err(format!(
-                "expected 1 task, got {}",
-                response.tasks.len()
-            )
-            .into());
+            return Err(format!("expected 1 task, got {}", response.tasks.len()).into());
         }
         if response.next_page_token != "1" {
             return Err(format!(
@@ -1444,11 +1408,7 @@ mod tests {
             .into());
         }
         if response.page_size != 1 {
-            return Err(format!(
-                "expected page_size 1, got {}",
-                response.page_size
-            )
-            .into());
+            return Err(format!("expected page_size 1, got {}", response.page_size).into());
         }
         Ok(())
     }
@@ -1496,11 +1456,9 @@ mod tests {
         store.insert(task("t-1"));
         let cancelled = store.cancel("t-1").ok_or("cancel returned None")?;
         if cancelled.status.state != TaskState::Cancelled {
-            return Err(format!(
-                "expected state Cancelled, got {:?}",
-                cancelled.status.state
-            )
-            .into());
+            return Err(
+                format!("expected state Cancelled, got {:?}", cancelled.status.state).into(),
+            );
         }
         let read_back = store.get("t-1").ok_or("get returned None")?;
         if read_back.status.state != TaskState::Cancelled {
@@ -1579,8 +1537,8 @@ mod tests {
     /// every task in the context or every task in
     /// the state, and the test catches it.
     #[test]
-    fn task_store_list_combines_context_and_state_as_and(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_list_combines_context_and_state_as_and() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut store = TaskStore::default();
         // t-1: context-a, cancelled — matches both
         let mut both = task("t-1");
@@ -1595,11 +1553,7 @@ mod tests {
         store.insert(task("t-3"));
         let listed = store.list(Some("ctx-a"), Some(TaskState::Cancelled));
         if listed.len() != 1 {
-            return Err(format!(
-                "expected 1 task (the AND), got {}",
-                listed.len()
-            )
-            .into());
+            return Err(format!("expected 1 task (the AND), got {}", listed.len()).into());
         }
         if listed.first().map_or(true, |t| t.id.as_ref() != "t-1") {
             return Err("expected the listed task to be t-1".into());
@@ -1613,18 +1567,13 @@ mod tests {
     /// would crash a peer that asked for an
     /// empty slice of the store.
     #[test]
-    fn task_store_list_with_no_match_returns_empty(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_list_with_no_match_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
         let mut store = TaskStore::default();
         store.insert(task("t-1"));
         store.insert(task("t-2"));
         let listed = store.list(Some("ctx-missing"), None);
         if !listed.is_empty() {
-            return Err(format!(
-                "expected empty list, got {} tasks",
-                listed.len()
-            )
-            .into());
+            return Err(format!("expected empty list, got {} tasks", listed.len()).into());
         }
         Ok(())
     }
@@ -1635,8 +1584,8 @@ mod tests {
     /// the store (forgetting the task_id filter)
     /// would leak configs across tasks.
     #[test]
-    fn task_store_push_config_list_on_unconfigured_task_returns_empty(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_push_config_list_on_unconfigured_task_returns_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut store = TaskStore::default();
         let config = TaskPushNotificationConfig::new(
             String::new(),
@@ -1664,14 +1613,12 @@ mod tests {
     /// turn a normal peer behaviour (delete
     /// what exists) into a wire-level error.
     #[test]
-    fn task_store_push_config_delete_missing_id_returns_none(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_push_config_delete_missing_id_returns_none()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut store = TaskStore::default();
         let deleted = store.delete_push_config("pc-missing");
         if deleted.is_some() {
-            return Err(
-                "expected None for a missing push config id".into(),
-            );
+            return Err("expected None for a missing push config id".into());
         }
         Ok(())
     }
@@ -1682,8 +1629,7 @@ mod tests {
     /// (`pc-<n>`) so a peer can list and address
     /// configs deterministically.
     #[test]
-    fn task_store_push_config_insert_assigns_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_push_config_insert_assigns_id() -> Result<(), Box<dyn std::error::Error>> {
         let mut store = TaskStore::default();
         let config = TaskPushNotificationConfig::new(
             String::new(),
@@ -1717,8 +1663,7 @@ mod tests {
     /// config in the store, and the test
     /// catches that.
     #[test]
-    fn task_store_push_config_list_filters_by_task(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_push_config_list_filters_by_task() -> Result<(), Box<dyn std::error::Error>> {
         let mut store = TaskStore::default();
         let config_a = TaskPushNotificationConfig::new(
             String::new(),
@@ -1747,8 +1692,8 @@ mod tests {
     /// `None`. The pair is the round-trip the
     /// handler relies on.
     #[test]
-    fn task_store_push_config_delete_returns_the_config(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_push_config_delete_returns_the_config() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut store = TaskStore::default();
         let config = TaskPushNotificationConfig::new(
             String::new(),
@@ -1775,8 +1720,8 @@ mod tests {
     /// increment it would overwrite the
     /// first config on the second call.
     #[test]
-    fn task_store_push_config_insert_assigns_unique_ids(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_push_config_insert_assigns_unique_ids() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut store = TaskStore::default();
         let first = TaskPushNotificationConfig::new(
             String::new(),
@@ -1811,8 +1756,7 @@ mod tests {
     /// path that calls `len` cares about
     /// tasks.
     #[test]
-    fn task_store_len_counts_only_tasks(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn task_store_len_counts_only_tasks() -> Result<(), Box<dyn std::error::Error>> {
         let mut store = TaskStore::default();
         store.insert(task("t-1"));
         store.insert(task("t-2"));
@@ -1837,8 +1781,7 @@ mod tests {
     /// `echo:` prefix would silently
     /// change the wire shape.
     #[test]
-    fn reply_for_single_text_part_carries_echo_prefix(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn reply_for_single_text_part_carries_echo_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let user = Message::new(MessageRole::User).with_part(Part::Text(TextPart {
             text: "hello".to_owned(),
             metadata: std::collections::BTreeMap::new(),
@@ -1851,11 +1794,7 @@ mod tests {
             return Err("expected exactly one text part on the reply".into());
         };
         if reply_text.text != "echo: hello" {
-            return Err(format!(
-                "expected 'echo: hello', got {:?}",
-                reply_text.text
-            )
-            .into());
+            return Err(format!("expected 'echo: hello', got {:?}", reply_text.text).into());
         }
         Ok(())
     }
@@ -1870,8 +1809,7 @@ mod tests {
     /// so they do not appear in the
     /// reply.
     #[test]
-    fn reply_for_joins_text_parts_with_space(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn reply_for_joins_text_parts_with_space() -> Result<(), Box<dyn std::error::Error>> {
         let user = Message::new(MessageRole::User)
             .with_part(Part::Text(TextPart {
                 text: "alpha".to_owned(),
@@ -1886,11 +1824,7 @@ mod tests {
             return Err("expected exactly one text part on the reply".into());
         };
         if reply_text.text != "echo: alpha beta" {
-            return Err(format!(
-                "expected 'echo: alpha beta', got {:?}",
-                reply_text.text
-            )
-            .into());
+            return Err(format!("expected 'echo: alpha beta', got {:?}", reply_text.text).into());
         }
         Ok(())
     }
@@ -1905,8 +1839,8 @@ mod tests {
     /// or a different role would break
     /// the round-trip.
     #[test]
-    fn reply_for_message_with_no_text_parts_returns_echo_with_empty_body(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn reply_for_message_with_no_text_parts_returns_echo_with_empty_body()
+    -> Result<(), Box<dyn std::error::Error>> {
         let user = Message::new(MessageRole::User);
         let reply = reply_for(&user);
         if reply.role != MessageRole::Agent {
@@ -1940,8 +1874,8 @@ mod tests {
     /// is unsupported. The example does
     /// both, so the card has to say both.
     #[test]
-    fn build_card_declares_streaming_and_push_notifications(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_card_declares_streaming_and_push_notifications()
+    -> Result<(), Box<dyn std::error::Error>> {
         let addr: SocketAddr = "127.0.0.1:8080".parse()?;
         let card = build_card(addr, None);
         if !card.capabilities.streaming {
@@ -1967,8 +1901,7 @@ mod tests {
     /// unit test catches the regression
     /// before the wire test would.
     #[test]
-    fn build_card_interface_url_matches_bound_addr(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_card_interface_url_matches_bound_addr() -> Result<(), Box<dyn std::error::Error>> {
         let addr: SocketAddr = "127.0.0.1:8084".parse()?;
         let card = build_card(addr, None);
         if card.supported_interfaces.len() != 1 {
@@ -1999,8 +1932,8 @@ mod tests {
     /// the peer would fail to discover
     /// the server.
     #[test]
-    fn build_card_without_bearer_omits_security_schemes(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_card_without_bearer_omits_security_schemes() -> Result<(), Box<dyn std::error::Error>>
+    {
         let addr: SocketAddr = "127.0.0.1:8080".parse()?;
         let card = build_card(addr, None);
         if !card.security_schemes.is_empty() {
@@ -2021,8 +1954,7 @@ mod tests {
     /// enforcement half; the card
     /// declares what is enforced.
     #[test]
-    fn build_card_with_bearer_publishes_bearer_scheme(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_card_with_bearer_publishes_bearer_scheme() -> Result<(), Box<dyn std::error::Error>> {
         let addr: SocketAddr = "127.0.0.1:8080".parse()?;
         let card = build_card(addr, Some("secret-token"));
         if !card.security_schemes.contains_key("bearer") {
@@ -2056,14 +1988,10 @@ mod tests {
     /// that mis-described it would send
     /// peers to the wrong agent.
     #[test]
-    fn build_card_advertises_echo_skill(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_card_advertises_echo_skill() -> Result<(), Box<dyn std::error::Error>> {
         let addr: SocketAddr = "127.0.0.1:8080".parse()?;
         let card = build_card(addr, None);
-        let has_echo = card
-            .skills
-            .iter()
-            .any(|skill| skill.id.as_ref() == "echo");
+        let has_echo = card.skills.iter().any(|skill| skill.id.as_ref() == "echo");
         if !has_echo {
             return Err("card did not advertise the 'echo' skill".into());
         }
@@ -2082,15 +2010,13 @@ mod tests {
     /// failures are `-32603 Internal`,
     /// not `-32602 Invalid Params`.
     #[test]
-    fn serialise_error_wraps_serde_error_as_internal(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn serialise_error_wraps_serde_error_as_internal() -> Result<(), Box<dyn std::error::Error>> {
         // A real `serde_json::Error` is
         // the only way to construct one
         // — `serde_json::from_str::<Value>`
         // on invalid JSON is the
         // canonical way to get one.
-        let result: Result<serde_json::Value, _> =
-            serde_json::from_str("not json");
+        let result: Result<serde_json::Value, _> = serde_json::from_str("not json");
         let error = match result {
             Err(error) => error,
             Ok(_) => return Err("expected a parse error".into()),
@@ -2099,17 +2025,11 @@ mod tests {
         match wrapped {
             A2aError::InternalError { message } => {
                 if !message.starts_with("serialise:") {
-                    return Err(format!(
-                        "expected 'serialise:' prefix, got {message:?}"
-                    )
-                    .into());
+                    return Err(format!("expected 'serialise:' prefix, got {message:?}").into());
                 }
             }
             other => {
-                return Err(format!(
-                    "expected InternalError, got {other:?}"
-                )
-                .into());
+                return Err(format!("expected InternalError, got {other:?}").into());
             }
         }
         Ok(())
@@ -2126,11 +2046,11 @@ mod tests {
     /// so a peer can find the bad
     /// field.
     #[test]
-    fn decode_params_yields_typed_request_for_well_formed_value(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn decode_params_yields_typed_request_for_well_formed_value()
+    -> Result<(), Box<dyn std::error::Error>> {
         let params = Some(serde_json::json!({ "id": "t-1" }));
-        let request: GetTaskRequest = decode_params(params)
-            .map_err(|error| format!("decode failed: {error:?}"))?;
+        let request: GetTaskRequest =
+            decode_params(params).map_err(|error| format!("decode failed: {error:?}"))?;
         if request.id != "t-1" {
             return Err(format!("expected id 't-1', got {:?}", request.id).into());
         }
@@ -2145,8 +2065,8 @@ mod tests {
     /// the code the spec names for bad
     /// inputs.
     #[test]
-    fn decode_params_yields_invalid_params_for_malformed_value(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn decode_params_yields_invalid_params_for_malformed_value()
+    -> Result<(), Box<dyn std::error::Error>> {
         // A value that is the right
         // shape but missing the
         // required `id` field. A
@@ -2158,10 +2078,9 @@ mod tests {
         match result {
             Err(A2aError::InvalidParams { reason }) => {
                 if !reason.starts_with("params do not match") {
-                    return Err(format!(
-                        "expected 'params do not match' prefix, got {reason:?}"
-                    )
-                    .into());
+                    return Err(
+                        format!("expected 'params do not match' prefix, got {reason:?}").into(),
+                    );
                 }
             }
             Ok(_) => {
@@ -2184,8 +2103,7 @@ mod tests {
     /// path that the dispatch arm
     /// relies on.
     #[test]
-    fn decode_params_treats_none_as_null_and_fails(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn decode_params_treats_none_as_null_and_fails() -> Result<(), Box<dyn std::error::Error>> {
         let result: Result<GetTaskRequest, A2aError> = decode_params(None);
         if result.is_ok() {
             return Err("expected decode_params(None) to fail".into());
@@ -2204,8 +2122,8 @@ mod tests {
     /// the dispatch's return type
     /// expects.
     #[tokio::test]
-    async fn decode_failed_returns_a_future_with_the_supplied_error(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn decode_failed_returns_a_future_with_the_supplied_error()
+    -> Result<(), Box<dyn std::error::Error>> {
         let supplied = A2aError::InvalidParams {
             reason: "test reason".to_owned(),
         };
@@ -2216,10 +2134,9 @@ mod tests {
             Ok(_) => return Err("expected the future to resolve to Err".into()),
         };
         if error != supplied {
-            return Err(format!(
-                "expected the same error back, got {error:?} vs {supplied:?}"
-            )
-            .into());
+            return Err(
+                format!("expected the same error back, got {error:?} vs {supplied:?}").into(),
+            );
         }
         Ok(())
     }
@@ -2273,8 +2190,8 @@ mod tests {
     /// would surface here as a
     /// missing or wrong id.
     #[test]
-    fn handle_send_message_creates_a_completed_task_with_echo_reply(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_send_message_creates_a_completed_task_with_echo_reply()
+    -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
         let request = SendMessageRequest::new(user_text_message("hello"));
         let response = agent.handle_send_message(&request);
@@ -2282,18 +2199,12 @@ mod tests {
             return Err("expected SendMessageResponse::Task".into());
         };
         if !task.id.as_ref().starts_with("t-") {
-            return Err(format!(
-                "expected id to start with 't-', got {:?}",
-                task.id.as_ref()
-            )
-            .into());
+            return Err(
+                format!("expected id to start with 't-', got {:?}", task.id.as_ref()).into(),
+            );
         }
         if task.status.state != TaskState::Completed {
-            return Err(format!(
-                "expected state Completed, got {:?}",
-                task.status.state
-            )
-            .into());
+            return Err(format!("expected state Completed, got {:?}", task.status.state).into());
         }
         let reply_text = task
             .status
@@ -2320,12 +2231,9 @@ mod tests {
     /// `SendMessage` then
     /// `GetTask` would observe.
     #[test]
-    fn handle_get_task_returns_a_known_task(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_get_task_returns_a_known_task() -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
-        let sent = agent.handle_send_message(&SendMessageRequest::new(
-            user_text_message("first"),
-        ));
+        let sent = agent.handle_send_message(&SendMessageRequest::new(user_text_message("first")));
         let SendMessageResponse::Task(sent_task) = sent else {
             return Err("expected SendMessageResponse::Task".into());
         };
@@ -2334,18 +2242,10 @@ mod tests {
             .handle_get_task(&GetTaskRequest::new(id.clone()))
             .map_err(|error| format!("handle_get_task failed: {error:?}"))?;
         if got.id.as_ref() != id {
-            return Err(format!(
-                "expected id {id:?}, got {:?}",
-                got.id.as_ref()
-            )
-            .into());
+            return Err(format!("expected id {id:?}, got {:?}", got.id.as_ref()).into());
         }
         if got.status.state != TaskState::Completed {
-            return Err(format!(
-                "expected state Completed, got {:?}",
-                got.status.state
-            )
-            .into());
+            return Err(format!("expected state Completed, got {:?}", got.status.state).into());
         }
         Ok(())
     }
@@ -2366,23 +2266,19 @@ mod tests {
     /// point of view, and the wire
     /// code is `-32602`.
     #[test]
-    fn handle_get_task_missing_id_is_invalid_params(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_get_task_missing_id_is_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
         let result = agent.handle_get_task(&GetTaskRequest::new("t-missing"));
         match result {
             Err(A2aError::InvalidParams { reason }) => {
                 if !reason.contains("t-missing") {
-                    return Err(format!(
-                        "expected reason to name the missing id, got {reason:?}"
-                    )
-                    .into());
+                    return Err(
+                        format!("expected reason to name the missing id, got {reason:?}").into(),
+                    );
                 }
             }
             Ok(_) => return Err("expected an InvalidParams error".into()),
-            Err(other) => {
-                return Err(format!("expected InvalidParams, got {other:?}").into())
-            }
+            Err(other) => return Err(format!("expected InvalidParams, got {other:?}").into()),
         }
         Ok(())
     }
@@ -2396,12 +2292,10 @@ mod tests {
     /// would surface here as a
     /// state mismatch.
     #[test]
-    fn handle_cancel_task_flips_state_to_cancelled(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_cancel_task_flips_state_to_cancelled() -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
-        let sent = agent.handle_send_message(&SendMessageRequest::new(
-            user_text_message("to-cancel"),
-        ));
+        let sent =
+            agent.handle_send_message(&SendMessageRequest::new(user_text_message("to-cancel")));
         let SendMessageResponse::Task(sent_task) = sent else {
             return Err("expected SendMessageResponse::Task".into());
         };
@@ -2410,11 +2304,9 @@ mod tests {
             .handle_cancel_task(&CancelTaskRequest::new(id.clone()))
             .map_err(|error| format!("handle_cancel_task failed: {error:?}"))?;
         if cancelled.status.state != TaskState::Cancelled {
-            return Err(format!(
-                "expected state Cancelled, got {:?}",
-                cancelled.status.state
-            )
-            .into());
+            return Err(
+                format!("expected state Cancelled, got {:?}", cancelled.status.state).into(),
+            );
         }
         // The follow-up read sees the
         // mutated state — the handler
@@ -2438,23 +2330,19 @@ mod tests {
     /// `InvalidParams`, mirroring
     /// the `handle_get_task` shape.
     #[test]
-    fn handle_cancel_task_missing_id_is_invalid_params(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_cancel_task_missing_id_is_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
         let result = agent.handle_cancel_task(&CancelTaskRequest::new("t-missing"));
         match result {
             Err(A2aError::InvalidParams { reason }) => {
                 if !reason.contains("t-missing") {
-                    return Err(format!(
-                        "expected reason to name the missing id, got {reason:?}"
-                    )
-                    .into());
+                    return Err(
+                        format!("expected reason to name the missing id, got {reason:?}").into(),
+                    );
                 }
             }
             Ok(_) => return Err("expected an InvalidParams error".into()),
-            Err(other) => {
-                return Err(format!("expected InvalidParams, got {other:?}").into())
-            }
+            Err(other) => return Err(format!("expected InvalidParams, got {other:?}").into()),
         }
         Ok(())
     }
@@ -2472,13 +2360,11 @@ mod tests {
     /// between the handler and the
     /// pagination math.
     #[test]
-    fn handle_list_tasks_reports_total_size_of_populated_store(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_list_tasks_reports_total_size_of_populated_store()
+    -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
         for text in ["one", "two"] {
-            let _ = agent.handle_send_message(&SendMessageRequest::new(
-                user_text_message(text),
-            ));
+            let _ = agent.handle_send_message(&SendMessageRequest::new(user_text_message(text)));
         }
         let response = agent.handle_list_tasks(&ListTasksRequest {
             context_id: None,
@@ -2490,18 +2376,12 @@ mod tests {
             metadata: std::collections::BTreeMap::new(),
         });
         if response.total_size != 2 {
-            return Err(format!(
-                "expected total_size 2, got {}",
-                response.total_size
-            )
-            .into());
+            return Err(format!("expected total_size 2, got {}", response.total_size).into());
         }
         if response.tasks.len() != 2 {
-            return Err(format!(
-                "expected 2 tasks in the page, got {}",
-                response.tasks.len()
-            )
-            .into());
+            return Err(
+                format!("expected 2 tasks in the page, got {}", response.tasks.len()).into(),
+            );
         }
         Ok(())
     }
@@ -2515,11 +2395,10 @@ mod tests {
     /// the handler hands back, with
     /// the same name and version.
     #[test]
-    fn handle_get_extended_agent_card_returns_the_agent_card(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_get_extended_agent_card_returns_the_agent_card()
+    -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
-        let response = agent
-            .handle_get_extended_agent_card(&GetExtendedAgentCardRequest::new());
+        let response = agent.handle_get_extended_agent_card(&GetExtendedAgentCardRequest::new());
         if response.0.name != agent.card.name {
             return Err(format!(
                 "expected name {:?}, got {:?}",
@@ -2559,8 +2438,8 @@ mod tests {
     /// well-known too would surface as
     /// a `401` here.
     #[tokio::test]
-    async fn well_known_card_is_unauthenticated_when_bearer_is_required(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn well_known_card_is_unauthenticated_when_bearer_is_required()
+    -> Result<(), Box<dyn std::error::Error>> {
         let router = build_protected_router("top-secret")?;
         let url = spawn_test_router(router).await?;
         let response = reqwest::Client::new()
@@ -2591,8 +2470,7 @@ mod tests {
     /// middleware in the wire
     /// tests.
     #[tokio::test]
-    async fn jsonrpc_without_bearer_is_a_401(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn jsonrpc_without_bearer_is_a_401() -> Result<(), Box<dyn std::error::Error>> {
         let router = build_protected_router("top-secret")?;
         let url = spawn_test_router(router).await?;
         let body = jsonrpc_send_message_body();
@@ -2627,8 +2505,7 @@ mod tests {
     /// surface here as a `401` (or
     /// worse, a malformed envelope).
     #[tokio::test]
-    async fn jsonrpc_with_bearer_succeeds(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn jsonrpc_with_bearer_succeeds() -> Result<(), Box<dyn std::error::Error>> {
         let router = build_protected_router("top-secret")?;
         let url = spawn_test_router(router).await?;
         let body = jsonrpc_send_message_body();
@@ -2652,10 +2529,7 @@ mod tests {
             .pointer("/result/status/state")
             .and_then(serde_json::Value::as_str);
         if state != Some("completed") {
-            return Err(format!(
-                "expected completed state, got body {body}"
-            )
-            .into());
+            return Err(format!("expected completed state, got body {body}").into());
         }
         Ok(())
     }
@@ -2670,8 +2544,7 @@ mod tests {
     /// time, and any mismatch is
     /// rejected.
     #[tokio::test]
-    async fn jsonrpc_with_wrong_bearer_is_a_401(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn jsonrpc_with_wrong_bearer_is_a_401() -> Result<(), Box<dyn std::error::Error>> {
         let router = build_protected_router("top-secret")?;
         let url = spawn_test_router(router).await?;
         let body = jsonrpc_send_message_body();
@@ -2707,19 +2580,14 @@ mod tests {
     /// would be obvious in
     /// orchestrator logs.
     #[tokio::test]
-    async fn health_route_returns_ok(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn health_route_returns_ok() -> Result<(), Box<dyn std::error::Error>> {
         let url = spawn_test_router(health_router()).await?;
         let response = reqwest::Client::new()
             .get(format!("{url}/health"))
             .send()
             .await?;
         if response.status() != reqwest::StatusCode::OK {
-            return Err(format!(
-                "expected 200 from /health, got {}",
-                response.status()
-            )
-            .into());
+            return Err(format!("expected 200 from /health, got {}", response.status()).into());
         }
         let body = response.text().await?;
         if body != "ok\n" {
@@ -2740,8 +2608,7 @@ mod tests {
     /// of the task lookup) would
     /// surface here.
     #[test]
-    fn deliver_for_task_with_no_configs_is_a_noop(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn deliver_for_task_with_no_configs_is_a_noop() -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
         // No push configs in the
         // store, no task. The
@@ -2754,10 +2621,7 @@ mod tests {
         // held across a panic).
         let len = agent.store.lock().expect("store lock").len();
         if len != 0 {
-            return Err(format!(
-                "expected an empty store, got {len} tasks"
-            )
-            .into());
+            return Err(format!("expected an empty store, got {len} tasks").into());
         }
         Ok(())
     }
@@ -2778,8 +2642,7 @@ mod tests {
     /// and crashed the spawned
     /// task.
     #[test]
-    fn deliver_for_task_for_missing_task_is_a_noop(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn deliver_for_task_for_missing_task_is_a_noop() -> Result<(), Box<dyn std::error::Error>> {
         let agent = minimal_agent()?;
         // No task named
         // `t-missing` in the
@@ -2798,9 +2661,7 @@ mod tests {
     /// example uses, so the rejection
     /// path is the one the example
     /// publishes.
-    fn build_protected_router(
-        token: &str,
-    ) -> Result<Router, Box<dyn std::error::Error>> {
+    fn build_protected_router(token: &str) -> Result<Router, Box<dyn std::error::Error>> {
         let addr: SocketAddr = "127.0.0.1:0".parse()?;
         let card = build_card(addr, Some(token));
         let delivery = WebhookDelivery::new(Arc::new(SsrfDenylist::FILTER));
@@ -2840,9 +2701,7 @@ mod tests {
     /// in a `tokio::spawn` task; the
     /// runtime shutdown at test exit
     /// closes the listener.
-    async fn spawn_test_router(
-        router: Router,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    async fn spawn_test_router(router: Router) -> Result<String, Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let bound_addr = listener.local_addr()?;
         let url = format!("http://{bound_addr}");
@@ -2874,7 +2733,9 @@ mod tests {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(serve())
 }
 
@@ -2892,9 +2753,7 @@ fn bind_addr() -> SocketAddr {
     match raw.parse() {
         Ok(addr) => addr,
         Err(error) => {
-            eprintln!(
-                "a2a_server: A2A_ADDR={raw:?} is not a valid socket address: {error}"
-            );
+            eprintln!("a2a_server: A2A_ADDR={raw:?} is not a valid socket address: {error}");
             "127.0.0.1:8080".parse().expect("default address parses")
         }
     }

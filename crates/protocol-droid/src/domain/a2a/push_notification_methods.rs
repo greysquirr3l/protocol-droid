@@ -73,9 +73,7 @@ use super::push_notification::TaskPushNotificationConfig;
 /// directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct CreateTaskPushNotificationConfigRequest(
-    pub TaskPushNotificationConfig,
-);
+pub struct CreateTaskPushNotificationConfigRequest(pub TaskPushNotificationConfig);
 
 impl From<TaskPushNotificationConfig> for CreateTaskPushNotificationConfigRequest {
     fn from(config: TaskPushNotificationConfig) -> Self {
@@ -97,13 +95,9 @@ impl std::ops::Deref for CreateTaskPushNotificationConfigRequest {
 /// directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct CreateTaskPushNotificationConfigResponse(
-    pub TaskPushNotificationConfig,
-);
+pub struct CreateTaskPushNotificationConfigResponse(pub TaskPushNotificationConfig);
 
-impl From<TaskPushNotificationConfig>
-    for CreateTaskPushNotificationConfigResponse
-{
+impl From<TaskPushNotificationConfig> for CreateTaskPushNotificationConfigResponse {
     fn from(config: TaskPushNotificationConfig) -> Self {
         Self(config)
     }
@@ -153,9 +147,7 @@ impl GetTaskPushNotificationConfigRequest {
 /// directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct GetTaskPushNotificationConfigResponse(
-    pub TaskPushNotificationConfig,
-);
+pub struct GetTaskPushNotificationConfigResponse(pub TaskPushNotificationConfig);
 
 impl From<TaskPushNotificationConfig> for GetTaskPushNotificationConfigResponse {
     fn from(config: TaskPushNotificationConfig) -> Self {
@@ -264,9 +256,7 @@ impl ListTaskPushNotificationConfigsResponse {
     /// [`with_next_page_token`](Self::with_next_page_token)
     /// to attach a token.
     #[must_use]
-    pub fn new(
-        configs: impl IntoIterator<Item = TaskPushNotificationConfig>,
-    ) -> Self {
+    pub fn new(configs: impl IntoIterator<Item = TaskPushNotificationConfig>) -> Self {
         Self {
             configs: configs.into_iter().collect(),
             next_page_token: None,
@@ -275,10 +265,7 @@ impl ListTaskPushNotificationConfigsResponse {
 
     /// Sets the next page token.
     #[must_use]
-    pub fn with_next_page_token(
-        mut self,
-        next_page_token: impl Into<String>,
-    ) -> Self {
+    pub fn with_next_page_token(mut self, next_page_token: impl Into<String>) -> Self {
         self.next_page_token = Some(next_page_token.into());
         self
     }
@@ -332,14 +319,10 @@ pub struct DeleteTaskPushNotificationConfigResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        CreateTaskPushNotificationConfigRequest,
-        CreateTaskPushNotificationConfigResponse,
-        DeleteTaskPushNotificationConfigRequest,
-        DeleteTaskPushNotificationConfigResponse,
-        GetTaskPushNotificationConfigRequest,
-        GetTaskPushNotificationConfigResponse,
-        ListTaskPushNotificationConfigsRequest,
-        ListTaskPushNotificationConfigsResponse,
+        CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
+        DeleteTaskPushNotificationConfigRequest, DeleteTaskPushNotificationConfigResponse,
+        GetTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigResponse,
+        ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
     };
     use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
 
@@ -437,8 +420,7 @@ mod tests {
             .with_page_size(50)
             .with_page_token("next-page");
         let json = serde_json::to_string(&request)?;
-        let parsed: ListTaskPushNotificationConfigsRequest =
-            serde_json::from_str(&json)?;
+        let parsed: ListTaskPushNotificationConfigsRequest = serde_json::from_str(&json)?;
         assert_eq!(parsed, request);
         Ok(())
     }
@@ -470,8 +452,7 @@ mod tests {
         ])
         .with_next_page_token("next");
         let json = serde_json::to_string(&response)?;
-        let parsed: ListTaskPushNotificationConfigsResponse =
-            serde_json::from_str(&json)?;
+        let parsed: ListTaskPushNotificationConfigsResponse = serde_json::from_str(&json)?;
         assert_eq!(parsed, response);
         Ok(())
     }

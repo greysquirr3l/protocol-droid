@@ -169,7 +169,10 @@ pub async fn run(args: &A2aConformanceArgs) -> anyhow::Result<()> {
             .find(|r| matches!(r.outcome, VectorOutcome::Fail { .. }))
             && let VectorOutcome::Fail { diff, .. } = &first_fail.outcome
         {
-            eprintln!("a2a-conformance: first failure: {name}: {diff}", name = first_fail.name);
+            eprintln!(
+                "a2a-conformance: first failure: {name}: {diff}",
+                name = first_fail.name
+            );
         }
         Err(anyhow!("{failed} vectors failed; the report is on stdout"))
     }
@@ -213,11 +216,7 @@ fn load_vectors(path: &std::path::Path) -> Result<Vec<Vector>, JsonlError> {
 /// one vector does not abort the run — the report
 /// is the whole point, and a partial report is
 /// more useful than no report.
-async fn run_vectors(
-    client: &Client,
-    server: &str,
-    vectors: &[Vector],
-) -> Vec<VectorResult> {
+async fn run_vectors(client: &Client, server: &str, vectors: &[Vector]) -> Vec<VectorResult> {
     let endpoint = format!("{server}/a2a");
     let mut out = Vec::with_capacity(vectors.len());
     for vector in vectors {
@@ -317,10 +316,18 @@ fn compare(vector: &Vector, observed: &ObservedResponse) -> VectorResult {
         }
         (
             ExpectedResponse::Error {
-                error: ExpectedError { code, message_contains },
+                error:
+                    ExpectedError {
+                        code,
+                        message_contains,
+                    },
             },
             ObservedResponse::Error {
-                error: ObservedError { code: obs_code, message },
+                error:
+                    ObservedError {
+                        code: obs_code,
+                        message,
+                    },
             },
         ) => code == obs_code && message.contains(message_contains.as_str()),
         _ => false,
@@ -405,7 +412,10 @@ mod tests {
         let Err(error) = result else {
             return;
         };
-        assert_eq!(error.line, 0, "a missing file is a line-0 error, not a parse error");
+        assert_eq!(
+            error.line, 0,
+            "a missing file is a line-0 error, not a parse error"
+        );
         assert!(
             error.message.contains("No such file"),
             "the underlying io error should appear: {msg}",

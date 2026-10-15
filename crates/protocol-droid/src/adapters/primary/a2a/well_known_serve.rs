@@ -111,8 +111,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::serve_well_known;
-    use crate::domain::a2a::well_known::AGENT_CARD_WELL_KNOWN_PATH;
     use crate::domain::a2a::version::A2aVersion;
+    use crate::domain::a2a::well_known::AGENT_CARD_WELL_KNOWN_PATH;
     use crate::domain::a2a::{AgentCard, AgentCardBuilder, AgentInterface, JSONRPC};
 
     type TestError = Box<dyn std::error::Error>;

@@ -39,17 +39,13 @@ pub mod well_known;
 mod tests;
 
 pub use agent_card::{
-    AgentCapabilities, AgentCard, AgentCardBuilder, AgentCardError, AgentInterface,
-    AgentSkill, ProtocolBinding, GRPC, HTTP_JSON, JSONRPC,
+    AgentCapabilities, AgentCard, AgentCardBuilder, AgentCardError, AgentInterface, AgentSkill,
+    GRPC, HTTP_JSON, JSONRPC, ProtocolBinding,
 };
-pub use extended_agent_card::{
-    GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
-};
+pub use extended_agent_card::{GetExtendedAgentCardRequest, GetExtendedAgentCardResponse};
 pub use list_tasks::{ListTasksRequest, ListTasksResponse};
 pub use message::{DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart};
-pub use push_notification::{
-    PushNotificationAuthenticationInfo, TaskPushNotificationConfig,
-};
+pub use push_notification::{PushNotificationAuthenticationInfo, TaskPushNotificationConfig};
 pub use push_notification_methods::{
     CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
     DeleteTaskPushNotificationConfigRequest, DeleteTaskPushNotificationConfigResponse,
@@ -57,13 +53,8 @@ pub use push_notification_methods::{
     ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
 };
 pub use send_message::{MessageSendConfiguration, SendMessageRequest, SendMessageResponse};
-pub use streaming_events::{
-    StreamingEvent, TaskArtifactUpdateEvent, TaskStatusUpdateEvent,
-};
+pub use streaming_events::{StreamingEvent, TaskArtifactUpdateEvent, TaskStatusUpdateEvent};
 pub use task::{Artifact, Task, TaskState, TaskStatus};
-pub use task_lifecycle::{
-    CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
-};
+pub use task_lifecycle::{CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse};
 pub use version::{A2aVersion, ParseA2aVersionError};
 pub use well_known::{AGENT_CARD_WELL_KNOWN_PATH, is_agent_card_well_known_path};
-

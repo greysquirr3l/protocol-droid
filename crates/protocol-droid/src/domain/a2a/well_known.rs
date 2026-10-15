@@ -70,19 +70,21 @@ mod tests {
 
     #[test]
     fn matches_the_exact_path() {
-        assert!(is_agent_card_well_known_path("/.well-known/agent-card.json"));
+        assert!(is_agent_card_well_known_path(
+            "/.well-known/agent-card.json"
+        ));
     }
 
     #[test]
     fn rejects_close_misses() {
         for near in [
-            "/.well-known/agent-card",            // missing .json
-            "/.well-known/agent-card.json/",      // trailing slash
-            "/.well-known/Agent-Card.json",       // case mismatch
-            "/.well-known/agent-card-json",       // dash, not dot
+            "/.well-known/agent-card",       // missing .json
+            "/.well-known/agent-card.json/", // trailing slash
+            "/.well-known/Agent-Card.json",  // case mismatch
+            "/.well-known/agent-card-json",  // dash, not dot
             "/.well-known/other",
-            "/agent-card.json",                   // missing /.well-known
-            "/.well-known/",                      // truncated
+            "/agent-card.json", // missing /.well-known
+            "/.well-known/",    // truncated
         ] {
             assert!(
                 !is_agent_card_well_known_path(near),

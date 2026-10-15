@@ -85,4 +85,3 @@ fn doc_has_an_introductory_section() -> Result<(), String> {
     let _ = write!(String::new(), "");
     Ok(())
 }
-

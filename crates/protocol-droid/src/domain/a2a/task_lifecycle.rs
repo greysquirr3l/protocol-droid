@@ -172,9 +172,7 @@ impl std::ops::Deref for CancelTaskResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
-    };
+    use super::{CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse};
     use crate::domain::a2a::task::{Task, TaskState, TaskStatus};
 
     type TestError = Box<dyn std::error::Error>;

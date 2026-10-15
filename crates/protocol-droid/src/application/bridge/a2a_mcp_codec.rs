@@ -377,10 +377,8 @@ fn a2a_task_content(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let last_message: Option<crate::domain::a2a::message::Message> = history
-        .iter()
-        .rev()
-        .find_map(|m| {
+    let last_message: Option<crate::domain::a2a::message::Message> =
+        history.iter().rev().find_map(|m| {
             let is_agent = m
                 .as_object()
                 .and_then(|obj| obj.get("role"))
@@ -392,7 +390,9 @@ fn a2a_task_content(
                 None
             }
         });
-    last_message.map_or_else(Vec::new, |message| a2a_message_to_mcp_content(&message, report))
+    last_message.map_or_else(Vec::new, |message| {
+        a2a_message_to_mcp_content(&message, report)
+    })
 }
 
 fn mcp_to_a2a_result(result: &Value) -> Value {
@@ -401,7 +401,9 @@ fn mcp_to_a2a_result(result: &Value) -> Value {
         return result.clone();
     };
     let content = object.get("content").and_then(Value::as_array);
-    let parts = content.map_or_else(Vec::new, |items| items.iter().map(value_to_a2a_part_value).collect());
+    let parts = content.map_or_else(Vec::new, |items| {
+        items.iter().map(value_to_a2a_part_value).collect()
+    });
     let mut message = serde_json::Map::new();
     message.insert("role".to_owned(), Value::String("assistant".to_owned()));
     message.insert("parts".to_owned(), Value::Array(parts));
@@ -424,10 +426,7 @@ fn value_to_a2a_part_value(value: &Value) -> Value {
     let Some(object) = value.as_object() else {
         return value.clone();
     };
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("data");
+    let kind = object.get("type").and_then(Value::as_str).unwrap_or("data");
     match kind {
         "text" => {
             let text = object
@@ -502,17 +501,11 @@ fn content_to_value(content: &crate::domain::ir::Content) -> Value {
         }
         Content::ResourceLink(link) => {
             let mut map = serde_json::Map::new();
-            map.insert(
-                "type".to_owned(),
-                Value::String("resource_link".to_owned()),
-            );
+            map.insert("type".to_owned(), Value::String("resource_link".to_owned()));
             map.insert("uri".to_owned(), Value::String(link.uri.clone()));
             map.insert("name".to_owned(), Value::String(link.name.clone()));
             if let Some(description) = link.description.as_ref() {
-                map.insert(
-                    "description".to_owned(),
-                    Value::String(description.clone()),
-                );
+                map.insert("description".to_owned(), Value::String(description.clone()));
             }
             if let Some(mime) = link.mime_type.as_ref() {
                 map.insert("mimeType".to_owned(), Value::String(mime.clone()));
@@ -521,10 +514,7 @@ fn content_to_value(content: &crate::domain::ir::Content) -> Value {
         }
         Content::EmbeddedResource(resource) => {
             let mut map = serde_json::Map::new();
-            map.insert(
-                "type".to_owned(),
-                Value::String("resource".to_owned()),
-            );
+            map.insert("type".to_owned(), Value::String("resource".to_owned()));
             let mut resource_map = serde_json::Map::new();
             resource_map.insert("uri".to_owned(), Value::String(resource.uri.clone()));
             if let Some(text) = resource.text.as_ref() {
@@ -608,15 +598,15 @@ mod tests {
             }
         }));
         let out = codec.encode_request(ProtocolSide::A2a, "SendMessage", &raw, &mut rep)?;
-        assert_eq!(out.get("method").and_then(Value::as_str), Some("tools/call"));
+        assert_eq!(
+            out.get("method").and_then(Value::as_str),
+            Some("tools/call")
+        );
         let params = out
             .get("params")
             .and_then(Value::as_object)
             .ok_or("missing params")?;
-        assert_eq!(
-            params.get("name").and_then(Value::as_str),
-            Some("lookup")
-        );
+        assert_eq!(params.get("name").and_then(Value::as_str), Some("lookup"));
         assert_eq!(
             params.get("arguments"),
             Some(&json!({ "query": "weather" }))
@@ -638,7 +628,10 @@ mod tests {
             }
         }));
         let out = codec.encode_request(ProtocolSide::Mcp, "tools/call", &raw, &mut rep)?;
-        assert_eq!(out.get("method").and_then(Value::as_str), Some("SendMessage"));
+        assert_eq!(
+            out.get("method").and_then(Value::as_str),
+            Some("SendMessage")
+        );
         let params = out
             .get("params")
             .and_then(Value::as_object)

@@ -240,11 +240,7 @@ pub trait A2aStreamingRequestHandler: Send + Sync + 'static {
 ///     protocol_droid::domain::a2a::version::A2aVersion::V1_0,
 /// ));
 /// ```
-pub fn serve_streaming<H>(
-    path: &str,
-    handler: Arc<H>,
-    protocol_version: A2aVersion,
-) -> Router
+pub fn serve_streaming<H>(path: &str, handler: Arc<H>, protocol_version: A2aVersion) -> Router
 where
     H: A2aStreamingRequestHandler + ?Sized + 'static,
 {
@@ -276,10 +272,11 @@ struct ParsedRequest {
 // `result_large_err` flags it; the function
 // is the one place that has to return both
 // shapes, so `#[expect]` is the honest answer.
-#[expect(clippy::result_large_err, reason = "this is the one place that returns both shapes")]
-async fn parse_envelope(
-    request: Request<Body>,
-) -> Result<ParsedRequest, Response> {
+#[expect(
+    clippy::result_large_err,
+    reason = "this is the one place that returns both shapes"
+)]
+async fn parse_envelope(request: Request<Body>) -> Result<ParsedRequest, Response> {
     // Content-Type check. A non-JSON
     // content type is a 415 — the
     // streaming transport cannot
@@ -306,9 +303,7 @@ async fn parse_envelope(
     // as `serve_jsonrpc`.
     let body = axum::body::to_bytes(request.into_body(), 64 * 1024 * 1024)
         .await
-        .map_err(|_| {
-            (StatusCode::BAD_REQUEST, "failed to read request body").into_response()
-        })?;
+        .map_err(|_| (StatusCode::BAD_REQUEST, "failed to read request body").into_response())?;
 
     // JSON-RPC envelope decode.
     let envelope: serde_json::Value = serde_json::from_slice(&body).map_err(|error| {
@@ -329,13 +324,7 @@ async fn parse_envelope(
     let method_name = envelope_obj
         .get("method")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                "missing or non-string `method`",
-            )
-                .into_response()
-        })?
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "missing or non-string `method`").into_response())?
         .to_owned();
     let params = envelope_obj.get("params").cloned();
 
@@ -352,11 +341,7 @@ async fn parse_envelope(
             .into_response()
     })?;
 
-    Ok(ParsedRequest {
-        id,
-        method,
-        params,
-    })
+    Ok(ParsedRequest { id, method, params })
 }
 
 async fn handle_streaming_request<H>(
@@ -366,11 +351,7 @@ async fn handle_streaming_request<H>(
 where
     H: A2aStreamingRequestHandler + ?Sized + 'static,
 {
-    let ParsedRequest {
-        id,
-        method,
-        params,
-    } = match parse_envelope(request).await {
+    let ParsedRequest { id, method, params } = match parse_envelope(request).await {
         Ok(parsed) => parsed,
         Err(response) => return response,
     };
@@ -378,9 +359,7 @@ where
     let context = A2aRequestContext {
         protocol_version: state.protocol_version,
     };
-    let event_stream = state
-        .handler
-        .dispatch_stream(method, params, &context);
+    let event_stream = state.handler.dispatch_stream(method, params, &context);
 
     // Wrap the event stream in an
     // SSE response. Each event is
@@ -391,30 +370,29 @@ where
     // single error event followed
     // by stream end.
     let id_for_sse = id;
-    let sse_stream: Pin<
-        Box<dyn Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>,
-    > = Box::pin(event_stream.map(move |event_result| {
-        let envelope = match event_result {
-            Ok(event) => serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": &id_for_sse,
-                "result": event,
-            }),
-            Err(error) => serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": &id_for_sse,
-                "error": {
-                    "code": error.code(),
-                    "message": error.message(),
-                },
-            }),
-        };
-        let line = match serde_json::to_string(&envelope) {
-            Ok(s) => format!("data: {s}\n\n"),
-            Err(e) => format!("data: {{\"error\":\"failed to serialise: {e}\"}}\n\n"),
-        };
-        Ok(axum::body::Bytes::from(line))
-    }));
+    let sse_stream: Pin<Box<dyn Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>> =
+        Box::pin(event_stream.map(move |event_result| {
+            let envelope = match event_result {
+                Ok(event) => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": &id_for_sse,
+                    "result": event,
+                }),
+                Err(error) => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": &id_for_sse,
+                    "error": {
+                        "code": error.code(),
+                        "message": error.message(),
+                    },
+                }),
+            };
+            let line = match serde_json::to_string(&envelope) {
+                Ok(s) => format!("data: {s}\n\n"),
+                Err(e) => format!("data: {{\"error\":\"failed to serialise: {e}\"}}\n\n"),
+            };
+            Ok(axum::body::Bytes::from(line))
+        }));
 
     let body = Body::from_stream(sse_stream);
     Response::builder()
@@ -423,7 +401,11 @@ where
         .header(header::CACHE_CONTROL, "no-cache")
         .body(body)
         .unwrap_or_else(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to build response",
+            )
+                .into_response()
         })
 }
 
@@ -439,20 +421,15 @@ mod tests {
     use futures_util::stream;
     use tower::ServiceExt;
 
-    use super::{
-        A2aStreamingRequestHandler, serve_streaming,
-    };
+    use super::{A2aStreamingRequestHandler, serve_streaming};
+    use crate::adapters::secondary::a2a::A2aMethod;
     use crate::application::a2a::handler::{A2aError, A2aRequestContext};
-    use crate::domain::a2a::streaming_events::{
-        StreamingEvent, TaskStatusUpdateEvent,
-    };
+    use crate::domain::a2a::streaming_events::{StreamingEvent, TaskStatusUpdateEvent};
     use crate::domain::a2a::task::{TaskState, TaskStatus};
     use crate::domain::a2a::version::A2aVersion;
-    use crate::adapters::secondary::a2a::A2aMethod;
 
     type TestError = Box<dyn std::error::Error>;
-    type TestStream =
-        Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>>;
+    type TestStream = Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>>;
 
     fn sample_status_event(final_flag: bool) -> TaskStatusUpdateEvent {
         let mut event = TaskStatusUpdateEvent::new(
@@ -486,42 +463,29 @@ mod tests {
             _params: Option<serde_json::Value>,
             _context: &A2aRequestContext,
         ) -> TestStream {
-            let events: Vec<Result<StreamingEvent, A2aError>> = self
-                .events
-                .iter()
-                .cloned()
-                .map(Ok)
-                .collect();
+            let events: Vec<Result<StreamingEvent, A2aError>> =
+                self.events.iter().cloned().map(Ok).collect();
             Box::pin(stream::iter(events))
         }
     }
 
-    async fn read_response_body(
-        response: axum::response::Response,
-    ) -> Result<String, TestError> {
+    async fn read_response_body(response: axum::response::Response) -> Result<String, TestError> {
         let body = response.into_body();
         let bytes = axum::body::to_bytes(body, usize::MAX)
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+        String::from_utf8(bytes.to_vec()).map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
     }
 
     #[tokio::test]
     async fn streaming_response_emits_events_as_sse() -> Result<(), TestError> {
-        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(
-            FixedStreamHandler {
-                events: vec![
-                    StreamingEvent::Status(sample_status_event(false)),
-                    StreamingEvent::Status(sample_status_event(true)),
-                ],
-            },
-        );
-        let app: Router = serve_streaming(
-            "/stream",
-            handler,
-            A2aVersion::V1_0,
-        );
+        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(FixedStreamHandler {
+            events: vec![
+                StreamingEvent::Status(sample_status_event(false)),
+                StreamingEvent::Status(sample_status_event(true)),
+            ],
+        });
+        let app: Router = serve_streaming("/stream", handler, A2aVersion::V1_0);
         let request = Request::builder()
             .method("POST")
             .uri("/stream")
@@ -566,16 +530,10 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_response_uses_the_request_id() -> Result<(), TestError> {
-        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(
-            FixedStreamHandler {
-                events: vec![StreamingEvent::Status(sample_status_event(false))],
-            },
-        );
-        let app: Router = serve_streaming(
-            "/stream",
-            handler,
-            A2aVersion::V1_0,
-        );
+        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(FixedStreamHandler {
+            events: vec![StreamingEvent::Status(sample_status_event(false))],
+        });
+        let app: Router = serve_streaming("/stream", handler, A2aVersion::V1_0);
         let request = Request::builder()
             .method("POST")
             .uri("/stream")
@@ -589,20 +547,18 @@ mod tests {
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
         let body = read_response_body(response).await?;
-        assert!(body.contains(r#""id":42"#), "the response must carry the request id");
+        assert!(
+            body.contains(r#""id":42"#),
+            "the response must carry the request id"
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn non_json_content_type_returns_415() -> Result<(), TestError> {
-        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(
-            FixedStreamHandler { events: vec![] },
-        );
-        let app: Router = serve_streaming(
-            "/stream",
-            handler,
-            A2aVersion::V1_0,
-        );
+        let handler: Arc<dyn A2aStreamingRequestHandler> =
+            Arc::new(FixedStreamHandler { events: vec![] });
+        let app: Router = serve_streaming("/stream", handler, A2aVersion::V1_0);
         let request = Request::builder()
             .method("POST")
             .uri("/stream")
@@ -619,14 +575,9 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_method_returns_400() -> Result<(), TestError> {
-        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(
-            FixedStreamHandler { events: vec![] },
-        );
-        let app: Router = serve_streaming(
-            "/stream",
-            handler,
-            A2aVersion::V1_0,
-        );
+        let handler: Arc<dyn A2aStreamingRequestHandler> =
+            Arc::new(FixedStreamHandler { events: vec![] });
+        let app: Router = serve_streaming("/stream", handler, A2aVersion::V1_0);
         let request = Request::builder()
             .method("POST")
             .uri("/stream")

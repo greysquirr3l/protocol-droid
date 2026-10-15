@@ -562,7 +562,10 @@ mod tests {
             meta: BTreeMap::new(),
         });
         let value = serde_json::to_value(&update)?;
-        assert_eq!(value.get("sessionUpdate"), Some(&json!("agent_message_chunk")));
+        assert_eq!(
+            value.get("sessionUpdate"),
+            Some(&json!("agent_message_chunk"))
+        );
         let back: SessionUpdate = serde_json::from_value(value)?;
         assert_eq!(back, update);
         Ok(())
@@ -625,10 +628,7 @@ mod tests {
         });
         let value = serde_json::to_value(&update)?;
         assert_eq!(value.get("sessionUpdate"), Some(&json!("notice")));
-        assert_eq!(
-            value.get("level"),
-            Some(&json!("warning"))
-        );
+        assert_eq!(value.get("level"), Some(&json!("warning")));
         let back: SessionUpdate = serde_json::from_value(value)?;
         assert_eq!(back, update);
         Ok(())
@@ -639,8 +639,7 @@ mod tests {
     /// variant. The wire payload is preserved
     /// verbatim for the bridge to forward.
     #[test]
-    fn an_unknown_session_update_lands_in_the_other_variant() -> Result<(), serde_json::Error>
-    {
+    fn an_unknown_session_update_lands_in_the_other_variant() -> Result<(), serde_json::Error> {
         let raw = json!({
             "sessionUpdate": "future_update",
             "payload": "anything"

@@ -206,7 +206,9 @@ mod tests {
         });
         let value = serde_json::to_value(&scheme)?;
         let Some(obj) = value.as_object() else {
-            return Err("a SecurityScheme must serialise to a JSON object".to_owned().into());
+            return Err("a SecurityScheme must serialise to a JSON object"
+                .to_owned()
+                .into());
         };
         assert_eq!(
             obj.get("type").and_then(serde_json::Value::as_str),
@@ -266,7 +268,9 @@ mod tests {
         });
         let value = serde_json::to_value(&scheme)?;
         let Some(obj) = value.as_object() else {
-            return Err("a SecurityScheme must serialise to a JSON object".to_owned().into());
+            return Err("a SecurityScheme must serialise to a JSON object"
+                .to_owned()
+                .into());
         };
         assert_eq!(
             obj.get("type").and_then(serde_json::Value::as_str),
@@ -318,7 +322,8 @@ mod tests {
             "the type field must be the OpenAPI literal \"openIdConnect\""
         );
         assert_eq!(
-            obj.get("openIdConnectUrl").and_then(serde_json::Value::as_str),
+            obj.get("openIdConnectUrl")
+                .and_then(serde_json::Value::as_str),
             Some("https://auth.example.com/.well-known/openid-configuration")
         );
         Ok(())
@@ -328,7 +333,9 @@ mod tests {
     fn open_id_connect_round_trips_through_serde() -> Result<(), TestError> {
         let scheme = SecurityScheme::OpenIdConnect(OpenIdConnectSecurityScheme {
             description: None,
-            open_id_connect_url: url::Url::parse("https://auth.example.com/.well-known/openid-configuration")?,
+            open_id_connect_url: url::Url::parse(
+                "https://auth.example.com/.well-known/openid-configuration",
+            )?,
         });
         let json = serde_json::to_string(&scheme)?;
         let parsed: SecurityScheme = serde_json::from_str(&json)?;
@@ -341,7 +348,9 @@ mod tests {
     #[test]
     fn mutual_tls_serialises_with_openapi_wire_form() -> Result<(), TestError> {
         let scheme = SecurityScheme::MutualTls(MutualTlsSecurityScheme {
-            description: Some(Arc::from("Client certs validated against the corporate CA.")),
+            description: Some(Arc::from(
+                "Client certs validated against the corporate CA.",
+            )),
         });
         let value = serde_json::to_value(&scheme)?;
         let Some(obj) = value.as_object() else {

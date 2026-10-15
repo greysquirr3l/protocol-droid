@@ -223,7 +223,10 @@ mod tests {
     #[test]
     fn feature_label_is_non_empty_for_every_variant() {
         for feature in Feature::ALL {
-            assert!(!feature.label().is_empty(), "{feature:?} has an empty label");
+            assert!(
+                !feature.label().is_empty(),
+                "{feature:?} has an empty label"
+            );
         }
     }
 
@@ -260,10 +263,8 @@ mod tests {
     /// shape the build cannot encode.
     #[test]
     fn unknown_version_profile_disables_every_feature() {
-        let profile = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
-            major: 2,
-            minor: 5,
-        });
+        let profile =
+            A2aFeatureProfile::for_known_version(A2aVersion::Unknown { major: 2, minor: 5 });
         for feature in Feature::ALL {
             assert!(
                 !profile.is_enabled(feature),
@@ -294,10 +295,8 @@ mod tests {
         // `false`; the same check
         // catches a constant-return
         // regression.
-        let unknown = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
-            major: 2,
-            minor: 0,
-        });
+        let unknown =
+            A2aFeatureProfile::for_known_version(A2aVersion::Unknown { major: 2, minor: 0 });
         assert!(!unknown.is_enabled(Feature::SendMessage));
         assert!(!unknown.is_enabled(Feature::GetExtendedAgentCard));
     }
@@ -319,16 +318,11 @@ mod tests {
         let v1 = A2aFeatureProfile::for_known_version(A2aVersion::V1_0);
         assert_eq!(v1.version(), A2aVersion::V1_0);
 
-        let unknown = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
-            major: 2,
-            minor: 5,
-        });
+        let unknown =
+            A2aFeatureProfile::for_known_version(A2aVersion::Unknown { major: 2, minor: 5 });
         assert_eq!(
             unknown.version(),
-            A2aVersion::Unknown {
-                major: 2,
-                minor: 5,
-            }
+            A2aVersion::Unknown { major: 2, minor: 5 }
         );
     }
 }

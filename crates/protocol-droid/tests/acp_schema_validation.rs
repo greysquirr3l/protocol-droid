@@ -72,8 +72,8 @@ const ACP_SCHEMA_JSON: &str =
 /// surfaces.
 fn arbitrary_initialize_request() -> impl Strategy<Value = InitializeRequest> {
     (
-        any::<bool>(),  // controls `client_info` presence
-        any::<bool>(),  // controls a non-default `client_info`
+        any::<bool>(), // controls `client_info` presence
+        any::<bool>(), // controls a non-default `client_info`
     )
         .prop_map(|(with_info, non_default_info)| InitializeRequest {
             protocol_version: AcpProtocolVersion::CURRENT,
@@ -323,7 +323,10 @@ mod initialize_request_schema_conformance {
         let request = InitializeRequest {
             protocol_version: AcpProtocolVersion::CURRENT,
             client_capabilities: ClientCapabilities::default(),
-            client_info: Some(Implementation::protocol_droid("protocol-droid-test", "1.2.3")),
+            client_info: Some(Implementation::protocol_droid(
+                "protocol-droid-test",
+                "1.2.3",
+            )),
         };
         let envelope = envelope_for(&request)?;
         let result = validator.validate(&envelope);
@@ -377,9 +380,7 @@ mod initialize_request_schema_conformance {
 /// missing arm is a compile error.
 #[test]
 fn acp_method_session_new_is_dot_separated() {
-    let method = AcpMethod::Agent(
-        protocol_droid::domain::acp::method::AgentMethod::SessionNew,
-    );
+    let method = AcpMethod::Agent(protocol_droid::domain::acp::method::AgentMethod::SessionNew);
     assert_eq!(method.as_wire_name(), "session/new");
 }
 

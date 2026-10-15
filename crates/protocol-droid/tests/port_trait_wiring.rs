@@ -232,5 +232,3 @@ fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
-
-

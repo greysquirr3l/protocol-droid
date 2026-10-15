@@ -39,9 +39,9 @@ use protocol_droid::adapters::secondary::oauth::introspection::IntrospectionSour
 use protocol_droid::adapters::secondary::oauth::jwt::JwtSource;
 use protocol_droid::adapters::secondary::oauth::redeem::HttpTokenEndpoint;
 use protocol_droid::adapters::secondary::oauth::secrets::OsSecrets;
+use protocol_droid::application::oauth::TokenSource;
 use protocol_droid::application::oauth::client::AuthorizationSecrets;
 use protocol_droid::application::oauth::redeem::TokenEndpoint;
-use protocol_droid::application::oauth::TokenSource;
 
 const fn is_authorization_secrets<T: AuthorizationSecrets + ?Sized>(_: &T) {}
 
@@ -101,10 +101,7 @@ fn os_secrets_draws_per_call_state_and_verifier() {
 
     let verifier_one = secrets.new_code_verifier();
     let verifier_two = secrets.new_code_verifier();
-    assert!(
-        verifier_one.is_ok(),
-        "first new_code_verifier must succeed"
-    );
+    assert!(verifier_one.is_ok(), "first new_code_verifier must succeed");
     assert!(
         verifier_two.is_ok(),
         "second new_code_verifier must succeed"

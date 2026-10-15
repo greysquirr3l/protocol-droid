@@ -182,9 +182,7 @@ fn normalise_base(server: &str) -> anyhow::Result<String> {
     };
     // The host (and optional port) ends at the first `/`,
     // `?`, or `#`. A trailing `/` is allowed.
-    let origin_end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or(rest.len());
+    let origin_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let origin = rest[..origin_end].trim_end_matches('/');
     if origin.is_empty() {
         anyhow::bail!("--server has no host component: {server}");
@@ -230,7 +228,9 @@ mod tests {
 
     use protocol_droid::domain::a2a::agent_card::AgentCard;
 
-    use super::{A2aProbeReport, collect_security_schemes, extract_protocol_version, normalise_base};
+    use super::{
+        A2aProbeReport, collect_security_schemes, extract_protocol_version, normalise_base,
+    };
 
     type TestError = Box<dyn std::error::Error>;
 

@@ -45,6 +45,6 @@ pub use downstream::negotiate as negotiate_downstream;
 
 #[cfg(feature = "a2a")]
 pub use crate::domain::bridge::a2a_mcp::{
-    a2a_message_to_mcp_content, a2a_message_to_mcp_text, a2a_skill_to_mcp_tool,
-    mcp_content_to_a2a_part, CrossProtocolReport, Direction, Protocol, Step, StepKind,
+    CrossProtocolReport, Direction, Protocol, Step, StepKind, a2a_message_to_mcp_content,
+    a2a_message_to_mcp_text, a2a_skill_to_mcp_tool, mcp_content_to_a2a_part,
 };

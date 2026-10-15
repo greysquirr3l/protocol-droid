@@ -103,7 +103,9 @@ impl Greeter {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = bind_addr()?;
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(serve(addr))
 }
 

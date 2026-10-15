@@ -164,10 +164,7 @@ impl A2aJsonRpcPeer {
             .header(reqwest::header::ACCEPT, "application/json")
             .body(body);
         if let Some(token) = self.bearer.as_deref() {
-            request = request.header(
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {token}"),
-            );
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
         }
         let response = request.send().await.map_err(A2aPeerError::Transport)?;
         let status = response.status();
@@ -200,10 +197,7 @@ impl BridgePeer for A2aJsonRpcPeer {
         })
     }
 
-    fn notify(
-        &self,
-        envelope: Map<String, Value>,
-    ) -> SendFuture<'_, Result<(), BridgeError>> {
+    fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async move {
             // A notification gets a `202 Accepted` reply, which
             // the agent's `post_envelope` would parse as a
@@ -212,10 +206,8 @@ impl BridgePeer for A2aJsonRpcPeer {
             // transport-level outcome (success or HTTP error)
             // is the only thing worth returning.
             let url = format!("{}{}", self.base, self.jsonrpc_path);
-            let body = serde_json::to_vec(&envelope).map_err(|err| {
-                BridgeError::Unreachable {
-                    reason: format!("encode: {err}"),
-                }
+            let body = serde_json::to_vec(&envelope).map_err(|err| BridgeError::Unreachable {
+                reason: format!("encode: {err}"),
             })?;
             let mut request = self
                 .http
@@ -223,22 +215,19 @@ impl BridgePeer for A2aJsonRpcPeer {
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body);
             if let Some(token) = self.bearer.as_deref() {
-                request = request.header(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {token}"),
-                );
+                request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
             }
-            let response = request.send().await.map_err(|err| BridgeError::Unreachable {
-                reason: format!("transport: {err}"),
-            })?;
+            let response = request
+                .send()
+                .await
+                .map_err(|err| BridgeError::Unreachable {
+                    reason: format!("transport: {err}"),
+                })?;
             if response.status().is_success() {
                 Ok(())
             } else {
                 Err(BridgeError::Unreachable {
-                    reason: format!(
-                        "agent returned {} for a notification",
-                        response.status()
-                    ),
+                    reason: format!("agent returned {} for a notification", response.status()),
                 })
             }
         })
@@ -320,7 +309,10 @@ mod tests {
     impl core::fmt::Display for Failure {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             match self {
-                Self::Recv(s) | Self::Server(s) | Self::Peers(s) | Self::Notify(s)
+                Self::Recv(s)
+                | Self::Server(s)
+                | Self::Peers(s)
+                | Self::Notify(s)
                 | Self::Peer(s) => f.write_str(s),
             }
         }
@@ -339,8 +331,12 @@ mod tests {
     }
 
     impl ServerState {
-        fn lock_received(&self) -> Result<std::sync::MutexGuard<'_, Vec<Map<String, Value>>>, Failure> {
-            self.received.lock().map_err(|_| Failure::Peers("received mutex poisoned".to_owned()))
+        fn lock_received(
+            &self,
+        ) -> Result<std::sync::MutexGuard<'_, Vec<Map<String, Value>>>, Failure> {
+            self.received
+                .lock()
+                .map_err(|_| Failure::Peers("received mutex poisoned".to_owned()))
         }
     }
 
@@ -358,7 +354,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|err| Failure::Server(format!("bind: {err}")))?;
-        let addr = listener.local_addr().map_err(|err| Failure::Server(err.to_string()))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|err| Failure::Server(err.to_string()))?;
         let state = Arc::new(ServerState::default());
         let state_for_task = Arc::clone(&state);
         tokio::spawn(async move {
@@ -422,10 +420,7 @@ mod tests {
                         .unwrap_or_else(|| {
                             let mut out = Map::new();
                             out.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
-                            let id = parsed
-                                .get("id")
-                                .cloned()
-                                .unwrap_or(Value::Null);
+                            let id = parsed.get("id").cloned().unwrap_or(Value::Null);
                             out.insert("id".to_owned(), id);
                             out.insert("result".to_owned(), json!({}));
                             out
@@ -459,7 +454,10 @@ mod tests {
         envelope.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
         envelope.insert("id".to_owned(), Value::Number(1.into()));
         envelope.insert("method".to_owned(), Value::String("SendMessage".to_owned()));
-        envelope.insert("params".to_owned(), json!({"message": {"role": "user", "parts": []}}));
+        envelope.insert(
+            "params".to_owned(),
+            json!({"message": {"role": "user", "parts": []}}),
+        );
 
         let reply = peer
             .send(envelope)
@@ -526,7 +524,10 @@ mod tests {
 
         let mut envelope = Map::new();
         envelope.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
-        envelope.insert("method".to_owned(), Value::String("notifications/initialized".to_owned()));
+        envelope.insert(
+            "method".to_owned(),
+            Value::String("notifications/initialized".to_owned()),
+        );
         envelope.insert("params".to_owned(), json!({}));
 
         peer.notify(envelope)

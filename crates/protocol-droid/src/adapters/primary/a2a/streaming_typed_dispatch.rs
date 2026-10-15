@@ -80,8 +80,8 @@ use std::pin::Pin;
 use futures_core::Stream;
 
 use crate::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
-use crate::application::a2a::handler::{A2aError, A2aRequestContext};
 use crate::adapters::secondary::a2a::A2aMethod;
+use crate::application::a2a::handler::{A2aError, A2aRequestContext};
 use crate::domain::a2a::send_message::SendMessageRequest;
 use crate::domain::a2a::streaming_events::StreamingEvent;
 use crate::domain::a2a::task_lifecycle::GetTaskRequest;
@@ -90,9 +90,7 @@ use crate::domain::a2a::task_lifecycle::GetTaskRequest;
 /// streaming. A blanket impl means every
 /// [`A2aStreamingRequestHandler`](super::A2aStreamingRequestHandler)
 /// gets the typed methods for free.
-pub trait A2aStreamingRequestHandlerExt:
-    A2aStreamingRequestHandler
-{
+pub trait A2aStreamingRequestHandlerExt: A2aStreamingRequestHandler {
     /// Sends a message and receives a
     /// stream of events. Typed
     /// counterpart to
@@ -101,12 +99,7 @@ pub trait A2aStreamingRequestHandlerExt:
         &self,
         request: SendMessageRequest,
         context: &A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    >;
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>>;
 
     /// Subscribes to a task's events.
     /// Typed counterpart to
@@ -115,27 +108,15 @@ pub trait A2aStreamingRequestHandlerExt:
         &self,
         request: GetTaskRequest,
         context: &A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    >;
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>>;
 }
 
-impl<H: A2aStreamingRequestHandler + ?Sized> A2aStreamingRequestHandlerExt
-    for H
-{
+impl<H: A2aStreamingRequestHandler + ?Sized> A2aStreamingRequestHandlerExt for H {
     fn send_streaming_message(
         &self,
         request: SendMessageRequest,
         context: &A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    > {
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>> {
         // The serialise-to-Value step
         // happens before the dispatch
         // call. A serialisation error
@@ -165,12 +146,7 @@ impl<H: A2aStreamingRequestHandler + ?Sized> A2aStreamingRequestHandlerExt
         &self,
         request: GetTaskRequest,
         context: &A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Stream<Item = Result<StreamingEvent, A2aError>>
-                + Send,
-        >,
-    > {
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>> {
         let value = match serde_json::to_value(&request) {
             Ok(v) => v,
             Err(e) => {
@@ -213,18 +189,15 @@ mod tests {
 
     use super::A2aStreamingRequestHandlerExt;
     use crate::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
-    use crate::application::a2a::handler::{A2aError, A2aRequestContext};
     use crate::adapters::secondary::a2a::A2aMethod;
+    use crate::application::a2a::handler::{A2aError, A2aRequestContext};
     use crate::domain::a2a::send_message::SendMessageRequest;
-    use crate::domain::a2a::streaming_events::{
-        StreamingEvent, TaskStatusUpdateEvent,
-    };
+    use crate::domain::a2a::streaming_events::{StreamingEvent, TaskStatusUpdateEvent};
     use crate::domain::a2a::task::TaskState;
     use crate::domain::a2a::task_lifecycle::GetTaskRequest;
 
     type TestError = Box<dyn std::error::Error>;
-    type TestStream =
-        Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>>;
+    type TestStream = Pin<Box<dyn Stream<Item = Result<StreamingEvent, A2aError>> + Send>>;
 
     /// A handler that captures the
     /// method name and params, then
@@ -257,18 +230,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_streaming_message_serialises_request_before_dispatch(
-    ) -> Result<(), TestError> {
-        let handler: Arc<dyn A2aStreamingRequestHandler> =
-            Arc::new(CaptureHandler);
+    async fn send_streaming_message_serialises_request_before_dispatch() -> Result<(), TestError> {
+        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(CaptureHandler);
         let context = A2aRequestContext {
             protocol_version: crate::domain::a2a::version::A2aVersion::V1_0,
         };
-        let request = SendMessageRequest::new(
-            crate::domain::a2a::message::Message::new(
-                crate::domain::a2a::message::MessageRole::User,
-            ),
-        );
+        let request = SendMessageRequest::new(crate::domain::a2a::message::Message::new(
+            crate::domain::a2a::message::MessageRole::User,
+        ));
         let mut stream = handler.send_streaming_message(request, &context);
         let first = stream
             .next()
@@ -279,10 +248,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_to_task_serialises_request_before_dispatch(
-    ) -> Result<(), TestError> {
-        let handler: Arc<dyn A2aStreamingRequestHandler> =
-            Arc::new(CaptureHandler);
+    async fn subscribe_to_task_serialises_request_before_dispatch() -> Result<(), TestError> {
+        let handler: Arc<dyn A2aStreamingRequestHandler> = Arc::new(CaptureHandler);
         let context = A2aRequestContext {
             protocol_version: crate::domain::a2a::version::A2aVersion::V1_0,
         };

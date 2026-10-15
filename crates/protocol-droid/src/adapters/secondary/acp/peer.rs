@@ -81,9 +81,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::AgentRequest;
@@ -93,7 +93,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::error::AcpPeerError;
 use super::reply::AcpReply;
@@ -356,8 +356,7 @@ impl AcpStdioPeer {
         // peer inserts on every
         // `send_request` and the reader
         // removes on every reply.
-        let sent_ids: Arc<StdMutex<HashSet<u64>>> =
-            Arc::new(StdMutex::new(HashSet::new()));
+        let sent_ids: Arc<StdMutex<HashSet<u64>>> = Arc::new(StdMutex::new(HashSet::new()));
 
         // The reader task. Owns the child's
         // stdout. Reads one line at a time
@@ -462,8 +461,7 @@ impl AcpStdioPeer {
                 ))))
             })?
             .insert(id);
-        let params_value: Value =
-            serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
+        let params_value: Value = serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -478,16 +476,7 @@ impl AcpStdioPeer {
             .await
             .map_err(|_| AcpPeerError::Write(io_other("the writer task is gone")))?;
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(
-                id,
-                Pending {
-                    tx,
-                    method,
-                },
-            );
+        self.pending.lock().await.insert(id, Pending { tx, method });
         match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(result)) => {
                 // The reply arrived. Remove
@@ -574,8 +563,7 @@ impl AcpStdioPeer {
     where
         Params: Serialize,
     {
-        let params_value: Value =
-            serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
+        let params_value: Value = serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method.as_wire_name(),
@@ -755,11 +743,7 @@ impl AcpStdioPeer {
     /// and the application layer
     /// only hands a serialised
     /// envelope to the channel.
-    pub async fn send_reply(
-        &self,
-        id: Value,
-        result: Value,
-    ) -> Result<(), AcpPeerError> {
+    pub async fn send_reply(&self, id: Value, result: Value) -> Result<(), AcpPeerError> {
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -824,10 +808,7 @@ fn spawn_reader(
                 // `agent_requests_tx` for
                 // the consumer's handler.
                 let (id, result) = parse_and_dispatch_value(value.clone());
-                let is_client_reply = id != 0
-                    && sent_ids
-                        .lock()
-                        .is_ok_and(|set| set.contains(&id));
+                let is_client_reply = id != 0 && sent_ids.lock().is_ok_and(|set| set.contains(&id));
                 if is_client_reply {
                     let entry = pending.lock().await.remove(&id);
                     if let Some(entry) = entry {
@@ -882,10 +863,7 @@ fn spawn_reader(
 /// params }`.
 fn parse_agent_request(value: &Value) -> Option<AgentRequest> {
     let id = value.get("id")?.clone();
-    let method = value
-        .get("method")
-        .and_then(Value::as_str)?
-        .to_owned();
+    let method = value.get("method").and_then(Value::as_str)?.to_owned();
     let params = value.get("params").cloned().unwrap_or(Value::Null);
     Some(AgentRequest { id, method, params })
 }
@@ -994,8 +972,9 @@ mod tests {
     /// function is asked to defend.
     #[test]
     fn parse_and_dispatch_routes_a_result_by_id() -> Result<(), Failure> {
-        let value: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"result":{"answer":42}}"#)
-            .map_err(|_| Failure::WrongResult("valid JSON"))?;
+        let value: Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"result":{"answer":42}}"#)
+                .map_err(|_| Failure::WrongResult("valid JSON"))?;
         let (id, result) = parse_and_dispatch_value(value);
         assert_eq!(id, 7);
         let Ok(reply) = result else {

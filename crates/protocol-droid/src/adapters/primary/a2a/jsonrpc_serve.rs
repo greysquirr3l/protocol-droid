@@ -100,11 +100,7 @@ use crate::domain::a2a::version::A2aVersion;
 ///     protocol_droid::domain::a2a::version::A2aVersion::V1_0,
 /// ));
 /// ```
-pub fn serve_jsonrpc<H>(
-    path: &str,
-    handler: Arc<H>,
-    protocol_version: A2aVersion,
-) -> Router
+pub fn serve_jsonrpc<H>(path: &str, handler: Arc<H>, protocol_version: A2aVersion) -> Router
 where
     H: A2aRequestHandler + ?Sized + 'static,
 {
@@ -195,7 +191,10 @@ where
             .into_response();
     };
     let id = envelope_obj.get("id").cloned();
-    let method_name = match envelope_obj.get("method").and_then(serde_json::Value::as_str) {
+    let method_name = match envelope_obj
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+    {
         Some(m) => m.to_owned(),
         None => {
             return error_response(
@@ -214,10 +213,7 @@ where
     // here — the bridge (T28) is where the form
     // mismatch is resolved.
     let Some(method) = A2aMethodTable::TABLE.lookup(&method_name) else {
-        return error_response(
-            id,
-            A2aError::MethodNotFound,
-        );
+        return error_response(id, A2aError::MethodNotFound);
     };
 
     // Handler invocation. The handler receives
@@ -226,10 +222,7 @@ where
     let context = A2aRequestContext {
         protocol_version: state.protocol_version,
     };
-    let result = state
-        .handler
-        .dispatch(method, params, &context)
-        .await;
+    let result = state.handler.dispatch(method, params, &context).await;
 
     match result {
         Ok(value) => success_response(id, value),
@@ -262,15 +255,14 @@ fn error_response(id: Option<serde_json::Value>, error: A2aError) -> Response {
 
 fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     let Ok(bytes) = serde_json::to_vec(&body) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "failed to serialise response").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialise response",
+        )
+            .into_response();
     };
     drop(body);
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/json")],
-        bytes,
-    )
-        .into_response()
+    (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
 #[cfg(test)]
@@ -304,9 +296,7 @@ mod tests {
             _params: Option<serde_json::Value>,
             _context: &A2aRequestContext,
         ) -> BoxFuture<'_, Result<serde_json::Value, A2aError>> {
-            Box::pin(async move {
-                Ok(serde_json::json!({ "method": method.as_str() }))
-            })
+            Box::pin(async move { Ok(serde_json::json!({ "method": method.as_str() })) })
         }
     }
 
@@ -322,9 +312,7 @@ mod tests {
             _params: Option<serde_json::Value>,
             _context: &A2aRequestContext,
         ) -> BoxFuture<'_, Result<serde_json::Value, A2aError>> {
-            Box::pin(async move {
-                Err(A2aError::MethodNotImplemented { method })
-            })
+            Box::pin(async move { Err(A2aError::MethodNotImplemented { method }) })
         }
     }
 
@@ -390,10 +378,7 @@ mod tests {
             obj.get("jsonrpc").and_then(serde_json::Value::as_str),
             Some("2.0")
         );
-        assert_eq!(
-            obj.get("id").and_then(serde_json::Value::as_i64),
-            Some(1)
-        );
+        assert_eq!(obj.get("id").and_then(serde_json::Value::as_i64), Some(1));
         let result = obj
             .get("result")
             .and_then(serde_json::Value::as_object)

@@ -66,13 +66,13 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use protocol_droid::adapters::secondary::a2a::A2aClient;
+use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
-use protocol_droid::domain::a2a::task::{TaskState};
-use protocol_droid::domain::a2a::task_lifecycle::GetTaskRequest;
 use protocol_droid::domain::a2a::send_message::SendMessageRequest;
 use protocol_droid::domain::a2a::send_message::SendMessageResponse;
-use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
+use protocol_droid::domain::a2a::task::TaskState;
 use protocol_droid::domain::a2a::task_lifecycle::CancelTaskRequest;
+use protocol_droid::domain::a2a::task_lifecycle::GetTaskRequest;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -82,8 +82,7 @@ use tokio::process::Command;
 /// Kept as a function so a future move of the
 /// fixture file is a one-line edit.
 fn reference_server_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/a2a_reference_server.mjs")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/a2a_reference_server.mjs")
 }
 
 /// A guard that kills the child process on
@@ -197,7 +196,9 @@ async fn spawn_reference_server(node: &str) -> Result<(String, ChildGuard), Stri
         let remaining = deadline - now;
         let line = match tokio::time::timeout(remaining, reader.next_line()).await {
             Ok(Ok(Some(line))) => line,
-            Ok(Ok(None)) => return Err("the reference server closed stderr before listening".to_owned()),
+            Ok(Ok(None)) => {
+                return Err("the reference server closed stderr before listening".to_owned());
+            }
             Ok(Err(error)) => return Err(format!("reading stderr: {error}")),
             Err(_) => return Err("the reference server did not start within 5 seconds".to_owned()),
         };
@@ -278,7 +279,8 @@ fn ensure_node() -> Result<String, String> {
 /// not a JSON-RPC POST, and the field names
 /// are `camelCase` per the spec.
 #[tokio::test]
-async fn card_deserialises_against_the_vanilla_js_server() -> Result<(), Box<dyn std::error::Error>> {
+async fn card_deserialises_against_the_vanilla_js_server() -> Result<(), Box<dyn std::error::Error>>
+{
     let node = match ensure_node() {
         Ok(node) => node,
         Err(_skip) => return Ok(()),
@@ -296,8 +298,8 @@ async fn card_deserialises_against_the_vanilla_js_server() -> Result<(), Box<dyn
 /// interop assertion is on the wire fields,
 /// not the typed newtype.
 #[tokio::test]
-async fn send_message_round_trips_against_the_vanilla_js_server(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn send_message_round_trips_against_the_vanilla_js_server()
+-> Result<(), Box<dyn std::error::Error>> {
     let node = match ensure_node() {
         Ok(node) => node,
         Err(_skip) => return Ok(()),
@@ -310,12 +312,19 @@ async fn send_message_round_trips_against_the_vanilla_js_server(
         return Err("the reference server returns a Task, not a Message".into());
     };
     let value = serde_json::to_value(&task).map_err(|e| format!("to_value: {e}"))?;
-    assert_field_equals(&value, "/status/state", &Value::String("completed".to_owned()))?;
+    assert_field_equals(
+        &value,
+        "/status/state",
+        &Value::String("completed".to_owned()),
+    )?;
     let text = value
         .pointer("/status/message/parts/0/text")
         .and_then(Value::as_str)
         .ok_or("the reference server did not echo the user message")?;
-    assert!(text.contains("hi"), "the response should mention the input: {text}");
+    assert!(
+        text.contains("hi"),
+        "the response should mention the input: {text}"
+    );
     Ok(())
 }
 
@@ -328,8 +337,7 @@ async fn send_message_round_trips_against_the_vanilla_js_server(
 /// the client deserialises — a server that
 /// returned an integer id would fail here.
 #[tokio::test]
-async fn get_task_reads_back_what_send_message_wrote(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn get_task_reads_back_what_send_message_wrote() -> Result<(), Box<dyn std::error::Error>> {
     let node = match ensure_node() {
         Ok(node) => node,
         Err(_skip) => return Ok(()),
@@ -342,7 +350,9 @@ async fn get_task_reads_back_what_send_message_wrote(
         return Err("the reference server returns a Task, not a Message".into());
     };
     let task_id = task.id.to_string();
-    let get = client.get_task(GetTaskRequest::new(task_id.clone())).await?;
+    let get = client
+        .get_task(GetTaskRequest::new(task_id.clone()))
+        .await?;
     assert_eq!(get.0.id.as_ref(), task_id.as_str());
     assert_eq!(get.0.status.state, TaskState::Completed);
     Ok(())
@@ -357,8 +367,7 @@ async fn get_task_reads_back_what_send_message_wrote(
 /// to signal "no more pages", which is the
 /// spec's required field.
 #[tokio::test]
-async fn list_tasks_returns_the_paginated_envelope(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn list_tasks_returns_the_paginated_envelope() -> Result<(), Box<dyn std::error::Error>> {
     let node = match ensure_node() {
         Ok(node) => node,
         Err(_skip) => return Ok(()),
@@ -377,8 +386,14 @@ async fn list_tasks_returns_the_paginated_envelope(
         total_size,
     } = list;
     assert_eq!(total_size, 1);
-    assert!(page_size >= 1, "pageSize must be at least 1, got {page_size}");
-    assert!(next_page_token.is_empty(), "the absent signal is the empty string");
+    assert!(
+        page_size >= 1,
+        "pageSize must be at least 1, got {page_size}"
+    );
+    assert!(
+        next_page_token.is_empty(),
+        "the absent signal is the empty string"
+    );
     assert_eq!(tasks.len(), 1);
     Ok(())
 }
@@ -393,8 +408,7 @@ async fn list_tasks_returns_the_paginated_envelope(
 /// `cancel_task` response itself, which is
 /// the more direct assertion.
 #[tokio::test]
-async fn cancel_task_flips_state_to_cancelled(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn cancel_task_flips_state_to_cancelled() -> Result<(), Box<dyn std::error::Error>> {
     let node = match ensure_node() {
         Ok(node) => node,
         Err(_skip) => return Ok(()),

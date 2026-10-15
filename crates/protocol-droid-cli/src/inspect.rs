@@ -151,16 +151,27 @@ impl std::fmt::Display for Report {
                 }
                 Ok(())
             }
-            Self::Schema { tool, schema: Some(schema) } => {
+            Self::Schema {
+                tool,
+                schema: Some(schema),
+            } => {
                 writeln!(formatter, "schema for {tool}:")?;
-                writeln!(formatter, "{}", serde_json::to_string_pretty(schema).unwrap_or_default())
+                writeln!(
+                    formatter,
+                    "{}",
+                    serde_json::to_string_pretty(schema).unwrap_or_default()
+                )
             }
             Self::Schema { tool, schema: None } => {
                 writeln!(formatter, "schema for {tool}: <none>")
             }
             Self::Call { tool, reply, .. } => {
                 writeln!(formatter, "{tool} replied:")?;
-                writeln!(formatter, "{}", serde_json::to_string_pretty(reply).unwrap_or_default())
+                writeln!(
+                    formatter,
+                    "{}",
+                    serde_json::to_string_pretty(reply).unwrap_or_default()
+                )
             }
         }
     }
@@ -304,13 +315,16 @@ async fn schema_of(client: &Client, tool: &str) -> anyhow::Result<Option<Value>>
 async fn call_tool(client: &Client, tool: &str, arguments: &Value) -> anyhow::Result<Value> {
     let arguments_text =
         serde_json::to_string(arguments).with_context(|| "the arguments did not serialise")?;
-    let params = JsonObject::new(&arguments_text)
-        .with_context(|| "the arguments are not a JSON object")?;
+    let params =
+        JsonObject::new(&arguments_text).with_context(|| "the arguments are not a JSON object")?;
     let reply = client
         .call_tool(tool, &params)
         .await
         .map_err(|error| match &error {
-            ClientError::FeatureUnavailable { feature, negotiated } => anyhow::anyhow!(
+            ClientError::FeatureUnavailable {
+                feature,
+                negotiated,
+            } => anyhow::anyhow!(
                 "the negotiated session {negotiated} has no {feature}; cannot call `{tool}`"
             ),
             ClientError::Transport(reason) => {
@@ -331,8 +345,7 @@ fn resolve_args(raw: Option<&str>) -> anyhow::Result<Value> {
         return Ok(Value::Object(Map::new()));
     }
     let text = if let Some(path) = raw.strip_prefix('@') {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("could not read args from {path}"))?
+        std::fs::read_to_string(path).with_context(|| format!("could not read args from {path}"))?
     } else if raw == "-" {
         let mut buffer = String::new();
         std::io::stdin()
@@ -427,9 +440,8 @@ mod tests {
     #[test]
     fn resolve_args_reads_a_file() -> Result<(), Failure> {
         let path = std::env::temp_dir().join("protocol-droid-inspect-args.json");
-        std::fs::write(&path, r#"{"from": "file"}"#).map_err(|error| {
-            Failure::Message(format!("could not write fixture: {error}"))
-        })?;
+        std::fs::write(&path, r#"{"from": "file"}"#)
+            .map_err(|error| Failure::Message(format!("could not write fixture: {error}")))?;
         let value = resolve_args(Some(&format!("@{}", path.display())))?;
         let _ = std::fs::remove_file(&path);
         let expected = serde_json::json!({"from": "file"});
@@ -477,7 +489,9 @@ mod tests {
         };
         let rendered = report.to_string();
         if !rendered.contains("alpha") || !rendered.contains("beta") {
-            return Err(Failure::Message(format!("rendering lost a tool: {rendered}")));
+            return Err(Failure::Message(format!(
+                "rendering lost a tool: {rendered}"
+            )));
         }
         if !rendered.contains("first") {
             return Err(Failure::Message(format!(
@@ -533,9 +547,8 @@ mod tests {
     #[test]
     fn report_serialises_with_a_kind_tag() -> Result<(), Failure> {
         let report = Report::Tools { tools: Vec::new() };
-        let value = serde_json::to_value(&report).map_err(|error| {
-            Failure::Message(format!("serialise failed: {error}"))
-        })?;
+        let value = serde_json::to_value(&report)
+            .map_err(|error| Failure::Message(format!("serialise failed: {error}")))?;
         let kind = value
             .get("kind")
             .and_then(Value::as_str)
@@ -578,10 +591,7 @@ mod tests {
             return Err(Failure::Message("--json was not set".to_owned()));
         }
         if !matches!(args.command, InspectCommand::List) {
-            return Err(Failure::Message(format!(
-                "command was {:?}",
-                args.command
-            )));
+            return Err(Failure::Message(format!("command was {:?}", args.command)));
         }
         Ok(())
     }
@@ -614,14 +624,15 @@ mod tests {
             }
         };
         match &args.command {
-            InspectCommand::Call { tool, args: raw_args } => {
+            InspectCommand::Call {
+                tool,
+                args: raw_args,
+            } => {
                 if tool != "echo" {
                     return Err(Failure::Message(format!("tool was {tool}")));
                 }
                 if raw_args.as_deref() != Some("{}") {
-                    return Err(Failure::Message(format!(
-                        "args was {raw_args:?}"
-                    )));
+                    return Err(Failure::Message(format!("args was {raw_args:?}")));
                 }
             }
             _ => return Err(Failure::Message("expected Call subcommand".to_owned())),
@@ -638,7 +649,9 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
-        use protocol_droid::application::client::{Client, ClientConfig, ClientTransport, TransportError};
+        use protocol_droid::application::client::{
+            Client, ClientConfig, ClientTransport, TransportError,
+        };
         use protocol_droid::domain::ir::JsonObject;
         use protocol_droid::domain::{CapabilitySet, ProtocolVersion, TransportKind};
 
@@ -696,9 +709,7 @@ mod tests {
                 _method: &str,
                 _params: &JsonObject,
             ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_,
-                >,
+                Box<dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_>,
             > {
                 Box::pin(async { Ok(()) })
             }
@@ -710,9 +721,9 @@ mod tests {
         let config = ClientConfig::new(version, TransportKind::Stdio);
         let client = Client::connect(config.negotiated_with(version, caps), transport.clone());
 
-        let report = dispatch(&client, &InspectCommand::List).await.map_err(|error| {
-            Failure::Message(format!("dispatch failed: {error}"))
-        })?;
+        let report = dispatch(&client, &InspectCommand::List)
+            .await
+            .map_err(|error| Failure::Message(format!("dispatch failed: {error}")))?;
 
         let names: Vec<String> = match &report {
             Report::Tools { tools } => tools.iter().map(|t| t.name.clone()).collect(),
@@ -753,14 +764,16 @@ mod tests {
         let (report, transport) = fixture;
 
         match report {
-            Report::Call { tool, arguments, reply } => {
+            Report::Call {
+                tool,
+                arguments,
+                reply,
+            } => {
                 if tool != "echo" {
                     return Err(Failure::Message(format!("tool was {tool}")));
                 }
                 if arguments != serde_json::json!({"hello": "world"}) {
-                    return Err(Failure::Message(format!(
-                        "arguments were {arguments}"
-                    )));
+                    return Err(Failure::Message(format!("arguments were {arguments}")));
                 }
                 if reply != serde_json::json!({"content": [{"type": "text", "text": "ok"}]}) {
                     return Err(Failure::Message(format!("reply was {reply}")));
@@ -771,9 +784,7 @@ mod tests {
 
         let seen_args = capture_seen_args(&transport)?;
         if seen_args != Some(serde_json::json!({"hello": "world"})) {
-            return Err(Failure::Message(format!(
-                "the transport saw {seen_args:?}"
-            )));
+            return Err(Failure::Message(format!("the transport saw {seen_args:?}")));
         }
         Ok(())
     }
@@ -787,7 +798,9 @@ mod tests {
         use std::pin::Pin;
         use std::sync::{Arc, Mutex};
 
-        use protocol_droid::application::client::{Client, ClientConfig, ClientTransport, TransportError};
+        use protocol_droid::application::client::{
+            Client, ClientConfig, ClientTransport, TransportError,
+        };
         use protocol_droid::domain::ir::JsonObject;
         use protocol_droid::domain::{CapabilitySet, ProtocolVersion, TransportKind};
 
@@ -829,11 +842,8 @@ mod tests {
                 &self,
                 _method: &str,
                 _params: &JsonObject,
-            ) -> Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_,
-                >,
-            > {
+            ) -> Pin<Box<dyn std::future::Future<Output = Result<(), TransportError>> + Send + '_>>
+            {
                 Box::pin(async { Ok(()) })
             }
         }
@@ -850,10 +860,15 @@ mod tests {
             tool: "echo".to_owned(),
             args: Some(r#"{"hello": "world"}"#.to_owned()),
         };
-        let report = dispatch(&client, &command).await.map_err(|error| {
-            Failure::Message(format!("dispatch failed: {error}"))
-        })?;
-        Ok((report, CallFixture { seen_args: transport.seen_args.clone() }))
+        let report = dispatch(&client, &command)
+            .await
+            .map_err(|error| Failure::Message(format!("dispatch failed: {error}")))?;
+        Ok((
+            report,
+            CallFixture {
+                seen_args: transport.seen_args.clone(),
+            },
+        ))
     }
 
     /// The captured args, lifted out of the lock guard so the test body
@@ -863,9 +878,9 @@ mod tests {
             .seen_args
             .lock()
             .map_err(|_| Failure::Message("lock poisoned".to_owned()))?;
-        let captured = seen.as_ref().ok_or_else(|| {
-            Failure::Message("tools/call was never made".to_owned())
-        })?;
+        let captured = seen
+            .as_ref()
+            .ok_or_else(|| Failure::Message("tools/call was never made".to_owned()))?;
         let arg = captured.get("arguments").cloned();
         drop(seen);
         Ok(arg)
@@ -882,20 +897,17 @@ mod tests {
     /// `inspect` scriptable; this test pins it at the function that does
     /// the writing, not at the parser.
     #[test]
-    fn print_report_emits_the_same_json_with_or_without_json_flag()
-    -> Result<(), Failure> {
+    fn print_report_emits_the_same_json_with_or_without_json_flag() -> Result<(), Failure> {
         let report = Report::Tools {
             tools: vec![ToolSummary {
                 name: "alpha".to_owned(),
                 description: Some("first".to_owned()),
             }],
         };
-        let with_json = serde_json::to_string_pretty(&report).map_err(|error| {
-            Failure::Message(format!("serialise failed: {error}"))
-        })?;
-        let without_json = serde_json::to_string_pretty(&report).map_err(|error| {
-            Failure::Message(format!("serialise failed: {error}"))
-        })?;
+        let with_json = serde_json::to_string_pretty(&report)
+            .map_err(|error| Failure::Message(format!("serialise failed: {error}")))?;
+        let without_json = serde_json::to_string_pretty(&report)
+            .map_err(|error| Failure::Message(format!("serialise failed: {error}")))?;
         if with_json != without_json {
             return Err(Failure::Message(
                 "the JSON form differs by `--json`".to_owned(),
@@ -926,7 +938,9 @@ mod tests {
                 }
                 Ok(())
             }
-            Ok(()) => Err(Failure::Message("the malformed spec was accepted".to_owned())),
+            Ok(()) => Err(Failure::Message(
+                "the malformed spec was accepted".to_owned(),
+            )),
         }
     }
 
@@ -956,7 +970,9 @@ mod tests {
                 }
                 Ok(())
             }
-            Ok(()) => Err(Failure::Message("stdio was accepted as inspectable".to_owned())),
+            Ok(()) => Err(Failure::Message(
+                "stdio was accepted as inspectable".to_owned(),
+            )),
         }
     }
 }

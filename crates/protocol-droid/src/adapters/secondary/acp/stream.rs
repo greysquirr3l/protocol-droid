@@ -38,7 +38,7 @@ use core::task::{Context, Poll};
 use std::sync::Arc;
 
 use futures_core::Stream;
-use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 
 use crate::domain::acp::notification::SessionNotification;
 
@@ -105,12 +105,7 @@ enum NotificationState {
     /// borrowed) so the stream can move it across the `Idle →
     /// Locking → Ready` cycle.
     Locking(
-        Pin<
-            Box<
-                dyn Future<Output = OwnedMutexGuard<mpsc::Receiver<SessionNotification>>>
-                    + Send,
-            >,
-        >,
+        Pin<Box<dyn Future<Output = OwnedMutexGuard<mpsc::Receiver<SessionNotification>>> + Send>>,
     ),
     /// Lock held; the receiver is the one to poll.
     Ready(OwnedMutexGuard<mpsc::Receiver<SessionNotification>>),
@@ -121,7 +116,11 @@ impl NotificationStream<'_> {
     /// `Arc<Mutex<Receiver>>` is cloned, not moved, so the peer keeps
     /// its own `recv_notification` method working in parallel.
     pub(crate) const fn new(rx: Arc<Mutex<mpsc::Receiver<SessionNotification>>>) -> Self {
-        Self { rx, state: NotificationState::Idle, _marker: PhantomData }
+        Self {
+            rx,
+            state: NotificationState::Idle,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -133,7 +132,9 @@ impl core::fmt::Debug for NotificationStream<'_> {
     /// representation into a log line that should be the consumer's
     /// view of the stream.
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("NotificationStream").finish_non_exhaustive()
+        formatter
+            .debug_struct("NotificationStream")
+            .finish_non_exhaustive()
     }
 }
 
@@ -141,7 +142,9 @@ impl core::fmt::Debug for AgentRequestStream<'_> {
     /// See [`NotificationStream`]'s `Debug` — the same reasoning
     /// applies to the agent-request stream.
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("AgentRequestStream").finish_non_exhaustive()
+        formatter
+            .debug_struct("AgentRequestStream")
+            .finish_non_exhaustive()
     }
 }
 
@@ -234,9 +237,7 @@ pub struct AgentRequestStream<'a> {
 
 enum AgentRequestState {
     Idle,
-    Locking(
-        Pin<Box<dyn Future<Output = OwnedMutexGuard<mpsc::Receiver<AgentRequest>>> + Send>>,
-    ),
+    Locking(Pin<Box<dyn Future<Output = OwnedMutexGuard<mpsc::Receiver<AgentRequest>>> + Send>>),
     Ready(OwnedMutexGuard<mpsc::Receiver<AgentRequest>>),
 }
 
@@ -245,7 +246,11 @@ impl AgentRequestStream<'_> {
     /// [`NotificationStream::new`] for the lifetime / ownership
     /// contract — the two are structurally identical.
     pub(crate) const fn new(rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>) -> Self {
-        Self { rx, state: AgentRequestState::Idle, _marker: PhantomData }
+        Self {
+            rx,
+            state: AgentRequestState::Idle,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -343,14 +348,20 @@ mod tests {
         let (tx, rx) = mpsc::channel::<SessionNotification>(4);
         let rx = Arc::new(Mutex::new(rx));
         let send_result = tx.send(notification("hello")).await;
-        assert!(send_result.is_ok(), "the channel is open at the time of send");
+        assert!(
+            send_result.is_ok(),
+            "the channel is open at the time of send"
+        );
         drop(tx);
 
         let mut stream = NotificationStream::new(rx);
         let first = stream.next().await;
         assert!(first.is_some(), "the queued value must surface");
         let second = stream.next().await;
-        assert!(second.is_none(), "the channel is closed after the sender drops");
+        assert!(
+            second.is_none(),
+            "the channel is closed after the sender drops"
+        );
     }
 
     #[tokio::test]
@@ -373,7 +384,10 @@ mod tests {
         let (tx, rx) = mpsc::channel::<SessionNotification>(4);
         let rx = Arc::new(Mutex::new(rx));
         let send_result = tx.send(notification("hello")).await;
-        assert!(send_result.is_ok(), "the channel is open at the time of send");
+        assert!(
+            send_result.is_ok(),
+            "the channel is open at the time of send"
+        );
         drop(tx);
 
         let mut first = NotificationStream::new(Arc::clone(&rx));
@@ -397,7 +411,10 @@ mod tests {
                 params: serde_json::json!({}),
             })
             .await;
-        assert!(send_result.is_ok(), "the channel is open at the time of send");
+        assert!(
+            send_result.is_ok(),
+            "the channel is open at the time of send"
+        );
         drop(tx);
 
         let mut stream = AgentRequestStream::new(rx);

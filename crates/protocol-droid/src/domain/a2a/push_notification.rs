@@ -108,11 +108,7 @@ impl TaskPushNotificationConfig {
     /// and [`with_authentication`](Self::with_authentication)
     /// to set the optional fields.
     #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        task_id: impl Into<String>,
-        url: impl Into<String>,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, task_id: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             task_id: task_id.into(),
@@ -268,7 +264,8 @@ mod tests {
 
     #[test]
     fn auth_info_round_trips_with_credentials() -> Result<(), TestError> {
-        let info = PushNotificationAuthenticationInfo::new("Basic").with_credentials("dXNlcjpwYXNz");
+        let info =
+            PushNotificationAuthenticationInfo::new("Basic").with_credentials("dXNlcjpwYXNz");
         let json = serde_json::to_string(&info)?;
         let parsed: PushNotificationAuthenticationInfo = serde_json::from_str(&json)?;
         assert_eq!(parsed, info);

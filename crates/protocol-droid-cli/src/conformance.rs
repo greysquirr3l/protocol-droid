@@ -307,11 +307,7 @@ async fn run_self(args: &SelfArgs) -> anyhow::Result<()> {
 /// invocation without standing up a process — the only thing
 /// `run_self` adds on top is the server lifecycle, and that is the
 /// piece a unit test cannot reach.
-async fn run_self_against(
-    pinned: &str,
-    url: &str,
-    args: &SelfArgs,
-) -> anyhow::Result<()> {
+async fn run_self_against(pinned: &str, url: &str, args: &SelfArgs) -> anyhow::Result<()> {
     let suite_args = ServerArgs {
         url: url.to_owned(),
         spec_version: args.spec_version.clone(),
@@ -477,11 +473,7 @@ fn workspace_manifest_path() -> std::path::PathBuf {
 /// fixture a chance to flush its own stderr before it goes.
 async fn terminate_child(mut child: tokio::process::Child) {
     let _ = child.start_kill();
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        child.wait(),
-    )
-    .await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
 }
 
 /// Reads `conformance/PINNED_VERSION` and returns the trimmed contents.
@@ -706,9 +698,7 @@ fn spawn_suite_child(npx_argv: &[OsString]) -> anyhow::Result<SuiteHandles> {
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| {
-            anyhow::anyhow!(
-                "could not spawn `npx` (is Node installed and on PATH?): {error}"
-            )
+            anyhow::anyhow!("could not spawn `npx` (is Node installed and on PATH?): {error}")
         })?;
 
     let mut stdout = child
@@ -742,8 +732,7 @@ fn write_json_report_if_requested(json: bool, report: &Report) -> anyhow::Result
     if !json {
         return Ok(());
     }
-    let serialized =
-        serde_json::to_string_pretty(report).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let serialized = serde_json::to_string_pretty(report).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("{serialized}");
     Ok(())
 }
@@ -937,9 +926,11 @@ mod tests {
             .collect();
         assert!(as_strings.contains(&"--url".to_owned()));
         assert!(as_strings.contains(&"http://127.0.0.1:8080/mcp".to_owned()));
-        assert!(as_strings
-            .iter()
-            .any(|s| s.contains("@modelcontextprotocol/conformance@0.2.0-alpha.12")));
+        assert!(
+            as_strings
+                .iter()
+                .any(|s| s.contains("@modelcontextprotocol/conformance@0.2.0-alpha.12"))
+        );
         assert!(as_strings.contains(&"server".to_owned()));
         assert!(as_strings.contains(&"--spec-version".to_owned()));
         assert!(as_strings.contains(&"2024-11-05".to_owned()));

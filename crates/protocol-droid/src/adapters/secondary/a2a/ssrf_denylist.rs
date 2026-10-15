@@ -167,7 +167,9 @@ impl SsrfDenylist {
         // it here so the receiver is not its own webhook.
         let path = url.path();
         if path.starts_with("/.well-known/") {
-            return Err(FilterDenial::ReservedNamespace { path: path.to_owned() });
+            return Err(FilterDenial::ReservedNamespace {
+                path: path.to_owned(),
+            });
         }
 
         // The version's reserved path is the same idea, version-tagged.
@@ -182,11 +184,7 @@ impl SsrfDenylist {
 }
 
 impl UrlFilter for SsrfDenylist {
-    fn check_at_config(
-        &self,
-        url: &Url,
-        version: A2aVersion,
-    ) -> Result<(), FilterDenial> {
+    fn check_at_config(&self, url: &Url, version: A2aVersion) -> Result<(), FilterDenial> {
         Self::check_url(url, version)
     }
 
@@ -214,9 +212,7 @@ impl UrlFilter for SsrfDenylist {
             && let Some(v4) = v6.to_ipv4_mapped()
             && Self::is_denied_v4(v4)
         {
-            return Err(FilterDenial::DeniedResolvedIp {
-                ip: IpAddr::V4(v4),
-            });
+            return Err(FilterDenial::DeniedResolvedIp { ip: IpAddr::V4(v4) });
         }
 
         Ok(())
@@ -284,15 +280,15 @@ mod tests {
     #[test]
     fn is_denied_v4_allows_public_ranges() {
         let allowed = [
-            "1.1.1.1",          // Cloudflare DNS
-            "8.8.8.8",          // Google DNS
-            "9.9.9.9",          // Quad9
-            "93.184.216.34",    // example.com
-            "172.32.0.1",       // first address outside 172.16.0.0/12
-            "172.15.0.1",       // last address outside
-            "169.255.0.1",      // first address outside 169.254.0.0/16
-            "169.253.0.1",      // last address outside
-            "11.0.0.1",         // just outside 10.0.0.0/8
+            "1.1.1.1",       // Cloudflare DNS
+            "8.8.8.8",       // Google DNS
+            "9.9.9.9",       // Quad9
+            "93.184.216.34", // example.com
+            "172.32.0.1",    // first address outside 172.16.0.0/12
+            "172.15.0.1",    // last address outside
+            "169.255.0.1",   // first address outside 169.254.0.0/16
+            "169.253.0.1",   // last address outside
+            "11.0.0.1",      // just outside 10.0.0.0/8
         ];
         for s in allowed {
             let IpAddr::V4(v4) = ip(s) else {
@@ -307,14 +303,7 @@ mod tests {
 
     #[test]
     fn is_denied_v6_covers_loopback_and_ula() {
-        let denied = [
-            "::1",
-            "::",
-            "fe80::1",
-            "fc00::1",
-            "fd00::1",
-            "2001:db8::1",
-        ];
+        let denied = ["::1", "::", "fe80::1", "fc00::1", "fd00::1", "2001:db8::1"];
         for s in denied {
             let IpAddr::V6(v6) = ip(s) else {
                 panic!("{s} is not IPv6");
@@ -500,11 +489,7 @@ mod tests {
         // attacker who pwned the persistence layer), the delivery
         // check should still catch the IP literal.
         let err = SsrfDenylist::FILTER
-            .check_at_delivery(
-                &url("http://10.0.0.1/hook"),
-                ip("93.184.216.34"),
-                V1_0,
-            )
+            .check_at_delivery(&url("http://10.0.0.1/hook"), ip("93.184.216.34"), V1_0)
             .expect_err("a tampered URL with a denied IP literal must still be denied");
         assert_matches::assert_matches!(err, FilterDenial::DeniedIpLiteral { .. });
     }

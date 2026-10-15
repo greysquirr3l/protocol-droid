@@ -157,7 +157,6 @@ pub trait PushNotificationDelivery: Send + Sync {
     ) -> impl std::future::Future<Output = Result<(), NotificationConfigError>> + Send;
 }
 
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -213,7 +212,10 @@ mod tests {
             .expect("the test fixture must parse as a URL");
         let err = WebhookUrl::new(&SsrfDenylist::FILTER, url, V1_0)
             .expect_err("a loopback URL must be denied at the constructor");
-        let matched = matches!(err, crate::application::a2a::FilterDenial::DeniedIpLiteral { .. });
+        let matched = matches!(
+            err,
+            crate::application::a2a::FilterDenial::DeniedIpLiteral { .. }
+        );
         assert!(matched, "denial was {err:?}");
     }
 
@@ -250,10 +252,7 @@ mod tests {
         match err {
             NotificationConfigError::Refused(d) => assert_eq!(d, denial),
             NotificationConfigError::TransientFailure { reason } => {
-                return Err(format!(
-                    "expected Refused, got TransientFailure({reason})"
-                )
-                .into());
+                return Err(format!("expected Refused, got TransientFailure({reason})").into());
             }
         }
         Ok(())

@@ -52,6 +52,7 @@ use std::time::Duration;
 use protocol_droid::adapters::secondary::a2a::A2aMethod;
 use protocol_droid::domain::a2a::agent_card::AgentCard;
 use protocol_droid::domain::a2a::agent_card::JSONRPC;
+use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
 use protocol_droid::domain::a2a::push_notification_methods::{
@@ -62,22 +63,22 @@ use protocol_droid::domain::a2a::push_notification_methods::{
 };
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use protocol_droid::domain::a2a::streaming_events::StreamingEvent;
-use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse};
-use protocol_droid::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 use protocol_droid::domain::a2a::task::TaskState;
+use protocol_droid::domain::a2a::task_lifecycle::{
+    CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
+};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let peer = std::env::var("A2A_PEER").unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
-    let card: AgentCard = fetch_json(&client, &format!("{peer}/.well-known/agent-card.json")).await?;
+    let card: AgentCard =
+        fetch_json(&client, &format!("{peer}/.well-known/agent-card.json")).await?;
     eprintln!("peer: {} v{}", card.name, card.version);
     eprintln!(
         "capabilities: streaming={} pushNotifications={} extendedAgentCard={}",
@@ -123,11 +124,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// `SendMessage` with a single text part. Returns the
 /// new task's id, which is what every other method
 /// here keys off of.
-async fn send_message(
-    client: &Client,
-    url: &str,
-    text: &str,
-) -> Result<String, Box<dyn Error>> {
+async fn send_message(client: &Client, url: &str, text: &str) -> Result<String, Box<dyn Error>> {
     let message = Message::new(MessageRole::User).with_part(Part::Text(TextPart {
         text: text.to_owned(),
         metadata: std::collections::BTreeMap::new(),
@@ -147,11 +144,7 @@ async fn send_message(
 }
 
 /// `GetTask`. Prints the response's `status.state`.
-async fn get_task(
-    client: &Client,
-    url: &str,
-    task_id: &str,
-) -> Result<(), Box<dyn Error>> {
+async fn get_task(client: &Client, url: &str, task_id: &str) -> Result<(), Box<dyn Error>> {
     let request = GetTaskRequest {
         id: task_id.to_owned(),
         history_length: None,
@@ -186,11 +179,7 @@ async fn list_tasks(client: &Client, url: &str) -> Result<(), Box<dyn Error>> {
 /// `CancelTask`. The example's task is already in
 /// `completed` state, so the cancel is a no-op on
 /// state but still returns the task.
-async fn cancel_task(
-    client: &Client,
-    url: &str,
-    task_id: &str,
-) -> Result<(), Box<dyn Error>> {
+async fn cancel_task(client: &Client, url: &str, task_id: &str) -> Result<(), Box<dyn Error>> {
     let request = CancelTaskRequest {
         id: task_id.to_owned(),
         metadata: std::collections::BTreeMap::new(),
@@ -230,8 +219,13 @@ async fn create_push_notification_config(
     };
     let request = CreateTaskPushNotificationConfigRequest::from(config);
     let value = serde_json::to_value(&request)?;
-    let result: Value =
-        json_rpc(client, url, A2aMethod::CreateTaskPushNotificationConfig, value).await?;
+    let result: Value = json_rpc(
+        client,
+        url,
+        A2aMethod::CreateTaskPushNotificationConfig,
+        value,
+    )
+    .await?;
     let response: CreateTaskPushNotificationConfigResponse = serde_json::from_value(result)?;
     let config_id = response.0.id;
     eprintln!("CreateTaskPushNotificationConfig({task_id}) -> {config_id}");
@@ -248,7 +242,8 @@ async fn get_push_notification_config(
     task_id: &str,
     config_id: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let request = GetTaskPushNotificationConfigRequest::new(config_id.to_owned(), task_id.to_owned());
+    let request =
+        GetTaskPushNotificationConfigRequest::new(config_id.to_owned(), task_id.to_owned());
     let value = serde_json::to_value(&request)?;
     let result: Value =
         json_rpc(client, url, A2aMethod::GetTaskPushNotificationConfig, value).await?;
@@ -271,8 +266,13 @@ async fn list_push_notification_configs(
         page_token: None,
     };
     let value = serde_json::to_value(&request)?;
-    let result: Value =
-        json_rpc(client, url, A2aMethod::ListTaskPushNotificationConfigs, value).await?;
+    let result: Value = json_rpc(
+        client,
+        url,
+        A2aMethod::ListTaskPushNotificationConfigs,
+        value,
+    )
+    .await?;
     let response: ListTaskPushNotificationConfigsResponse = serde_json::from_value(result)?;
     eprintln!(
         "ListTaskPushNotificationConfigs({task_id}) -> {} config(s)",
@@ -293,8 +293,13 @@ async fn delete_push_notification_config(
     let request =
         DeleteTaskPushNotificationConfigRequest::new(config_id.to_owned(), task_id.to_owned());
     let value = serde_json::to_value(&request)?;
-    let result: Value =
-        json_rpc(client, url, A2aMethod::DeleteTaskPushNotificationConfig, value).await?;
+    let result: Value = json_rpc(
+        client,
+        url,
+        A2aMethod::DeleteTaskPushNotificationConfig,
+        value,
+    )
+    .await?;
     let _response: DeleteTaskPushNotificationConfigResponse = serde_json::from_value(result)?;
     eprintln!("DeleteTaskPushNotificationConfig({task_id}, {config_id}) -> ok");
     Ok(())
@@ -321,7 +326,8 @@ async fn send_streaming_message(
         metadata: std::collections::BTreeMap::new(),
     };
     let value = serde_json::to_value(&request)?;
-    let events: Vec<StreamingEvent> = sse_post(client, url, A2aMethod::SendStreamingMessage, value).await?;
+    let events: Vec<StreamingEvent> =
+        sse_post(client, url, A2aMethod::SendStreamingMessage, value).await?;
     let names = events
         .iter()
         .map(|e| match e {
@@ -355,7 +361,8 @@ async fn subscribe_to_task(
         metadata: std::collections::BTreeMap::new(),
     };
     let value = serde_json::to_value(&request)?;
-    let events: Vec<StreamingEvent> = sse_post(client, url, A2aMethod::SubscribeToTask, value).await?;
+    let events: Vec<StreamingEvent> =
+        sse_post(client, url, A2aMethod::SubscribeToTask, value).await?;
     if let Some(StreamingEvent::Status(s)) = events.first() {
         eprintln!(
             "SubscribeToTask({task_id}) -> {} (final={})",
@@ -498,10 +505,7 @@ fn state_name(state: TaskState) -> String {
 /// `json` feature; a `text` round-trip plus a
 /// `serde_json::from_str` is the smallest dependency
 /// shape the example can use.
-async fn fetch_json<T: DeserializeOwned>(
-    client: &Client,
-    url: &str,
-) -> Result<T, Box<dyn Error>> {
+async fn fetch_json<T: DeserializeOwned>(client: &Client, url: &str) -> Result<T, Box<dyn Error>> {
     let body = client
         .get(url)
         .send()

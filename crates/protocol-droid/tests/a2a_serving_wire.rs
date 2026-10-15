@@ -74,9 +74,8 @@ impl A2aRequestHandler for MinimalAgent {
         method: A2aMethod,
         params: Option<Value>,
         _context: &A2aRequestContext,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + '_>>
+    {
         let store = self.store.clone();
         match method {
             A2aMethod::SendMessage => {
@@ -91,11 +90,10 @@ impl A2aRequestHandler for MinimalAgent {
                         store.next_id
                     };
                     let task_id = format!("t-{next_id}");
-                    let reply =
-                        Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
-                            text: "hi".to_owned(),
-                            metadata: std::collections::BTreeMap::new(),
-                        }));
+                    let reply = Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
+                        text: "hi".to_owned(),
+                        metadata: std::collections::BTreeMap::new(),
+                    }));
                     let task = Task::new(task_id.clone()).with_status(TaskStatus {
                         state: TaskState::Completed,
                         message: Some(reply),
@@ -192,7 +190,8 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::CreateTaskPushNotificationConfig => {
-                let request = match decode_params::<CreateTaskPushNotificationConfigRequest>(params) {
+                let request = match decode_params::<CreateTaskPushNotificationConfigRequest>(params)
+                {
                     Ok(request) => request,
                     Err(error) => return decode_failed(error),
                 };
@@ -206,10 +205,11 @@ impl A2aRequestHandler for MinimalAgent {
                         store.push_configs.insert(id.clone(), config.clone());
                         config
                     };
-                    serde_json::to_value(CreateTaskPushNotificationConfigResponse(stored))
-                        .map_err(|e| A2aError::InternalError {
+                    serde_json::to_value(CreateTaskPushNotificationConfigResponse(stored)).map_err(
+                        |e| A2aError::InternalError {
                             message: e.to_string(),
-                        })
+                        },
+                    )
                 })
             }
             A2aMethod::GetTaskPushNotificationConfig => {
@@ -230,14 +230,16 @@ impl A2aRequestHandler for MinimalAgent {
                                 request.id, request.task_id
                             ),
                         })?;
-                    serde_json::to_value(GetTaskPushNotificationConfigResponse(config))
-                        .map_err(|e| A2aError::InternalError {
+                    serde_json::to_value(GetTaskPushNotificationConfigResponse(config)).map_err(
+                        |e| A2aError::InternalError {
                             message: e.to_string(),
-                        })
+                        },
+                    )
                 })
             }
             A2aMethod::ListTaskPushNotificationConfigs => {
-                let request = match decode_params::<ListTaskPushNotificationConfigsRequest>(params) {
+                let request = match decode_params::<ListTaskPushNotificationConfigsRequest>(params)
+                {
                     Ok(request) => request,
                     Err(error) => return decode_failed(error),
                 };
@@ -257,7 +259,8 @@ impl A2aRequestHandler for MinimalAgent {
                 })
             }
             A2aMethod::DeleteTaskPushNotificationConfig => {
-                let request = match decode_params::<DeleteTaskPushNotificationConfigRequest>(params) {
+                let request = match decode_params::<DeleteTaskPushNotificationConfigRequest>(params)
+                {
                     Ok(request) => request,
                     Err(error) => return decode_failed(error),
                 };
@@ -286,17 +289,14 @@ impl A2aRequestHandler for MinimalAgent {
 /// params could not be decoded.
 fn decode_failed(
     error: A2aError,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + 'static>,
-> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + 'static>>
+{
     Box::pin(std::future::ready(Err(error)))
 }
 
 fn decode_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, A2aError> {
-    serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| {
-        A2aError::InvalidParams {
-            reason: format!("params do not match the method shape: {error}"),
-        }
+    serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| A2aError::InvalidParams {
+        reason: format!("params do not match the method shape: {error}"),
     })
 }
 
@@ -421,7 +421,9 @@ async fn well_known_serves_capabilities() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
-    let streaming = body.pointer("/capabilities/streaming").and_then(Value::as_bool);
+    let streaming = body
+        .pointer("/capabilities/streaming")
+        .and_then(Value::as_bool);
     let push = body
         .pointer("/capabilities/pushNotifications")
         .and_then(Value::as_bool);
@@ -472,9 +474,7 @@ async fn send_message_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let body: Value = serde_json::from_slice(&bytes)?;
     let jsonrpc = body.pointer("/jsonrpc").and_then(Value::as_str);
     let id = body.pointer("/id").and_then(Value::as_i64);
-    let state = body
-        .pointer("/result/status/state")
-        .and_then(Value::as_str);
+    let state = body.pointer("/result/status/state").and_then(Value::as_str);
     let role = body
         .pointer("/result/status/message/role")
         .and_then(Value::as_str);
@@ -543,9 +543,7 @@ async fn get_task_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let body: Value = serde_json::from_slice(&bytes)?;
     let id = body.pointer("/id").and_then(Value::as_i64);
     let read_id = body.pointer("/result/id").and_then(Value::as_str);
-    let state = body
-        .pointer("/result/status/state")
-        .and_then(Value::as_str);
+    let state = body.pointer("/result/status/state").and_then(Value::as_str);
     assert_eq!(id, Some(7));
     assert_eq!(read_id, task_id.as_deref());
     assert_eq!(state, Some("completed"));
@@ -632,9 +630,7 @@ async fn send_then_get_returns_same_task() -> Result<(), Box<dyn std::error::Err
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
     let read_id = body.pointer("/result/id").and_then(Value::as_str);
-    let state = body
-        .pointer("/result/status/state")
-        .and_then(Value::as_str);
+    let state = body.pointer("/result/status/state").and_then(Value::as_str);
     assert_eq!(read_id, task_id.as_deref());
     assert_eq!(state, Some("completed"));
     Ok(())
@@ -708,9 +704,7 @@ async fn cancel_flips_state_to_cancelled() -> Result<(), Box<dyn std::error::Err
         .await?;
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
-    let state = body
-        .pointer("/result/status/state")
-        .and_then(Value::as_str);
+    let state = body.pointer("/result/status/state").and_then(Value::as_str);
     assert_eq!(state, Some("cancelled"));
     Ok(())
 }
@@ -755,8 +749,8 @@ async fn get_missing_task_returns_invalid_params() -> Result<(), Box<dyn std::er
 /// that conflates them hides the wrong-doing
 /// from the peer.
 #[tokio::test]
-async fn missing_required_param_field_returns_invalid_params_not_method_not_found(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn missing_required_param_field_returns_invalid_params_not_method_not_found()
+-> Result<(), Box<dyn std::error::Error>> {
     let app = router();
     let body = json!({
         "jsonrpc": "2.0",
@@ -853,25 +847,20 @@ async fn list_tasks_returns_populated_tasks() -> Result<(), Box<dyn std::error::
     let id = body.pointer("/id").and_then(Value::as_i64);
     let tasks = body.pointer("/result/tasks").and_then(Value::as_array);
     let page_size = body.pointer("/result/pageSize").and_then(Value::as_u64);
-    let next_page_token = body.pointer("/result/nextPageToken").and_then(Value::as_str);
+    let next_page_token = body
+        .pointer("/result/nextPageToken")
+        .and_then(Value::as_str);
     assert_eq!(jsonrpc, Some("2.0"));
     assert_eq!(id, Some(99));
     let task_list = tasks.ok_or("expected /result/tasks to be an array")?;
     if task_list.len() != 2 {
-        return Err(format!(
-            "expected 2 tasks, got {}",
-            task_list.len()
-        )
-        .into());
+        return Err(format!("expected 2 tasks, got {}", task_list.len()).into());
     }
     if page_size != Some(2) {
         return Err(format!("expected pageSize 2, got {page_size:?}").into());
     }
     if next_page_token != Some("") {
-        return Err(format!(
-            "expected empty nextPageToken, got {next_page_token:?}"
-        )
-        .into());
+        return Err(format!("expected empty nextPageToken, got {next_page_token:?}").into());
     }
     Ok(())
 }
@@ -887,8 +876,7 @@ async fn list_tasks_returns_populated_tasks() -> Result<(), Box<dyn std::error::
 /// crash a peer that iterates without
 /// a null check.
 #[tokio::test]
-async fn list_tasks_on_empty_store_returns_empty_page(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn list_tasks_on_empty_store_returns_empty_page() -> Result<(), Box<dyn std::error::Error>> {
     let app = router();
     let list = json!({
         "jsonrpc": "2.0",
@@ -911,11 +899,7 @@ async fn list_tasks_on_empty_store_returns_empty_page(
     let tasks = body.pointer("/result/tasks").and_then(Value::as_array);
     let task_list = tasks.ok_or("expected /result/tasks to be an array")?;
     if !task_list.is_empty() {
-        return Err(format!(
-            "expected empty tasks, got {} entries",
-            task_list.len()
-        )
-        .into());
+        return Err(format!("expected empty tasks, got {} entries", task_list.len()).into());
     }
     let page_size = body.pointer("/result/pageSize").and_then(Value::as_u64);
     if page_size != Some(1) {
@@ -933,14 +917,15 @@ async fn list_tasks_on_empty_store_returns_empty_page(
 /// streaming `SendStreamingMessage` round-trips a
 /// `working`-then-`completed` pair on a single SSE response.
 #[tokio::test]
-async fn send_streaming_message_emits_working_then_completed() -> Result<(), Box<dyn std::error::Error>> {
+async fn send_streaming_message_emits_working_then_completed()
+-> Result<(), Box<dyn std::error::Error>> {
     use protocol_droid::adapters::primary::a2a::streaming_serve::{
-        serve_streaming, A2aStreamingRequestHandler,
+        A2aStreamingRequestHandler, serve_streaming,
     };
+    use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
     use protocol_droid::domain::a2a::send_message::SendMessageRequest;
     use protocol_droid::domain::a2a::streaming_events::StreamingEvent;
     use protocol_droid::domain::a2a::task_lifecycle::GetTaskRequest;
-    use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 
     struct EchoStreamAgent;
     impl A2aStreamingRequestHandler for EchoStreamAgent {
@@ -955,34 +940,42 @@ async fn send_streaming_message_emits_working_then_completed() -> Result<(), Box
             match method {
                 protocol_droid::adapters::secondary::a2a::A2aMethod::SendStreamingMessage => {
                     Box::pin(futures_util::stream::iter([
-                        Ok(StreamingEvent::Status(protocol_droid::domain::a2a::streaming_events::TaskStatusUpdateEvent {
-                            task_id: "t-s1".to_owned(),
-                            context_id: String::new(),
-                            status: protocol_droid::domain::a2a::task::TaskStatus {
-                                state: protocol_droid::domain::a2a::task::TaskState::Working,
-                                message: Some(Message::new(MessageRole::Agent)),
-                                timestamp: None,
+                        Ok(StreamingEvent::Status(
+                            protocol_droid::domain::a2a::streaming_events::TaskStatusUpdateEvent {
+                                task_id: "t-s1".to_owned(),
+                                context_id: String::new(),
+                                status: protocol_droid::domain::a2a::task::TaskStatus {
+                                    state: protocol_droid::domain::a2a::task::TaskState::Working,
+                                    message: Some(Message::new(MessageRole::Agent)),
+                                    timestamp: None,
+                                },
+                                is_final: false,
+                                metadata: std::collections::BTreeMap::new(),
                             },
-                            is_final: false,
-                            metadata: std::collections::BTreeMap::new(),
-                        })),
-                        Ok(StreamingEvent::Status(protocol_droid::domain::a2a::streaming_events::TaskStatusUpdateEvent {
-                            task_id: "t-s1".to_owned(),
-                            context_id: String::new(),
-                            status: protocol_droid::domain::a2a::task::TaskStatus {
-                                state: protocol_droid::domain::a2a::task::TaskState::Completed,
-                                message: Some(Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
-                                    text: "hi".to_owned(),
-                                    metadata: std::collections::BTreeMap::new(),
-                                }))),
-                                timestamp: None,
+                        )),
+                        Ok(StreamingEvent::Status(
+                            protocol_droid::domain::a2a::streaming_events::TaskStatusUpdateEvent {
+                                task_id: "t-s1".to_owned(),
+                                context_id: String::new(),
+                                status: protocol_droid::domain::a2a::task::TaskStatus {
+                                    state: protocol_droid::domain::a2a::task::TaskState::Completed,
+                                    message: Some(Message::new(MessageRole::Agent).with_part(
+                                        Part::Text(TextPart {
+                                            text: "hi".to_owned(),
+                                            metadata: std::collections::BTreeMap::new(),
+                                        }),
+                                    )),
+                                    timestamp: None,
+                                },
+                                is_final: true,
+                                metadata: std::collections::BTreeMap::new(),
                             },
-                            is_final: true,
-                            metadata: std::collections::BTreeMap::new(),
-                        })),
+                        )),
                     ]))
                 }
-                _other => Box::pin(futures_util::stream::iter(std::iter::once(Err(A2aError::MethodNotFound)))),
+                _other => Box::pin(futures_util::stream::iter(std::iter::once(Err(
+                    A2aError::MethodNotFound,
+                )))),
             }
         }
     }
@@ -1054,7 +1047,10 @@ async fn create_push_notification_config_round_trips() -> Result<(), Box<dyn std
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(body.pointer("/result/id").and_then(Value::as_str), Some("pc-1"));
+    assert_eq!(
+        body.pointer("/result/id").and_then(Value::as_str),
+        Some("pc-1")
+    );
     assert_eq!(
         body.pointer("/result/url").and_then(Value::as_str),
         Some("https://example.com/webhook")
@@ -1112,15 +1108,18 @@ async fn get_push_notification_config_round_trips() -> Result<(), Box<dyn std::e
         .await?;
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(body.pointer("/result/id").and_then(Value::as_str), Some("pc-1"));
+    assert_eq!(
+        body.pointer("/result/id").and_then(Value::as_str),
+        Some("pc-1")
+    );
     Ok(())
 }
 
 /// `GetTaskPushNotificationConfig` for an unknown id
 /// returns `-32602` (invalid params).
 #[tokio::test]
-async fn get_missing_push_notification_config_returns_invalid_params(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn get_missing_push_notification_config_returns_invalid_params()
+-> Result<(), Box<dyn std::error::Error>> {
     let app = router();
     let body = json!({
         "jsonrpc": "2.0",
@@ -1139,7 +1138,10 @@ async fn get_missing_push_notification_config_returns_invalid_params(
         .await?;
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(body.pointer("/error/code").and_then(Value::as_i64), Some(-32602));
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_i64),
+        Some(-32602)
+    );
     Ok(())
 }
 
@@ -1147,7 +1149,8 @@ async fn get_missing_push_notification_config_returns_invalid_params(
 /// for a task, in insertion order. An empty list is
 /// represented as an empty `configs` array.
 #[tokio::test]
-async fn list_push_notification_configs_filters_by_task() -> Result<(), Box<dyn std::error::Error>> {
+async fn list_push_notification_configs_filters_by_task() -> Result<(), Box<dyn std::error::Error>>
+{
     let app = router();
     for (i, task_id) in ["t-1", "t-1", "t-2"].iter().enumerate() {
         let create = json!({
@@ -1261,7 +1264,10 @@ async fn delete_push_notification_config_removes_it() -> Result<(), Box<dyn std:
         .await?;
     let bytes = body_bytes(response.into_body()).await;
     let body: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(body.pointer("/error/code").and_then(Value::as_i64), Some(-32602));
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_i64),
+        Some(-32602)
+    );
     Ok(())
 }
 
@@ -1279,9 +1285,12 @@ async fn delete_push_notification_config_removes_it() -> Result<(), Box<dyn std:
 async fn facade_serves_well_known_and_jsonrpc() -> Result<(), Box<dyn std::error::Error>> {
     let card = build_card();
     let store = Arc::new(std::sync::Mutex::new(TaskStore::default()));
-    let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent { store: store.clone() });
-    let streaming: Arc<dyn A2aStreamingRequestHandler> =
-        Arc::new(EmptyStreamAgent { store: store.clone() });
+    let handler: Arc<dyn A2aRequestHandler> = Arc::new(MinimalAgent {
+        store: store.clone(),
+    });
+    let streaming: Arc<dyn A2aStreamingRequestHandler> = Arc::new(EmptyStreamAgent {
+        store: store.clone(),
+    });
     let app = serve_a2a_agent("/a2a", handler, streaming, card);
 
     let well_known = app
@@ -1336,7 +1345,14 @@ impl A2aStreamingRequestHandler for EmptyStreamAgent {
         _params: Option<Value>,
         _context: &A2aRequestContext,
     ) -> std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<protocol_droid::domain::a2a::streaming_events::StreamingEvent, A2aError>> + Send>,
+        Box<
+            dyn futures_util::Stream<
+                    Item = Result<
+                        protocol_droid::domain::a2a::streaming_events::StreamingEvent,
+                        A2aError,
+                    >,
+                > + Send,
+        >,
     > {
         drop(self.store.lock().expect("store lock"));
         Box::pin(futures_util::stream::empty())

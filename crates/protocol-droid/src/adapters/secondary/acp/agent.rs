@@ -124,7 +124,9 @@ impl std::fmt::Debug for AcpAgentPeer {
         // implement `Debug`; format the
         // peer by hand, omitting the
         // channels.
-        formatter.debug_struct("AcpAgentPeer").finish_non_exhaustive()
+        formatter
+            .debug_struct("AcpAgentPeer")
+            .finish_non_exhaustive()
     }
 }
 
@@ -195,11 +197,7 @@ impl AcpAgentPeer {
     /// "result": <result> }`. The `id` is
     /// the value the request carried; the
     /// peer passes it through unchanged.
-    pub async fn send_reply(
-        &self,
-        id: Value,
-        result: Value,
-    ) -> Result<(), AcpPeerError> {
+    pub async fn send_reply(&self, id: Value, result: Value) -> Result<(), AcpPeerError> {
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -258,8 +256,7 @@ impl AcpAgentPeer {
     where
         Params: Serialize,
     {
-        let params_value: Value =
-            serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
+        let params_value: Value = serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -276,10 +273,8 @@ impl AcpAgentPeer {
     }
 }
 
-async fn spawn_reader<R>(
-    mut reader: BufReader<R>,
-    request_tx: mpsc::Sender<AgentRequest>,
-) where
+async fn spawn_reader<R>(mut reader: BufReader<R>, request_tx: mpsc::Sender<AgentRequest>)
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let mut line = String::new();
@@ -370,7 +365,10 @@ mod tests {
         // to its end of the duplex; the
         // agent peer should surface it.
         let request_bytes = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"foo\":\"bar\"}}\n";
-        client_end.write_all(request_bytes).await.map_err(AcpPeerError::Write)?;
+        client_end
+            .write_all(request_bytes)
+            .await
+            .map_err(AcpPeerError::Write)?;
 
         let request = peer
             .recv_request()
@@ -401,8 +399,7 @@ mod tests {
             .await?;
 
         let line = read_line_from(BufReader::new(client_end)).await?;
-        let value: Value =
-            serde_json::from_str(&line).map_err(AcpPeerError::Decode)?;
+        let value: Value = serde_json::from_str(&line).map_err(AcpPeerError::Decode)?;
         assert_eq!(value.get("jsonrpc"), Some(&Value::String("2.0".to_owned())));
         assert_eq!(value.get("id"), Some(&Value::from(7u64)));
         assert_eq!(
@@ -422,8 +419,7 @@ mod tests {
     /// is `{ jsonrpc, method, params }`
     /// only.
     #[tokio::test]
-    async fn a_notification_written_by_the_agent_peer_omits_the_id() -> Result<(), AcpPeerError>
-    {
+    async fn a_notification_written_by_the_agent_peer_omits_the_id() -> Result<(), AcpPeerError> {
         let (client_end, agent_end) = duplex(4096);
         let (agent_read, agent_write) = tokio::io::split(agent_end);
         let peer = AcpAgentPeer::from_stdio(agent_read, agent_write);
@@ -432,9 +428,11 @@ mod tests {
             .await?;
 
         let line = read_line_from(BufReader::new(client_end)).await?;
-        let value: Value =
-            serde_json::from_str(&line).map_err(AcpPeerError::Decode)?;
-        assert!(value.get("id").is_none(), "the notification has no `id` field");
+        let value: Value = serde_json::from_str(&line).map_err(AcpPeerError::Decode)?;
+        assert!(
+            value.get("id").is_none(),
+            "the notification has no `id` field"
+        );
         assert_eq!(
             value.get("method"),
             Some(&Value::String("session/update".to_owned()))
@@ -450,8 +448,7 @@ mod tests {
     /// wire form is `{ jsonrpc, id,
     /// error: { code, message } }`.
     #[tokio::test]
-    async fn an_error_reply_written_by_the_agent_peer_round_trips() -> Result<(), AcpPeerError>
-    {
+    async fn an_error_reply_written_by_the_agent_peer_round_trips() -> Result<(), AcpPeerError> {
         let (client_end, agent_end) = duplex(4096);
         let (agent_read, agent_write) = tokio::io::split(agent_end);
         let peer = AcpAgentPeer::from_stdio(agent_read, agent_write);
@@ -460,8 +457,7 @@ mod tests {
             .await?;
 
         let line = read_line_from(BufReader::new(client_end)).await?;
-        let value: Value =
-            serde_json::from_str(&line).map_err(AcpPeerError::Decode)?;
+        let value: Value = serde_json::from_str(&line).map_err(AcpPeerError::Decode)?;
         assert_eq!(value.get("id"), Some(&Value::from(3u64)));
         let error = value
             .get("error")
@@ -486,9 +482,7 @@ mod tests {
     /// trailing newline is stripped so the
     /// caller parses the JSON object
     /// directly.
-    async fn read_line_from<R>(
-        mut reader: BufReader<R>,
-    ) -> Result<String, AcpPeerError>
+    async fn read_line_from<R>(mut reader: BufReader<R>) -> Result<String, AcpPeerError>
     where
         R: tokio::io::AsyncRead + Unpin + Send,
     {

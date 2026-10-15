@@ -47,12 +47,15 @@ fn record_args_constructable() {
     // (clap), so constructing it through `Default::default()` is
     // the cheapest way to exercise the derive without going
     // through the parser.
-    let _ = format!("{:?}", protocol_droid_cli::record::RecordArgs {
-        listen: "stdio:.".to_owned(),
-        upstream: "stdio:./upstream".to_owned(),
-        out: "-".to_owned(),
-        allow_downgrade: false,
-    });
+    let _ = format!(
+        "{:?}",
+        protocol_droid_cli::record::RecordArgs {
+            listen: "stdio:.".to_owned(),
+            upstream: "stdio:./upstream".to_owned(),
+            out: "-".to_owned(),
+            allow_downgrade: false,
+        }
+    );
 }
 
 #[test]

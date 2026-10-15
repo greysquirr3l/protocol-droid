@@ -33,6 +33,7 @@
 use std::error::Error;
 
 use protocol_droid::adapters::secondary::a2a::A2aClient;
+use protocol_droid::domain::a2a::list_tasks::ListTasksRequest;
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::push_notification::TaskPushNotificationConfig;
 use protocol_droid::domain::a2a::push_notification_methods::{
@@ -42,7 +43,6 @@ use protocol_droid::domain::a2a::push_notification_methods::{
 use protocol_droid::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use protocol_droid::domain::a2a::streaming_events::StreamingEvent;
 use protocol_droid::domain::a2a::task_lifecycle::{CancelTaskRequest, GetTaskRequest};
-use protocol_droid::domain::a2a::list_tasks::ListTasksRequest;
 
 const PEER: &str = "http://127.0.0.1:8080";
 
@@ -89,15 +89,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // `get_task`, `cancel_task`, `list_tasks` are
     // the same one-line shape: typed request in,
     // typed response out.
-    let get = client.get_task(GetTaskRequest::new(task_id.clone())).await?;
-    eprintln!(
-        "GetTask({task_id}) -> state {:?}",
-        get.0.status.state
-    );
-
-    let listed = client
-        .list_tasks(ListTasksRequest::default())
+    let get = client
+        .get_task(GetTaskRequest::new(task_id.clone()))
         .await?;
+    eprintln!("GetTask({task_id}) -> state {:?}", get.0.status.state);
+
+    let listed = client.list_tasks(ListTasksRequest::default()).await?;
     eprintln!("ListTasks -> {} tasks", listed.tasks.len());
 
     let cancelled = client
@@ -124,7 +121,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("  [{i}] artifact event");
             continue;
         };
-        eprintln!("  [{i}] status {:?} (final = {})", status.status.state, status.is_final);
+        eprintln!(
+            "  [{i}] status {:?} (final = {})",
+            status.status.state, status.is_final
+        );
     }
 
     // The four push-notification-config methods
@@ -189,9 +189,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // `A2aClientError::Io`.
     if std::env::var("A2A_BEARER_TOKEN").is_ok() {
         let extended = client
-            .get_extended_agent_card(protocol_droid::domain::a2a::extended_agent_card::GetExtendedAgentCardRequest::new())
+            .get_extended_agent_card(
+                protocol_droid::domain::a2a::extended_agent_card::GetExtendedAgentCardRequest::new(
+                ),
+            )
             .await?;
-        eprintln!("GetExtendedAgentCard -> {} v{}", extended.name, extended.version);
+        eprintln!(
+            "GetExtendedAgentCard -> {} v{}",
+            extended.name, extended.version
+        );
     } else {
         eprintln!(
             "GetExtendedAgentCard -> skipped (set A2A_BEARER_TOKEN on both sides to exercise)"

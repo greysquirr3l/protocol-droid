@@ -308,7 +308,9 @@ mod tests {
             client_info: None,
         };
         let value = serde_json::to_value(&request)?;
-        let protocol_version = value.get("protocolVersion").and_then(serde_json::Value::as_u64);
+        let protocol_version = value
+            .get("protocolVersion")
+            .and_then(serde_json::Value::as_u64);
         let client_capabilities = value.get("clientCapabilities");
         assert_eq!(protocol_version, Some(1));
         assert_eq!(client_capabilities, Some(&json!({})));
@@ -361,7 +363,9 @@ mod tests {
         let agent_value = serde_json::to_value(&agent)?;
         let terminal_value = serde_json::to_value(&terminal)?;
         let agent_type = agent_value.get("type").and_then(serde_json::Value::as_str);
-        let terminal_type = terminal_value.get("type").and_then(serde_json::Value::as_str);
+        let terminal_type = terminal_value
+            .get("type")
+            .and_then(serde_json::Value::as_str);
         assert_eq!(agent_type, Some("agent"));
         assert_eq!(terminal_type, Some("terminal"));
         Ok(())
@@ -384,7 +388,10 @@ mod tests {
                     audio: false,
                     embedded_context: true,
                 }),
-                mcp_capabilities: Some(McpCapabilities { http: true, sse: false }),
+                mcp_capabilities: Some(McpCapabilities {
+                    http: true,
+                    sse: false,
+                }),
             },
             auth_methods: None,
             agent_info: Some(Implementation::protocol_droid("test-agent", "0.1.0")),
@@ -417,7 +424,9 @@ mod tests {
             .get("authMethods")
             .and_then(|v| v.as_array())
             .ok_or_else(|| Failure::Other("authMethods is not an array".to_owned()))?;
-        let first = methods.first().ok_or_else(|| Failure::Other("authMethods is empty".to_owned()))?;
+        let first = methods
+            .first()
+            .ok_or_else(|| Failure::Other("authMethods is empty".to_owned()))?;
         let first_type = first.get("type").and_then(serde_json::Value::as_str);
         assert_eq!(first_type, Some("terminal"));
         Ok(())

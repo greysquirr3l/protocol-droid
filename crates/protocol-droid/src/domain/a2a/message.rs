@@ -282,9 +282,7 @@ pub struct DataPart {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{
-        DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart,
-    };
+    use super::{DataPart, FileContent, FilePart, Message, MessageRole, Part, TextPart};
 
     type TestError = Box<dyn std::error::Error>;
 

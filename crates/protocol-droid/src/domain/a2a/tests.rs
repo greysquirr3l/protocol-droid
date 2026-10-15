@@ -50,10 +50,7 @@ fn v1_0_parses_to_the_known_variant() {
 fn a_future_version_becomes_unknown() {
     assert_eq!(
         "1.5".parse::<A2aVersion>(),
-        Ok(A2aVersion::Unknown {
-            major: 1,
-            minor: 5
-        }),
+        Ok(A2aVersion::Unknown { major: 1, minor: 5 }),
         "`1.5` must parse as the unknown peer"
     );
 }
@@ -151,10 +148,7 @@ fn unknown_profile_disables_every_feature() {
     // names a `Unknown` version is the upstream-correct
     // path to a `VersionNotSupportedError` upgrade; the
     // profile agrees.
-    let profile = A2aFeatureProfile::for_known_version(A2aVersion::Unknown {
-        major: 9,
-        minor: 9,
-    });
+    let profile = A2aFeatureProfile::for_known_version(A2aVersion::Unknown { major: 9, minor: 9 });
     for feature in Feature::ALL {
         assert!(
             !profile.is_enabled(feature),
@@ -223,10 +217,7 @@ fn a_known_version_serialises_to_its_display_form() -> Result<(), Failure> {
 
 #[test]
 fn an_unknown_version_serialises_to_its_display_form() -> Result<(), Failure> {
-    let v = A2aVersion::Unknown {
-        major: 1,
-        minor: 5,
-    };
+    let v = A2aVersion::Unknown { major: 1, minor: 5 };
     let json = serde_json::to_string(&v)?;
     assert_eq!(
         json, "\"1.5\"",
@@ -246,10 +237,7 @@ fn a_known_version_round_trips_through_serde() -> Result<(), Failure> {
 
 #[test]
 fn an_unknown_version_round_trips_through_serde() -> Result<(), Failure> {
-    let v = A2aVersion::Unknown {
-        major: 0,
-        minor: 3,
-    };
+    let v = A2aVersion::Unknown { major: 0, minor: 3 };
     let json = serde_json::to_string(&v)?;
     let parsed: A2aVersion = serde_json::from_str(&json)?;
     assert_eq!(parsed, v);

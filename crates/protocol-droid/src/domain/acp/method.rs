@@ -240,7 +240,11 @@ pub struct AcpMethodParseError {
 
 impl fmt::Display for AcpMethodParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "ACP method {:?} is not in the v1.25.0 method table", self.input)
+        write!(
+            formatter,
+            "ACP method {:?} is not in the v1.25.0 method table",
+            self.input
+        )
     }
 }
 
@@ -253,7 +257,9 @@ impl FromStr for AcpMethod {
         if let Some(rest) = input.strip_prefix("$/") {
             return match rest {
                 "cancel_request" => Ok(Self::Protocol(ProtocolMethod::CancelRequest)),
-                _ => Err(AcpMethodParseError { input: input.to_owned() }),
+                _ => Err(AcpMethodParseError {
+                    input: input.to_owned(),
+                }),
             };
         }
         for method in [
@@ -292,7 +298,9 @@ impl FromStr for AcpMethod {
                 return Ok(method);
             }
         }
-        Err(AcpMethodParseError { input: input.to_owned() })
+        Err(AcpMethodParseError {
+            input: input.to_owned(),
+        })
     }
 }
 
@@ -313,33 +321,94 @@ mod tests {
             (AcpMethod::Agent(AgentMethod::Authenticate), "authenticate"),
             (AcpMethod::Agent(AgentMethod::SessionNew), "session/new"),
             (AcpMethod::Agent(AgentMethod::SessionLoad), "session/load"),
-            (AcpMethod::Agent(AgentMethod::SessionSetMode), "session/set_mode"),
-            (AcpMethod::Agent(AgentMethod::SessionSetConfigOption), "session/set_config_option"),
-            (AcpMethod::Agent(AgentMethod::SessionPrompt), "session/prompt"),
-            (AcpMethod::Agent(AgentMethod::SessionCancel), "session/cancel"),
+            (
+                AcpMethod::Agent(AgentMethod::SessionSetMode),
+                "session/set_mode",
+            ),
+            (
+                AcpMethod::Agent(AgentMethod::SessionSetConfigOption),
+                "session/set_config_option",
+            ),
+            (
+                AcpMethod::Agent(AgentMethod::SessionPrompt),
+                "session/prompt",
+            ),
+            (
+                AcpMethod::Agent(AgentMethod::SessionCancel),
+                "session/cancel",
+            ),
             (AcpMethod::Agent(AgentMethod::SessionList), "session/list"),
-            (AcpMethod::Agent(AgentMethod::SessionDelete), "session/delete"),
-            (AcpMethod::Agent(AgentMethod::SessionResume), "session/resume"),
+            (
+                AcpMethod::Agent(AgentMethod::SessionDelete),
+                "session/delete",
+            ),
+            (
+                AcpMethod::Agent(AgentMethod::SessionResume),
+                "session/resume",
+            ),
             (AcpMethod::Agent(AgentMethod::SessionClose), "session/close"),
             (AcpMethod::Agent(AgentMethod::Logout), "logout"),
-            (AcpMethod::Client(ClientMethod::SessionRequestPermission), "session/request_permission"),
-            (AcpMethod::Client(ClientMethod::SessionUpdate), "session/update"),
-            (AcpMethod::Client(ClientMethod::FsWriteTextFile), "fs/write_text_file"),
-            (AcpMethod::Client(ClientMethod::FsReadTextFile), "fs/read_text_file"),
-            (AcpMethod::Client(ClientMethod::TerminalCreate), "terminal/create"),
-            (AcpMethod::Client(ClientMethod::TerminalOutput), "terminal/output"),
-            (AcpMethod::Client(ClientMethod::TerminalRelease), "terminal/release"),
-            (AcpMethod::Client(ClientMethod::TerminalWaitForExit), "terminal/wait_for_exit"),
-            (AcpMethod::Client(ClientMethod::TerminalKill), "terminal/kill"),
-            (AcpMethod::Client(ClientMethod::ElicitationCreate), "elicitation/create"),
-            (AcpMethod::Client(ClientMethod::ElicitationComplete), "elicitation/complete"),
-            (AcpMethod::Protocol(ProtocolMethod::CancelRequest), "$/cancel_request"),
+            (
+                AcpMethod::Client(ClientMethod::SessionRequestPermission),
+                "session/request_permission",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::SessionUpdate),
+                "session/update",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::FsWriteTextFile),
+                "fs/write_text_file",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::FsReadTextFile),
+                "fs/read_text_file",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::TerminalCreate),
+                "terminal/create",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::TerminalOutput),
+                "terminal/output",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::TerminalRelease),
+                "terminal/release",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::TerminalWaitForExit),
+                "terminal/wait_for_exit",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::TerminalKill),
+                "terminal/kill",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::ElicitationCreate),
+                "elicitation/create",
+            ),
+            (
+                AcpMethod::Client(ClientMethod::ElicitationComplete),
+                "elicitation/complete",
+            ),
+            (
+                AcpMethod::Protocol(ProtocolMethod::CancelRequest),
+                "$/cancel_request",
+            ),
         ];
-        assert_eq!(cases.len(), 25, "every published ACP v1 method should appear");
+        assert_eq!(
+            cases.len(),
+            25,
+            "every published ACP v1 method should appear"
+        );
         for (method, expected_name) in cases {
             assert_eq!(method.as_wire_name(), *expected_name);
             let round_tripped: AcpMethod = expected_name.parse()?;
-            assert_eq!(round_tripped, *method, "round-trip failed for {expected_name}");
+            assert_eq!(
+                round_tripped, *method,
+                "round-trip failed for {expected_name}"
+            );
         }
         Ok(())
     }

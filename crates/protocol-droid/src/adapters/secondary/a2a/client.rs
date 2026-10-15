@@ -663,7 +663,9 @@ mod tests {
                 unreachable!("an envelope without `result` is a parse error, got Ok({value})")
             }
             Err(A2aClientError::Parse(_)) => {}
-            Err(other) => unreachable!("an envelope without `result` is a parse error, got {other}"),
+            Err(other) => {
+                unreachable!("an envelope without `result` is a parse error, got {other}")
+            }
         }
     }
 
@@ -708,8 +710,8 @@ mod tests {
     }
 
     #[test]
-    fn get_extended_agent_card_request_serialises_as_empty_object(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn get_extended_agent_card_request_serialises_as_empty_object()
+    -> Result<(), Box<dyn std::error::Error>> {
         // The spec's `GetExtendedAgentCardRequest`
         // has only a `tenant` path parameter, so
         // the wire body is `{}` (not `null`). The

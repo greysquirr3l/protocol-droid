@@ -299,9 +299,7 @@ pub async fn run_one(router: &axum::Router, vector: &Vector) -> VectorResult {
 /// envelope, and shapes it for the runner's
 /// `ObservedResponse`. Status codes outside
 /// the 200 range are recorded as `Transport`.
-async fn observe_response(
-    response: axum::response::Response,
-) -> ObservedResponse {
+async fn observe_response(response: axum::response::Response) -> ObservedResponse {
     let status = response.status();
     let body_bytes = match axum::body::to_bytes(response.into_body(), 64 * 1024).await {
         Ok(bytes) => bytes,
@@ -339,15 +337,10 @@ async fn observe_response(
             envelope_object.get("error").map_or_else(
                 || ObservedResponse::Transport {
                     status: status.as_u16(),
-                    body: format!(
-                        "envelope carried neither result nor error: {envelope}"
-                    ),
+                    body: format!("envelope carried neither result nor error: {envelope}"),
                 },
                 |error| {
-                    let code = error
-                        .get("code")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0);
+                    let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
                     let message = error
                         .get("message")
                         .and_then(Value::as_str)
@@ -376,8 +369,20 @@ fn compare(vector: &Vector, observed: &ObservedResponse) -> VectorResult {
             expected == result
         }
         (
-            ExpectedResponse::Error { error: ExpectedError { code, message_contains } },
-            ObservedResponse::Error { error: ObservedError { code: obs_code, message } },
+            ExpectedResponse::Error {
+                error:
+                    ExpectedError {
+                        code,
+                        message_contains,
+                    },
+            },
+            ObservedResponse::Error {
+                error:
+                    ObservedError {
+                        code: obs_code,
+                        message,
+                    },
+            },
         ) => code == obs_code && message.contains(message_contains.as_str()),
         _ => false,
     };
@@ -549,7 +554,8 @@ mod tests {
     /// the malformed entry, 1-indexed.
     #[test]
     fn parse_jsonl_names_the_offending_line() -> Result<(), String> {
-        let fixture = "{\"name\": \"ok\", \"request\": {}, \"expected\": {\"result\": {}}}\nbad json\n";
+        let fixture =
+            "{\"name\": \"ok\", \"request\": {}, \"expected\": {\"result\": {}}}\nbad json\n";
         match parse_jsonl(fixture) {
             Ok(vectors) => Err(format!(
                 "a malformed fixture should be an error, got {vectors_len} vectors",
@@ -580,7 +586,10 @@ mod tests {
         };
         let text = format!("{error}");
         assert!(text.contains('3'), "the line number should appear: {text}");
-        assert!(text.contains("expected"), "the serde message should appear: {text}");
+        assert!(
+            text.contains("expected"),
+            "the serde message should appear: {text}"
+        );
     }
 
     /// `run_against_in_process` is exercised in
@@ -646,7 +655,11 @@ mod tests {
             _params: Option<Value>,
             _context: &crate::application::a2a::A2aRequestContext,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Value, crate::application::a2a::A2aError>> + Send + '_>,
+            Box<
+                dyn std::future::Future<Output = Result<Value, crate::application::a2a::A2aError>>
+                    + Send
+                    + '_,
+            >,
         > {
             Box::pin(async move { Err(crate::application::a2a::A2aError::MethodNotFound) })
         }

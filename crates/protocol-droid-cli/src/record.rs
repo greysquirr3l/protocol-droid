@@ -93,7 +93,10 @@ fn redact_field(frame: &str, field: &str) -> String {
         return frame.to_owned();
     };
     let after_key = start.saturating_add(key.len());
-    let Some(value_start) = frame[after_key..].find('"').map(|offset| after_key + offset + 1) else {
+    let Some(value_start) = frame[after_key..]
+        .find('"')
+        .map(|offset| after_key + offset + 1)
+    else {
         return frame.to_owned();
     };
     let Some(value_end_rel) = frame[value_start..].find('"') else {
@@ -384,8 +387,8 @@ pub async fn run(args: &RecordArgs) -> anyhow::Result<()> {
             Arc::new(JsonlRecorder::new(buffered, Instant::now()))
         }
         path => {
-            let file = File::create(path)
-                .with_context(|| format!("opening record output at {path}"))?;
+            let file =
+                File::create(path).with_context(|| format!("opening record output at {path}"))?;
             Arc::new(JsonlRecorder::new(BufWriter::new(file), Instant::now()))
         }
     };
@@ -595,10 +598,7 @@ mod tests {
             fn record_upstream_to_client(&self, _frame: &str) {}
         }
         let recorder: Arc<dyn Recorder> = Arc::new(Counting);
-        let source = RecordingSource::new(
-            OneShot(Some("frame".to_owned())),
-            Arc::clone(&recorder),
-        );
+        let source = RecordingSource::new(OneShot(Some("frame".to_owned())), Arc::clone(&recorder));
         let result = source.next_frame().await.expect("inner source returns Ok");
         assert_eq!(result.as_deref(), Some("frame"));
     }
@@ -628,10 +628,7 @@ mod tests {
         }
         let captured = Arc::new(Mutex::new(None::<String>));
         let recorder: Arc<dyn Recorder> = Arc::new(Counting);
-        let sink = RecordingSink::new(
-            Capturing(Arc::clone(&captured)),
-            Arc::clone(&recorder),
-        );
+        let sink = RecordingSink::new(Capturing(Arc::clone(&captured)), Arc::clone(&recorder));
         sink.send("frame").await.expect("capturing sink returns Ok");
         let captured = captured.lock().expect("captured mutex is not poisoned");
         assert_eq!(captured.as_deref(), Some("frame"));
@@ -653,10 +650,7 @@ mod tests {
         }
         let (buf, writer) = fresh_buffer();
         let recorder: Arc<dyn Recorder> = Arc::new(JsonlRecorder::new(writer, Instant::now()));
-        let source = RecordingSource::new(
-            OneShot(Some("first".to_owned())),
-            Arc::clone(&recorder),
-        );
+        let source = RecordingSource::new(OneShot(Some("first".to_owned())), Arc::clone(&recorder));
         let _ = source.next_frame().await;
         let out = String::from_utf8(buf.lock().expect("buffer").clone()).expect("utf-8");
         assert!(out.contains("first"));

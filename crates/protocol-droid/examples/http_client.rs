@@ -48,7 +48,9 @@ use protocol_droid::domain::ir::JsonObject;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(run())
 }
 

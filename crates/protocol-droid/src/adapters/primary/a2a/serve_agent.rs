@@ -105,10 +105,10 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::adapters::primary::a2a::jsonrpc_serve::serve_jsonrpc;
+use crate::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
 use crate::adapters::primary::a2a::streaming_serve::serve_streaming;
 use crate::adapters::primary::a2a::well_known_serve::serve_well_known;
 use crate::application::a2a::A2aRequestHandler;
-use crate::adapters::primary::a2a::streaming_serve::A2aStreamingRequestHandler;
 use crate::domain::a2a::agent_card::AgentCard;
 use crate::domain::a2a::version::A2aVersion;
 
@@ -184,7 +184,12 @@ mod tests {
             _params: Option<serde_json::Value>,
             _context: &A2aRequestContext,
         ) -> std::pin::Pin<
-            Box<dyn futures_core::Future<Output = Result<serde_json::Value, crate::application::a2a::A2aError>> + Send + '_>,
+            Box<
+                dyn futures_core::Future<
+                        Output = Result<serde_json::Value, crate::application::a2a::A2aError>,
+                    > + Send
+                    + '_,
+            >,
         > {
             Box::pin(async move {
                 Err(crate::application::a2a::A2aError::MethodNotImplemented { method })
@@ -199,7 +204,9 @@ mod tests {
             _params: Option<serde_json::Value>,
             _context: &A2aRequestContext,
         ) -> std::pin::Pin<
-            Box<dyn Stream<Item = Result<StreamingEvent, crate::application::a2a::A2aError>> + Send>,
+            Box<
+                dyn Stream<Item = Result<StreamingEvent, crate::application::a2a::A2aError>> + Send,
+            >,
         > {
             Box::pin(stream::empty())
         }

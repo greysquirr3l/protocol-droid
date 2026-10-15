@@ -205,7 +205,10 @@ impl AgentCardBuilder {
                 return Err(AgentCardError::EmptySkillField { index, field: "id" });
             }
             if skill.name.is_empty() {
-                return Err(AgentCardError::EmptySkillField { index, field: "name" });
+                return Err(AgentCardError::EmptySkillField {
+                    index,
+                    field: "name",
+                });
             }
             if skill.description.is_empty() {
                 return Err(AgentCardError::EmptySkillField {
@@ -221,7 +224,10 @@ impl AgentCardBuilder {
         }
         for (index, extension) in self.capabilities.extensions.iter().enumerate() {
             if extension.uri.is_empty() {
-                return Err(AgentCardError::EmptyExtensionField { index, field: "uri" });
+                return Err(AgentCardError::EmptyExtensionField {
+                    index,
+                    field: "uri",
+                });
             }
             if extension.description.is_empty() {
                 return Err(AgentCardError::EmptyExtensionField {
@@ -256,8 +262,7 @@ impl AgentCardBuilder {
                         });
                     }
                 }
-                SecurityScheme::OpenIdConnect(_)
-                | SecurityScheme::MutualTls(_) => {
+                SecurityScheme::OpenIdConnect(_) | SecurityScheme::MutualTls(_) => {
                     // OpenIdConnectSecurityScheme has no
                     // builder-time invariants beyond the
                     // required `open_id_connect_url`, which
@@ -296,13 +301,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::{AgentCard, AgentCardBuilder};
+    use crate::domain::a2a::A2aVersion;
     use crate::domain::a2a::agent_card::error::AgentCardError;
     use crate::domain::a2a::agent_card::types::{AgentSkill, JSONRPC};
-    use crate::domain::a2a::A2aVersion;
 
     type TestError = Box<dyn std::error::Error>;
 
-    fn sample_interface() -> Result<crate::domain::a2a::agent_card::types::AgentInterface, TestError> {
+    fn sample_interface() -> Result<crate::domain::a2a::agent_card::types::AgentInterface, TestError>
+    {
         Ok(crate::domain::a2a::agent_card::types::AgentInterface {
             url: url::Url::parse("https://example.com/a2a/v1")?,
             protocol_binding: JSONRPC.clone(),
@@ -455,7 +461,10 @@ mod tests {
             .expect_err("an empty skill id must be refused");
         assert_eq!(
             err,
-            AgentCardError::EmptySkillField { index: 0, field: "id" }
+            AgentCardError::EmptySkillField {
+                index: 0,
+                field: "id"
+            }
         );
         Ok(())
     }
@@ -591,7 +600,10 @@ mod tests {
             .extensions
             .first()
             .expect("the card carries exactly one extension");
-        assert_eq!(ext.uri.as_ref(), "https://example.com/extension/audio-input");
+        assert_eq!(
+            ext.uri.as_ref(),
+            "https://example.com/extension/audio-input"
+        );
         assert!(!ext.required);
         assert!(ext.params.is_none());
         Ok(())
@@ -616,7 +628,10 @@ mod tests {
             .expect_err("an empty extension uri must be refused");
         assert_eq!(
             err,
-            AgentCardError::EmptyExtensionField { index: 0, field: "uri" }
+            AgentCardError::EmptyExtensionField {
+                index: 0,
+                field: "uri"
+            }
         );
         Ok(())
     }

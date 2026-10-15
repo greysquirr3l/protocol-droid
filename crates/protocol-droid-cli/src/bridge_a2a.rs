@@ -87,8 +87,9 @@ impl protocol_droid::application::bridge::Upstream for A2aUpstream {
     /// `await`.
     fn open(
         &self,
-    ) -> impl core::future::Future<Output = Result<OpenedUpstream, protocol_droid::application::bridge::UpstreamError>>
-    + Send {
+    ) -> impl core::future::Future<
+        Output = Result<OpenedUpstream, protocol_droid::application::bridge::UpstreamError>,
+    > + Send {
         let codec: Arc<dyn CrossProtocolCodec> = Arc::new(A2aMcpCodec::new());
         let inner = Arc::clone(&self.inner);
         let result = (|| {
@@ -105,7 +106,10 @@ impl protocol_droid::application::bridge::Upstream for A2aUpstream {
             // knows about and the profile the bridge
             // advertises.
             let leg = Leg::new(latest_version(), self.profile);
-            Ok(OpenedUpstream::new(leg, Arc::new(wrapped) as Arc<dyn BridgePeer>))
+            Ok(OpenedUpstream::new(
+                leg,
+                Arc::new(wrapped) as Arc<dyn BridgePeer>,
+            ))
         })();
         core::future::ready(result)
     }

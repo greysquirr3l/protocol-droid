@@ -40,8 +40,7 @@ use reqwest::redirect::Policy;
 use url::Url;
 
 use crate::application::a2a::{
-    FilterDenial, NotificationConfig, NotificationConfigError,
-    PushNotificationDelivery, UrlFilter,
+    FilterDenial, NotificationConfig, NotificationConfigError, PushNotificationDelivery, UrlFilter,
 };
 use crate::domain::a2a::A2aVersion;
 
@@ -120,10 +119,7 @@ impl WebhookDelivery {
     /// caller owns TLS, redirect, and
     /// timeout configuration.
     #[must_use]
-    pub fn with_client(
-        client: reqwest::Client,
-        filter: Arc<dyn UrlFilter>,
-    ) -> Self {
+    pub fn with_client(client: reqwest::Client, filter: Arc<dyn UrlFilter>) -> Self {
         Self {
             client,
             filter,
@@ -148,10 +144,7 @@ impl PushNotificationDelivery for WebhookDelivery {
         for hop in 0..=self.max_redirects {
             if hop == self.max_redirects {
                 return Err(NotificationConfigError::TransientFailure {
-                    reason: format!(
-                        "exceeded {} redirects",
-                        self.max_redirects
-                    ),
+                    reason: format!("exceeded {} redirects", self.max_redirects),
                 });
             }
 
@@ -198,14 +191,11 @@ impl PushNotificationDelivery for WebhookDelivery {
             // retrying will not make
             // it through.
             for ip in &resolved_ips {
-                if let Err(_denial) = self.filter.check_at_delivery(
-                    &current_url,
-                    *ip,
-                    A2aVersion::V1_0,
-                ) {
-                    return Err(NotificationConfigError::Refused(
-                        FilterDenial::MissingHost,
-                    ));
+                if let Err(_denial) =
+                    self.filter
+                        .check_at_delivery(&current_url, *ip, A2aVersion::V1_0)
+                {
+                    return Err(NotificationConfigError::Refused(FilterDenial::MissingHost));
                 }
             }
 
@@ -216,8 +206,7 @@ impl PushNotificationDelivery for WebhookDelivery {
                 .header("content-type", "application/json")
                 .body(body.to_vec());
             if let Some(token) = &config.token {
-                request = request
-                    .header("x-a2a-notification-token", token.as_ref());
+                request = request.header("x-a2a-notification-token", token.as_ref());
             }
             let response = request.send().await.map_err(|error| {
                 NotificationConfigError::TransientFailure {
@@ -234,16 +223,12 @@ impl PushNotificationDelivery for WebhookDelivery {
                 if let Some(location) = response.headers().get(reqwest::header::LOCATION) {
                     let location_str = location.to_str().map_err(|error| {
                         NotificationConfigError::TransientFailure {
-                            reason: format!(
-                                "redirect location is not valid UTF-8: {error}"
-                            ),
+                            reason: format!("redirect location is not valid UTF-8: {error}"),
                         }
                     })?;
                     let next_url = current_url.join(location_str).map_err(|error| {
                         NotificationConfigError::TransientFailure {
-                            reason: format!(
-                                "redirect location is not a valid URL: {error}"
-                            ),
+                            reason: format!("redirect location is not a valid URL: {error}"),
                         }
                     })?;
                     current_url = next_url;
@@ -289,10 +274,7 @@ mod tests {
         // caller-supplied client
         // path.
         let client = reqwest::Client::new();
-        let delivery = WebhookDelivery::with_client(
-            client,
-            Arc::new(SsrfDenylist::FILTER),
-        );
+        let delivery = WebhookDelivery::with_client(client, Arc::new(SsrfDenylist::FILTER));
         let _ = format!("{delivery:?}");
     }
 }

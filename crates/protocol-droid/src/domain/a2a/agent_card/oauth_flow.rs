@@ -262,9 +262,7 @@ mod tests {
             }),
             client_credentials: None,
             device_code: Some(DeviceCodeOAuthFlow {
-                device_authorization_url: url::Url::parse(
-                    "https://auth.example.com/device",
-                )?,
+                device_authorization_url: url::Url::parse("https://auth.example.com/device")?,
                 token_url: url::Url::parse("https://auth.example.com/token")?,
                 refresh_url: None,
                 scopes,
@@ -272,7 +270,9 @@ mod tests {
         };
         let value = serde_json::to_value(&flows)?;
         let Some(obj) = value.as_object() else {
-            return Err("OAuthFlows must serialise to a JSON object".to_owned().into());
+            return Err("OAuthFlows must serialise to a JSON object"
+                .to_owned()
+                .into());
         };
         assert!(obj.contains_key("authorizationCode"));
         assert!(!obj.contains_key("clientCredentials"));
@@ -315,8 +315,7 @@ mod tests {
             obj.get("type").and_then(serde_json::Value::as_str),
             Some("oauth2")
         );
-        let Some(flows_obj) = obj.get("flows").and_then(serde_json::Value::as_object)
-        else {
+        let Some(flows_obj) = obj.get("flows").and_then(serde_json::Value::as_object) else {
             return Err("flows must be a JSON object".to_owned().into());
         };
         let Some(ac) = flows_obj
@@ -326,7 +325,8 @@ mod tests {
             return Err("authorizationCode must be a JSON object".to_owned().into());
         };
         assert_eq!(
-            ac.get("authorizationUrl").and_then(serde_json::Value::as_str),
+            ac.get("authorizationUrl")
+                .and_then(serde_json::Value::as_str),
             Some("https://auth.example.com/authorize")
         );
         assert_eq!(

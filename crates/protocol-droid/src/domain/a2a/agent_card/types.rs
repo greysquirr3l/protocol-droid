@@ -24,8 +24,7 @@ pub static JSONRPC: LazyLock<ProtocolBinding> =
     LazyLock::new(|| ProtocolBinding(Arc::from("JSONRPC")));
 
 /// The gRPC binding.
-pub static GRPC: LazyLock<ProtocolBinding> =
-    LazyLock::new(|| ProtocolBinding(Arc::from("GRPC")));
+pub static GRPC: LazyLock<ProtocolBinding> = LazyLock::new(|| ProtocolBinding(Arc::from("GRPC")));
 
 /// The HTTP+JSON binding (REST-style POSTs of JSON-RPC envelopes).
 pub static HTTP_JSON: LazyLock<ProtocolBinding> =
@@ -273,7 +272,8 @@ pub struct AgentCard {
     /// (alphabetical by scheme name), which keeps test
     /// fixtures readable.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub security_schemes: std::collections::BTreeMap<Arc<str>, super::security_scheme::SecurityScheme>,
+    pub security_schemes:
+        std::collections::BTreeMap<Arc<str>, super::security_scheme::SecurityScheme>,
     /// The security requirements the agent publishes, in
     /// preference order. Optional in the spec — an agent
     /// with no `security_requirements` field on the wire
@@ -460,9 +460,7 @@ mod tests {
             .as_object()
             .expect("the card must serialise to a JSON object");
 
-        let provider = obj
-            .get("provider")
-            .and_then(serde_json::Value::as_object);
+        let provider = obj.get("provider").and_then(serde_json::Value::as_object);
         let provider_url = provider
             .and_then(|p| p.get("url"))
             .and_then(serde_json::Value::as_str)

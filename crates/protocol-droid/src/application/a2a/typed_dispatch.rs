@@ -74,18 +74,12 @@ use crate::domain::a2a::extended_agent_card::{
 };
 use crate::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
 use crate::domain::a2a::push_notification_methods::{
-    CreateTaskPushNotificationConfigRequest,
-    CreateTaskPushNotificationConfigResponse,
-    DeleteTaskPushNotificationConfigRequest,
-    DeleteTaskPushNotificationConfigResponse,
-    GetTaskPushNotificationConfigRequest,
-    GetTaskPushNotificationConfigResponse,
-    ListTaskPushNotificationConfigsRequest,
-    ListTaskPushNotificationConfigsResponse,
+    CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
+    DeleteTaskPushNotificationConfigRequest, DeleteTaskPushNotificationConfigResponse,
+    GetTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigResponse,
+    ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
 };
-use crate::domain::a2a::send_message::{
-    SendMessageRequest, SendMessageResponse,
-};
+use crate::domain::a2a::send_message::{SendMessageRequest, SendMessageResponse};
 use crate::domain::a2a::task_lifecycle::{
     CancelTaskRequest, CancelTaskResponse, GetTaskRequest, GetTaskResponse,
 };
@@ -102,13 +96,7 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         &'a self,
         request: SendMessageRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<SendMessageResponse, A2aError>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<SendMessageResponse, A2aError>> + Send + 'a>>;
 
     // --- GetTask ----------------------------------------------------
 
@@ -118,9 +106,7 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         &'a self,
         request: GetTaskRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<GetTaskResponse, A2aError>> + Send + 'a>,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<GetTaskResponse, A2aError>> + Send + 'a>>;
 
     // --- CancelTask -------------------------------------------------
 
@@ -130,13 +116,7 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         &'a self,
         request: CancelTaskRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<CancelTaskResponse, A2aError>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<CancelTaskResponse, A2aError>> + Send + 'a>>;
 
     // --- ListTasks --------------------------------------------------
 
@@ -146,11 +126,7 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         &'a self,
         request: ListTasksRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ListTasksResponse, A2aError>> + Send + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<ListTasksResponse, A2aError>> + Send + 'a>>;
 
     // --- GetExtendedAgentCard ---------------------------------------
 
@@ -161,13 +137,7 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         &'a self,
         request: GetExtendedAgentCardRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<GetExtendedAgentCardResponse, A2aError>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<GetExtendedAgentCardResponse, A2aError>> + Send + 'a>>;
 
     // --- Push-notification methods ----------------------------------
 
@@ -180,12 +150,8 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        CreateTaskPushNotificationConfigResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<CreateTaskPushNotificationConfigResponse, A2aError>>
+                + Send
                 + 'a,
         >,
     >;
@@ -199,12 +165,8 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        GetTaskPushNotificationConfigResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<GetTaskPushNotificationConfigResponse, A2aError>>
+                + Send
                 + 'a,
         >,
     >;
@@ -218,12 +180,8 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        ListTaskPushNotificationConfigsResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<ListTaskPushNotificationConfigsResponse, A2aError>>
+                + Send
                 + 'a,
         >,
     >;
@@ -237,12 +195,8 @@ pub trait A2aRequestHandlerExt: A2aRequestHandler {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        DeleteTaskPushNotificationConfigResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<DeleteTaskPushNotificationConfigResponse, A2aError>>
+                + Send
                 + 'a,
         >,
     >;
@@ -253,18 +207,11 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         &'a self,
         request: SendMessageRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<SendMessageResponse, A2aError>>
-                + Send
-                + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<SendMessageResponse, A2aError>> + Send + '_>> {
         let method = A2aMethod::SendMessage;
-        let value = serde_json::to_value(&request)
-            .map_err(|e| A2aError::InternalError {
-                message: format!("failed to serialise SendMessage request: {e}"),
-            });
+        let value = serde_json::to_value(&request).map_err(|e| A2aError::InternalError {
+            message: format!("failed to serialise SendMessage request: {e}"),
+        });
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
@@ -280,9 +227,7 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         &'a self,
         request: GetTaskRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<GetTaskResponse, A2aError>> + Send + '_>,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<GetTaskResponse, A2aError>> + Send + '_>> {
         let method = A2aMethod::GetTask;
         let value = serde_json::to_value(&request).map_err(|e| A2aError::InternalError {
             message: format!("failed to serialise GetTask request: {e}"),
@@ -290,10 +235,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<GetTaskResponse>(raw).map_err(|e| {
-                A2aError::InternalError {
-                    message: format!("failed to deserialise GetTask response: {e}"),
-                }
+            serde_json::from_value::<GetTaskResponse>(raw).map_err(|e| A2aError::InternalError {
+                message: format!("failed to deserialise GetTask response: {e}"),
             })
         })
     }
@@ -302,13 +245,7 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         &'a self,
         request: CancelTaskRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<CancelTaskResponse, A2aError>>
-                + Send
-                + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<CancelTaskResponse, A2aError>> + Send + '_>> {
         let method = A2aMethod::CancelTask;
         let value = serde_json::to_value(&request).map_err(|e| A2aError::InternalError {
             message: format!("failed to serialise CancelTask request: {e}"),
@@ -316,10 +253,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<CancelTaskResponse>(raw).map_err(|e| {
-                A2aError::InternalError {
-                    message: format!("failed to deserialise CancelTask response: {e}"),
-                }
+            serde_json::from_value::<CancelTaskResponse>(raw).map_err(|e| A2aError::InternalError {
+                message: format!("failed to deserialise CancelTask response: {e}"),
             })
         })
     }
@@ -328,11 +263,7 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         &'a self,
         request: ListTasksRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ListTasksResponse, A2aError>> + Send + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<ListTasksResponse, A2aError>> + Send + '_>> {
         let method = A2aMethod::ListTasks;
         let value = serde_json::to_value(&request).map_err(|e| A2aError::InternalError {
             message: format!("failed to serialise ListTasks request: {e}"),
@@ -340,10 +271,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<ListTasksResponse>(raw).map_err(|e| {
-                A2aError::InternalError {
-                    message: format!("failed to deserialise ListTasks response: {e}"),
-                }
+            serde_json::from_value::<ListTasksResponse>(raw).map_err(|e| A2aError::InternalError {
+                message: format!("failed to deserialise ListTasks response: {e}"),
             })
         })
     }
@@ -352,13 +281,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         &'a self,
         request: GetExtendedAgentCardRequest,
         context: &'a A2aRequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<GetExtendedAgentCardResponse, A2aError>>
-                + Send
-                + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<GetExtendedAgentCardResponse, A2aError>> + Send + '_>>
+    {
         let method = A2aMethod::GetExtendedAgentCard;
         let value = serde_json::to_value(&request).map_err(|e| A2aError::InternalError {
             message: format!("failed to serialise GetExtendedAgentCard request: {e}"),
@@ -368,9 +292,7 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
             let raw = self.dispatch(method, Some(value), context).await?;
             serde_json::from_value::<GetExtendedAgentCardResponse>(raw).map_err(|e| {
                 A2aError::InternalError {
-                    message: format!(
-                        "failed to deserialise GetExtendedAgentCard response: {e}"
-                    ),
+                    message: format!("failed to deserialise GetExtendedAgentCard response: {e}"),
                 }
             })
         })
@@ -382,12 +304,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        CreateTaskPushNotificationConfigResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<CreateTaskPushNotificationConfigResponse, A2aError>>
+                + Send
                 + '_,
         >,
     > {
@@ -398,12 +316,13 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<CreateTaskPushNotificationConfigResponse>(raw)
-                .map_err(|e| A2aError::InternalError {
+            serde_json::from_value::<CreateTaskPushNotificationConfigResponse>(raw).map_err(|e| {
+                A2aError::InternalError {
                     message: format!(
                         "failed to deserialise CreateTaskPushNotificationConfig response: {e}"
                     ),
-                })
+                }
+            })
         })
     }
 
@@ -413,12 +332,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        GetTaskPushNotificationConfigResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<GetTaskPushNotificationConfigResponse, A2aError>>
+                + Send
                 + '_,
         >,
     > {
@@ -429,12 +344,13 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<GetTaskPushNotificationConfigResponse>(raw)
-                .map_err(|e| A2aError::InternalError {
+            serde_json::from_value::<GetTaskPushNotificationConfigResponse>(raw).map_err(|e| {
+                A2aError::InternalError {
                     message: format!(
                         "failed to deserialise GetTaskPushNotificationConfig response: {e}"
                     ),
-                })
+                }
+            })
         })
     }
 
@@ -444,12 +360,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        ListTaskPushNotificationConfigsResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<ListTaskPushNotificationConfigsResponse, A2aError>>
+                + Send
                 + '_,
         >,
     > {
@@ -460,12 +372,13 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<ListTaskPushNotificationConfigsResponse>(raw)
-                .map_err(|e| A2aError::InternalError {
+            serde_json::from_value::<ListTaskPushNotificationConfigsResponse>(raw).map_err(|e| {
+                A2aError::InternalError {
                     message: format!(
                         "failed to deserialise ListTaskPushNotificationConfigs response: {e}"
                     ),
-                })
+                }
+            })
         })
     }
 
@@ -475,12 +388,8 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         context: &'a A2aRequestContext,
     ) -> Pin<
         Box<
-            dyn Future<
-                    Output = Result<
-                        DeleteTaskPushNotificationConfigResponse,
-                        A2aError,
-                    >,
-                > + Send
+            dyn Future<Output = Result<DeleteTaskPushNotificationConfigResponse, A2aError>>
+                + Send
                 + '_,
         >,
     > {
@@ -491,12 +400,13 @@ impl<H: A2aRequestHandler + ?Sized> A2aRequestHandlerExt for H {
         Box::pin(async move {
             let value = value?;
             let raw = self.dispatch(method, Some(value), context).await?;
-            serde_json::from_value::<DeleteTaskPushNotificationConfigResponse>(raw)
-                .map_err(|e| A2aError::InternalError {
+            serde_json::from_value::<DeleteTaskPushNotificationConfigResponse>(raw).map_err(|e| {
+                A2aError::InternalError {
                     message: format!(
                         "failed to deserialise DeleteTaskPushNotificationConfig response: {e}"
                     ),
-                })
+                }
+            })
         })
     }
 }
@@ -511,31 +421,21 @@ mod tests {
     use serde_json::json;
 
     use super::A2aRequestHandlerExt;
-    use crate::application::a2a::handler::{
-        A2aError, A2aRequestContext, A2aRequestHandler,
-    };
     use crate::adapters::secondary::a2a::A2aMethod;
+    use crate::application::a2a::handler::{A2aError, A2aRequestContext, A2aRequestHandler};
     use crate::domain::a2a::extended_agent_card::{
         GetExtendedAgentCardRequest, GetExtendedAgentCardResponse,
     };
-    use crate::domain::a2a::list_tasks::{
-        ListTasksRequest, ListTasksResponse,
-    };
+    use crate::domain::a2a::list_tasks::{ListTasksRequest, ListTasksResponse};
     use crate::domain::a2a::push_notification_methods::{
-        CreateTaskPushNotificationConfigRequest,
-        CreateTaskPushNotificationConfigResponse,
-        DeleteTaskPushNotificationConfigRequest,
-        DeleteTaskPushNotificationConfigResponse,
-        GetTaskPushNotificationConfigRequest,
-        GetTaskPushNotificationConfigResponse,
-        ListTaskPushNotificationConfigsRequest,
-        ListTaskPushNotificationConfigsResponse,
+        CreateTaskPushNotificationConfigRequest, CreateTaskPushNotificationConfigResponse,
+        DeleteTaskPushNotificationConfigRequest, DeleteTaskPushNotificationConfigResponse,
+        GetTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigResponse,
+        ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
     };
     use crate::domain::a2a::send_message::SendMessageRequest;
     use crate::domain::a2a::task::Task;
-    use crate::domain::a2a::task_lifecycle::{
-        CancelTaskRequest, GetTaskRequest,
-    };
+    use crate::domain::a2a::task_lifecycle::{CancelTaskRequest, GetTaskRequest};
     use crate::domain::a2a::version::A2aVersion;
 
     type TestError = Box<dyn std::error::Error>;
@@ -577,14 +477,10 @@ mod tests {
         // serialises to `{}`).
         let mut modes = BTreeSet::new();
         modes.insert("text/plain".to_owned());
-        let request = SendMessageRequest::new(
-            crate::domain::a2a::message::Message::new(
-                crate::domain::a2a::message::MessageRole::User,
-            ),
-        )
-        .with_configuration(
-            crate::domain::a2a::send_message::MessageSendConfiguration::new(modes),
-        );
+        let request = SendMessageRequest::new(crate::domain::a2a::message::Message::new(
+            crate::domain::a2a::message::MessageRole::User,
+        ))
+        .with_configuration(crate::domain::a2a::send_message::MessageSendConfiguration::new(modes));
         // The typed wrapper returns
         // `Result<SendMessageResponse,
         // A2aError>`, but our echo
@@ -605,9 +501,7 @@ mod tests {
         // output is not a valid response
         // shape.
         let Err(_err) = result else {
-            return Err(
-                "expected deserialisation error from echo handler".into(),
-            );
+            return Err("expected deserialisation error from echo handler".into());
         };
         Ok(())
     }
@@ -630,9 +524,7 @@ mod tests {
         // serialised request.
         let result = handler.get_task(request, &context).await;
         let Err(_err) = result else {
-            return Err(
-                "expected deserialisation error from echo handler".into(),
-            );
+            return Err("expected deserialisation error from echo handler".into());
         };
         // A direct dispatch would
         // succeed. This asserts the
@@ -675,17 +567,11 @@ mod tests {
             // whatever was there before the
             // panic. That is what `lock().ok()`
             // expresses.
-            self.last_method
-                .lock()
-                .ok()
-                .and_then(|guard| *guard)
+            self.last_method.lock().ok().and_then(|guard| *guard)
         }
 
         fn last_params(&self) -> Option<serde_json::Value> {
-            self.last_params
-                .lock()
-                .ok()
-                .and_then(|guard| guard.clone())
+            self.last_params.lock().ok().and_then(|guard| guard.clone())
         }
     }
 
@@ -712,8 +598,7 @@ mod tests {
     /// serialises the request id into the
     /// params.
     #[tokio::test]
-    async fn cancel_task_routes_to_cancel_task_method(
-    ) -> Result<(), TestError> {
+    async fn cancel_task_routes_to_cancel_task_method() -> Result<(), TestError> {
         use crate::domain::a2a::task::Task;
         let task = Task::new("t-cancel");
         let response_value = serde_json::to_value(&task)?;
@@ -734,9 +619,7 @@ mod tests {
             .cancel_task(request, &context)
             .await
             .map_err(|error| format!("cancel_task returned an error: {error:?}"))?;
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::CancelTask {
             return Err(format!("expected CancelTask, got {recorded:?}").into());
         }
@@ -758,8 +641,7 @@ mod tests {
     /// response deserialises through the
     /// typed wrapper without error.
     #[tokio::test]
-    async fn list_tasks_routes_to_list_tasks_method(
-    ) -> Result<(), TestError> {
+    async fn list_tasks_routes_to_list_tasks_method() -> Result<(), TestError> {
         let response = ListTasksResponse::new(Vec::<Task>::new())
             .with_page_size(1)
             .with_total_size(0)
@@ -775,15 +657,9 @@ mod tests {
             .await
             .map_err(|error| format!("list_tasks returned an error: {error:?}"))?;
         if response.page_size != 1 {
-            return Err(format!(
-                "expected page_size 1, got {}",
-                response.page_size
-            )
-            .into());
+            return Err(format!("expected page_size 1, got {}", response.page_size).into());
         }
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::ListTasks {
             return Err(format!("expected ListTasks, got {recorded:?}").into());
         }
@@ -795,11 +671,9 @@ mod tests {
     /// and the response deserialises
     /// through the typed wrapper.
     #[tokio::test]
-    async fn get_extended_agent_card_routes_to_method(
-    ) -> Result<(), TestError> {
+    async fn get_extended_agent_card_routes_to_method() -> Result<(), TestError> {
         use crate::domain::a2a::agent_card::{
-            AgentCapabilities, AgentCardBuilder, AgentInterface,
-            AgentSkill, ProtocolBinding,
+            AgentCapabilities, AgentCardBuilder, AgentInterface, AgentSkill, ProtocolBinding,
         };
         // The card builder is the
         // domain's typed entry point.
@@ -852,17 +726,10 @@ mod tests {
         handler
             .get_extended_agent_card(request, &context)
             .await
-            .map_err(|error| {
-                format!("get_extended_agent_card returned an error: {error:?}")
-            })?;
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+            .map_err(|error| format!("get_extended_agent_card returned an error: {error:?}"))?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::GetExtendedAgentCard {
-            return Err(format!(
-                "expected GetExtendedAgentCard, got {recorded:?}"
-            )
-            .into());
+            return Err(format!("expected GetExtendedAgentCard, got {recorded:?}").into());
         }
         Ok(())
     }
@@ -871,16 +738,14 @@ mod tests {
     /// routes to the right method and the
     /// response deserialises.
     #[tokio::test]
-    async fn create_task_push_notification_config_routes_to_method(
-    ) -> Result<(), TestError> {
+    async fn create_task_push_notification_config_routes_to_method() -> Result<(), TestError> {
         use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
         let config = TaskPushNotificationConfig::new(
             String::new(),
             "t-1".to_owned(),
             "https://example.com/webhook".to_owned(),
         );
-        let response =
-            CreateTaskPushNotificationConfigResponse(config);
+        let response = CreateTaskPushNotificationConfigResponse(config);
         let response_value = serde_json::to_value(&response)?;
         let handler = RecordingHandler::new(response_value);
         let context = A2aRequestContext {
@@ -891,22 +756,16 @@ mod tests {
             "t-1".to_owned(),
             "https://example.com/webhook".to_owned(),
         );
-        let request =
-            CreateTaskPushNotificationConfigRequest(inner);
+        let request = CreateTaskPushNotificationConfigRequest(inner);
         handler
             .create_task_push_notification_config(request, &context)
             .await
-            .map_err(|error| {
-                format!("create returned an error: {error:?}")
-            })?;
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+            .map_err(|error| format!("create returned an error: {error:?}"))?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::CreateTaskPushNotificationConfig {
-            return Err(format!(
-                "expected CreateTaskPushNotificationConfig, got {recorded:?}"
-            )
-            .into());
+            return Err(
+                format!("expected CreateTaskPushNotificationConfig, got {recorded:?}").into(),
+            );
         }
         Ok(())
     }
@@ -915,39 +774,27 @@ mod tests {
     /// routes to the right method and the
     /// response deserialises.
     #[tokio::test]
-    async fn get_task_push_notification_config_routes_to_method(
-    ) -> Result<(), TestError> {
+    async fn get_task_push_notification_config_routes_to_method() -> Result<(), TestError> {
         use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
         let config = TaskPushNotificationConfig::new(
             String::new(),
             "t-1".to_owned(),
             "https://example.com/webhook".to_owned(),
         );
-        let response =
-            GetTaskPushNotificationConfigResponse(config);
+        let response = GetTaskPushNotificationConfigResponse(config);
         let response_value = serde_json::to_value(&response)?;
         let handler = RecordingHandler::new(response_value);
         let context = A2aRequestContext {
             protocol_version: A2aVersion::V1_0,
         };
-        let request = GetTaskPushNotificationConfigRequest::new(
-            "pc-1",
-            "t-1",
-        );
+        let request = GetTaskPushNotificationConfigRequest::new("pc-1", "t-1");
         handler
             .get_task_push_notification_config(request, &context)
             .await
-            .map_err(|error| {
-                format!("get returned an error: {error:?}")
-            })?;
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+            .map_err(|error| format!("get returned an error: {error:?}"))?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::GetTaskPushNotificationConfig {
-            return Err(format!(
-                "expected GetTaskPushNotificationConfig, got {recorded:?}"
-            )
-            .into());
+            return Err(format!("expected GetTaskPushNotificationConfig, got {recorded:?}").into());
         }
         Ok(())
     }
@@ -956,8 +803,7 @@ mod tests {
     /// routes to the right method and the
     /// response deserialises.
     #[tokio::test]
-    async fn list_task_push_notification_configs_routes_to_method(
-    ) -> Result<(), TestError> {
+    async fn list_task_push_notification_configs_routes_to_method() -> Result<(), TestError> {
         use crate::domain::a2a::push_notification::TaskPushNotificationConfig;
         let configs: Vec<TaskPushNotificationConfig> = Vec::new();
         let response = ListTaskPushNotificationConfigsResponse::new(configs);
@@ -970,17 +816,12 @@ mod tests {
         handler
             .list_task_push_notification_configs(request, &context)
             .await
-            .map_err(|error| {
-                format!("list returned an error: {error:?}")
-            })?;
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+            .map_err(|error| format!("list returned an error: {error:?}"))?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::ListTaskPushNotificationConfigs {
-            return Err(format!(
-                "expected ListTaskPushNotificationConfigs, got {recorded:?}"
-            )
-            .into());
+            return Err(
+                format!("expected ListTaskPushNotificationConfigs, got {recorded:?}").into(),
+            );
         }
         Ok(())
     }
@@ -989,30 +830,23 @@ mod tests {
     /// routes to the right method and the
     /// response (default) deserialises.
     #[tokio::test]
-    async fn delete_task_push_notification_config_routes_to_method(
-    ) -> Result<(), TestError> {
+    async fn delete_task_push_notification_config_routes_to_method() -> Result<(), TestError> {
         let response = DeleteTaskPushNotificationConfigResponse::default();
         let response_value = serde_json::to_value(&response)?;
         let handler = RecordingHandler::new(response_value);
         let context = A2aRequestContext {
             protocol_version: A2aVersion::V1_0,
         };
-        let request =
-            DeleteTaskPushNotificationConfigRequest::new("pc-1", "t-1");
+        let request = DeleteTaskPushNotificationConfigRequest::new("pc-1", "t-1");
         handler
             .delete_task_push_notification_config(request, &context)
             .await
-            .map_err(|error| {
-                format!("delete returned an error: {error:?}")
-            })?;
-        let recorded = handler
-            .last_method()
-            .ok_or("dispatch was not called")?;
+            .map_err(|error| format!("delete returned an error: {error:?}"))?;
+        let recorded = handler.last_method().ok_or("dispatch was not called")?;
         if recorded != A2aMethod::DeleteTaskPushNotificationConfig {
-            return Err(format!(
-                "expected DeleteTaskPushNotificationConfig, got {recorded:?}"
-            )
-            .into());
+            return Err(
+                format!("expected DeleteTaskPushNotificationConfig, got {recorded:?}").into(),
+            );
         }
         Ok(())
     }
@@ -1026,8 +860,7 @@ mod tests {
     /// domain errors into internal
     /// errors.
     #[tokio::test]
-    async fn dispatch_error_is_propagated_not_swallowed(
-    ) -> Result<(), TestError> {
+    async fn dispatch_error_is_propagated_not_swallowed() -> Result<(), TestError> {
         struct FailingHandler;
         impl A2aRequestHandler for FailingHandler {
             fn dispatch(

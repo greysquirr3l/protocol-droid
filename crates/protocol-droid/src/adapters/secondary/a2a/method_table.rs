@@ -363,10 +363,7 @@ mod tests {
                 assert_eq!(method, A2aMethod::SendMessage);
                 assert_eq!(id.as_number(), Some(7));
                 let raw = params.ok_or("SendMessage has params")?;
-                assert_eq!(
-                    raw.get(),
-                    r#"{"message":{"role":"user","parts":[]}}"#
-                );
+                assert_eq!(raw.get(), r#"{"message":{"role":"user","parts":[]}}"#);
             }
             other => return Err(format!("expected a request, got {other:?}").into()),
         }

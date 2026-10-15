@@ -71,24 +71,15 @@ fn detect_git_sha() -> String {
         .args(["diff", "--quiet", "HEAD"])
         .status()
         .is_ok_and(|status| !status.success());
-    if dirty {
-        format!("{sha}-dirty")
-    } else {
-        sha
-    }
+    if dirty { format!("{sha}-dirty") } else { sha }
 }
 
 /// The last commit's date, in `YYYY-MM-DD`. Falls back to
 /// `UNKNOWN` when git is unavailable, which is the same
 /// fallback `detect_git_sha` uses so the two are consistent.
 fn detect_build_date() -> String {
-    git_output(&[
-        "log",
-        "-1",
-        "--format=%cd",
-        "--date=format:%Y-%m-%d",
-    ])
-    .unwrap_or_else(|| UNKNOWN.to_owned())
+    git_output(&["log", "-1", "--format=%cd", "--date=format:%Y-%m-%d"])
+        .unwrap_or_else(|| UNKNOWN.to_owned())
 }
 
 fn main() {

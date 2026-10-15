@@ -27,9 +27,7 @@ use protocol_droid::application::a2a::conformance::{
     ExpectedError, ExpectedResponse, JsonlError, ObservedResponse, Vector, VectorOutcome,
     VectorResult, parse_jsonl, run_against_in_process, run_one,
 };
-use protocol_droid::application::a2a::{
-    A2aError, A2aRequestContext, A2aRequestHandler,
-};
+use protocol_droid::application::a2a::{A2aError, A2aRequestContext, A2aRequestHandler};
 use protocol_droid::domain::a2a::message::{Message, MessageRole, Part, TextPart};
 use protocol_droid::domain::a2a::task::{Task, TaskState, TaskStatus};
 use protocol_droid::domain::a2a::version::A2aVersion;
@@ -60,9 +58,8 @@ impl A2aRequestHandler for DeterministicAgent {
         method: A2aMethod,
         params: Option<Value>,
         _context: &A2aRequestContext,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, A2aError>> + Send + '_>>
+    {
         match method {
             A2aMethod::SendMessage => {
                 let request = match decode_params::<SendMessageLike>(params) {
@@ -80,12 +77,12 @@ impl A2aRequestHandler for DeterministicAgent {
                     .unwrap_or_default();
                 let task = Task::new("t-1".to_owned()).with_status(TaskStatus {
                     state: TaskState::Completed,
-                    message: Some(
-                        Message::new(MessageRole::Agent).with_part(Part::Text(TextPart {
+                    message: Some(Message::new(MessageRole::Agent).with_part(Part::Text(
+                        TextPart {
                             text,
                             metadata: std::collections::BTreeMap::new(),
-                        })),
-                    ),
+                        },
+                    ))),
                     timestamp: None,
                 });
                 let value = serde_json::to_value(&task).expect("Task is JSON");
@@ -174,9 +171,7 @@ impl A2aRequestHandler for DeterministicAgent {
             | A2aMethod::CreateTaskPushNotificationConfig
             | A2aMethod::SubscribeToTask
             | A2aMethod::GetExtendedAgentCard => {
-                Box::pin(async move {
-                    Err(A2aError::MethodNotImplemented { method })
-                })
+                Box::pin(async move { Err(A2aError::MethodNotImplemented { method }) })
             }
         }
     }
@@ -226,13 +221,9 @@ struct TaskConfigIdParam {
 /// `params` field, which the spec allows for
 /// notification calls but the test's typed shapes
 /// require a `Value::Null` to satisfy `serde`.
-fn decode_params<T: serde::de::DeserializeOwned>(
-    params: Option<Value>,
-) -> Result<T, A2aError> {
-    serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| {
-        A2aError::InvalidParams {
-            reason: format!("params do not match the method shape: {error}"),
-        }
+fn decode_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, A2aError> {
+    serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| A2aError::InvalidParams {
+        reason: format!("params do not match the method shape: {error}"),
     })
 }
 
@@ -243,12 +234,8 @@ fn decode_params<T: serde::de::DeserializeOwned>(
 #[tokio::test]
 async fn the_in_tree_fixture_passes_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
     let vectors = fixture()?;
-    let report = run_against_in_process(
-        Arc::new(DeterministicAgent),
-        A2aVersion::V1_0,
-        &vectors,
-    )
-    .await;
+    let report =
+        run_against_in_process(Arc::new(DeterministicAgent), A2aVersion::V1_0, &vectors).await;
     let failed: Vec<&VectorResult> = report
         .iter()
         .filter(|result| matches!(result.outcome, VectorOutcome::Fail { .. }))
@@ -263,9 +250,17 @@ async fn the_in_tree_fixture_passes_end_to_end() -> Result<(), Box<dyn std::erro
                 let _ = writeln!(message, "\n  actual: {actual}");
             }
         }
-        return Err(format!("{failed_len} vectors failed: {message}", failed_len = failed.len()).into());
+        return Err(format!(
+            "{failed_len} vectors failed: {message}",
+            failed_len = failed.len()
+        )
+        .into());
     }
-    assert_eq!(report.len(), vectors.len(), "every vector should produce a result");
+    assert_eq!(
+        report.len(),
+        vectors.len(),
+        "every vector should produce a result"
+    );
     Ok(())
 }
 
@@ -273,7 +268,8 @@ async fn the_in_tree_fixture_passes_end_to_end() -> Result<(), Box<dyn std::erro
 /// that returns an `error` matches on the code plus
 /// a substring of the message — the test pins both.
 #[tokio::test]
-async fn a_missing_param_vector_matches_on_code_and_substring() -> Result<(), Box<dyn std::error::Error>> {
+async fn a_missing_param_vector_matches_on_code_and_substring()
+-> Result<(), Box<dyn std::error::Error>> {
     let vector = Vector {
         name: "missing-param".to_owned(),
         request: json!({
@@ -352,7 +348,8 @@ fn parse_jsonl_ignores_blank_and_comment_lines() -> Result<(), JsonlError> {
 /// rather than hunting for the bad line.
 #[test]
 fn parse_jsonl_reports_the_line_number_of_a_malformed_entry() -> Result<(), String> {
-    let fixture = "{\"name\": \"ok\", \"request\": {}, \"expected\": {\"result\": {}}}\nthis is not json\n";
+    let fixture =
+        "{\"name\": \"ok\", \"request\": {}, \"expected\": {\"result\": {}}}\nthis is not json\n";
     match parse_jsonl(fixture) {
         Ok(vectors) => Err(format!(
             "a malformed line should be an error, got {vectors_len} vectors",
@@ -382,8 +379,7 @@ fn parse_jsonl_reports_the_line_number_of_a_malformed_entry() -> Result<(), Stri
 /// so the relative path is one directory up.
 fn fixture() -> Result<Vec<Vector>, Box<dyn std::error::Error>> {
     let contents = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/a2a_v1_0.jsonl"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/a2a_v1_0.jsonl"),
     )?;
     Ok(parse_jsonl(&contents)?)
 }

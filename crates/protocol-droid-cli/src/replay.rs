@@ -419,7 +419,8 @@ where
                 let verdict = FrameVerdict::malformed(index, error.to_string());
                 serde_json::to_writer(&mut *out, &verdict)
                     .context("writing a malformed-line verdict")?;
-                out.write_all(b"\n").context("writing the verdict newline")?;
+                out.write_all(b"\n")
+                    .context("writing the verdict newline")?;
                 counter.skipped += 1;
                 continue;
             }
@@ -427,9 +428,9 @@ where
         if explain {
             writeln!(summary, "frame {index}: {}", explain_verdict(&verdict))?;
         }
-        serde_json::to_writer(&mut *out, &verdict)
-            .context("writing a per-frame verdict")?;
-        out.write_all(b"\n").context("writing the verdict newline")?;
+        serde_json::to_writer(&mut *out, &verdict).context("writing a per-frame verdict")?;
+        out.write_all(b"\n")
+            .context("writing the verdict newline")?;
         counter.record(&verdict);
     }
 
@@ -449,13 +450,17 @@ fn replay_one(
     let recorded: RecordedFrame = match serde_json::from_str(line) {
         Ok(recorded) => recorded,
         Err(error) => {
-            return Err(anyhow::anyhow!("not a `{{version, frame}}` object: {error}"));
+            return Err(anyhow::anyhow!(
+                "not a `{{version, frame}}` object: {error}"
+            ));
         }
     };
-    let source: ProtocolVersion = recorded
-        .version
-        .parse()
-        .with_context(|| format!("the recorded version is not a known revision: {}", recorded.version))?;
+    let source: ProtocolVersion = recorded.version.parse().with_context(|| {
+        format!(
+            "the recorded version is not a known revision: {}",
+            recorded.version
+        )
+    })?;
     // The bridge treats an unvendored version as "pass through", because
     // a client on the other side might still read it. `replay` answers
     // the user's question "what would happen?", and a build that cannot
@@ -597,16 +602,27 @@ pub async fn run(args: &ReplayArgs) -> anyhow::Result<()> {
     }
     if args.as_client {
         if args.server.is_empty() {
-            anyhow::bail!("--as-client requires a server command after the session, e.g. `replay --as-client session.jsonl -- python server.py`");
+            anyhow::bail!(
+                "--as-client requires a server command after the session, e.g. `replay --as-client session.jsonl -- python server.py`"
+            );
         }
         return run_as_client_async(&args.session, &args.server).await;
     }
     let target: ProtocolVersion = args
         .target
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--target is required for the verdict mode; pass --diff or --as-server to skip it"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--target is required for the verdict mode; pass --diff or --as-server to skip it"
+            )
+        })?
         .parse()
-        .with_context(|| format!("--target is not a known revision: {}", args.target.as_deref().unwrap_or("")))?;
+        .with_context(|| {
+            format!(
+                "--target is not a known revision: {}",
+                args.target.as_deref().unwrap_or("")
+            )
+        })?;
     let policy = if args.allow_downgrade {
         DegradePolicy::permissive()
     } else {
@@ -614,7 +630,14 @@ pub async fn run(args: &ReplayArgs) -> anyhow::Result<()> {
     };
     let mut stdout = std::io::stdout().lock();
     let mut stderr = std::io::stderr().lock();
-    let summary = run_on_path(&args.session, target, policy, args.explain, &mut stdout, &mut stderr)?;
+    let summary = run_on_path(
+        &args.session,
+        target,
+        policy,
+        args.explain,
+        &mut stdout,
+        &mut stderr,
+    )?;
     drop((stdout, stderr));
     if summary.refused > 0 && !args.allow_downgrade {
         anyhow::bail!(
@@ -849,8 +872,7 @@ where
             (None, None) => unreachable!("pairs = max(left, right); the for loop is bounded by it"),
         };
         totals.record(&diff);
-        serde_json::to_writer(&mut *out, &diff)
-            .context("writing a per-line diff")?;
+        serde_json::to_writer(&mut *out, &diff).context("writing a per-line diff")?;
         out.write_all(b"\n").context("writing the diff newline")?;
     }
     totals.write_to(summary)?;
@@ -915,7 +937,10 @@ where
 }
 
 /// Opens a session file (or stdin for `-`).
-fn open_session(path: &str, label: &str) -> anyhow::Result<std::io::BufReader<Box<dyn std::io::Read + Send>>> {
+fn open_session(
+    path: &str,
+    label: &str,
+) -> anyhow::Result<std::io::BufReader<Box<dyn std::io::Read + Send>>> {
     let reader: Box<dyn std::io::Read + Send> = if path == "-" {
         Box::new(std::io::stdin())
     } else {
@@ -981,7 +1006,10 @@ impl ServeReport {
 
 /// Looks up the recorded reply for one request id, drawing from a
 /// `VecDeque` of pre-parsed `upstream→client` frames.
-fn take_reply_by_id(replies: &mut VecDeque<Map<String, Value>>, id: &Value) -> Option<Map<String, Value>> {
+fn take_reply_by_id(
+    replies: &mut VecDeque<Map<String, Value>>,
+    id: &Value,
+) -> Option<Map<String, Value>> {
     for (index, reply) in replies.iter().enumerate() {
         if reply.get("id") == Some(id) {
             return replies.remove(index);
@@ -1062,8 +1090,8 @@ where
                     "message": "this id is not in the recorded session",
                 },
             });
-            let serialised = serde_json::to_string(&refusal)
-                .context("serialising a not-found refusal")?;
+            let serialised =
+                serde_json::to_string(&refusal).context("serialising a not-found refusal")?;
             writeln!(sink, "{serialised}").context("writing a not-found refusal")?;
             report.not_found += 1;
         }
@@ -1092,7 +1120,9 @@ fn run_as_server(session_path: &str) -> anyhow::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let Ok(recorded) = serde_json::from_str::<RecordedFrame>(&line) else { continue };
+        let Ok(recorded) = serde_json::from_str::<RecordedFrame>(&line) else {
+            continue;
+        };
         total_recorded += 1;
         if !looks_like_response(&recorded.frame) {
             continue;
@@ -1122,7 +1152,9 @@ fn run_as_server(session_path: &str) -> anyhow::Result<()> {
         && report.notifications == 0
         && report.unreadable == 0
     {
-        anyhow::bail!("the mock answered no requests; check the session file or the test client's request ids");
+        anyhow::bail!(
+            "the mock answered no requests; check the session file or the test client's request ids"
+        );
     }
     Ok(())
 }
@@ -1180,7 +1212,10 @@ impl ClientReport {
     /// Whether the diff found no differences and matched every
     /// sent request with a recorded response.
     const fn is_clean(&self) -> bool {
-        self.matched == self.sent && self.diffed == 0 && self.unexpected == 0 && self.unanswered == 0
+        self.matched == self.sent
+            && self.diffed == 0
+            && self.unexpected == 0
+            && self.unanswered == 0
     }
 
     fn write_to(&self, sink: &mut impl Write) -> std::io::Result<()> {
@@ -1346,7 +1381,8 @@ async fn run_as_client_async(session_path: &str, server: &[String]) -> anyhow::R
         .ok_or_else(|| anyhow::anyhow!("--as-client needs at least one positional (the program); the trailing_var_arg was empty"))?;
     let spec = ChildSpec::new(program.as_str())
         .with_context(|| format!("building the child spec for {program}"))?;
-    let spec = spec.with_args(args.iter().map(std::ffi::OsString::from))
+    let spec = spec
+        .with_args(args.iter().map(std::ffi::OsString::from))
         .with_context(|| format!("building the child args for {program}"))?;
     let config = ClientConfig::default();
     let diagnostics = Diagnostics::stderr();
@@ -1516,8 +1552,15 @@ mod tests {
     #[test]
     fn text_result_is_forwarded_to_2024_11_05() -> anyhow::Result<()> {
         let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"}"#;
-        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
-            .expect("a well-formed line produces a verdict");
+        let verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )?
+        .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
         assert!(verdict.unchanged);
         Ok(())
@@ -1532,8 +1575,15 @@ mod tests {
     #[test]
     fn record_string_frame_round_trips() -> anyhow::Result<()> {
         let line = r#"{"direction":"client→upstream","version":"2025-06-18","clock_ns":42,"frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"}"#;
-        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
-            .expect("a record-shape line produces a verdict");
+        let verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )?
+        .expect("a record-shape line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
         Ok(())
     }
@@ -1546,8 +1596,15 @@ mod tests {
     #[test]
     fn record_string_frame_with_null_is_refused() {
         let line = r#"{"version":"2025-06-18","frame":null}"#;
-        let _verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))
-            .expect_err("a null frame is a parse error, not a verdict");
+        let _verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )
+        .expect_err("a null frame is a parse error, not a verdict");
     }
 
     /// A line whose `frame` is a JSON string that does not parse
@@ -1557,20 +1614,37 @@ mod tests {
     #[test]
     fn record_string_frame_with_unparseable_value_is_refused() {
         let line = r#"{"version":"2025-06-18","frame":"not even json"}"#;
-        let _verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))
-            .expect_err("an unparseable frame is a parse error, not a verdict");
+        let _verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )
+        .expect_err("an unparseable frame is a parse error, not a verdict");
     }
 
     /// A 2025-06-18 `structuredContent` cannot reach 2024-11-05.
     #[test]
     fn structured_content_is_downgraded_when_replayed_to_2024_11_05() -> anyhow::Result<()> {
         let line = r#"{"version":"2025-06-18","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"structuredContent\":{\"key\":\"value\"}}}"}"#;
-        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
-            .expect("a well-formed line produces a verdict");
+        let verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )?
+        .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Downgraded);
         assert!(!verdict.unchanged);
         assert!(
-            verdict.steps.iter().any(|step| step.contains("StructuredContent")),
+            verdict
+                .steps
+                .iter()
+                .any(|step| step.contains("StructuredContent")),
             "the downgrade step should name `StructuredContent`; got {:?}",
             verdict.steps,
         );
@@ -1582,8 +1656,15 @@ mod tests {
     #[test]
     fn error_envelope_is_forwarded() -> anyhow::Result<()> {
         let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"}"#;
-        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
-            .expect("a well-formed line produces a verdict");
+        let verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )?
+        .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
         assert!(verdict.unchanged);
         Ok(())
@@ -1593,8 +1674,15 @@ mod tests {
     #[test]
     fn request_envelope_is_forwarded() -> anyhow::Result<()> {
         let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"}"#;
-        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
-            .expect("a well-formed line produces a verdict");
+        let verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )?
+        .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Forwarded);
         assert!(verdict.unchanged);
         Ok(())
@@ -1604,8 +1692,18 @@ mod tests {
     #[test]
     fn malformed_line_returns_err_so_caller_can_skip() {
         let line = r#"{"not":"a frame"}"#;
-        let result = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults));
-        assert!(result.is_err(), "a malformed line should be an error, got Ok");
+        let result = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        );
+        assert!(
+            result.is_err(),
+            "a malformed line should be an error, got Ok"
+        );
     }
 
     /// An unknown recorded version is reported as `Refused` (the
@@ -1616,9 +1714,17 @@ mod tests {
     /// a lie the build cannot back up.
     #[test]
     fn unknown_recorded_version_is_refused_not_silently_forwarded() -> anyhow::Result<()> {
-        let line = r#"{"version":"2099-01-01","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}"#;
-        let verdict = replay_one(line, 1, target(), &leg_for(target()), policy(), &Translator::new(WireToolResults))?
-            .expect("a well-formed line produces a verdict");
+        let line =
+            r#"{"version":"2099-01-01","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}"#;
+        let verdict = replay_one(
+            line,
+            1,
+            target(),
+            &leg_for(target()),
+            policy(),
+            &Translator::new(WireToolResults),
+        )?
+        .expect("a well-formed line produces a verdict");
         assert_eq!(verdict.outcome, VerdictOutcome::Refused);
         assert!(verdict.error.is_some());
         assert!(verdict.note.contains("not a revision this build can read"));
@@ -1681,7 +1787,10 @@ this is not json
         let lines = output.lines().count();
         assert_eq!(lines, 3, "the malformed line still gets a verdict record");
         let summary = std::str::from_utf8(&summary).expect("summary is utf-8");
-        assert!(summary.contains("line 2:"), "the bad line is named on stderr; got {summary:?}");
+        assert!(
+            summary.contains("line 2:"),
+            "the bad line is named on stderr; got {summary:?}"
+        );
         Ok(())
     }
 
@@ -1734,12 +1843,7 @@ this is not json
 "#;
         let mut out: Vec<u8> = Vec::new();
         let mut summary: Vec<u8> = Vec::new();
-        let totals = diff_with_io(
-            left.as_bytes(),
-            right.as_bytes(),
-            &mut out,
-            &mut summary,
-        )?;
+        let totals = diff_with_io(left.as_bytes(), right.as_bytes(), &mut out, &mut summary)?;
         assert_eq!(totals.same, 1);
         assert_eq!(totals.changed, 1);
         assert_eq!(totals.added, 0);
@@ -1776,12 +1880,7 @@ this is not json
 "#;
         let mut out: Vec<u8> = Vec::new();
         let mut summary: Vec<u8> = Vec::new();
-        let totals = diff_with_io(
-            left.as_bytes(),
-            right.as_bytes(),
-            &mut out,
-            &mut summary,
-        )?;
+        let totals = diff_with_io(left.as_bytes(), right.as_bytes(), &mut out, &mut summary)?;
         assert_eq!(totals.same, 1);
         assert_eq!(totals.changed, 1);
         assert_eq!(totals.added, 0);
@@ -1813,12 +1912,7 @@ this is not json
 "#;
         let mut out: Vec<u8> = Vec::new();
         let mut summary: Vec<u8> = Vec::new();
-        let totals = diff_with_io(
-            left.as_bytes(),
-            right.as_bytes(),
-            &mut out,
-            &mut summary,
-        )?;
+        let totals = diff_with_io(left.as_bytes(), right.as_bytes(), &mut out, &mut summary)?;
         assert_eq!(totals.changed, 1);
         assert_eq!(totals.same, 0);
         Ok(())
@@ -1831,12 +1925,7 @@ this is not json
     fn diff_with_io_handles_empty_sessions() -> anyhow::Result<()> {
         let mut out: Vec<u8> = Vec::new();
         let mut summary: Vec<u8> = Vec::new();
-        let totals = diff_with_io(
-            b"" as &[u8],
-            b"" as &[u8],
-            &mut out,
-            &mut summary,
-        )?;
+        let totals = diff_with_io(b"" as &[u8], b"" as &[u8], &mut out, &mut summary)?;
         assert_eq!(totals.same, 0);
         assert!(totals.is_clean());
         let summary_text = std::str::from_utf8(&summary).expect("summary is utf-8");
@@ -1854,8 +1943,14 @@ this is not json
     #[test]
     fn serve_with_io_answers_matching_ids() -> anyhow::Result<()> {
         let replies: VecDeque<Map<String, Value>> = vec![
-            json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}}).as_object().cloned().expect("an object"),
-            json!({"jsonrpc":"2.0","id":2,"result":{"v":"two"}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
+            json!({"jsonrpc":"2.0","id":2,"result":{"v":"two"}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
         ]
         .into();
         let input = "\
@@ -1869,8 +1964,14 @@ this is not json
         assert_eq!(report.not_found, 0);
         assert!(report.served_any());
         let output = std::str::from_utf8(&out).expect("output is utf-8");
-        assert!(output.contains("\"v\":\"one\""), "first reply served; got {output:?}");
-        assert!(output.contains("\"v\":\"two\""), "second reply served; got {output:?}");
+        assert!(
+            output.contains("\"v\":\"one\""),
+            "first reply served; got {output:?}"
+        );
+        assert!(
+            output.contains("\"v\":\"two\""),
+            "second reply served; got {output:?}"
+        );
         Ok(())
     }
 
@@ -1880,7 +1981,10 @@ this is not json
     #[test]
     fn serve_with_io_reports_method_not_found_for_unknown_id() -> anyhow::Result<()> {
         let replies: VecDeque<Map<String, Value>> = vec![
-            json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":1,"result":{}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
         ]
         .into();
         let input = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"unknown\"}\n";
@@ -1896,7 +2000,10 @@ this is not json
         // request.
         assert!(report.served_any());
         let output = std::str::from_utf8(&out).expect("output is utf-8");
-        assert!(output.contains("-32601"), "the not-found error code is reported; got {output:?}");
+        assert!(
+            output.contains("-32601"),
+            "the not-found error code is reported; got {output:?}"
+        );
         Ok(())
     }
 
@@ -1907,7 +2014,10 @@ this is not json
     #[test]
     fn serve_with_io_silently_consumes_notifications() -> anyhow::Result<()> {
         let replies: VecDeque<Map<String, Value>> = vec![
-            json!({"jsonrpc":"2.0","id":2,"result":{}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":2,"result":{}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
         ]
         .into();
         let input = "\
@@ -1920,8 +2030,14 @@ this is not json
         assert_eq!(report.notifications, 1);
         assert_eq!(report.answered, 1);
         let output = std::str::from_utf8(&out).expect("output is utf-8");
-        assert!(!output.contains("notifications/initialized"), "no reply to a notification; got {output:?}");
-        assert!(output.contains("\"id\":2"), "the recorded reply is still served; got {output:?}");
+        assert!(
+            !output.contains("notifications/initialized"),
+            "no reply to a notification; got {output:?}"
+        );
+        assert!(
+            output.contains("\"id\":2"),
+            "the recorded reply is still served; got {output:?}"
+        );
         Ok(())
     }
 
@@ -1934,8 +2050,14 @@ this is not json
     #[test]
     fn serve_with_io_keeps_serving_after_a_not_found() -> anyhow::Result<()> {
         let replies: VecDeque<Map<String, Value>> = vec![
-            json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}}).as_object().cloned().expect("an object"),
-            json!({"jsonrpc":"2.0","id":2,"result":{"v":"two"}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
+            json!({"jsonrpc":"2.0","id":2,"result":{"v":"two"}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
         ]
         .into();
         let input = "\
@@ -1978,7 +2100,10 @@ this is not json
     #[test]
     fn serve_with_io_skips_unparseable_lines() -> anyhow::Result<()> {
         let replies: VecDeque<Map<String, Value>> = vec![
-            json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":1,"result":{}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
         ]
         .into();
         let input = "\
@@ -2020,22 +2145,34 @@ this is not json
         let lines = vec![
             recorded(
                 Direction::ClientToUpstream,
-                json!({"jsonrpc":"2.0","id":1,"method":"initialize"}).as_object().cloned().expect("an object"),
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize"})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
                 "2024-11-05",
             ),
             recorded(
                 Direction::UpstreamToClient,
-                json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}}).as_object().cloned().expect("an object"),
+                json!({"jsonrpc":"2.0","id":1,"result":{"v":"one"}})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
                 "2024-11-05",
             ),
             recorded(
                 Direction::ClientToUpstream,
-                json!({"jsonrpc":"2.0","id":2,"method":"ping"}).as_object().cloned().expect("an object"),
+                json!({"jsonrpc":"2.0","id":2,"method":"ping"})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
                 "2024-11-05",
             ),
             recorded(
                 Direction::UpstreamToClient,
-                json!({"jsonrpc":"2.0","id":2,"result":{}}).as_object().cloned().expect("an object"),
+                json!({"jsonrpc":"2.0","id":2,"result":{}})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
                 "2024-11-05",
             ),
         ];
@@ -2058,7 +2195,10 @@ this is not json
     fn pair_recorded_turns_marks_a_trailing_request_as_unanswered() {
         let lines = vec![recorded(
             Direction::ClientToUpstream,
-            json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":1,"method":"x"})
+                .as_object()
+                .cloned()
+                .expect("an object"),
             "2024-11-05",
         )];
         let (turns, report) = pair_recorded_turns(&lines);
@@ -2074,7 +2214,10 @@ this is not json
     fn pair_recorded_turns_marks_a_leading_response_as_unexpected() {
         let lines = vec![recorded(
             Direction::UpstreamToClient,
-            json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            json!({"jsonrpc":"2.0","id":1,"result":{}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
             "2024-11-05",
         )];
         let (turns, report) = pair_recorded_turns(&lines);
@@ -2092,7 +2235,10 @@ this is not json
         let lines = vec![RecordedFrame {
             direction: None,
             version: "2024-11-05".to_owned(),
-            frame: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+            frame: json!({"jsonrpc":"2.0","id":1,"method":"x"})
+                .as_object()
+                .cloned()
+                .expect("an object"),
         }];
         let (turns, report) = pair_recorded_turns(&lines);
         assert!(turns.is_empty());
@@ -2107,9 +2253,15 @@ this is not json
     #[test]
     fn diff_turn_reports_same_when_captured_matches_expected() {
         let mut turn = CapturedTurn {
-            request: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
+            request: json!({"jsonrpc":"2.0","id":1,"method":"x"})
+                .as_object()
+                .cloned()
+                .expect("an object"),
             captured: None,
-            expected: json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            expected: json!({"jsonrpc":"2.0","id":1,"result":{}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
             request_index: 1,
         };
         turn.captured = Some(turn.expected.clone());
@@ -2124,9 +2276,20 @@ this is not json
     #[test]
     fn diff_turn_reports_changed_when_captured_differs_from_expected() {
         let turn = CapturedTurn {
-            request: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
-            captured: Some(json!({"jsonrpc":"2.0","id":1,"result":{"mutated":true}}).as_object().cloned().expect("an object")),
-            expected: json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+            request: json!({"jsonrpc":"2.0","id":1,"method":"x"})
+                .as_object()
+                .cloned()
+                .expect("an object"),
+            captured: Some(
+                json!({"jsonrpc":"2.0","id":1,"result":{"mutated":true}})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
+            ),
+            expected: json!({"jsonrpc":"2.0","id":1,"result":{}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
             request_index: 1,
         };
         let diff = diff_turn(&turn).expect("a captured response produces a diff");
@@ -2142,15 +2305,37 @@ this is not json
     fn drive_session_writes_one_line_per_turn() -> anyhow::Result<()> {
         let mut turns = vec![
             CapturedTurn {
-                request: json!({"jsonrpc":"2.0","id":1,"method":"x"}).as_object().cloned().expect("an object"),
-                captured: Some(json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object")),
-                expected: json!({"jsonrpc":"2.0","id":1,"result":{}}).as_object().cloned().expect("an object"),
+                request: json!({"jsonrpc":"2.0","id":1,"method":"x"})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
+                captured: Some(
+                    json!({"jsonrpc":"2.0","id":1,"result":{}})
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
+                ),
+                expected: json!({"jsonrpc":"2.0","id":1,"result":{}})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
                 request_index: 1,
             },
             CapturedTurn {
-                request: json!({"jsonrpc":"2.0","id":2,"method":"y"}).as_object().cloned().expect("an object"),
-                captured: Some(json!({"jsonrpc":"2.0","id":2,"result":{"mutated":true}}).as_object().cloned().expect("an object")),
-                expected: json!({"jsonrpc":"2.0","id":2,"result":{}}).as_object().cloned().expect("an object"),
+                request: json!({"jsonrpc":"2.0","id":2,"method":"y"})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
+                captured: Some(
+                    json!({"jsonrpc":"2.0","id":2,"result":{"mutated":true}})
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
+                ),
+                expected: json!({"jsonrpc":"2.0","id":2,"result":{}})
+                    .as_object()
+                    .cloned()
+                    .expect("an object"),
                 request_index: 3,
             },
         ];

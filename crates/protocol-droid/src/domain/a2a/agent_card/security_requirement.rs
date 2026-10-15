@@ -172,19 +172,15 @@ mod tests {
             return Err("apiKey must be a JSON object".to_owned().into());
         };
         let list = api_key.get("list").and_then(serde_json::Value::as_array);
-        let list = list
-            .map(std::vec::Vec::as_slice)
-            .unwrap_or_default();
+        let list = list.map(std::vec::Vec::as_slice).unwrap_or_default();
         assert!(list.is_empty());
         Ok(())
     }
 
     #[test]
     fn requirement_with_oauth_scopes_round_trips() -> Result<(), TestError> {
-        let req = SecurityRequirement::new().with_scheme(
-            "oauth2",
-            [Arc::from("read"), Arc::from("write")],
-        );
+        let req = SecurityRequirement::new()
+            .with_scheme("oauth2", [Arc::from("read"), Arc::from("write")]);
         let json = serde_json::to_string(&req)?;
         let parsed: SecurityRequirement = serde_json::from_str(&json)?;
         assert_eq!(parsed, req);

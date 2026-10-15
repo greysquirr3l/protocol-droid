@@ -150,7 +150,10 @@ pub struct MessageSendConfiguration {
 // so the argument is `&bool` even though the
 // type is one byte. The clippy lint is a false
 // positive for serde-internal helpers.
-#[expect(clippy::trivially_copy_pass_by_ref, reason = "required by skip_serializing_if")]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "required by skip_serializing_if"
+)]
 const fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -226,9 +229,7 @@ impl From<Message> for SendMessageResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MessageSendConfiguration, SendMessageRequest, SendMessageResponse,
-    };
+    use super::{MessageSendConfiguration, SendMessageRequest, SendMessageResponse};
     use crate::domain::a2a::message::{Message, MessageRole, Part, TextPart};
     use crate::domain::a2a::task::{Artifact, Task, TaskState, TaskStatus};
 
@@ -315,17 +316,13 @@ mod tests {
         // a deterministic order (alphabetical),
         // which keeps test fixtures readable
         // and the diff-on-the-wire stable.
-        let config =
-            MessageSendConfiguration::new(["text/plain", "application/json", "image/png"]);
+        let config = MessageSendConfiguration::new(["text/plain", "application/json", "image/png"]);
         let value = serde_json::to_value(&config)?;
         let modes = value
             .get("acceptedOutputModes")
             .and_then(serde_json::Value::as_array)
             .ok_or("`acceptedOutputModes` must be a JSON array")?;
-        let names: Vec<&str> = modes
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect();
+        let names: Vec<&str> = modes.iter().filter_map(serde_json::Value::as_str).collect();
         assert_eq!(
             names,
             vec!["application/json", "image/png", "text/plain"],
@@ -388,8 +385,7 @@ mod tests {
         // `::Message`. A `Message` JSON
         // object decodes to `::Message`.
         let task_json = r#"{"id":"task-1","status":{"state":"working"}}"#;
-        let message_json =
-            r#"{"role":"agent","parts":[{"text":"hi"}]}"#;
+        let message_json = r#"{"role":"agent","parts":[{"text":"hi"}]}"#;
         let from_task: SendMessageResponse = serde_json::from_str(task_json)
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
         let from_message: SendMessageResponse = serde_json::from_str(message_json)

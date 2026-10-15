@@ -57,9 +57,7 @@ use std::time::Duration;
 
 use protocol_droid::adapters::secondary::acp::{AcpStdioPeer, SpawnSpec};
 use protocol_droid::domain::acp::implementation::Implementation;
-use protocol_droid::domain::acp::initialize::{
-    AuthMethod, ClientCapabilities, InitializeRequest,
-};
+use protocol_droid::domain::acp::initialize::{AuthMethod, ClientCapabilities, InitializeRequest};
 use protocol_droid::domain::acp::method::{AcpMethod, AgentMethod};
 use protocol_droid::domain::acp::session::{
     McpServer, NewSessionRequest, PromptRequest, PromptResponse, SessionId,
@@ -69,8 +67,7 @@ use serde_json::Value;
 /// The path to the in-tree JS reference agent,
 /// resolved relative to `CARGO_MANIFEST_DIR`.
 fn reference_agent_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/acp_reference_agent.mjs")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp_reference_agent.mjs")
 }
 
 /// Returns the path to a `node` executable on
@@ -112,7 +109,8 @@ fn ensure_node() -> Result<String, String> {
 /// to the reference agent.
 fn sample_initialize_request() -> InitializeRequest {
     InitializeRequest {
-        protocol_version: protocol_droid::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
+        protocol_version:
+            protocol_droid::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
         client_capabilities: ClientCapabilities::default(),
         client_info: Some(Implementation::protocol_droid("acp-stdio-interop", "0.1.0")),
     }
@@ -126,8 +124,11 @@ fn sample_initialize_request() -> InitializeRequest {
 #[tokio::test]
 async fn initialize_round_trip_against_a_vanilla_node_agent() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
     let reply = peer
         .send_request(
@@ -189,8 +190,11 @@ async fn initialize_round_trip_against_a_vanilla_node_agent() -> Result<(), Stri
 #[tokio::test]
 async fn an_unknown_method_returns_a_typed_json_rpc_error() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     let outcome = peer
@@ -227,12 +231,16 @@ async fn an_unknown_method_returns_a_typed_json_rpc_error() -> Result<(), String
 #[tokio::test]
 async fn a_minimal_initialize_request_round_trips() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     let request = InitializeRequest {
-        protocol_version: protocol_droid::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
+        protocol_version:
+            protocol_droid::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
         client_capabilities: ClientCapabilities::default(),
         client_info: None,
     };
@@ -260,8 +268,11 @@ async fn a_minimal_initialize_request_round_trips() -> Result<(), String> {
 #[tokio::test]
 async fn the_peer_spawns_against_node_and_drops_cleanly() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -277,8 +288,11 @@ async fn the_peer_spawns_against_node_and_drops_cleanly() -> Result<(), String> 
 #[tokio::test]
 async fn the_auth_method_discriminator_is_the_type_field() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
     let reply = peer
         .send_request(
@@ -321,8 +335,11 @@ async fn the_auth_method_discriminator_is_the_type_field() -> Result<(), String>
 #[tokio::test]
 async fn a_typed_session_new_request_round_trips() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     let request = NewSessionRequest {
@@ -362,10 +379,12 @@ async fn a_typed_session_new_request_round_trips() -> Result<(), String> {
 #[tokio::test]
 async fn a_session_update_notification_round_trips() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
-    let peer = AcpStdioPeer::spawn(&spec)
-        .map_err(|error| format!("spawning the peer: {error}"))?;
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
+    let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     let request = NewSessionRequest {
         cwd: "/tmp/example".to_owned(),
@@ -400,7 +419,11 @@ async fn a_session_update_notification_round_trips() -> Result<(), String> {
                 }
             }
             assert_eq!(
-                chunk.message_id.as_ref().map(protocol_droid::domain::acp::notification::MessageId::to_string).as_deref(),
+                chunk
+                    .message_id
+                    .as_ref()
+                    .map(protocol_droid::domain::acp::notification::MessageId::to_string)
+                    .as_deref(),
                 Some("msg-1"),
             );
         }
@@ -422,12 +445,16 @@ async fn a_session_update_notification_round_trips() -> Result<(), String> {
 #[tokio::test]
 async fn a_typed_session_cancel_notification_writes_cleanly() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
-    let notification =
-        protocol_droid::domain::acp::session::CancelNotification { session_id: SessionId::new("s") };
+    let notification = protocol_droid::domain::acp::session::CancelNotification {
+        session_id: SessionId::new("s"),
+    };
     peer.send_notification(AcpMethod::Agent(AgentMethod::SessionCancel), notification)
         .await
         .map_err(|error| format!("session/cancel write: {error}"))?;
@@ -458,10 +485,12 @@ async fn a_typed_session_cancel_notification_writes_cleanly() -> Result<(), Stri
 #[tokio::test]
 async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
-    let peer = AcpStdioPeer::spawn(&spec)
-        .map_err(|error| format!("spawning the peer: {error}"))?;
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
+    let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     // Hand the agent an `initialize`
     // request and a `session/new` request;
@@ -469,7 +498,10 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
     // test reuses for the `session/prompt`
     // request.
     let _: protocol_droid::domain::acp::initialize::InitializeResponse = peer
-        .send_typed_request(AcpMethod::Agent(AgentMethod::Initialize), sample_initialize_request())
+        .send_typed_request(
+            AcpMethod::Agent(AgentMethod::Initialize),
+            sample_initialize_request(),
+        )
         .await
         .map_err(|error| format!("initialize reply: {error}"))?;
 
@@ -510,7 +542,10 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
         .send_typed_request(AcpMethod::Agent(AgentMethod::SessionPrompt), prompt)
         .await
         .map_err(|error| format!("session/prompt reply: {error}"))?;
-    assert_eq!(response.stop_reason, protocol_droid::domain::acp::session::StopReason::EndTurn);
+    assert_eq!(
+        response.stop_reason,
+        protocol_droid::domain::acp::session::StopReason::EndTurn
+    );
 
     // Drain the notifications the agent
     // streamed for this turn. The
@@ -542,11 +577,10 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
     let mut assembled_text = String::new();
     let mut chunks_seen: u8 = 0;
     while chunks_seen < 2 {
-        let notification =
-            tokio::time::timeout(Duration::from_secs(2), peer.recv_notification())
-                .await
-                .map_err(|error| format!("waiting for the notification: {error}"))?
-                .ok_or_else(|| "the notification stream closed without a notification".to_owned())?;
+        let notification = tokio::time::timeout(Duration::from_secs(2), peer.recv_notification())
+            .await
+            .map_err(|error| format!("waiting for the notification: {error}"))?
+            .ok_or_else(|| "the notification stream closed without a notification".to_owned())?;
         assert_eq!(notification.session_id, session_id);
         match notification.update {
             protocol_droid::domain::acp::notification::SessionUpdate::AgentMessageChunk(chunk) => {
@@ -593,12 +627,18 @@ async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Resu
 #[tokio::test]
 async fn a_select_loop_renders_notifications_and_returns_a_reply() -> Result<(), String> {
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     let _: protocol_droid::domain::acp::initialize::InitializeResponse = peer
-        .send_typed_request(AcpMethod::Agent(AgentMethod::Initialize), sample_initialize_request())
+        .send_typed_request(
+            AcpMethod::Agent(AgentMethod::Initialize),
+            sample_initialize_request(),
+        )
         .await
         .map_err(|error| format!("initialize reply: {error}"))?;
     let new_session: protocol_droid::domain::acp::session::NewSessionResponse = peer
@@ -678,7 +718,10 @@ async fn a_select_loop_renders_notifications_and_returns_a_reply() -> Result<(),
             }
         }
     };
-    assert_eq!(response.stop_reason, protocol_droid::domain::acp::session::StopReason::EndTurn);
+    assert_eq!(
+        response.stop_reason,
+        protocol_droid::domain::acp::session::StopReason::EndTurn
+    );
     assert_eq!(chunks_seen, 2);
     assert_eq!(assembled_text, "Hello, world!");
 
@@ -714,13 +757,19 @@ async fn a_select_loop_renders_notifications_and_returns_a_reply() -> Result<(),
 async fn an_agent_originating_request_round_trips_to_the_consumer() -> Result<(), String> {
     use std::path::PathBuf;
     let node = ensure_node()?;
-    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
-        .with_timeout(Duration::from_secs(10));
+    let spec = SpawnSpec::new(
+        node,
+        vec![reference_agent_path().to_string_lossy().into_owned()],
+    )
+    .with_timeout(Duration::from_secs(10));
     let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
 
     // Initialize and create a session.
     let _: protocol_droid::domain::acp::initialize::InitializeResponse = peer
-        .send_typed_request(AcpMethod::Agent(AgentMethod::Initialize), sample_initialize_request())
+        .send_typed_request(
+            AcpMethod::Agent(AgentMethod::Initialize),
+            sample_initialize_request(),
+        )
         .await
         .map_err(|error| format!("initialize reply: {error}"))?;
     let new_session: protocol_droid::domain::acp::session::NewSessionResponse = peer
@@ -790,8 +839,7 @@ async fn an_agent_originating_request_round_trips_to_the_consumer() -> Result<()
     let content = std::fs::read_to_string(PathBuf::from(path))
         .map_err(|error| format!("reading {path}: {error}"))?;
     let reply = serde_json::json!({ "content": content });
-    peer
-        .send_reply(request.id, reply)
+    peer.send_reply(request.id, reply)
         .await
         .map_err(|error| format!("send_reply: {error}"))?;
 
@@ -811,6 +859,9 @@ async fn an_agent_originating_request_round_trips_to_the_consumer() -> Result<()
     // (the spec-defined field) and
     // the test round-trips end to
     // end.
-    assert_eq!(response.stop_reason, protocol_droid::domain::acp::session::StopReason::EndTurn);
+    assert_eq!(
+        response.stop_reason,
+        protocol_droid::domain::acp::session::StopReason::EndTurn
+    );
     Ok(())
 }

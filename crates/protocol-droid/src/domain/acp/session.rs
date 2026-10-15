@@ -549,8 +549,13 @@ mod tests {
         let prompt = value
             .get("prompt")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| serde_json::Error::io(std::io::Error::other("prompt is not an array")))?;
-        assert_eq!(prompt.first().and_then(|b| b.get("type")), Some(&json!("text")));
+            .ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::other("prompt is not an array"))
+            })?;
+        assert_eq!(
+            prompt.first().and_then(|b| b.get("type")),
+            Some(&json!("text"))
+        );
         let back: PromptRequest = serde_json::from_value(value)?;
         assert_eq!(back, request);
         Ok(())
@@ -685,10 +690,7 @@ mod tests {
         let modes = value
             .get("modes")
             .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing `modes` field")))?;
-        assert_eq!(
-            modes.get("currentModeId"),
-            Some(&json!("default"))
-        );
+        assert_eq!(modes.get("currentModeId"), Some(&json!("default")));
         let back: NewSessionResponse = serde_json::from_value(value)?;
         assert_eq!(back, response);
         Ok(())
@@ -961,7 +963,10 @@ mod tests {
             name: "Model".to_owned(),
             description: Some("The LLM to use".to_owned()),
             current_value: "claude-sonnet-4-5".to_owned(),
-            options: Some(vec!["claude-sonnet-4-5".to_owned(), "claude-opus-4-7".to_owned()]),
+            options: Some(vec![
+                "claude-sonnet-4-5".to_owned(),
+                "claude-opus-4-7".to_owned(),
+            ]),
         };
         let value = serde_json::to_value(&option)?;
         assert_eq!(value.get("id"), Some(&json!("model")));

@@ -107,7 +107,10 @@ mod tests {
         assert_eq!(name, Some("test-client"));
         assert_eq!(title, Some("protocol-droid"));
         assert_eq!(version, Some("0.1.0"));
-        assert!(value.get("_meta").is_none(), "empty _meta is omitted from the wire");
+        assert!(
+            value.get("_meta").is_none(),
+            "empty _meta is omitted from the wire"
+        );
         Ok(())
     }
 
@@ -118,7 +121,8 @@ mod tests {
     #[test]
     fn serialize_then_deserialize_round_trips() -> Result<(), Failure> {
         let mut info = Implementation::protocol_droid("test", "0.1.0");
-        info.meta.insert("k".to_owned(), serde_json::json!({"nested": 42}));
+        info.meta
+            .insert("k".to_owned(), serde_json::json!({"nested": 42}));
         let json = serde_json::to_string(&info)?;
         let round_tripped: Implementation = serde_json::from_str(&json)?;
         assert_eq!(round_tripped, info);

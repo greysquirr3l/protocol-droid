@@ -67,7 +67,8 @@ const GET_TASK: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"GetTask","params":
 
 /// A `CancelTask` request — same
 /// shape as `GetTask`.
-const CANCEL_TASK: &[u8] = br#"{"jsonrpc":"2.0","id":2,"method":"CancelTask","params":{"id":"t-2"}}"#;
+const CANCEL_TASK: &[u8] =
+    br#"{"jsonrpc":"2.0","id":2,"method":"CancelTask","params":{"id":"t-2"}}"#;
 
 /// A `ListTasks` request — a
 /// paginated list with no params
@@ -80,7 +81,8 @@ const LIST_TASKS: &[u8] = br#"{"jsonrpc":"2.0","id":3,"method":"ListTasks","para
 const SEND_STREAMING_MESSAGE: &[u8] = br#"{"jsonrpc":"2.0","id":4,"method":"SendStreamingMessage","params":{"message":{"role":"user","messageId":"m-2","parts":[{"kind":"text","text":"hi"}]}}}"#;
 
 /// A `SubscribeToTask` request.
-const SUBSCRIBE_TO_TASK: &[u8] = br#"{"jsonrpc":"2.0","id":5,"method":"SubscribeToTask","params":{"id":"t-3"}}"#;
+const SUBSCRIBE_TO_TASK: &[u8] =
+    br#"{"jsonrpc":"2.0","id":5,"method":"SubscribeToTask","params":{"id":"t-3"}}"#;
 
 /// A method name that is not in
 /// the A2A v1.0 table, with the
@@ -96,7 +98,8 @@ const UNROUTABLE: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"NotARealMethod",
 /// A reply, which the router must
 /// pass through rather than
 /// look up.
-const REPLY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t-1","status":{"state":"working"}}}"#;
+const REPLY: &[u8] =
+    br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t-1","status":{"state":"working"}}}"#;
 
 /// The single message out of a
 /// benchmark input.
@@ -112,10 +115,8 @@ fn single(input: &[u8]) -> Envelope<'_> {
 /// the route.
 fn route(b: Bencher, input: &[u8]) {
     b.bench_local(|| {
-        let routed: Result<
-            Routed<'_, _, Option<&RawValue>, Option<&RawValue>>,
-            RouteError<'_>,
-        > = route_one(single(black_box(input)), &A2aMethodTable::TABLE);
+        let routed: Result<Routed<'_, _, Option<&RawValue>, Option<&RawValue>>, RouteError<'_>> =
+            route_one(single(black_box(input)), &A2aMethodTable::TABLE);
         black_box(routed)
     });
 }

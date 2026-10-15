@@ -8,7 +8,9 @@
 pub mod client;
 pub mod method_table;
 
-pub use client::{default_client_capabilities, initialize_request_template, CallToolRequest,
-                CallToolResult, ClientCapabilities, ContentBlock, Implementation, InitializeRequest,
-                InitializeResult, ListToolsResult, McpPeerError, McpStdioPeer, SpawnSpec, Tool};
+pub use client::{
+    CallToolRequest, CallToolResult, ClientCapabilities, ContentBlock, Implementation,
+    InitializeRequest, InitializeResult, ListToolsResult, McpPeerError, McpStdioPeer, SpawnSpec,
+    Tool, default_client_capabilities, initialize_request_template,
+};
 pub use method_table::{McpMethod, McpMethodTable};
