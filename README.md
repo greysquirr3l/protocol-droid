@@ -1,5 +1,9 @@
 # protocol-droid
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/greysquirr3l/protocol-droid/main/assets/img/protocol-droid.svg" alt="protocol-droid" width="180">
+</p>
+
 A Rust toolkit for the [Model Context Protocol](https://modelcontextprotocol.io)
 that speaks **every** published spec revision — `2024-11-05`, `2025-03-26`,
 `2025-06-18`, `2025-11-25`, `2026-07-28`, and the floating `draft` — in a
