@@ -27,6 +27,8 @@
 //! to invent for every request, and nothing stops a caller from taking them
 //! from the wrong request.
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::application::server::error::GatedError;
@@ -36,6 +38,20 @@ use crate::domain::ir::JsonObject;
 use crate::domain::registry::AuthContext;
 use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
 use crate::domain::{ProtocolVersion, RequestId, TransportKind};
+
+/// The type-keyed state a `Server` carries into every request.
+///
+/// Each `Server::with_state::<T>(value)` registers one entry; every
+/// `RequestContext` clones an `Arc<StateMap>` rather than the values
+/// themselves, so a thousand in-flight requests pay a thousand `Arc`
+/// bumps rather than a thousand deep copies.
+///
+/// `Any` rather than a typed `HashMap<TypeId, T>` because a server
+/// accumulates entries for *different* `T`s — a database pool, a
+/// configuration, a metrics handle — and a typed map is only one of
+/// those at a time. The `Send + Sync` bounds on the values match what
+/// every other port in this crate asks for.
+pub type StateMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
 /// Why a server-initiated request could not complete.
 ///
@@ -339,6 +355,14 @@ pub struct RequestContext {
     id: RequestId,
     cancel: CancellationToken,
     progress: Option<ProgressToken>,
+    /// The `Server`'s registered state, sharable across every request.
+    ///
+    /// `Arc` so cloning the context for a long handler is two pointer
+    /// bumps; an empty `StateMap` is one allocation's worth of memory
+    /// for a server that never called `with_state`, so a thousand
+    /// requests cost a thousand pointer bumps rather than a thousand
+    /// empty hashmaps.
+    state: Arc<StateMap>,
 }
 
 impl core::fmt::Debug for RequestContext {
@@ -353,6 +377,7 @@ impl core::fmt::Debug for RequestContext {
             .field("negotiated", &self.peer.negotiated)
             .field("has_progress_token", &self.progress.is_some())
             .field("cancelled", &self.cancel.is_cancelled())
+            .field("state_entries", &self.state.len())
             .finish_non_exhaustive()
     }
 }
@@ -363,6 +388,11 @@ impl RequestContext {
     /// Clones the session, which is two `Arc` bumps and two `Copy` fields. That
     /// is why a server with a thousand in-flight requests pays a thousand
     /// pointer bumps rather than a thousand deep copies of the profile.
+    ///
+    /// The state map is empty. A test that needs state should use
+    /// [`for_request_with_state`](Self::for_request_with_state); a
+    /// production handler gets the map from the `Server` it was
+    /// built with.
     #[must_use]
     pub fn for_request(
         peer: &PeerSession,
@@ -375,7 +405,64 @@ impl RequestContext {
             id,
             cancel,
             progress,
+            state: Arc::new(HashMap::new()),
         }
+    }
+
+    /// Binds one in-flight request to the connection serving it, with the
+    /// server's registered state.
+    ///
+    /// The state map is the one the
+    /// [`Server`](crate::application::server::Server) accumulated
+    /// through `with_state` calls. The context holds an `Arc`
+    /// rather than the values, so a thousand concurrent requests
+    /// share one allocation rather than each deep-copying the
+    /// database pool.
+    #[must_use]
+    pub fn for_request_with_state(
+        peer: &PeerSession,
+        id: RequestId,
+        cancel: CancellationToken,
+        progress: Option<ProgressToken>,
+        state: Arc<StateMap>,
+    ) -> Self {
+        Self {
+            peer: peer.clone(),
+            id,
+            cancel,
+            progress,
+            state,
+        }
+    }
+
+    /// Looks up a state value by its concrete type.
+    ///
+    /// The state map is keyed by [`TypeId`], and the value is stored as
+    /// `Arc<dyn Any>`, so the lookup is two `HashMap` operations and one
+    /// downcast. The `Send + Sync` bounds are the same the
+    /// [`Server::with_state`](crate::application::server::Server::with_state)
+    /// builder requires, so a `T` registered here is reachable here.
+    ///
+    /// Returns `None` for a type that was never registered. That is
+    /// the right answer for a state the handler treats as optional;
+    /// a handler that *requires* a piece of state should `.expect`
+    /// the result with a message naming the missing type, or it
+    /// should be registered at server construction.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// #[tool]
+    /// async fn search(ctx: RequestContext, query: String) -> Result<JsonObject, ToolError> {
+    ///     let db = ctx.state::<MyPool>().expect("MyPool was registered");
+    ///     db.search(query).await
+    /// }
+    /// ```
+    #[must_use]
+    pub fn state<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.state
+            .get(&TypeId::of::<T>())
+            .and_then(|value| value.downcast_ref::<T>())
     }
 
     /// The connection serving this request.
@@ -532,9 +619,13 @@ impl RequestContext {
 
 #[cfg(test)]
 mod tests {
+    use std::any::{Any, TypeId};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use super::{CallbackExchange, ExchangeError, GatedError, PeerSession, RequestContext};
+    use super::{
+        CallbackExchange, ExchangeError, GatedError, PeerSession, RequestContext, StateMap,
+    };
     use crate::application::session::{FrameSink, SinkError};
     use crate::domain::feature::{Feature, FeatureProfile};
     use crate::domain::ir::{JsonObject, JsonObjectError};
@@ -1040,5 +1131,98 @@ mod tests {
         );
         assert!(rendered.contains("RequestContext"));
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #12: the typed state extension lets `#[tool]` handlers
+    // reach the state registered on the server without a process
+    // global and without the macro knowing about a receiver.
+    // -----------------------------------------------------------------
+
+    /// A `for_request` context has no state, so `state::<T>()` returns
+    /// `None`. This is the path a test that does not wire state takes;
+    /// changing it would break the existing `for_request` callers that
+    /// rely on the no-state default.
+    #[test]
+    fn a_default_context_has_no_state() -> Result<(), TestError> {
+        let exchange = Arc::new(CountingExchange::answering("{}")?);
+        let sink = Arc::new(RecordingSink::default());
+        let peer = peer(
+            ProtocolVersion::V2025_06_18,
+            FeatureProfile::all(),
+            &exchange,
+            &sink,
+        );
+        let ctx = RequestContext::for_request(
+            &peer,
+            RequestId::number(1),
+            CancellationToken::new(),
+            None,
+        );
+        if ctx.state::<TestConfig>().is_some() {
+            return Err(Failure::Message(
+                "a default context returned a state value".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A `for_request_with_state` context reaches a value put in the
+    /// state map. The point of the test: the lookup is type-keyed, so
+    /// `state::<TestConfig>()` for an unrelated type returns `None`
+    /// even when the map has entries.
+    #[test]
+    fn a_state_typed_lookup_finds_its_value() -> Result<(), TestError> {
+        let exchange = Arc::new(CountingExchange::answering("{}")?);
+        let sink = Arc::new(RecordingSink::default());
+        let peer = peer(
+            ProtocolVersion::V2025_06_18,
+            FeatureProfile::all(),
+            &exchange,
+            &sink,
+        );
+        let mut map: StateMap = HashMap::new();
+        map.insert(
+            TypeId::of::<TestConfig>(),
+            Arc::new(TestConfig { version: 7 }) as Arc<dyn Any + Send + Sync>,
+        );
+        let state = Arc::new(map);
+        let ctx = RequestContext::for_request_with_state(
+            &peer,
+            RequestId::number(1),
+            CancellationToken::new(),
+            None,
+            Arc::clone(&state),
+        );
+        let found = ctx.state::<TestConfig>();
+        if found != Some(&TestConfig { version: 7 }) {
+            return Err(Failure::Message(format!(
+                "expected Some(&TestConfig {{ version: 7 }}), got {found:?}"
+            )));
+        }
+        // Wrong type, same map: must not be reachable through this lookup.
+        if ctx.state::<TestOtherConfig>().is_some() {
+            return Err(Failure::Message(
+                "an unrelated type was found in the state map".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The type the lookup test searches for. Carries no behavior
+    /// beyond a `version` field; the test asserts on the field, not
+    /// the trait surface.
+    #[derive(Debug, PartialEq, Eq)]
+    struct TestConfig {
+        version: u32,
+    }
+
+    /// A second type the lookup test uses to assert the type-keyed
+    /// miss path. `T` and `OtherT` are stored as their own
+    /// `TypeId`s, and `state::<OtherT>()` must not return a
+    /// `T` value.
+    #[derive(Debug, PartialEq, Eq)]
+    struct TestOtherConfig {
+        name: String,
     }
 }

@@ -122,8 +122,9 @@ pub(crate) fn read_handler(
                 return Err(syn::Error::new_spanned(
                     receiver,
                     "a #[tool] handler takes no `self`: a tool is called by name, so a \
-                     receiver would have nothing to receive from. Share the state \
-                     through an `Arc` the server holds instead.",
+                     receiver would have nothing to receive from. Share state through \
+                     `Server::builder().with_state(value)` and read it from the context: \
+                     `ctx.state::<MyType>()`.",
                 ));
             }
             FnArg::Typed(typed) if is_context(arg) => {

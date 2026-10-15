@@ -46,6 +46,19 @@ use protocol_droid::domain::session::{CancellationToken, SessionId};
 use protocol_droid::domain::{CapabilitySet, ProtocolVersion, RequestId, TransportKind};
 use serde::Serialize;
 
+/// The state a `#[tool]` handler reaches through `RequestContext::state`.
+///
+/// The point of the test that registers this: a `#[tool]` method
+/// cannot see `self`, so it has no way to close over a `Greeting`
+/// from the function it was declared in. The typed state extension
+/// is what makes "share a database pool with a tool handler"
+/// compile without a process global.
+#[derive(Debug, Clone)]
+struct Greeting {
+    /// What the greeting prepends to the caller's argument.
+    prefix: String,
+}
+
 /// A server written with the macros, exercising every shape at once.
 ///
 /// The `ctx` parameter on one tool and not the others is deliberate: the two
@@ -86,6 +99,21 @@ impl Demo {
     #[protocol_droid::tool(name = "renamed", description = "A named description.")]
     async fn original_name() -> Result<String, DemoError> {
         Ok("named".to_string())
+    }
+
+    /// Reads state registered through `Server::builder().with_state::<Greeting>(...)`.
+    ///
+    /// The point of the test: the macro cannot see `self`, so it has
+    /// no way to capture an `Arc<Greeting>`; the typed state
+    /// extension in `RequestContext::state` is the only way a
+    /// `#[tool]` method gets a handle on shared state without a
+    /// process global.
+    #[protocol_droid::tool(name = "greet")]
+    async fn greet(ctx: RequestContext, who: String) -> Result<String, DemoError> {
+        let greeting = ctx
+            .state::<Greeting>()
+            .ok_or_else(|| DemoError::Refused("no greeting registered".to_owned()))?;
+        Ok(greeting.prefix.clone() + &who)
     }
 
     /// A resource, described by the method rather than by the doc comment
@@ -802,6 +830,38 @@ fn context() -> RequestContext {
     RequestContext::for_request(&peer, RequestId::text("r1"), CancellationToken::new(), None)
 }
 
+/// A context for a direct dispatch, carrying the state registered on `server`.
+///
+/// The point of the helper: a test that wants to drive a `#[tool]`
+/// handler reading `ctx.state::<T>()` has to hand the dispatcher a
+/// context whose state map is the one the server was built with,
+/// because the dispatcher reaches state through the context, not
+/// through the server. The helper copies the `Arc<StateMap>` over.
+fn context_with_server_state(server: &Server) -> RequestContext {
+    let version = ProtocolVersion::V2025_06_18;
+    let peer = PeerSession::new(
+        version,
+        resolve(Negotiation {
+            version,
+            client_caps: CapabilitySet::all_for(version),
+            server_caps: CapabilitySet::all_for(version),
+            transport: TransportKind::StreamableHttp,
+        }),
+        SessionId::new(1),
+        TransportKind::Stdio,
+        Arc::new(NoExchange),
+        Arc::new(NoSink),
+    )
+    .with_auth(AuthContext::unrestricted("tester"));
+    RequestContext::for_request_with_state(
+        &peer,
+        RequestId::text("r1"),
+        CancellationToken::new(),
+        None,
+        Arc::clone(server.state()),
+    )
+}
+
 /// The `tools/call` params for `name` with `arguments`.
 ///
 /// `arguments` is parsed rather than pasted in. `json!({ "arguments": text })`
@@ -830,6 +890,66 @@ fn assert_text(answer: &JsonObject, expected: &str) -> Result<(), TestError> {
         .to_string();
     if text != expected {
         return Err(Failure::from(format!("got {text:?}, wanted {expected:?}")));
+    }
+    Ok(())
+}
+
+/// A `#[tool]` method that reads `ctx.state::<T>()` returns the value
+/// registered through `Server::builder().with_state(...)`.
+///
+/// The point of the test is end-to-end: a `#[tool]` cannot see
+/// `self`, so it has no captured environment; the typed state
+/// extension is the path the macro leaves open. The test builds a
+/// `Server` with state, dispatches `greet` through it, and asserts
+/// the response carries the greeting prefix.
+#[tokio::test]
+async fn a_tool_handler_reads_state_from_the_context() -> Result<(), TestError> {
+    let mut server = Demo.into_server()?;
+    server.with_state(Greeting {
+        prefix: "hello, ".to_owned(),
+    });
+    let dispatcher = dispatcher(server);
+    let answer = dispatcher
+        .dispatch(
+            &context_with_server_state(dispatcher.server()),
+            "tools/call",
+            &call("greet", r#"{"who": "world"}"#),
+        )
+        .await
+        .map_err(|error| Failure::from(format!("greet was refused: {error}")))?;
+    assert_text(&answer, "hello, world")
+}
+
+/// A `#[tool]` reading `ctx.state::<T>()` for a type that was not
+/// registered returns the registered refusal, not a panic. The
+/// `greet` method is written to convert a missing state into a
+/// `DemoError::Refused`; this test asserts the error path works.
+#[tokio::test]
+async fn a_tool_handler_with_no_state_registered_refuses() -> Result<(), TestError> {
+    let server = Demo.into_server()?;
+    let dispatcher = dispatcher(server);
+    let answer = dispatcher
+        .dispatch(
+            &context(),
+            "tools/call",
+            &call("greet", r#"{"who": "world"}"#),
+        )
+        .await
+        .map_err(|error| Failure::from(format!("greet was refused at dispatch: {error}")))?;
+    // The dispatch itself returned Ok; the tool handler returned an
+    // Err, and the dispatcher wraps that as a JSON-RPC result with
+    // isError: true. The test inspects the wrapped form.
+    if !answer.as_str().contains("no greeting registered") {
+        return Err(Failure::from(format!(
+            "expected the refused-state message, got {}",
+            answer.as_str()
+        )));
+    }
+    if !answer.as_str().contains("\"isError\":true") {
+        return Err(Failure::from(format!(
+            "expected the answer to be marked isError, got {}",
+            answer.as_str()
+        )));
     }
     Ok(())
 }

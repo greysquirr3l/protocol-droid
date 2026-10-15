@@ -396,11 +396,12 @@ where
 
         // The id is carried through untouched: the peer's `WireId` becomes
         // the handler's `RequestId` and is written back from the same value.
-        let context = RequestContext::for_request(
+        let context = RequestContext::for_request_with_state(
             &self.peer,
             RequestId::from_wire(envelope.id()),
             CancellationToken::new(),
             None,
+            Arc::clone(self.dispatcher.state()),
         );
         let method: &str = envelope.method_str().unwrap_or_default();
 

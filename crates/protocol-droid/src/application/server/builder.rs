@@ -127,6 +127,15 @@ pub struct Server {
     /// only correct on the one host. The default is the in-memory store, which
     /// is correct for a single process and honest about being so.
     idempotency: Arc<dyn IdempotencyStore<Result = JsonObject>>,
+    /// The type-keyed state handlers read through
+    /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
+    ///
+    /// `Arc` so a `Server` is cheap to clone into a `Dispatcher`, and
+    /// the dispatcher is what the transport's per-request handler
+    /// actually reaches into. An empty map is the default; a server
+    /// that never called [`ServerBuilder::with_state`] gets an empty
+    /// map and `state::<T>()` returns `None` for every `T`.
+    state: Arc<crate::application::server::context::StateMap>,
 }
 
 impl core::fmt::Debug for Server {
@@ -252,6 +261,7 @@ impl Server {
             registry: RegistryStore::new(),
             tools: Vec::new(),
             idempotency: None,
+            state: Vec::new(),
         }
     }
 
@@ -290,6 +300,37 @@ impl Server {
     #[must_use]
     pub const fn idempotency(&self) -> &Arc<dyn IdempotencyStore<Result = JsonObject>> {
         &self.idempotency
+    }
+
+    /// Registers a state value after the server is built.
+    ///
+    /// The builder API is `ServerBuilder::with_state`; this method
+    /// exists for callers that built a server through a path that did
+    /// not surface the builder (the `#[server]` macro's
+    /// `into_server` is the canonical one). Each call appends to
+    /// the existing map, so a server that already had state for one
+    /// type can grow state for a second.
+    ///
+    /// `Send + Sync + 'static` is what every other port in this crate
+    /// asks for; a pool of non-`Send` handles cannot live in this
+    /// map.
+    pub fn with_state<T: Send + Sync + 'static>(&mut self, value: T) {
+        Arc::make_mut(&mut self.state).insert(
+            std::any::TypeId::of::<T>(),
+            Arc::new(value) as Arc<dyn std::any::Any + Send + Sync>,
+        );
+    }
+
+    /// The state map handlers read through
+    /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
+    ///
+    /// A transport hands this to every [`RequestContext`](crate::application::server::context::RequestContext)
+    /// it builds. A handler that never calls `with_state` on the
+    /// builder gets an empty map here, and `state::<T>()` returns
+    /// `None` for every `T`.
+    #[must_use]
+    pub fn state(&self) -> &Arc<crate::application::server::context::StateMap> {
+        &self.state
     }
 
     /// The registry, for the transport that serves it.
@@ -539,6 +580,12 @@ pub struct ServerBuilder {
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
     idempotency: Option<Arc<dyn IdempotencyStore<Result = JsonObject>>>,
+    /// The state entries built up through `with_state` calls. Held as a
+    /// `Vec<(TypeId, Arc<dyn Any>)>` and re-keyed at build time because
+    /// the `TypeId` of `T` is only known to `with_state`, and pushing
+    /// into a `HashMap` keyed by a value the caller cannot see is the
+    /// wrong shape for a builder.
+    state: Vec<(std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>)>,
 }
 
 impl core::fmt::Debug for ServerBuilder {
@@ -584,6 +631,30 @@ impl ServerBuilder {
     #[must_use]
     pub fn idempotency(mut self, store: Arc<dyn IdempotencyStore<Result = JsonObject>>) -> Self {
         self.idempotency = Some(store);
+        self
+    }
+
+    /// Registers a value handlers can read through
+    /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
+    ///
+    /// `T` is keyed by [`TypeId`], so two `with_state` calls with the same
+    /// `T` keep the later value (the registry is a `HashMap`, and the
+    /// later write is the one the lookup will see). The `Send + Sync`
+    /// bounds are the same every other port in this crate asks for; a
+    /// pool of non-`Send` handles cannot live in this map.
+    ///
+    /// The point of this method is the `#[tool]` problem: a macro that
+    /// generates module-scope items cannot see `self`, so the handler
+    /// it generates has no captured environment. Storing the state
+    /// here and reading it through the request context is the
+    /// standard answer, and the only one that keeps the macro
+    /// out of the receiver business.
+    #[must_use]
+    pub fn with_state<T: Send + Sync + 'static>(mut self, value: T) -> Self {
+        self.state.push((
+            std::any::TypeId::of::<T>(),
+            Arc::new(value) as Arc<dyn std::any::Any + Send + Sync>,
+        ));
         self
     }
 
@@ -711,6 +782,11 @@ impl ServerBuilder {
             registry: self.registry,
             tools: self.tools,
             idempotency,
+            state: Arc::new(
+                self.state
+                    .into_iter()
+                    .collect::<std::collections::HashMap<_, _>>(),
+            ),
         }
     }
 }

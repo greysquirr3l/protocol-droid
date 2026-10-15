@@ -73,6 +73,16 @@ impl Dispatcher {
         &self.server
     }
 
+    /// The server's state map, for a transport handler that needs to
+    /// hand it to a [`RequestContext`](crate::application::server::context::RequestContext).
+    ///
+    /// Cloning the `Arc` is one bump; the contents of the map are not
+    /// touched on the read path.
+    #[must_use]
+    pub fn state(&self) -> &Arc<crate::application::server::context::StateMap> {
+        self.server.state()
+    }
+
     /// Runs the handshake and returns the session narrowed to what was
     /// negotiated.
     ///

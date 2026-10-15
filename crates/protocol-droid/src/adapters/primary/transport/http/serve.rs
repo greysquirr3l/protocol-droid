@@ -314,11 +314,12 @@ impl RequestHandler<HttpSession> for HttpHandler {
             let id = envelope.id();
             let params = params_of(&envelope)?;
             let method = envelope.method_str().unwrap_or_default();
-            let context = RequestContext::for_request(
+            let context = RequestContext::for_request_with_state(
                 &peer,
                 RequestId::from_wire(id),
                 CancellationToken::new(),
                 None,
+                Arc::clone(self.dispatcher.state()),
             );
 
             // `initialize` is the one method that changes the session rather
