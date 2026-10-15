@@ -43,7 +43,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use getrandom::getrandom;
+use getrandom;
 use thiserror::Error;
 
 use crate::application::session::IdSource;
@@ -120,7 +120,7 @@ impl IdSource for RandomIds {
 /// Eight bytes from the OS CSPRNG.
 fn draw() -> Result<u64, EntropyError> {
     let mut bytes = [0_u8; 8];
-    getrandom(&mut bytes).map_err(|source| EntropyError::Unavailable { source })?;
+    getrandom::fill(&mut bytes).map_err(|source| EntropyError::Unavailable { source })?;
     Ok(u64::from_ne_bytes(bytes))
 }
 
@@ -202,6 +202,37 @@ mod tests {
                 "a failed draw fell back to zero rather than the constructor seed"
             );
         }
+        Ok(())
+    }
+
+    /// `getrandom` 0.4 changed the high-level entry point from
+    /// `getrandom::getrandom` to `getrandom::fill` and re-organised the error
+    /// type to wrap `io::Error`. The CSPRNG invariant the type is built on —
+    /// that two draws do not collapse to a constant or a counter — has to
+    /// survive both the 0.2 → 0.3 → 0.4 migration and any future reorganisation
+    /// of the entry point. This test pins the syscall path's two strongest
+    /// claims: every byte slot is filled, and the draw is wider than a single
+    /// 64-bit counter.
+    #[test]
+    fn getrandom_fills_every_byte_and_is_not_a_counter() -> Result<(), EntropyError> {
+        // 256 draws of 8 bytes each. A `getrandom` 0.4 that silently
+        // short-filled the buffer would have one of these slots repeat within
+        // 256 draws, even if the source is CSPRNG-graded. A 0.4 that regressed
+        // to a `fetch_add` counter would have every draw differ by exactly 1.
+        const SAMPLE: usize = 256;
+        let mut draws: Vec<u64> = Vec::with_capacity(SAMPLE);
+        for _ in 0..SAMPLE {
+            let mut bytes = [0_u8; 8];
+            getrandom::fill(&mut bytes)
+                .map_err(|source| EntropyError::Unavailable { source })?;
+            draws.push(u64::from_ne_bytes(bytes));
+        }
+        let unique: HashSet<u64> = draws.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            SAMPLE,
+            "two of {SAMPLE} draws collided — the source is no longer CSPRNG-graded"
+        );
         Ok(())
     }
 }

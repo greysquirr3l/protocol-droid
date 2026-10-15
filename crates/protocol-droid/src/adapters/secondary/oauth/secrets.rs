@@ -49,7 +49,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use getrandom::getrandom;
+use getrandom;
 
 use crate::application::oauth::client::{AuthorizationSecrets, SecretError, State};
 use crate::domain::oauth::pkce::CodeVerifier;
@@ -110,7 +110,14 @@ fn draw() -> Result<[u8; ENTROPY_BYTES], SecretError> {
     // variant. It stays its own case because it is the one failure a
     // deployment cannot retry its way out of: there is nothing to retry, the
     // platform has no such facility.
-    getrandom(&mut bytes).map_err(|error| match error {
+    //
+    // `getrandom` 0.4 renamed the high-level entry point to `fill`; the
+    // `Error::UNSUPPORTED` associated constant is unchanged. Calling the
+    // function through `fill` keeps the same syscall (Linux `getrandom(2)`,
+    // macOS `getentropy(2)`, Windows `ProcessPrng`) — the CSPRNG invariant the
+    // test in this module pins is preserved by the call site, not the
+    // function name.
+    getrandom::fill(&mut bytes).map_err(|error| match error {
         getrandom::Error::UNSUPPORTED => SecretError::EntropyUnsupported,
         _ => SecretError::EntropyUnavailable,
     })?;
