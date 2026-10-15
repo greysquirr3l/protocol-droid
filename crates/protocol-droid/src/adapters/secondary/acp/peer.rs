@@ -97,6 +97,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use super::error::AcpPeerError;
 use super::reply::AcpReply;
+use super::stream::{AgentRequestStream, NotificationStream};
 use crate::domain::acp::method::AcpMethod;
 use crate::domain::acp::notification::SessionNotification;
 
@@ -673,6 +674,61 @@ impl AcpStdioPeer {
     pub async fn recv_agent_request(&self) -> Option<AgentRequest> {
         let mut guard = self.agent_requests_rx.lock().await;
         guard.recv().await
+    }
+
+    /// A `Stream` of the [`SessionNotification`]s the agent streams
+    /// to the client.
+    ///
+    /// The canonical alternative to [`recv_notification`](Self::recv_notification)
+    /// for a consumer whose main loop is a `tokio::select!` of
+    /// "next notification" against "next typed reply" against
+    /// "agent-originating request", and for a consumer who wants
+    /// `Stream` combinators (`StreamExt::map`, `filter`,
+    /// `take_while`, `for_each`, …) over the notification stream.
+    ///
+    /// The returned stream holds a clone of the peer's notification
+    /// mutex; [`recv_notification`](Self::recv_notification) and the
+    /// stream are mutually exclusive inside one task. Across tasks
+    /// the lock is the same lock, so a `select!` in one task and a
+    /// `next().await` in another race for the same channel and the
+    /// lock serialises them.
+    ///
+    /// `&self` (not `&mut self`) so the consumer can hold the peer
+    /// by `Arc` and call `notifications()` from any task — the same
+    /// shape `recv_notification` supports, but as a `Stream`. The
+    /// returned stream borrows the lock only (the `Arc` is
+    /// `Clone`), so the borrow is `&self` rather than `&mut self`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use futures_util::StreamExt;
+    ///
+    /// let mut notifications = peer.notifications();
+    /// while let Some(notification) = notifications.next().await {
+    ///     render(notification);
+    /// }
+    /// ```
+    pub fn notifications(&self) -> NotificationStream<'_> {
+        NotificationStream::new(Arc::clone(&self.notifications_rx))
+    }
+
+    /// A `Stream` of the [`AgentRequest`]s the agent sends to the
+    /// client.
+    ///
+    /// The agent-originating request counterpart of
+    /// [`notifications`](Self::notifications). The agent's
+    /// `fs/read_text_file`, `fs/write_text_file`,
+    /// `terminal/create`, `terminal/output`, `terminal/release`,
+    /// `terminal/wait_for_exit`, `terminal/kill`, and
+    /// `session/request_permission` requests flow through this
+    /// stream.
+    ///
+    /// Mutually exclusive with
+    /// [`recv_agent_request`](Self::recv_agent_request) inside one
+    /// task; across tasks the lock serialises them.
+    pub fn agent_requests(&self) -> AgentRequestStream<'_> {
+        AgentRequestStream::new(Arc::clone(&self.agent_requests_rx))
     }
 
     /// Reply to an agent-originating

@@ -96,6 +96,7 @@ a2a = ["dep:url", "url/serde"]
 # wants both the typed envelope and the stdio peer enables both
 # flags.
 acp-experimental = [
+    "dep:futures-core",
     "dep:tokio",
     "tokio/io-std",
     "tokio/io-util",

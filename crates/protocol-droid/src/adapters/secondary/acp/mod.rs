@@ -25,8 +25,10 @@ mod agent;
 mod error;
 mod peer;
 mod reply;
+mod stream;
 
 pub use agent::{AcpAgentPeer, AgentRequest};
 pub use error::AcpPeerError;
 pub use peer::{AcpStdioPeer, SpawnSpec};
 pub use reply::AcpReply;
+pub use stream::{AgentRequestStream, NotificationStream};
