@@ -223,8 +223,7 @@ mod tests {
         let mut draws: Vec<u64> = Vec::with_capacity(SAMPLE);
         for _ in 0..SAMPLE {
             let mut bytes = [0_u8; 8];
-            getrandom::fill(&mut bytes)
-                .map_err(|source| EntropyError::Unavailable { source })?;
+            getrandom::fill(&mut bytes).map_err(|source| EntropyError::Unavailable { source })?;
             draws.push(u64::from_ne_bytes(bytes));
         }
         let unique: HashSet<u64> = draws.iter().copied().collect();
