@@ -21,10 +21,12 @@
 
 #![cfg(feature = "acp-experimental")]
 
+mod agent;
 mod error;
 mod peer;
 mod reply;
 
+pub use agent::{AcpAgentPeer, AgentRequest};
 pub use error::AcpPeerError;
 pub use peer::{AcpStdioPeer, SpawnSpec};
 pub use reply::AcpReply;
