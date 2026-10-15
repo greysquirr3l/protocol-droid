@@ -178,6 +178,12 @@ url = { version = "2.5.8", optional = true }
 # >10% regression against the committed baseline.
 divan = { workspace = true }
 assert_matches = { workspace = true }
+# The schema-validation property tests in `tests/acp_schema_validation.rs`
+# validate the typed `InitializeRequest` shape against the vendored ACP
+# v1.25.0 schema. `jsonschema` is a dev-only dep; the runtime is too
+# expensive to ship in a library that already has its own typed
+# validation.
+jsonschema = { workspace = true }
 # The golden feature profiles are snapshots a human reviews, so a matrix change
 # shows up as a diff to read rather than as a failure to debug.
 insta = { workspace = true }
