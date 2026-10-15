@@ -164,7 +164,7 @@ getrandom = { workspace = true, optional = true }
 # rather than hoisting it to `[workspace.dependencies]`: one crate uses it, and
 # a workspace table entry would invite a second one.
 sha2 = { workspace = true, optional = true }
-base64 = { version = "0.22.1", default-features = false, features = [
+base64 = { version = "0.23.1", default-features = false, features = [
     "alloc",
 ], optional = true }
 # T16 stage 7. Building the authorization redirect. `url` is already in the
@@ -212,7 +212,7 @@ trybuild = "1.0.121"
 # RFC 7515 base64url, for the one JWT no encoder will produce: an unsecured
 # `alg: none` token. `jsonwebtoken` depends on it too, so this is a dev-only
 # path to a crate already in the graph rather than a new one.
-base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 # Drives a `Router` to a response without binding a socket, which is what lets
 # the security-header test read headers off a real response rather than
 # asserting that a middleware value is `Some`.
