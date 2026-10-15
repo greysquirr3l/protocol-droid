@@ -55,6 +55,8 @@ pub mod feature;
 pub mod implementation;
 pub mod initialize;
 pub mod method;
+pub mod notification;
 pub mod protocol_version;
 pub mod session;
+pub mod tool_call;
 pub mod version;

@@ -456,7 +456,7 @@ pub struct SessionModeState {
     pub available_modes: Vec<SessionMode>,
     /// The id of the currently active mode. Must be
     /// a member of `available_modes`.
-    pub current_mode_id: String,
+    pub current_mode_id: SessionModeId,
 }
 
 /// A single session mode. The agent advertises the
@@ -466,13 +466,39 @@ pub struct SessionModeState {
 #[serde(rename_all = "camelCase")]
 pub struct SessionMode {
     /// The unique id of the mode. The consumer
-    /// references this id in `SetSessionModeRequest`.
-    pub id: String,
+    /// references this id in
+    /// [`SetSessionModeRequest`] and
+    /// [`CurrentModeUpdate`][super::notification::CurrentModeUpdate].
+    pub id: SessionModeId,
     /// Human-readable name.
     pub name: String,
     /// Human-readable description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// A unique identifier for a session mode.
+///
+/// The schema's `SessionModeId` is `type: "string"`
+/// — opaque to the protocol. The newtype gives the
+/// API a self-documenting handle and a place for the
+/// future per-revision codec to narrow the type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SessionModeId(pub String);
+
+impl SessionModeId {
+    /// A `SessionModeId` from any string the schema
+    /// accepts.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl core::fmt::Display for SessionModeId {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, formatter)
+    }
 }
 
 /// A session configuration option. The agent
@@ -646,11 +672,11 @@ mod tests {
             session_id: SessionId::new("session-1"),
             modes: Some(SessionModeState {
                 available_modes: vec![SessionMode {
-                    id: "default".to_owned(),
+                    id: SessionModeId::new("default"),
                     name: "Default".to_owned(),
                     description: None,
                 }],
-                current_mode_id: "default".to_owned(),
+                current_mode_id: SessionModeId::new("default"),
             }),
             config_options: None,
         };
