@@ -157,12 +157,83 @@ function handleLine(line) {
     case 'session/new':
       process.stdout.write(JSON.stringify(makeNewSessionResponse(id)) + '\n');
       return;
+    case 'session/prompt':
+      handlePrompt(request);
+      return;
     default:
       process.stdout.write(
         JSON.stringify(makeJsonRpcError(id, -32601, 'Method not found')) + '\n',
       );
       return;
   }
+}
+
+// A `session/prompt` handler. The fixture
+// streams two `session/update` notifications
+// (an `agent_message_chunk` and a
+// `user_message_chunk` echo) and then replies
+// with a `PromptResponse` carrying
+// `stopReason: end_turn`. The order is
+// notifications → reply; the consumer's
+// `recv_notification` and `send_typed_request`
+// race in independent Tokio tasks, so the
+// consumer must be willing to drain
+// notifications before the reply is read.
+function handlePrompt(request) {
+  const id = request.id;
+  const sessionId = request.params?.sessionId;
+  if (typeof sessionId !== 'string') {
+    process.stdout.write(
+      JSON.stringify(makeJsonRpcError(id, -32602, 'missing sessionId')) + '\n',
+    );
+    return;
+  }
+  // The two notifications are scheduled
+  // with `setImmediate` so they hit
+  // stdout before the reply; the
+  // consumer can read the
+  // `PromptResponse` after draining
+  // the stream.
+  const notifications = [
+    {
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Hello, ' },
+          messageId: 'msg-1',
+        },
+      },
+    },
+    {
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'world!' },
+          messageId: 'msg-1',
+        },
+      },
+    },
+  ];
+  for (const notification of notifications) {
+    setImmediate(() => {
+      process.stdout.write(JSON.stringify(notification) + '\n');
+    });
+  }
+  setImmediate(() => {
+    process.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        result: { stopReason: 'end_turn' },
+      }) + '\n',
+    );
+  });
 }
 
 // A `session/new` reply. The test fixture

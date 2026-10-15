@@ -61,7 +61,9 @@ use protocol_droid::domain::acp::initialize::{
     AuthMethod, ClientCapabilities, InitializeRequest,
 };
 use protocol_droid::domain::acp::method::{AcpMethod, AgentMethod};
-use protocol_droid::domain::acp::session::{McpServer, NewSessionRequest, SessionId};
+use protocol_droid::domain::acp::session::{
+    McpServer, NewSessionRequest, PromptRequest, PromptResponse, SessionId,
+};
 use serde_json::Value;
 
 /// The path to the in-tree JS reference agent,
@@ -433,5 +435,128 @@ async fn a_typed_session_cancel_notification_writes_cleanly() -> Result<(), Stri
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     drop(peer);
+    Ok(())
+}
+
+/// The full consumer loop: send
+/// `session/prompt`, drain the agent's
+/// `session/update` notifications, then read
+/// the typed `PromptResponse`. The reference
+/// agent streams two `agent_message_chunk`
+/// notifications (with `setImmediate` so they
+/// hit stdout before the reply) and then
+/// replies with `stopReason: end_turn`. The
+/// 32-deep notification channel buffers the
+/// two notifications while `send_typed_request`
+/// is parked in its `oneshot`, so the test
+/// awaits the typed reply first and drains
+/// the notifications after. A real consumer
+/// would interleave the two awaits with
+/// `tokio::select!`; a future increment
+/// surfaces the notification stream as a
+/// `Stream` to make that ergonomics land.
+#[tokio::test]
+async fn a_session_prompt_turn_streams_updates_and_returns_stop_reason() -> Result<(), String> {
+    let node = ensure_node()?;
+    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
+        .with_timeout(Duration::from_secs(10));
+    let mut peer = AcpStdioPeer::spawn(&spec)
+        .map_err(|error| format!("spawning the peer: {error}"))?;
+
+    // Hand the agent an `initialize`
+    // request and a `session/new` request;
+    // the agent mints a sessionId the
+    // test reuses for the `session/prompt`
+    // request.
+    let _: protocol_droid::domain::acp::initialize::InitializeResponse = peer
+        .send_typed_request(AcpMethod::Agent(AgentMethod::Initialize), sample_initialize_request())
+        .await
+        .map_err(|error| format!("initialize reply: {error}"))?;
+
+    let new_session: protocol_droid::domain::acp::session::NewSessionResponse = peer
+        .send_typed_request(
+            AcpMethod::Agent(AgentMethod::SessionNew),
+            NewSessionRequest {
+                cwd: "/tmp/example".to_owned(),
+                additional_directories: None,
+                mcp_servers: vec![],
+            },
+        )
+        .await
+        .map_err(|error| format!("session/new reply: {error}"))?;
+    let session_id = new_session.session_id;
+
+    // Send the prompt. The agent's two
+    // `agent_message_chunk` notifications
+    // hit stdout before the reply; the
+    // 32-deep notification channel
+    // buffers them while the typed
+    // request is parked. Awaiting the
+    // typed reply returns the reply
+    // first; the notifications wait in
+    // the channel for the next
+    // `recv_notification` call.
+    let prompt = PromptRequest {
+        session_id: session_id.clone(),
+        prompt: vec![protocol_droid::domain::acp::content::ContentBlock::Text(
+            protocol_droid::domain::acp::content::TextContent {
+                text: "hi".to_owned(),
+                annotations: None,
+                meta: std::collections::BTreeMap::new(),
+            },
+        )],
+    };
+    let response: PromptResponse = peer
+        .send_typed_request(AcpMethod::Agent(AgentMethod::SessionPrompt), prompt)
+        .await
+        .map_err(|error| format!("session/prompt reply: {error}"))?;
+    assert_eq!(response.stop_reason, protocol_droid::domain::acp::session::StopReason::EndTurn);
+
+    // Drain the notifications the agent
+    // streamed for this turn. The
+    // `session/new` handler emits a
+    // `user_message_chunk` (the
+    // "Echo: hello" the test exercises
+    // in `a_session_update_notification_round_trips`);
+    // the `session/prompt` handler emits
+    // two `agent_message_chunk`s. The
+    // test filters for the
+    // `agent_message_chunk`s and
+    // reconstructs the agent's text.
+    let mut assembled_text = String::new();
+    let mut chunks_seen: u8 = 0;
+    while chunks_seen < 2 {
+        let notification =
+            tokio::time::timeout(Duration::from_secs(2), peer.recv_notification())
+                .await
+                .map_err(|error| format!("waiting for the notification: {error}"))?
+                .ok_or_else(|| "the notification stream closed without a notification".to_owned())?;
+        assert_eq!(notification.session_id, session_id);
+        match notification.update {
+            protocol_droid::domain::acp::notification::SessionUpdate::AgentMessageChunk(chunk) => {
+                use protocol_droid::domain::acp::content::ContentBlock;
+                match chunk.content {
+                    ContentBlock::Text(text) => assembled_text.push_str(&text.text),
+                    other => {
+                        return Err(format!("expected a text chunk, got {other:?}"));
+                    }
+                }
+                chunks_seen = chunks_seen.saturating_add(1);
+            }
+            protocol_droid::domain::acp::notification::SessionUpdate::UserMessageChunk(_)
+            | protocol_droid::domain::acp::notification::SessionUpdate::AgentThoughtChunk(_) => {
+                // The `session/new` handler
+                // emits a `user_message_chunk`
+                // for the previous interop
+                // test; ignore it here and
+                // keep draining.
+            }
+            other => {
+                return Err(format!("expected an agent_message_chunk, got {other:?}"));
+            }
+        }
+    }
+    assert_eq!(assembled_text, "Hello, world!");
+
     Ok(())
 }
