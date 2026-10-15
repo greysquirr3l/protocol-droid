@@ -27,14 +27,20 @@
 //   - initialize (returns a hand-built
 //     InitializeResponse with all capability flags
 //     off and one auth method)
+//   - session/new (returns a fixture-minted
+//     sessionId so the typed round-trip test
+//     has a wire-level answer)
 //
 // What this does NOT implement
 // ---------------------------------------------------------
-//   - session/new and the rest of the session
-//     lifecycle (a future T29 increment adds the
-//     session types; this fixture only needs to
-//     exercise the `initialize` round-trip the
-//     typed code already supports)
+//   - session/load, session/list, session/delete,
+//     session/resume, session/close, logout, the
+//     set_* methods, session/prompt, session/cancel,
+//     session/update, authenticate, the streaming
+//     notifications (a future T29 increment adds the
+//     notification stream consumer; this fixture is
+//     enough to drive the typed `session/new` round-
+//     trip the typed code already supports)
 //   - terminal/*, fs/*, prompt/*, mcp/* (the
 //     capability flags stay off on the response,
 //     so the consumer is testing the all-off
@@ -148,10 +154,32 @@ function handleLine(line) {
     case 'initialize':
       process.stdout.write(JSON.stringify(makeInitializeResponse(id)) + '\n');
       return;
+    case 'session/new':
+      process.stdout.write(JSON.stringify(makeNewSessionResponse(id)) + '\n');
+      return;
     default:
       process.stdout.write(
         JSON.stringify(makeJsonRpcError(id, -32601, 'Method not found')) + '\n',
       );
       return;
   }
+}
+
+// A `session/new` reply. The test fixture
+// returns a deterministic sessionId (the
+// `sessionId` argument is the JSON-RPC `id`)
+// and an empty modes / configOptions block so
+// the consumer exercises the "all-off" wire
+// form. A real agent would mint a UUID and
+// read the `cwd` / `mcpServers` from the
+// request; the fixture is enough to drive
+// the typed round-trip.
+function makeNewSessionResponse(id) {
+  return {
+    jsonrpc: '2.0',
+    id,
+    result: {
+      sessionId: `fixture-${id}`,
+    },
+  };
 }

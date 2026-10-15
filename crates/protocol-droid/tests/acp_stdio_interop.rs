@@ -61,6 +61,7 @@ use protocol_droid::domain::acp::initialize::{
     AuthMethod, ClientCapabilities, InitializeRequest,
 };
 use protocol_droid::domain::acp::method::{AcpMethod, AgentMethod};
+use protocol_droid::domain::acp::session::{McpServer, NewSessionRequest, SessionId};
 use serde_json::Value;
 
 /// The path to the in-tree JS reference agent,
@@ -303,6 +304,70 @@ async fn the_auth_method_discriminator_is_the_type_field() -> Result<(), String>
         .and_then(Value::as_str)
         .ok_or_else(|| "the auth method has no `id` field".to_owned())?;
     assert_eq!(id, "dev-terminal", "the wire `id` is the agent's value");
+
+    drop(peer);
+    Ok(())
+}
+
+/// The typed `session/new` request round-trips
+/// through `send_typed_request` and decodes a
+/// typed `NewSessionResponse`. This is the
+/// first test that drives the typed wrapper
+/// the consumer-facing API exposes — the
+/// previous tests all decode the raw
+/// `reply.result` by hand.
+#[tokio::test]
+async fn a_typed_session_new_request_round_trips() -> Result<(), String> {
+    let node = ensure_node()?;
+    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
+        .with_timeout(Duration::from_secs(10));
+    let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
+
+    let request = NewSessionRequest {
+        cwd: "/tmp/example".to_owned(),
+        additional_directories: None,
+        mcp_servers: vec![McpServer::Stdio(
+            protocol_droid::domain::acp::session::McpServerStdio {
+                name: "stdio-server".to_owned(),
+                command: "/usr/local/bin/mcp-server".to_owned(),
+                args: vec!["--quiet".to_owned()],
+                env: vec![],
+            },
+        )],
+    };
+
+    let response: protocol_droid::domain::acp::session::NewSessionResponse = peer
+        .send_typed_request(AcpMethod::Agent(AgentMethod::SessionNew), request)
+        .await
+        .map_err(|error| format!("session/new reply: {error}"))?;
+
+    let expected_id = SessionId::new("fixture-1");
+    assert_eq!(response.session_id, expected_id);
+
+    drop(peer);
+    Ok(())
+}
+
+/// The typed `send_notification` writes a
+/// JSON-RPC 2.0 notification (no `id` field)
+/// and the agent is free to ignore it. The
+/// reference agent does ignore it (the test
+/// asserts the call returned `Ok` and the
+/// peer is still alive).
+#[tokio::test]
+async fn a_typed_session_cancel_notification_writes_cleanly() -> Result<(), String> {
+    let node = ensure_node()?;
+    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
+        .with_timeout(Duration::from_secs(10));
+    let peer = AcpStdioPeer::spawn(&spec).map_err(|error| format!("spawning the peer: {error}"))?;
+
+    let notification =
+        protocol_droid::domain::acp::session::CancelNotification { session_id: SessionId::new("s") };
+    peer.send_notification(AcpMethod::Agent(AgentMethod::SessionCancel), notification)
+        .await
+        .map_err(|error| format!("session/cancel write: {error}"))?;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     drop(peer);
     Ok(())

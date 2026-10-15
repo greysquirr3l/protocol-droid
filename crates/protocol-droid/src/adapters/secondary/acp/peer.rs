@@ -85,6 +85,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -356,6 +357,73 @@ impl AcpStdioPeer {
                 Err(AcpPeerError::Timeout(self.timeout))
             }
         }
+    }
+
+    /// Send a typed request and decode the typed
+    /// response.
+    ///
+    /// This is the typed wrapper over
+    /// [`send_request`][Self::send_request]. The
+    /// raw `Result<AcpReply, _>` it returns
+    /// carries the wire's `result` as a
+    /// `serde_json::Value`; the consumer has to
+    /// call `serde_json::from_value` themselves.
+    /// This method does that step.
+    ///
+    /// The two type parameters are the
+    /// consumer's call to the agent: the
+    /// `Req` is what the consumer's handler
+    /// sends, the `Resp` is what the agent's
+    /// handler is expected to return. The
+    /// typed `NewSessionRequest` /
+    /// `NewSessionResponse` pair is the
+    /// canonical example.
+    pub async fn send_typed_request<Req, Resp>(
+        &self,
+        method: AcpMethod,
+        params: Req,
+    ) -> Result<Resp, AcpPeerError>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        let reply = self.send_request(method, params).await?;
+        serde_json::from_value(reply.result).map_err(AcpPeerError::Decode)
+    }
+
+    /// Send a typed notification. A notification
+    /// has no `id` and no reply; the agent's
+    /// handler may respond, but the consumer
+    /// does not wait.
+    ///
+    /// The wire form is a JSON-RPC 2.0
+    /// notification: `{ "jsonrpc": "2.0",
+    /// "method": ..., "params": ... }` with no
+    /// `id` field. The schema's `session/cancel`
+    /// is the canonical example.
+    pub async fn send_notification<Params>(
+        &self,
+        method: AcpMethod,
+        params: Params,
+    ) -> Result<(), AcpPeerError>
+    where
+        Params: Serialize,
+    {
+        let params_value: Value =
+            serde_json::to_value(&params).map_err(AcpPeerError::Decode)?;
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method.as_wire_name(),
+            "params": params_value,
+        });
+        let bytes = serde_json::to_vec(&envelope).map_err(AcpPeerError::Decode)?;
+        let mut framed = bytes;
+        framed.push(b'\n');
+        self.write_tx
+            .send(framed)
+            .await
+            .map_err(|_| AcpPeerError::Write(io_other("the writer task is gone")))?;
+        Ok(())
     }
 }
 
