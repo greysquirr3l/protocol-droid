@@ -348,6 +348,69 @@ async fn a_typed_session_new_request_round_trips() -> Result<(), String> {
     Ok(())
 }
 
+/// The notification stream surfaces the
+/// agent's `session/update` notifications
+/// as typed [`SessionNotification`]s. The
+/// reference agent sends a `user_message_chunk`
+/// immediately after the `session/new`
+/// reply; the test asserts the consumer
+/// receives the notification with the
+/// expected `sessionId` and the expected
+/// `ContentChunk::Text` payload.
+#[tokio::test]
+async fn a_session_update_notification_round_trips() -> Result<(), String> {
+    let node = ensure_node()?;
+    let spec = SpawnSpec::new(node, vec![reference_agent_path().to_string_lossy().into_owned()])
+        .with_timeout(Duration::from_secs(10));
+    let mut peer = AcpStdioPeer::spawn(&spec)
+        .map_err(|error| format!("spawning the peer: {error}"))?;
+
+    let request = NewSessionRequest {
+        cwd: "/tmp/example".to_owned(),
+        additional_directories: None,
+        mcp_servers: vec![],
+    };
+    let _: protocol_droid::domain::acp::session::NewSessionResponse = peer
+        .send_typed_request(AcpMethod::Agent(AgentMethod::SessionNew), request)
+        .await
+        .map_err(|error| format!("session/new reply: {error}"))?;
+
+    // The agent emits the notification
+    // immediately after the reply, but
+    // the two are independent Tokio
+    // tasks; a short bounded wait gives
+    // the reader time to drain stdout.
+    let notification = tokio::time::timeout(Duration::from_secs(2), peer.recv_notification())
+        .await
+        .map_err(|error| format!("waiting for the notification: {error}"))?
+        .ok_or_else(|| "the notification stream closed without a notification".to_owned())?;
+
+    assert_eq!(notification.session_id, SessionId::new("fixture-1"));
+    match &notification.update {
+        protocol_droid::domain::acp::notification::SessionUpdate::UserMessageChunk(chunk) => {
+            use protocol_droid::domain::acp::content::ContentBlock;
+            match &chunk.content {
+                ContentBlock::Text(text) => {
+                    assert_eq!(text.text, "Echo: hello");
+                }
+                other => {
+                    return Err(format!("expected a text chunk, got {other:?}"));
+                }
+            }
+            assert_eq!(
+                chunk.message_id.as_ref().map(protocol_droid::domain::acp::notification::MessageId::to_string).as_deref(),
+                Some("msg-1"),
+            );
+        }
+        other => {
+            return Err(format!("expected a user_message_chunk, got {other:?}"));
+        }
+    }
+
+    drop(peer);
+    Ok(())
+}
+
 /// The typed `send_notification` writes a
 /// JSON-RPC 2.0 notification (no `id` field)
 /// and the agent is free to ignore it. The

@@ -174,12 +174,46 @@ function handleLine(line) {
 // read the `cwd` / `mcpServers` from the
 // request; the fixture is enough to drive
 // the typed round-trip.
+//
+// After sending the reply, the fixture
+// emits one `session/update` notification
+// (a `user_message_chunk`) so the consumer
+// can exercise the notification stream
+// without a long-running prompt turn. The
+// notification uses the same `sessionId`
+// the reply returned, and carries a
+// `messageId` so the consumer can group
+// consecutive chunks.
 function makeNewSessionResponse(id) {
+  const sessionId = `fixture-${id}`;
+  const notification = {
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: 'user_message_chunk',
+        content: {
+          type: 'text',
+          text: 'Echo: hello',
+        },
+        messageId: 'msg-1',
+      },
+    },
+  };
+  // The reply is written first; the
+  // notification follows immediately. The
+  // order is not part of the protocol, but
+  // the consumer can correlate the two
+  // because they share the same `sessionId`.
+  setImmediate(() => {
+    process.stdout.write(JSON.stringify(notification) + '\n');
+  });
   return {
     jsonrpc: '2.0',
     id,
     result: {
-      sessionId: `fixture-${id}`,
+      sessionId,
     },
   };
 }

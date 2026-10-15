@@ -94,6 +94,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use super::error::AcpPeerError;
 use super::reply::AcpReply;
 use crate::domain::acp::method::AcpMethod;
+use crate::domain::acp::notification::SessionNotification;
 
 /// A `SpawnSpec` is the configuration for
 /// `AcpStdioPeer::spawn`. The `program` and
@@ -184,6 +185,16 @@ pub struct AcpStdioPeer {
     /// hands a fully-serialised envelope to the
     /// channel; the writer writes the bytes.
     write_tx: mpsc::Sender<Vec<u8>>,
+    /// The notification stream's consumer end.
+    /// The reader task pushes
+    /// [`SessionNotification`]s into the
+    /// matching `notifications_tx`; the
+    /// application layer awaits the next
+    /// notification with
+    /// [`recv_notification`][Self::recv_notification].
+    /// `&mut self` is the borrow the
+    /// `mpsc::Receiver::recv` method needs.
+    notifications_rx: mpsc::Receiver<SessionNotification>,
     /// The default request timeout.
     timeout: Duration,
     /// The child process. The `kill_on_drop`
@@ -205,9 +216,11 @@ pub struct AcpStdioPeer {
 
 impl std::fmt::Debug for AcpStdioPeer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The `Child` does not implement
-        // `Debug`; format the peer by
-        // hand, omitting the child.
+        // The `Child` and the
+        // `mpsc::Receiver<SessionNotification>`
+        // do not implement `Debug`; format
+        // the peer by hand, omitting the
+        // child and the receiver.
         formatter
             .debug_struct("AcpStdioPeer")
             .field("next_id", &self.next_id)
@@ -253,13 +266,27 @@ impl AcpStdioPeer {
             .ok_or_else(|| AcpPeerError::Spawn(io_other("stdout was not piped")))?;
         let pending: Arc<Mutex<HashMap<u64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(32);
+        // The notification stream. The reader
+        // pushes [`SessionNotification`]s;
+        // the application layer pulls them with
+        // `recv_notification`. A bounded
+        // channel (32) gives the consumer a
+        // moment to catch up before the agent
+        // starts to back-pressure.
+        let (notifications_tx, notifications_rx) = mpsc::channel::<SessionNotification>(32);
 
         // The reader task. Owns the child's
         // stdout. Reads one line at a time
         // (newline-delimited JSON-RPC), parses,
         // and dispatches to the matching
-        // pending reply.
-        spawn_reader(BufReader::new(stdout), Arc::clone(&pending));
+        // pending reply. Notifications (no
+        // `id` field) go to the
+        // `notifications_tx` instead.
+        spawn_reader(
+            BufReader::new(stdout),
+            Arc::clone(&pending),
+            notifications_tx,
+        );
 
         // The writer task. Owns the child's
         // stdin. Receives pre-serialised bytes
@@ -283,6 +310,7 @@ impl AcpStdioPeer {
             pending,
             next_id: AtomicU64::new(1),
             write_tx,
+            notifications_rx,
             timeout: spec.timeout.unwrap_or(Duration::from_secs(30)),
             child,
         })
@@ -425,11 +453,31 @@ impl AcpStdioPeer {
             .map_err(|_| AcpPeerError::Write(io_other("the writer task is gone")))?;
         Ok(())
     }
+
+    /// Await the next [`SessionNotification`]
+    /// the agent streams.
+    ///
+    /// `&mut self` is the borrow
+    /// `mpsc::Receiver::recv` needs. The
+    /// caller is the single consumer; a
+    /// future increment that wants a
+    /// `Stream` wrapper can hand out a
+    /// borrowed `&mut Receiver` instead.
+    ///
+    /// Returns `None` when the reader task
+    /// is gone (the child has exited and
+    /// the channel is closed). The consumer
+    /// is expected to drop the peer at that
+    /// point.
+    pub async fn recv_notification(&mut self) -> Option<SessionNotification> {
+        self.notifications_rx.recv().await
+    }
 }
 
 fn spawn_reader(
     mut reader: BufReader<ChildStdout>,
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
+    notifications_tx: mpsc::Sender<SessionNotification>,
 ) {
     tokio::spawn(async move {
         let mut line = String::new();
@@ -445,31 +493,63 @@ fn spawn_reader(
             if trimmed.is_empty() {
                 continue;
             }
-            let (id, result) = parse_and_dispatch(trimmed);
-            let entry = pending.lock().await.remove(&id);
-            if id != 0 && let Some(entry) = entry {
-                let _ = entry.tx.send(result);
+            // A JSON-RPC 2.0 envelope is a
+            // reply (carries an `id`) or a
+            // notification (no `id`). The
+            // shape detector is a peek at
+            // the `id` field; the dispatch
+            // path is the same.
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if value.get("id").is_some() {
+                // Reply: parse, look up the
+                // pending oneshot, hand the
+                // result over.
+                let (id, result) = parse_and_dispatch_value(value);
+                let entry = pending.lock().await.remove(&id);
+                if id != 0 && let Some(entry) = entry {
+                    let _ = entry.tx.send(result);
+                }
+            } else {
+                // Notification: decode the
+                // `params` as a typed
+                // [`SessionNotification`] and
+                // push to the consumer's
+                // stream. The schema's
+                // `session/update` is the
+                // canonical example; a
+                // future notification method
+                // (e.g. `auth/required`) gets
+                // its own decoder.
+                if value.get("method").and_then(Value::as_str) == Some("session/update")
+                    && let Some(params) = value.get("params")
+                    && let Ok(notification) =
+                        serde_json::from_value::<SessionNotification>(params.clone())
+                {
+                    let _ = notifications_tx.send(notification).await;
+                }
             }
         }
     });
 }
 
-/// Parse a single JSON-RPC 2.0 reply line into a
-/// `(id, Result)` pair.
+/// Parse a single JSON-RPC 2.0 reply envelope
+/// into a `(id, Result)` pair.
 ///
 /// The function never fails to produce a pair:
-/// a malformed JSON line is a `(0,
-/// Err(Decode))`, a JSON-RPC error is a
-/// `(id, Err(JsonRpc))`, a success is a
-/// `(id, Ok(reply))`. The reader treats an
+/// a JSON-RPC error is a `(id,
+/// Err(JsonRpc))`, a success is a `(id,
+/// Ok(reply))`. The reader treats an
 /// id of `0` as "do not dispatch" — that is
-/// the sentinel for a line that cannot be
-/// correlated with a request.
-fn parse_and_dispatch(trimmed: &str) -> (u64, Result<AcpReply, AcpPeerError>) {
-    let value: Value = match serde_json::from_str(trimmed) {
-        Ok(value) => value,
-        Err(error) => return (0, Err(AcpPeerError::Decode(error))),
-    };
+/// the sentinel for an envelope that cannot be
+/// correlated with a request. The caller is
+/// responsible for parsing the raw line; this
+/// function takes the already-parsed `Value`
+/// so the same parse can drive the
+/// notification path.
+fn parse_and_dispatch_value(value: Value) -> (u64, Result<AcpReply, AcpPeerError>) {
     let id = value.get("id").and_then(Value::as_u64).unwrap_or(0);
     if value.get("error").is_some() {
         let code = value
@@ -539,21 +619,29 @@ mod tests {
 
     impl std::error::Error for Failure {}
 
+    impl From<serde_json::Error> for Failure {
+        fn from(_error: serde_json::Error) -> Self {
+            Self::WrongResult("a JSON parse failed")
+        }
+    }
+
     /// The reader parses a `result` reply into a
     /// typed `AcpReply` and routes it to the
     /// matching id. A reply with no id is
     /// silently dropped (the consumer's oneshot
     /// would never fire).
     ///
-    /// The test only exercises `parse_and_dispatch`
-    /// in isolation; the `oneshot` is fed by the
-    /// reader task in the real path. The
-    /// `assert_eq!` on the parsed pair is the
-    /// claim the function is asked to defend.
+    /// The test only exercises
+    /// `parse_and_dispatch_value` in isolation;
+    /// the `oneshot` is fed by the reader task
+    /// in the real path. The `assert_eq!` on
+    /// the parsed pair is the claim the
+    /// function is asked to defend.
     #[test]
     fn parse_and_dispatch_routes_a_result_by_id() -> Result<(), Failure> {
-        let line = r#"{"jsonrpc":"2.0","id":7,"result":{"answer":42}}"#;
-        let (id, result) = parse_and_dispatch(line);
+        let value: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"result":{"answer":42}}"#)
+            .map_err(|_| Failure::WrongResult("valid JSON"))?;
+        let (id, result) = parse_and_dispatch_value(value);
         assert_eq!(id, 7);
         let Ok(reply) = result else {
             return Err(Failure::WrongResult("Ok reply"));
@@ -568,10 +656,13 @@ mod tests {
     /// error carries the agent's code and
     /// message; the consumer decides what to
     /// do.
-    #[tokio::test]
-    async fn parse_and_dispatch_routes_an_error_by_id() -> Result<(), Failure> {
-        let line = r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"Method not found"}}"#;
-        let (id, result) = parse_and_dispatch(line);
+    #[test]
+    fn parse_and_dispatch_routes_an_error_by_id() -> Result<(), Failure> {
+        let value: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"Method not found"}}"#,
+        )
+        .map_err(|_| Failure::WrongResult("valid JSON"))?;
+        let (id, result) = parse_and_dispatch_value(value);
         assert_eq!(id, 7);
         match result {
             Err(AcpPeerError::JsonRpc { code, message }) => {
@@ -584,19 +675,21 @@ mod tests {
         }
     }
 
-    /// A malformed JSON line is a `Decode`
-    /// error. The peer is recoverable: a
-    /// subsequent well-formed line still
-    /// routes correctly.
-    #[tokio::test]
-    async fn parse_and_dispatch_rejects_malformed_json() -> Result<(), Failure> {
-        let line = "not even close";
-        let (_id, result) = parse_and_dispatch(line);
-        match result {
-            Err(AcpPeerError::Decode(_)) => Ok(()),
-            Err(_) => Err(Failure::WrongResult("Decode variant")),
-            Ok(_) => Err(Failure::WrongResult("Err variant")),
-        }
+    /// A JSON-RPC error with no `id` is
+    /// dispatched to the `0` sentinel — the
+    /// reader treats `id == 0` as "do not
+    /// dispatch" so a misbehaving agent
+    /// cannot crash the consumer's pending
+    /// oneshot.
+    #[test]
+    fn parse_and_dispatch_treats_missing_id_as_zero() -> Result<(), Failure> {
+        let value: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"}}"#,
+        )
+        .map_err(|_| Failure::WrongResult("valid JSON"))?;
+        let (id, _result) = parse_and_dispatch_value(value);
+        assert_eq!(id, 0);
+        Ok(())
     }
 
     /// The peer can be spawned, sent a request,
