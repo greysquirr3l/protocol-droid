@@ -1,0 +1,84 @@
+---
+title: protocol-droid
+description: A Rust MCP toolkit that speaks every published spec revision and bridges to A2A and ACP through the same canonical model.
+template: splash
+hero:
+  title: protocol-droid
+  tagline: >-
+    A Rust MCP toolkit that speaks every published spec revision at once —
+    2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28, plus draft.
+    The A* schemas (A2A, ACP) ride the same canonical model, so the bridge
+    is a translation, not a rewrite.
+  actions:
+    - text: Add to your project
+      link: /protocol-droid/getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: Read the architecture
+      link: /protocol-droid/architecture/overview/
+      icon: open-book
+      variant: minimal
+    - text: View on GitHub
+      link: https://github.com/greysquirr3l/protocol-droid
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## What you get
+
+<CardGrid stagger>
+  <Card title="One IR, many codecs" icon="puzzle">
+    Application code speaks a version-agnostic superset. Per-revision codecs lift
+    wire messages into the IR and lower them back out for whatever version was
+    negotiated. No revision forks in your code.
+  </Card>
+  <Card title="Runtime feature gating" icon="seti:config">
+    A pure domain function turns the negotiated protocol version, client
+    capabilities, server capabilities, and transport into a FeatureProfile.
+    Every feature-specific code path checks the profile. Nothing is silently
+    dropped.
+  </Card>
+  <Card title="Every transport the spec has defined" icon="seti:default">
+    stdio, legacy HTTP plus SSE (2024-11-05), Streamable HTTP (stateful), and
+    the 2026-07-28 stateless lifecycle. The CLI is a Swiss-army knife on top:
+    bridge, probe, inspect, record, replay.
+  </Card>
+  <Card title="Spec-exact, conformance-verified" icon="approve-check">
+    The vendored schema.json for every revision is the single source of truth.
+    Conformance suites run on every revision, every commit. No hand-remembered
+    wire shapes.
+  </Card>
+  <Card title="A* schema support" icon="rocket">
+    A2A and ACP ride the same internal model as MCP. The A*-prefixed
+    protocols (A2A, ACP) get their own vendored schemas and codecs, so the
+    bridge translates between protocols without re-implementing your
+    application.
+  </Card>
+</CardGrid>
+
+## Where to next
+
+<CardGrid>
+  <LinkCard
+    title="Getting started"
+    description="Install the crate, write a server, send your first JSON-RPC round-trip."
+    href="/protocol-droid/getting-started/installation/"
+  />
+  <LinkCard
+    title="Architecture"
+    description="How one IR, runtime feature gating, and per-revision codecs fit together."
+    href="/protocol-droid/architecture/overview/"
+  />
+  <LinkCard
+    title="Guides"
+    description="FeatureProfile, the bridge, the prober, and the rest of the operator surface."
+    href="/protocol-droid/guides/introduction/"
+  />
+  <LinkCard
+    title="Reference"
+    description="CLI subcommands, error codes, configuration."
+    href="/protocol-droid/reference/cli/"
+  />
+</CardGrid>

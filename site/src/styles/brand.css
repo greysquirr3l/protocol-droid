@@ -1,0 +1,32 @@
+/* protocol-droid brand layer.
+   Industrial, monochrome, geometric. The logo is B&W so the page follows.
+   Single signal color (amber) reserved for warnings and active states.
+   Two weights. One border radius. No decoration. */
+
+:root {
+  /* Typography. Inter for body, JetBrains Mono for code/specs/labels. */
+  --sl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+
+  /* Single signal color: amber. Used for active nav state and warnings only.
+     The default Starlight accent is gone; greys carry the rest. */
+  --sl-color-accent-low: hsl(38, 90%, 92%);
+  --sl-color-accent: hsl(38, 90%, 45%);
+  --sl-color-accent-high: hsl(38, 90%, 32%);
+
+  /* Industrial: tight corners, dense line-height. */
+  --sl-border-radius-xs: 1px;
+  --sl-border-radius-sm: 2px;
+  --sl-border-radius-md: 2px;
+  --sl-border-radius-lg: 4px;
+
+  /* Code blocks: mono, sharp corners, visible separator border. */
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+/* Dark mode: amber is slightly darker so it doesn't burn. */
+:root[data-theme='dark'] {
+  --sl-color-accent-low: hsl(38, 60%, 18%);
+  --sl-color-accent: hsl(38, 80%, 50%);
+  --sl-color-accent-high: hsl(38, 90%, 65%);
+}

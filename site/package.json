@@ -1,0 +1,21 @@
+{
+  "name": "protocol-droid-site",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Documentation site for protocol-droid, deployed to greysquirr3l.github.io",
+  "scripts": {
+    "dev": "npx astro dev",
+    "start": "npx astro dev",
+    "build": "npx astro build",
+    "preview": "npx astro preview",
+    "astro": "npx astro"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@astrojs/starlight": "^0.30.0",
+    "astro": "^5.0.0",
+    "sharp": "^0.33.0",
+    "typescript": "^5.7.0"
+  }
+}

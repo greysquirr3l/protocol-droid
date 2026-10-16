@@ -1,0 +1,45 @@
+# protocol-droid
+
+> A Rust MCP toolkit that speaks every published spec revision at once
+> (2024-11-05 through 2026-07-28, plus draft) and bridges to the A*
+> protocols (A2A, ACP) through the same canonical model. One internal
+> representation behind per-revision codecs, runtime feature gating,
+> every transport the spec has ever defined.
+
+A Rust crate (`protocol-droid`) for building MCP servers and clients
+that speak every published revision at once, and bridges to A2A and
+ACP through the same internal model. Schema types for every revision
+coexist; a single binary serves stdio, HTTP+SSE, and Streamable HTTP.
+The CLI bridges between protocol revisions, probes servers, records
+and replays sessions, and runs the conformance suite.
+
+## Landing
+- [protocol-droid](https://greysquirr3l.github.io/protocol-droid/): Project overview, supported revisions, A* protocol support, and the four-pillar value prop.
+
+## Getting started
+- [Installation](https://greysquirr3l.github.io/protocol-droid/getting-started/installation/): Add the crate, set up the Rust toolchain, enable the right features.
+- [Quickstart](https://greysquirr3l.github.io/protocol-droid/getting-started/quickstart/): First server, first client, first JSON-RPC round-trip.
+
+## Architecture
+- [Overview](https://greysquirr3l.github.io/protocol-droid/architecture/overview/): One IR, runtime feature gating, per-revision codecs, the protocol-neutral core.
+
+## Guides
+- [Why one IR](https://greysquirr3l.github.io/protocol-droid/guides/why-one-ir/): The case against forking per spec revision; what a single canonical model buys you.
+- [FeatureProfile and gating](https://greysquirr3l.github.io/protocol-droid/guides/feature-profile/): How the negotiated protocol version, client capabilities, server capabilities, and transport collapse into a `FeatureProfile` every code path checks.
+- [Bridge two peers](https://greysquirr3l.github.io/protocol-droid/guides/bridge/): Run a version-translating bridge between an old client and a new server, with no application changes.
+- [Write a server](https://greysquirr3l.github.io/protocol-droid/guides/write-a-server/): Register tools, resources, and prompts; serve over stdio, HTTP+SSE, or Streamable HTTP.
+- [Write a client](https://greysquirr3l.github.io/protocol-droid/guides/write-a-client/): Connect, negotiate, dispatch requests, handle notifications.
+- [Write an A2A server](https://greysquirr3l.github.io/protocol-droid/guides/write-a-server-a2a/): Same internal model, A2A wire — cross-protocol servers without re-implementing your application.
+- [Security model](https://greysquirr3l.github.io/protocol-droid/guides/security/): AuthContext, default deny, redaction, elicitation response handling.
+- [Spec refresh process](https://greysquirr3l.github.io/protocol-droid/guides/spec-refresh/): How a new revision lands — vendoring the schema, running the conformance suite, gating the codec.
+- [Release process](https://greysquirr3l.github.io/protocol-droid/guides/release/): Versioning policy, deprecation timeline, public API surface.
+
+## Reference
+- [CLI](https://greysquirr3l.github.io/protocol-droid/reference/cli/): bridge, probe, inspect, record, replay, conformance — subcommands, flags, machine-readable JSON output.
+
+## Contributing
+- [Development](https://greysquirr3l.github.io/protocol-droid/contributing/development/): Build, test, lint (`cargo l`), `cargo deny`, the 1.98.1 toolchain, MSRV policy.
+
+## Optional
+- [Source on GitHub](https://github.com/greysquirr3l/protocol-droid): Repository, issues, changelog, conformance fixtures.
+- [Introduction](https://greysquirr3l.github.io/protocol-droid/guides/introduction/): Pointer to the README and the working notes in `docs/guide/src/`.

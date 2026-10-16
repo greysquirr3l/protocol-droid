@@ -1,0 +1,141 @@
+/* protocol-droid custom layer.
+   Industrial polish: watermark behind hero, mono labels with letter-spacing,
+   sharp code blocks, hairline borders treated as engineering rules. */
+
+/* === Accent: charcoal, not purple.
+   Industrial palette keeps amber as a signal color (used sparingly).
+   Selector specificity must match Starlight's `:root[data-theme=...]`
+   rules or the default purple wins. */
+:root,
+:root[data-theme='light'],
+:root[data-theme='dark'] {
+  --sl-color-accent-low: var(--sl-color-gray-5);
+  --sl-color-accent: var(--sl-color-gray-3);
+  --sl-color-accent-high: #0a0a0a;
+  --sl-color-text-accent: var(--sl-color-gray-1);
+  --sl-color-text-invert: #ffffff;
+}
+:root[data-theme='dark'] {
+  --sl-color-accent-low: var(--sl-color-gray-6);
+  --sl-color-accent: var(--sl-color-gray-2);
+  --sl-color-accent-high: #ffffff;
+  --sl-color-text-accent: var(--sl-color-gray-1);
+  --sl-color-text-invert: #0a0a0a;
+}
+
+/* === Hero watermark ===
+   Light mode: black droid at 4% opacity, tucked in the right margin.
+   Dark mode: white droid at 4% opacity. */
+.hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url('/watermark-light.svg');
+  background-repeat: no-repeat;
+  background-position: right -40px center;
+  background-size: clamp(220px, 30%, 380px) auto;
+  z-index: -1;
+  pointer-events: none;
+}
+:root[data-theme='dark'] .hero::before,
+.theme-toggle-dark .hero::before {
+  background-image: url('/watermark-dark.svg');
+}
+
+/* === Card grid: monochrome ===
+   Starlight cycles --sl-color-purple / orange / green / red / blue per card.
+   Override the cycle so every card uses the same neutral palette. */
+.card,
+sl-card,
+.card-grid .card {
+  --sl-card-border: var(--sl-color-gray-5);
+  --sl-card-bg: var(--sl-color-gray-6);
+}
+.card .icon,
+.card [class*='icon'] {
+  border-color: var(--sl-color-gray-5) !important;
+  background-color: var(--sl-color-gray-7) !important;
+}
+.card .icon svg,
+.card [class*='icon'] svg {
+  color: var(--sl-color-gray-2);
+}
+.card-grid.link-card .card,
+a.card {
+  --sl-card-border: var(--sl-color-gray-5);
+  --sl-card-bg: var(--sl-color-gray-7);
+}
+
+/* === Type: tighter headlines, schematic labels === */
+.sl-markdown-content h1,
+main h1 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.sl-markdown-content h2,
+main h2 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  border-bottom: 1px solid var(--sl-color-gray-5);
+  padding-bottom: 0.4em;
+}
+
+/* === Schematic caps for sidebar group labels === */
+nav[aria-label='Main'] > ul > li > details > summary,
+nav[aria-label='Main'] > ul > li > strong {
+  font-family: var(--sl-font-mono);
+  font-size: var(--sl-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+/* === Code blocks: visible separator, sharp corners === */
+.expressive-code pre,
+pre.astro-code,
+pre[class*='language-'] {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: var(--sl-border-radius-sm);
+}
+:not(pre) > code {
+  font-family: var(--sl-font-mono);
+  font-size: 0.875em;
+  background-color: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: var(--sl-border-radius-sm);
+  padding: 0.1em 0.35em;
+}
+
+/* === Tables: engineering rules === */
+.sl-markdown-content table,
+.markdown table {
+  border: 1px solid var(--sl-color-gray-5);
+}
+.sl-markdown-content th,
+.markdown th {
+  font-family: var(--sl-font-mono);
+  font-size: var(--sl-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--sl-color-gray-4);
+}
+
+/* === Site title: tighter === */
+.site-title,
+a.site-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* === Hero title: bigger, tighter === */
+[data-has-hero] .hero h1 {
+  font-size: var(--sl-text-5xl);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
