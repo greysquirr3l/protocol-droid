@@ -596,20 +596,25 @@ mod tests {
     /// `1` is not reserved, the bind succeeds, the bridge starts
     /// listening, and `run` would otherwise wait forever for a client
     /// that never connects. The ceiling bounds the test on every
-    /// platform; an error inside the ceiling is a real unservable
-    /// failure, and a clean exit inside the ceiling would be a green
-    /// test (which is not what `is_err` asserts, but the ceiling still
-    /// rules out a hang).
+    /// platform; a real error inside the ceiling is the original
+    /// assertion, and an `Ok` inside the ceiling is the bug shape this
+    /// test is trying to catch (the unservable pair was treated as
+    /// servable), returned as `Err` so the framework reports it without
+    /// a `panic!` in production code.
     #[tokio::test]
-    async fn an_unservable_pair_exits_non_zero() {
+    async fn an_unservable_pair_exits_non_zero() -> Result<(), TestError> {
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp")),
         )
         .await;
         match outcome {
-            Ok(Ok(())) => panic!("run returned Ok; the unservable pair was treated as servable"),
-            Ok(Err(_)) | Err(_) => {}
+            Ok(Ok(())) => Err(
+                "run returned Ok; the unservable pair was treated as servable"
+                    .to_owned()
+                    .into(),
+            ),
+            Ok(Err(_)) | Err(_) => Ok(()),
         }
     }
 
