@@ -416,21 +416,32 @@ mod tests {
     /// path is the part the operator named in the
     /// diagnostic anyway.
     #[test]
-    fn load_vectors_reports_missing_files() {
+    fn load_vectors_reports_missing_files() -> Result<(), Box<dyn std::error::Error>> {
         let path = std::path::Path::new("/nonexistent/a2a_v1_0.jsonl");
         let result = load_vectors(path);
         let Err(error) = result else {
-            return;
+            return Err(
+                "load_vectors returned Ok; the missing file was treated as present"
+                    .to_owned()
+                    .into(),
+            );
         };
         assert_eq!(
             error.line, 0,
             "a missing file is a line-0 error, not a parse error"
         );
+        // The path is hard-coded as a valid-UTF-8 string literal above,
+        // so the `Option` is `Some` by construction; an explicit match
+        // avoids `clippy::expect_used` in test code.
+        let Some(path_str) = path.to_str() else {
+            return Err("test path is not valid UTF-8".to_owned().into());
+        };
         assert!(
-            error.message.contains(path.to_str().expect("path is valid UTF-8")),
+            error.message.contains(path_str),
             "the operator's path should appear in the diagnostic: {msg}",
             msg = error.message
         );
+        Ok(())
     }
 
     /// A transport-level observation (a non-2xx
