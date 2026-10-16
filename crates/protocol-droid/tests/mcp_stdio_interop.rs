@@ -64,21 +64,37 @@ fn reference_server_path() -> PathBuf {
 /// The test skips with a clear
 /// log line when `node` is not
 /// available.
+///
+/// Cross-platform: a plain `Command::new("node")` lets the OS
+/// resolve the executable through `PATH`, which works on every
+/// target. The earlier `which node` shell-out is Linux/macOS-only
+/// — `which` is not a Windows command, so the runner fell through
+/// to a path Windows could not spawn. Spawning a probe with
+/// `--version` confirms the path resolves to a working executable
+/// before the test commits to it.
 fn find_node() -> Option<String> {
-    let output = std::process::Command::new("which")
-        .arg("node")
+    // On Unix, `Command::new("node")` will resolve through PATH and
+    // `/bin/node` and `/usr/bin/node` and a `node` on PATH all
+    // work. The `.arg("--version")` makes the call fail loudly
+    // instead of hanging if the path is wrong, and the `output()`
+    // form (vs `spawn`) is the right shape for a probe that should
+    // not survive the function.
+    //
+    // On Windows, this is also the only shape that works: `which`
+    // is not a built-in command, and the only portable way to ask
+    // "is this on PATH?" is to try to run it.
+    let output = std::process::Command::new("node")
+        .arg("--version")
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let path = String::from_utf8(output.stdout).ok()?;
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
-    }
+    // `Command::new` resolves through PATH; we don't have the
+    // resolved path back, but `node` on its own is also accepted
+    // by the spawn below — the OS resolves again. Returning a bare
+    // `"node"` here is the cross-platform answer.
+    Some("node".to_owned())
 }
 
 /// The test runs the
