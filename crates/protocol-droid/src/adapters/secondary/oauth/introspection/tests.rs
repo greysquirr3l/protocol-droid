@@ -268,8 +268,12 @@ fn claims_for(resource: &str, subject: &str, scope: &str) -> Result<TokenClaims,
     Ok(TokenClaims::new()
         .with_subject(subject)
         .with_audience(ResourceUri::new(resource)?)
-        // Far enough out that the expiry is not the thing under test.
-        .with_expiry(UNIX_EPOCH + Duration::from_secs(u64::MAX / 2))
+        // One year past the unix epoch, so the expiry is not the thing
+        // under test. `u64::MAX / 2` seconds would be ~146M years past
+        // epoch — past the Windows FILETIME ceiling of 30828 AD and
+        // overflowing `SystemTime + Duration` on that target. A year is
+        // far enough out that no test in this file races the expiry.
+        .with_expiry(UNIX_EPOCH + Duration::from_hours(8_760))
         .with_scope(scope))
 }
 

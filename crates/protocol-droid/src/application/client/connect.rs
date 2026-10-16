@@ -157,7 +157,7 @@ pub async fn open(
     let _ = versions;
     Err(ConnectError::Unsupported {
         kind: spec.kind(),
-        reason: "this build compiled no client adapter",
+        reason: missing_reason(spec.kind()),
     })
 }
 
@@ -165,8 +165,10 @@ pub async fn open(
 /// decide what to do about it.
 ///
 /// Split from the dispatch above so the explanation and the match cannot drift:
-/// the arm that refuses is the arm that knows why.
-#[cfg(any(feature = "http", feature = "legacy-sse"))]
+/// the arm that refuses is the arm that knows why. Always compiled (not gated
+/// on `http` or `legacy-sse`) so the no-adapter `open` above can name the
+/// specific kind it is refusing — a stdio spec in a no-features build still
+/// gets the "no command line" reason, not a generic "no adapter" string.
 const fn missing_reason(kind: TransportKind) -> &'static str {
     match kind {
         TransportKind::Stdio => {

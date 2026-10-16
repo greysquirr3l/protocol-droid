@@ -12,6 +12,12 @@
 //! push-notification-config methods, and the streaming
 //! SSE shape for `SendStreamingMessage`.
 
+// Drives the typed A2A client against a real `axum` listener, so it needs
+// the `http` feature to compile, and the client is gated behind `a2a`. A
+// consumer that enables only one of the two gets either the server fixture
+// or the typed client, not the round-trip.
+#![cfg(all(feature = "a2a", feature = "http"))]
+
 #![expect(
     clippy::expect_used,
     reason = "tests assert on fallible calls; a panic in a test is the right shape"

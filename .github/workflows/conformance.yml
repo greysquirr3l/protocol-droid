@@ -99,7 +99,6 @@ jobs:
             cargo run --quiet -p protocol-droid-cli -- conformance self \
               --spec-version "${{ matrix.spec-version }}" \
               --scenario "$scenario" \
-              --force \
               --timeout 5m
           done
       - name: Upload suite results

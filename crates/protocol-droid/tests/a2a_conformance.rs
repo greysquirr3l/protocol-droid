@@ -14,6 +14,9 @@
 //! supported platform, in every CI run, with no
 //! external dependency.
 
+// Reads `protocol_droid::a2a::*`; gated behind the `a2a` feature.
+#![cfg(feature = "a2a")]
+
 #![expect(
     clippy::expect_used,
     reason = "tests assert on fallible calls; a panic in a test is the right shape — propagate `?` would replace a named failure with `from()` noise"

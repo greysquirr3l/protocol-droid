@@ -10,6 +10,13 @@
 //! the JSON-RPC envelope, the JSON-RPC error code, and the
 //! response shape for `SendMessage` and `GetTask`.
 
+// These tests bind a real `axum` router, so they need the `http` feature to
+// compile, and they read `protocol_droid::a2a::*` which is only present when
+// the `a2a` feature is on. A consumer that enables only one of the two gets
+// the a2a domain or the http transport, not the bridge between them — these
+// tests cover the bridge.
+#![cfg(all(feature = "a2a", feature = "http"))]
+
 #![expect(
     clippy::expect_used,
     reason = "tests assert on fallible calls; a panic in a test is the right shape — propagate `?` would replace a named failure with `from()` noise"

@@ -10,6 +10,8 @@
 //! frame and stops, and one that reads to the end and loses the reply among
 //! the traffic.
 
+#![cfg(feature = "http")]
+
 use axum::Router;
 use std::fmt::Write as _;
 

@@ -789,7 +789,15 @@ mod tests {
     /// suite supports (`server-initialize` is the smallest one) keeps
     /// the function and the `SelfArgs` it consumes alive in the lib
     /// test build without paying for a real fixture compile.
+    ///
+    /// `#[ignore]` because the test spawns `npx` to download and run the
+    /// pinned conformance suite; in CI's `--no-default-features` matrix
+    /// and on a developer machine without network, the npx call hangs
+    /// forever. The dedicated `Conformance` workflow exercises the same
+    /// code path with a guaranteed-working npx and a 5m timeout, so
+    /// the coverage lives there rather than in the default test run.
     #[tokio::test]
+    #[ignore = "spawns npx and the suite; covered by the Conformance workflow, not the default test run"]
     async fn run_self_executes_the_suite_end_to_end() {
         let args = SelfArgs {
             spec_version: "2025-06-18".to_owned(),
@@ -829,7 +837,14 @@ mod tests {
     /// reap the server) without asserting on a pass/fail — the suite's
     /// own pass/fail is the run's answer, and CI post-processes that
     /// against the allow-list.
+    ///
+    /// `#[ignore]` for the same reason as
+    /// `run_self_executes_the_suite_end_to_end` above: the test spawns
+    /// `npx` and the suite, and a default test run should not pay for
+    /// the network. The Conformance workflow runs the same path with
+    /// a timeout.
     #[tokio::test]
+    #[ignore = "spawns npx and the suite; covered by the Conformance workflow, not the default test run"]
     async fn run_dispatches_to_run_self() {
         let args = ConformanceArgs {
             mode: ConformanceMode::Self_(SelfArgs {

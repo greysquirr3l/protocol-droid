@@ -19,6 +19,8 @@
 //! *not* held in the second ([`a_push_that_lands_before_the_client_reads_is_not_lost`]),
 //! which is where the distinction actually bites.
 
+#![cfg(feature = "http")]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;

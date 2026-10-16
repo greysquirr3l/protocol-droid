@@ -245,7 +245,19 @@ name = "stdio_server"
 required-features = ["stdio"]
 
 [[example]]
+name = "mcp_client"
+required-features = ["stdio"]
+
+[[example]]
 name = "server"
+required-features = ["http"]
+
+[[example]]
+name = "http_server"
+required-features = ["http"]
+
+[[example]]
+name = "http_client"
 required-features = ["http"]
 
 [[example]]
@@ -254,4 +266,16 @@ required-features = ["http", "random-ids"]
 
 [[example]]
 name = "a2a_client"
+required-features = ["a2a", "http"]
+
+[[example]]
+name = "a2a_minimal_server"
+required-features = ["a2a", "http"]
+
+[[example]]
+name = "a2a_server"
+required-features = ["a2a", "http"]
+
+[[example]]
+name = "a2a_typed_client"
 required-features = ["a2a", "http"]

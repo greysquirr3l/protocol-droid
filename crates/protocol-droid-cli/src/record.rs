@@ -380,6 +380,14 @@ pub struct RecordArgs {
 /// signature; a follow-up adds `record` as a new subcommand that
 /// delegates to this function.
 pub async fn run(args: &RecordArgs) -> anyhow::Result<()> {
+    // Validate both specs at startup. Without this, a malformed
+    // `--listen` slips through (the recorder just writes to stdout and
+    // returns Ok), and the user only learns their spec is bad by
+    // reading the test results — the bridge path validates the
+    // upstream a few lines down, but the listen path is the recorder's
+    // own.
+    let _ = parse_spec(&args.listen, "--listen")?;
+
     let recorder: Arc<dyn Recorder> = match args.out.as_str() {
         "-" => {
             let writer = std::io::stdout();
@@ -439,11 +447,11 @@ pub async fn run(args: &RecordArgs) -> anyhow::Result<()> {
 /// Parses a `kind:target` transport spec, with the same error
 /// messages the `bridge` subcommand uses.
 ///
-/// Gated on `bridge` because the only caller is the bridge path
-/// above. A build without `bridge` does not need this parser,
-/// and a function that is only ever used in one configuration
-/// has no business being compiled in the other.
-#[cfg(feature = "bridge")]
+/// Always compiled (not gated on `bridge`) because the recorder
+/// validates the listen spec at startup, even when no bridge peer
+/// will be attached — a malformed `--listen` should be an error
+/// the user sees immediately, not a panic or a quiet fallthrough
+/// to "the recorder opened stdout and waited for nothing".
 fn parse_spec(raw: &str, label: &str) -> anyhow::Result<protocol_droid::domain::TransportSpec> {
     use std::str::FromStr;
     protocol_droid::domain::TransportSpec::from_str(raw)

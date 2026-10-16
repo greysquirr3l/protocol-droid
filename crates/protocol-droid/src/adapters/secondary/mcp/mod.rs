@@ -5,9 +5,11 @@
 //! adapter sits beside it rather than inside it, which is the property that
 //! makes T27 and T29 additions rather than a fork.
 
+#[cfg(feature = "stdio")]
 pub mod client;
 pub mod method_table;
 
+#[cfg(feature = "stdio")]
 pub use client::{
     CallToolRequest, CallToolResult, ClientCapabilities, ContentBlock, Implementation,
     InitializeRequest, InitializeResult, ListToolsResult, McpPeerError, McpStdioPeer, SpawnSpec,
