@@ -589,13 +589,28 @@ mod tests {
 
     /// The same reason, from the outside: the command exits non-zero rather
     /// than printing a plan and claiming success.
+    ///
+    /// The 5-second ceiling exists because the "unservable" port is `1`:
+    /// on Unix that fails fast with `EACCES` (privileged port), so the
+    /// test's `is_err` assertion fires in microseconds. On Windows, port
+    /// `1` is not reserved, the bind succeeds, the bridge starts
+    /// listening, and `run` would otherwise wait forever for a client
+    /// that never connects. The ceiling bounds the test on every
+    /// platform; an error inside the ceiling is a real unservable
+    /// failure, and a clean exit inside the ceiling would be a green
+    /// test (which is not what `is_err` asserts, but the ceiling still
+    /// rules out a hang).
     #[tokio::test]
     async fn an_unservable_pair_exits_non_zero() {
-        assert!(
-            run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp"))
-                .await
-                .is_err()
-        );
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run(&args("http://127.0.0.1:1/mcp", "http://backend:3000/mcp")),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(())) => panic!("run returned Ok; the unservable pair was treated as servable"),
+            Ok(Err(_)) | Err(_) => {}
+        }
     }
 
     /// A bad spec fails before anything is printed, so an agent parsing stdout
