@@ -17,7 +17,6 @@
 // consumer that enables only one of the two gets either the server fixture
 // or the typed client, not the round-trip.
 #![cfg(all(feature = "a2a", feature = "http"))]
-
 #![expect(
     clippy::expect_used,
     reason = "tests assert on fallible calls; a panic in a test is the right shape"

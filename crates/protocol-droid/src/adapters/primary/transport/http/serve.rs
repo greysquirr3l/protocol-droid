@@ -297,7 +297,22 @@ impl RequestHandler<HttpSession> for HttpHandler {
             SessionHandle::Establishing | SessionHandle::Stateless => None,
             SessionHandle::Live { session, .. } => Some(Arc::clone(session)),
         };
-        let peer = self.peer_for(stored.as_ref());
+        // The principal is this request's, not the session's. The router
+        // resolved it from the credentials *this* request presented, and a
+        // bearer token can be refreshed, replaced, or withdrawn between two
+        // requests on one session — so it is overlaid onto this request's own
+        // copy of the peer and the stored session is left holding the
+        // anonymous default.
+        //
+        // This is the line that decides whether an authenticated caller is
+        // served at all: every visibility gate reads `ctx.peer().auth()`
+        // (`Dispatcher` for the listings, `RegistryServer::call` for the call
+        // path), and a peer that never received the request's context is
+        // anonymous to all of them, so a scope-gated primitive is invisible
+        // to the very caller who earned it.
+        let peer = self
+            .peer_for(stored.as_ref())
+            .with_auth(call.context.clone());
 
         async move {
             // Decoded once. A body that is a batch, or a reply shape, or
@@ -353,9 +368,19 @@ impl RequestHandler<HttpSession> for HttpHandler {
             }
 
             if opening {
-                let peer = negotiated.ok_or_else(|| {
-                    Refusal::Handler("a session was opened without a handshake".to_owned())
-                })?;
+                // `handshake` narrows the context it was handed, so the peer it
+                // returns carries the *establishing request's* principal. Every
+                // request resolves its own principal above, so nothing
+                // downstream reads this one — which is exactly why it is worth
+                // dropping rather than storing: session state outlives the
+                // credential that produced it, and a principal recorded there
+                // has the wrong lifetime for a token that can be refreshed,
+                // replaced, or withdrawn mid-session.
+                let peer = negotiated
+                    .ok_or_else(|| {
+                        Refusal::Handler("a session was opened without a handshake".to_owned())
+                    })?
+                    .without_auth();
                 let minted = self
                     .sessions
                     .open(Arc::new(HttpSession {
@@ -917,18 +942,24 @@ fn default_ceiling() -> ProtocolVersion {
 
 #[cfg(test)]
 mod tests {
+    use core::pin::Pin;
+    use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serde_json::Value;
     use tower::ServiceExt;
 
     use super::{HttpBuilder, ServeError, default_ceiling, routes};
     use crate::adapters::primary::transport::http::router::RouterError;
-    use crate::adapters::primary::transport::http::{Anonymous, AuthPolicy};
-    use crate::application::server::Server;
+    use crate::adapters::primary::transport::http::{
+        Anonymous, AuthPolicy, Authenticator, Credentials,
+    };
+    use crate::application::server::{Server, ToolHandler};
     use crate::domain::registry::auth::ScopeSet;
+    use crate::domain::registry::{AuthContext, Primitive, Registered, Scope, Tool};
 
     /// Anything a test here can fail at, gathered so a test can `?` through
     /// unrelated error types without unwrapping.
@@ -1209,5 +1240,235 @@ mod tests {
             Err(other) => Err(Failure::Serve(other)),
             Ok(_) => Err(Failure::Expectation("the unsafe combination was accepted")),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #19: the principal the router authenticated now reaches the
+    // handler. Every visibility gate reads `ctx.peer().auth()`, and the
+    // HTTP transport was building that peer from the session rather than
+    // from the request — so an authenticated caller was answered as
+    // anonymous, and every scope-gated primitive was invisible to the very
+    // caller entitled to it.
+    // -----------------------------------------------------------------
+
+    /// The one tool the servers in this section publish.
+    const GATED: &str = "gated";
+
+    /// A server whose only tool is invisible without the `Read` scope.
+    ///
+    /// The scope is the assertion's teeth. An ungated tool is visible to
+    /// everyone, so a test built on one cannot tell an authenticated caller
+    /// from an anonymous one and would pass either way.
+    fn gated_server() -> Result<Server, Failure> {
+        let tool = Tool::new(GATED, r#"{"type":"object"}"#)
+            .map_err(|_| Failure::Expectation("a tool schema the crate accepts"))?;
+        let handler: ToolHandler =
+            Arc::new(|_context, arguments| Box::pin(async move { arguments }));
+        Ok(Server::builder("auth-propagation")
+            .restricted_tool(
+                Registered::from(Primitive::from(tool)).requiring_scope(Scope::Read),
+                handler,
+            )
+            .build())
+    }
+
+    /// `Bearer alice` authenticates as a principal holding `Read`.
+    ///
+    /// Every other credential — including none at all — authenticates as a
+    /// *named* principal holding nothing. The naming is load-bearing: an
+    /// anonymous context is indistinguishable from a peer the transport never
+    /// authenticated, which is the state this section exists to rule out.
+    #[derive(Debug, Clone, Copy)]
+    struct Tokens;
+
+    impl Authenticator for Tokens {
+        fn authenticate<'a>(
+            &'a self,
+            presented: &'a Credentials<'_>,
+        ) -> Pin<Box<dyn Future<Output = AuthContext> + Send + 'a>> {
+            let holds_read = presented
+                .authorization()
+                .is_some_and(|presented| presented == "Bearer alice");
+            Box::pin(std::future::ready(if holds_read {
+                AuthContext::new("alice", ScopeSet::empty().with(Scope::Read))
+            } else {
+                AuthContext::new("bob", ScopeSet::empty())
+            }))
+        }
+    }
+
+    /// The router these tests drive.
+    ///
+    /// `Require(ScopeSet::empty())` rather than `Public`, for two reasons. An
+    /// endpoint with an authenticator wired under a `Public` policy is refused
+    /// at mount time, and an empty requirement is the only policy that admits
+    /// a *named* caller holding nothing. So both callers get past the endpoint
+    /// policy and differ only at the visibility gate, which is the claim under
+    /// test — a `403` here would prove nothing about the gate.
+    fn auth_routes() -> Result<axum::Router, Failure> {
+        Ok(routes(
+            HttpBuilder::new(gated_server()?)
+                .ids(test_ids())
+                .with_authenticator(Arc::new(Tokens))
+                .with_policy(AuthPolicy::Require(ScopeSet::empty())),
+        )?
+        .router)
+    }
+
+    /// One POST to `/mcp`, with the credential and session the test chose.
+    ///
+    /// Reports the status, the minted session id if one was minted, and the
+    /// decoded reply — all read off the response rather than off a value both
+    /// sides already agreed on.
+    async fn post(
+        router: &axum::Router,
+        body: &str,
+        credential: Option<&str>,
+        session: Option<&str>,
+    ) -> Result<(StatusCode, Option<String>, Value), Failure> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream");
+        if let Some(credential) = credential {
+            request = request.header("authorization", credential);
+        }
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        let response = router
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(body.to_owned()))
+                    .map_err(|_| Failure::Expectation("the request built"))?,
+            )
+            .await
+            .map_err(|_| Failure::NoResponse)?;
+        let status = response.status();
+        let minted = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .map_err(|_| Failure::Expectation("the reply body to be readable"))?;
+        let document = serde_json::from_slice(&bytes)
+            .map_err(|_| Failure::Expectation("the reply to be JSON"))?;
+        Ok((status, minted, document))
+    }
+
+    /// The tool names a `tools/list` reply offers.
+    fn listed(document: &Value) -> Result<Vec<String>, Failure> {
+        let tools = document
+            .get("result")
+            .and_then(|result| result.get("tools"))
+            .and_then(Value::as_array)
+            .ok_or(Failure::Expectation("a tools array in the result"))?;
+        Ok(tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    /// The handshake, as the caller holding `Read`, naming the new session.
+    async fn open_session(router: &axum::Router) -> Result<String, Failure> {
+        let (status, minted, _) = post(
+            router,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+            Some("Bearer alice"),
+            None,
+        )
+        .await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("a 200 for a well-formed initialize"));
+        }
+        minted.ok_or(Failure::Expectation(
+            "an mcp-session-id naming the new session",
+        ))
+    }
+
+    /// An authenticated caller sees what its scopes earn.
+    ///
+    /// The claim issue #19 was filed on: the peer the listing is filtered
+    /// against is built from the request, so the principal that authenticated
+    /// this request is the one the gate reads.
+    #[tokio::test]
+    async fn an_authenticated_caller_sees_what_its_scopes_earn() -> Result<(), Failure> {
+        let router = auth_routes()?;
+        let session = open_session(&router).await?;
+
+        let (status, _, reply) = post(
+            &router,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            Some("Bearer alice"),
+            Some(&session),
+        )
+        .await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("a 200 for tools/list"));
+        }
+        if !listed(&reply)?.iter().any(|name| name == GATED) {
+            return Err(Failure::Expectation(
+                "the Read-gated tool listed for a caller holding Read",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The principal is read from the request, so two requests on one session
+    /// are filtered independently.
+    ///
+    /// Both calls here are the same method on the same session, opened by the
+    /// caller holding `Read`, and they are answered differently: the second is
+    /// filtered against the credential it presented rather than the one that
+    /// opened the session. That is the whole of the lifetime claim as a caller
+    /// experiences it, and it is what fails if the peer's principal comes from
+    /// session state instead of from the request.
+    ///
+    /// The pairing is what makes it a test rather than a demonstration — one
+    /// caller holding the scope and one holding nothing, against one session —
+    /// because a gate that answered both the same way passes a test that ever
+    /// only used one caller.
+    #[tokio::test]
+    async fn a_later_request_is_filtered_against_its_own_credential() -> Result<(), Failure> {
+        let router = auth_routes()?;
+        let session = open_session(&router).await?;
+
+        let (status, _, held) = post(
+            &router,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            Some("Bearer alice"),
+            Some(&session),
+        )
+        .await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("a 200 for tools/list"));
+        }
+        let (status, _, unheld) = post(
+            &router,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#,
+            Some("Bearer bob"),
+            Some(&session),
+        )
+        .await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("a 200 for tools/list"));
+        }
+
+        if !listed(&held)?.iter().any(|name| name == GATED) {
+            return Err(Failure::Expectation(
+                "the Read-gated tool listed for a caller holding Read",
+            ));
+        }
+        if listed(&unheld)?.iter().any(|name| name == GATED) {
+            return Err(Failure::Expectation(
+                "the Read-gated tool hidden from a caller holding nothing, on a session a caller who did hold it opened",
+            ));
+        }
+        Ok(())
     }
 }

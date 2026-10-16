@@ -294,9 +294,38 @@ impl PeerSession {
     }
 
     /// Records who the caller is.
+    ///
+    /// Per **request**, and the distinction is the one that goes wrong
+    /// silently. A bearer token can be refreshed, replaced, or withdrawn
+    /// between two requests on one session, so the principal belongs to the
+    /// [`RequestContext`] being served rather than to the session the peer was
+    /// negotiated into. A transport therefore overlays the context it resolved
+    /// onto the session peer per request, and what it persists carries the
+    /// anonymous default that [`without_auth`](Self::without_auth) restores.
     #[must_use]
     pub fn with_auth(mut self, auth: AuthContext) -> Self {
         self.auth = auth;
+        self
+    }
+
+    /// This peer's session state with the principal dropped.
+    ///
+    /// What a transport stores when it persists a handshake result. The
+    /// returned peer keeps the negotiated revision, the profile and the session
+    /// id — everything that *is* the session — and answers
+    /// [`auth`](Self::auth) with [`AuthContext::anonymous`].
+    ///
+    /// A handshake narrows the context it was handed, so the peer it returns
+    /// inherits that context's principal. A transport that overlays the
+    /// request's own context per request overwrites it on every request and
+    /// never observes the difference, which is precisely why it is worth
+    /// stating rather than leaving to chance: a principal recorded against
+    /// session state has the wrong lifetime for a token that can be refreshed,
+    /// replaced, or withdrawn mid-session, and the next reader of the session
+    /// to skip that overlay would be answered as whoever opened it.
+    #[must_use]
+    pub fn without_auth(mut self) -> Self {
+        self.auth = AuthContext::anonymous();
         self
     }
 
@@ -629,6 +658,7 @@ mod tests {
     use crate::application::session::{FrameSink, SinkError};
     use crate::domain::feature::{Feature, FeatureProfile};
     use crate::domain::ir::{JsonObject, JsonObjectError};
+    use crate::domain::registry::{AuthContext, Scope, ScopeSet};
     use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
     use crate::domain::{ProtocolVersion, RequestId, TransportKind};
 
@@ -827,6 +857,42 @@ mod tests {
             exchange.clone(),
             sink.clone(),
         )
+    }
+
+    /// Dropping the principal keeps everything the session *is*.
+    ///
+    /// Three claims, and the second is the one that would be easy to break by
+    /// writing `without_auth` as a fresh `PeerSession`. The scopes go — `holds`
+    /// is what a visibility gate reads, so a peer that kept them would still
+    /// answer as a principal it no longer names — and the revision, profile and
+    /// session id survive, because those are the negotiation a persisted
+    /// session exists to carry, and losing them would answer the next request
+    /// against the wrong feature set.
+    #[test]
+    fn without_auth_keeps_the_session_and_drops_the_principal() -> Result<(), TestError> {
+        let exchange = Arc::new(CountingExchange::answering(r#"{"action":"accept"}"#)?);
+        let sink = Arc::new(RecordingSink::default());
+        let held = ScopeSet::empty().with(Scope::Read).with(Scope::Write);
+        let profile = crate::domain::feature::resolve(crate::domain::feature::Negotiation::bare(
+            ProtocolVersion::V2025_06_18,
+            TransportKind::Stdio,
+        ));
+
+        let holding = peer(ProtocolVersion::V2025_06_18, profile, &exchange, &sink)
+            .with_auth(AuthContext::new("alice", held));
+        assert!(
+            holding.auth().holds(held),
+            "the premise: alice holds what she was given"
+        );
+
+        let stored = holding.without_auth();
+        assert_eq!(stored.auth(), &AuthContext::anonymous());
+        assert!(!stored.auth().holds(held));
+        assert_eq!(stored.negotiated(), ProtocolVersion::V2025_06_18);
+        assert_eq!(stored.profile(), profile);
+        assert_eq!(stored.session(), SessionId::new(7));
+        assert_eq!(stored.transport(), TransportKind::Stdio);
+        Ok(())
     }
 
     /// The scenario the task file names: elicitation on a session that never

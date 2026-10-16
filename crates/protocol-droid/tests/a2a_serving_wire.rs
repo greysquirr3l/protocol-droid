@@ -16,7 +16,6 @@
 // the a2a domain or the http transport, not the bridge between them — these
 // tests cover the bridge.
 #![cfg(all(feature = "a2a", feature = "http"))]
-
 #![expect(
     clippy::expect_used,
     reason = "tests assert on fallible calls; a panic in a test is the right shape — propagate `?` would replace a named failure with `from()` noise"
