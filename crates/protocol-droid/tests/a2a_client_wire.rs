@@ -424,9 +424,7 @@ async fn check_bearer_middleware(
         .expect("a static 401 response builds")
 }
 
-async fn spawn_test_peer_with_bearer(
-    required_token: Option<&str>,
-) -> (String, TestPeerGuard) {
+async fn spawn_test_peer_with_bearer(required_token: Option<&str>) -> (String, TestPeerGuard) {
     let mut builder = AgentCardBuilder::new()
         .with_name("a2a_client_wire_agent")
         .with_description("A test agent for A2aClient.")
