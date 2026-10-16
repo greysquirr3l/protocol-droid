@@ -70,8 +70,9 @@ a human reviews the push), and the conformance work — the
 suite runs end-to-end now, but the per-scenario pass rate is
 below the MCP target on three revisions (`2025-06-18`,
 `2025-11-25`, `2026-07-28`), and closing the gaps is the last
-gate before MVP sign-off. The per-scenario breakdown is in
-the `Conformance` workflow logs.
+gate before MVP sign-off. The root-cause analysis and the
+six-step order of operations for closing the matrix are in
+[`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
 
 **Not started.** Nothing the strategy document named. Anything that
 lands after MVP sign-off (post-MVP A2A work, additional cross-protocol
