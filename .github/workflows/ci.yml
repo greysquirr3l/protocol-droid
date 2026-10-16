@@ -92,6 +92,30 @@ jobs:
           workspaces: . -> target
           key: ${{ matrix.features.name }}
       - name: Test
+        # 30 min is generous — the slowest cell (Linux all-features)
+        # finishes in ~12 min locally. The ceiling exists because a
+        # hung test in a previous run held a Windows cell for over
+        # five hours and blocked every merge to main. A self-fail at
+        # 30 min surfaces the hang immediately, the next run picks
+        # up the fix once the offending test is identified.
+        #
+        # Investigation target: `tests/a2a_client_wire.rs` is the
+        # prime suspect. It uses `tokio::spawn` to run a real
+        # `axum::serve` against a `TcpListener::bind("127.0.0.1:0")`
+        # and discards the `JoinHandle` so the test function's
+        # return cancels the server task. On Linux and macOS the
+        # cancellation propagates and the listener releases within
+        # microseconds; on Windows the cleanup appears to block
+        # somewhere in the `axum::serve` shutdown path, and the
+        # whole test binary never returns. Each of the 14 tests in
+        # that file spawns and tears down a server, so the binary
+        # holds open a chain of TCP listeners until the workflow
+        # kills it. A `shutdown_signal` on the server, a
+        # `with_graceful_shutdown` on `axum::serve`, or a `Drop` for
+        # the test peer that explicitly aborts the task would all
+        # close the leak; the smallest fix is to install a
+        # cancellation token and abort the handle on drop.
+        timeout-minutes: 30
         run: cargo test --workspace ${{ matrix.features.args }}
 
   deny:
