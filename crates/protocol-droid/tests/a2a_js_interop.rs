@@ -58,7 +58,13 @@
 //!    of the test (or when the test panics —
 //!    see the `Drop` impl on `Child`).
 
-#![cfg(feature = "a2a")]
+// See the corresponding comment in `mcp_stdio_interop.rs` for why
+// every Node-spawning interop test on this runner is gated to Unix.
+// The Windows stdio handle for a console-mode `node` process hangs
+// the test on GitHub-hosted `windows-latest`; same root cause, same
+// fix. Move the gate if the Windows console-mode story is
+// understood, not before.
+#![cfg(all(feature = "a2a", unix))]
 
 use std::net::TcpListener;
 use std::path::PathBuf;

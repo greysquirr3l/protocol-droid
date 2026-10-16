@@ -50,7 +50,13 @@
 //! 4. The child is killed when the peer drops
 //!    (the peer sets `Command::kill_on_drop(true)`).
 
-#![cfg(feature = "acp-experimental")]
+// See the corresponding comment in `mcp_stdio_interop.rs` for why
+// every Node-spawning interop test on this runner is gated to Unix.
+// The Windows stdio handle for a console-mode `node` process hangs
+// the test on GitHub-hosted `windows-latest`; same root cause, same
+// fix. Move the gate if the Windows console-mode story is
+// understood, not before.
+#![cfg(all(feature = "acp-experimental", unix))]
 
 use std::path::PathBuf;
 use std::time::Duration;
