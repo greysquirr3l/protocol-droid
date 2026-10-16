@@ -9,7 +9,15 @@
     "start": "npx astro dev",
     "build": "npx astro build",
     "preview": "npx astro preview",
-    "astro": "npx astro"
+    "astro": "npx astro",
+    "deploy": "bash scripts/deploy-docs.sh",
+    "deploy:dry": "bash scripts/deploy-docs.sh --no-push"
+  },
+  "deploy-docs": {
+    "pagesRepo": "../../../greysquirr3l.github.io",
+    "subdir": "protocol-droid",
+    "liveUrl": "https://greysquirr3l.github.io/protocol-droid/",
+    "sourceRepo": "greysquirr3l/protocol-droid"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.4",
