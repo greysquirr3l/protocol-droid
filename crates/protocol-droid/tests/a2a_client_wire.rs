@@ -345,7 +345,52 @@ impl A2aStreamingRequestHandler for MinimalAgent {
     }
 }
 
-async fn spawn_test_peer() -> (String, tokio::task::JoinHandle<()>) {
+/// Owns the spawned axum server so the test can drop it on success.
+///
+/// A returned `JoinHandle` is a `tokio` cancellation handle: dropping
+/// it cancels the task. The `axum::serve` future does not respond to
+/// cancellation the way a plain `async fn` does — the `hyper` driver
+/// inside it has to wind down before the TCP listener releases, and
+/// on Windows the wind-down appears to block on a runtime-internal
+/// queue. The result is the test binary hangs because every spawned
+/// server is still holding its socket, and `cargo test` waits for
+/// them all to exit. A `with_graceful_shutdown` future keyed to a
+/// `oneshot` the guard owns lets the test ask the server to drain
+/// rather than cancel it; the explicit `abort` is a backstop in
+/// case the shutdown signal races the test process's own exit.
+///
+/// The pattern is the same `ChildGuard` shape every test fixture
+/// that owns a real socket eventually needs.
+struct TestPeerGuard {
+    /// The server task. `abort` is the backstop in case the
+    /// graceful-shutdown signal below did not make the server exit
+    /// in time.
+    handle: tokio::task::JoinHandle<()>,
+    /// The sender half of a `oneshot` the spawned server's
+    /// `with_graceful_shutdown` future is awaiting. Drop semantics
+    /// alone would cancel the task, which is what we are trying
+    /// to avoid; the signal gives the server a chance to drain
+    /// its in-flight requests.
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for TestPeerGuard {
+    fn drop(&mut self) {
+        // The receiver lives inside the spawned task; sending is
+        // best-effort and an error means the server already exited,
+        // which is the outcome we wanted anyway.
+        if let Some(sender) = self.shutdown.take() {
+            let _ = sender.send(());
+        }
+        // Belt-and-suspenders. `with_graceful_shutdown` should have
+        // let the server drain, but on Windows the shutdown signal
+        // can race the test binary's own exit and leave the
+        // listener open. An explicit abort closes the leak.
+        self.handle.abort();
+    }
+}
+
+async fn spawn_test_peer() -> (String, TestPeerGuard) {
     spawn_test_peer_with_bearer(None).await
 }
 
@@ -381,7 +426,7 @@ async fn check_bearer_middleware(
 
 async fn spawn_test_peer_with_bearer(
     required_token: Option<&str>,
-) -> (String, tokio::task::JoinHandle<()>) {
+) -> (String, TestPeerGuard) {
     let mut builder = AgentCardBuilder::new()
         .with_name("a2a_client_wire_agent")
         .with_description("A test agent for A2aClient.")
@@ -441,10 +486,26 @@ async fn spawn_test_peer_with_bearer(
         .await
         .expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
+        // The graceful-shutdown future owns `shutdown_rx`; when the
+        // guard's `Drop` sends, this future resolves and `axum::serve`
+        // drains its in-flight requests before exiting. The point
+        // is to avoid a hard cancel, which on Windows does not
+        // unwind the `hyper` driver cleanly.
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
     });
-    (format!("http://127.0.0.1:{port}"), handle)
+    (
+        format!("http://127.0.0.1:{port}"),
+        TestPeerGuard {
+            handle,
+            shutdown: Some(shutdown_tx),
+        },
+    )
 }
 
 fn user_message(text: &str) -> Message {
@@ -456,7 +517,7 @@ fn user_message(text: &str) -> Message {
 
 #[tokio::test]
 async fn card_fetches_the_well_known_agent_card() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
     let card = client.card().await?;
     assert_eq!(card.name.as_ref(), "a2a_client_wire_agent");
@@ -465,7 +526,7 @@ async fn card_fetches_the_well_known_agent_card() -> Result<(), Box<dyn std::err
 
 #[tokio::test]
 async fn send_message_returns_a_task() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
     let request = SendMessageRequest::new(user_message("hi"));
     let response = client.send_message(request).await?;
@@ -478,7 +539,7 @@ async fn send_message_returns_a_task() -> Result<(), Box<dyn std::error::Error>>
 
 #[tokio::test]
 async fn send_then_get_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
     let request = SendMessageRequest::new(user_message("hi"));
     let response = client.send_message(request).await?;
@@ -493,7 +554,7 @@ async fn send_then_get_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn cancel_flips_state_to_cancelled() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
     let request = SendMessageRequest::new(user_message("hi"));
     let response = client.send_message(request).await?;
@@ -508,7 +569,7 @@ async fn cancel_flips_state_to_cancelled() -> Result<(), Box<dyn std::error::Err
 
 #[tokio::test]
 async fn list_tasks_returns_what_send_message_wrote() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
     let request = SendMessageRequest::new(user_message("hi"));
     let _ = client.send_message(request).await?;
@@ -529,7 +590,7 @@ async fn list_tasks_returns_what_send_message_wrote() -> Result<(), Box<dyn std:
 
 #[tokio::test]
 async fn push_notification_config_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
 
     let created = client
@@ -576,7 +637,7 @@ async fn push_notification_config_round_trip() -> Result<(), Box<dyn std::error:
 
 #[tokio::test]
 async fn send_streaming_message_collects_events() -> Result<(), Box<dyn std::error::Error>> {
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::new(url)?;
     let request = SendMessageRequest::new(user_message("hi"));
     let events = client.send_streaming_message(request).await?;
@@ -598,7 +659,7 @@ async fn with_paths_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     // test pin is that a custom path is
     // honored, not that the path is
     // non-conventional.
-    let (url, _handle) = spawn_test_peer().await;
+    let (url, _guard) = spawn_test_peer().await;
     let client = A2aClient::with_paths(url, "/.well-known/agent-card.json", "/a2a", "/a2a/stream")?;
     let card = client.card().await?;
     assert_eq!(card.name.as_ref(), "a2a_client_wire_agent");
@@ -611,7 +672,7 @@ async fn bearer_token_unlocks_an_auth_required_peer() -> Result<(), Box<dyn std:
     // client attaches it via
     // `with_bearer_token`; the typed
     // `send_message` round-trip succeeds.
-    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let (url, _guard) = spawn_test_peer_with_bearer(Some("top-secret")).await;
     let client = A2aClient::new(url)?.with_bearer_token("top-secret");
     let response = client
         .send_message(SendMessageRequest::new(user_message("hi")))
@@ -632,7 +693,7 @@ async fn missing_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error
     // the status as `A2aClientError::Io`
     // because `reqwest::Response::error_for_status`
     // is what runs first.
-    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let (url, _guard) = spawn_test_peer_with_bearer(Some("top-secret")).await;
     let client = A2aClient::new(url)?;
     let result = client
         .send_message(SendMessageRequest::new(user_message("hi")))
@@ -679,7 +740,7 @@ async fn the_well_known_card_is_unauthenticated_even_when_bearer_is_required()
     // claim this in their doc comments; the
     // wire-level assertion here is the
     // truth test.
-    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let (url, _guard) = spawn_test_peer_with_bearer(Some("top-secret")).await;
     let peer = url;
     let response = reqwest::get(format!("{peer}/.well-known/agent-card.json")).await?;
     if response.status() != reqwest::StatusCode::OK {
@@ -699,7 +760,7 @@ async fn wrong_bearer_token_is_a_401() -> Result<(), Box<dyn std::error::Error>>
     // the client sends a different one.
     // The wire-level assertion is that the
     // request is rejected.
-    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let (url, _guard) = spawn_test_peer_with_bearer(Some("top-secret")).await;
     let client = A2aClient::new(url)?.with_bearer_token("not-the-secret");
     let result = client
         .send_message(SendMessageRequest::new(user_message("hi")))
@@ -738,7 +799,7 @@ async fn get_extended_agent_card_round_trips_with_a_bearer_token()
     // typed `GetExtendedAgentCardResponse`
     // wrapping the same `AgentCard` the
     // well-known path served.
-    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let (url, _guard) = spawn_test_peer_with_bearer(Some("top-secret")).await;
     let client = A2aClient::new(url)?.with_bearer_token("top-secret");
     let response = client
         .get_extended_agent_card(GetExtendedAgentCardRequest::new())
@@ -756,7 +817,7 @@ async fn get_extended_agent_card_is_a_401_without_a_bearer_token()
     // rejected — the public well-known
     // read is still available, but the
     // extended read is auth-gated.
-    let (url, _handle) = spawn_test_peer_with_bearer(Some("top-secret")).await;
+    let (url, _guard) = spawn_test_peer_with_bearer(Some("top-secret")).await;
     let client = A2aClient::new(url)?;
     let result = client
         .get_extended_agent_card(GetExtendedAgentCardRequest::new())
