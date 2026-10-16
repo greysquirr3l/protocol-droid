@@ -8,10 +8,12 @@ A Rust toolkit for the [Model Context Protocol](https://modelcontextprotocol.io)
 that speaks **every** published spec revision — `2024-11-05`, `2025-03-26`,
 `2025-06-18`, `2025-11-25`, `2026-07-28`, and the floating `draft` — in a
 single binary, all at once. It does not ask you to pick a version at compile
-time. The A\* protocols (A2A, ACP) ride the same internal model — they get
-their own vendored schemas and codecs, so the cross-protocol bridge
-translates between protocols without a consumer having to re-implement
-their application.
+time. The A\* protocols ride the same internal model — A2A v1.0 and ACP
+v1.25.0 are vendored alongside the MCP schemas, the cross-protocol
+bridge (`protocol-droid bridge_a2a`) translates between MCP and A2A
+without a consumer having to re-implement their application, and a
+consumer that only wants MCP never pays for the A\* codecs (`a2a` and
+`acp-experimental` are opt-in Cargo features).
 
 **📖 [Read the guide](https://greysquirr3l.github.io/protocol-droid/)** —
 the live Astro + Starlight site at `greysquirr3l.github.io/protocol-droid/`
@@ -40,8 +42,8 @@ Three ideas set it apart:
 
 ## Status
 
-Twenty-two of twenty-nine tasks are complete, with four in flight.
-Preflight is green at **2,015 tests** across the workspace
+Twenty-six of twenty-nine tasks are complete, with three in flight.
+Preflight is green at **2,343 tests** across the workspace
 (`cargo test --workspace --all-features`).
 
 | Done        | What it built                                                                                           |
@@ -54,19 +56,27 @@ Preflight is green at **2,015 tests** across the workspace
 | T16         | OAuth 2.1: resource server, PKCE client, RFC 7591 + CIMD registration, RFC 7662 introspection, JWT/JWKS |
 | T17         | HTTP hardening: `Origin`/DNS-rebinding, rate limiting, request deadline, concurrency ceiling            |
 | T18, T21, T22, T24, T25 | The version-translating `bridge` serving loop; the official conformance suite (`conformance self/server/client`); differential interop vs `rmcp` and the TypeScript SDK across four revisions; security audit (no exploitable findings, `SECURITY-REVIEW.md` committed); wiring stub audit |
+| T19         | `probe` and `inspect` — the operator-side fingerprinter and the typed JSON-RPC inspector              |
+| T20         | `record` and `replay` — capture a session's frames to a `.jsonl` and replay them with version downgrade |
+| T27         | A2A v1.0 — full server + client + `a2a_*_wire` end-to-end tests against a vanilla-Node reference         |
+| T28         | `bridge_a2a` — the MCP ↔ A2A cross-protocol bridge, sharing the same `bridge` loop the MCP bridge uses  |
+| T29         | ACP v1.25.0 — typed `AcpStdioPeer` plus a vanilla-Node reference agent for interop coverage            |
 
-**In progress.** T20 (`replay`, built — `record` deferred per the
-strategy's Phase 1), T23 (perf + fuzz baselines committed; the
+**In progress.** T23 (perf + fuzz baselines committed; the
 comparative bench against `rmcp` is the one open piece), T26
 (docs site **live** at [greysquirr3l.github.io/protocol-droid](https://greysquirr3l.github.io/protocol-droid/);
 the automated crates.io publish stays deliberately disabled so
-a human reviews the push), and T27 (A2A — the second product,
-gated behind MVP sign-off per the strategy document).
+a human reviews the push), and the conformance work — the
+suite runs end-to-end now, but the per-scenario pass rate is
+below the MCP target on three revisions (`2025-06-18`,
+`2025-11-25`, `2026-07-28`), and closing the gaps is the last
+gate before MVP sign-off. The per-scenario breakdown is in
+the `Conformance` workflow logs.
 
-**Not started.** T19 (`probe` / `inspect`), T28 (MCP ↔ A2A bridge),
-T29 (ACP). T19 and T28 are operator-side tooling; the strategy
-document's recommendation is to ship `replay` first (done) and
-fund the rest once a user has a reason to ask.
+**Not started.** Nothing the strategy document named. Anything that
+lands after MVP sign-off (post-MVP A2A work, additional cross-protocol
+bridges, third-party protocol modules) is a separate workstream, not
+a deferred Phase 1 task.
 
 The three ideas above describe the finished design. Where the code does not yet
 match the design, the architecture document says so rather than rounding up.
