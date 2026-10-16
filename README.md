@@ -8,7 +8,16 @@ A Rust toolkit for the [Model Context Protocol](https://modelcontextprotocol.io)
 that speaks **every** published spec revision — `2024-11-05`, `2025-03-26`,
 `2025-06-18`, `2025-11-25`, `2026-07-28`, and the floating `draft` — in a
 single binary, all at once. It does not ask you to pick a version at compile
-time.
+time. The A\* protocols (A2A, ACP) ride the same internal model — they get
+their own vendored schemas and codecs, so the cross-protocol bridge
+translates between protocols without a consumer having to re-implement
+their application.
+
+**📖 [Read the guide](https://greysquirr3l.github.io/protocol-droid/)** —
+the live Astro + Starlight site at `greysquirr3l.github.io/protocol-droid/`
+hosts the full guide (introduction, FeatureProfile, write-a-server,
+write-a-client, bridge, security model, spec-refresh, release). The site
+is built from `site/` in this repo and is updated on every `pnpm run deploy`.
 
 Three ideas set it apart:
 
@@ -26,8 +35,8 @@ Three ideas set it apart:
 3. **Every transport the spec has ever defined.** stdio, legacy HTTP+SSE
    (`2024-11-05`), Streamable HTTP (stateful), and the `2026-07-28` stateless
    lifecycle — each with both a server and a client half. The CLI on top is
-   being built to a Swiss-army knife; today it has two of its five blades, the
-   version-translating `bridge` and `replay` (see [Status](#status)).
+   being built to a Swiss-army knife; today it has `bridge`, `probe`,
+   `inspect`, `record`, `replay`, and `conformance` (see [Status](#status)).
 
 ## Status
 
@@ -49,8 +58,9 @@ Preflight is green at **2,015 tests** across the workspace
 **In progress.** T20 (`replay`, built — `record` deferred per the
 strategy's Phase 1), T23 (perf + fuzz baselines committed; the
 comparative bench against `rmcp` is the one open piece), T26
-(docs/release; automatic publish deliberately disabled so a human
-reviews the `crates.io` push), and T27 (A2A — the second product,
+(docs site **live** at [greysquirr3l.github.io/protocol-droid](https://greysquirr3l.github.io/protocol-droid/);
+the automated crates.io publish stays deliberately disabled so
+a human reviews the push), and T27 (A2A — the second product,
 gated behind MVP sign-off per the strategy document).
 
 **Not started.** T19 (`probe` / `inspect`), T28 (MCP ↔ A2A bridge),
@@ -303,6 +313,16 @@ other workflows' `on: push` filters — so `release.yml` is triggered by
 
 There is also nothing to do if you are on a fork with no registry token: the
 publish job warns and exits 0 instead of failing the chain.
+
+## The docs site
+
+The `site/` directory is an [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/)
+project. Develop with `pnpm dev`; build with `pnpm build`; deploy with
+`pnpm run deploy` (the deploy script lives in `site/scripts/deploy-docs.sh`
+and is described in [`site/README.md`](site/README.md)). The deploy script
+verifies the live URL after pushing, and prints a fix-it line if the source
+repo's Pages config is shadowing the user-pages URL — the trap that bit
+the first deploy.
 
 ## Licence
 

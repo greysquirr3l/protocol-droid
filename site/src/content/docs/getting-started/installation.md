@@ -1,9 +1,70 @@
 ---
 title: Installation
-description: Installation — coming soon.
+description: How to add protocol-droid to a Cargo project, what the feature flags gate, and the toolchain pin the crate requires.
 ---
 
-This page is being written. The content is in the repository at
-`docs/guide/src/` and will be migrated here. For now, see the
-[GitHub repository](https://github.com/greysquirr3l/protocol-droid) for the
-working notes.
+Add the library with `cargo add`. The crate is published as
+`protocol-droid` on crates.io, and the macro crate `protocol-droid-macros`
+is a transitive dependency that `cargo` resolves automatically.
+
+```bash
+cargo add protocol-droid
+```
+
+The crate compiles on stable Rust 1.98.1 — see
+[`rust-toolchain.toml`](https://github.com/greysquirr3l/protocol-droid/blob/main/rust-toolchain.toml)
+for the exact pin. A `cargo` invocation that picks a different toolchain
+will be auto-redirected by the file, so a clone of the repo is reproducible
+end-to-end.
+
+## Feature flags
+
+The default build pulls in everything you need to write a server or a
+client, including all schema revisions and all transports. The
+non-default features are additive and do not change behaviour on the
+default path:
+
+| Feature    | What it adds                                              |
+| ---------- | --------------------------------------------------------- |
+| `http`     | Streamable HTTP transport (client and server)             |
+| `oauth`    | OAuth 2.1 resource server, PKCE client, CIMD registration |
+| `legacy-sse` | Legacy HTTP+SSE binding (`2024-11-05`)                  |
+| `a2a`      | A2A v1.0 server, client, and cross-protocol bridge        |
+| `acp`      | Agent Client Protocol (experimental)                      |
+| `cli`      | The `protocol-droid` binary                               |
+
+All schema revisions are *always* compiled. They are data, not optional
+features — a `--no-default-features` build still speaks every revision,
+it just does not bring transports or OAuth along with it.
+
+## Toolchain
+
+```bash
+cargo build --workspace --all-features
+cargo test  --workspace --all-features
+cargo l                                                   # the full clippy profile
+cargo deny --all-features check
+```
+
+`cargo l` is an alias for the strict lint profile. It is the one that
+gates commits; a bare `cargo build` is also warning-free because
+`.cargo/config.toml` sets `build.warnings = "deny"`. Full tooling
+guidance lives in the [Development guide](/protocol-droid/contributing/development/).
+
+## Vendored schemas
+
+Every wire type is generated from the official `schema.json` / `schema.ts`,
+and those files are pinned by commit and locked by SHA-256. A build
+refuses to compile if the tree has drifted from the manifest, and no
+build ever touches the network.
+
+To re-fetch a schema after a new MCP release:
+
+```bash
+cargo xtask refresh-spec 2026-07-28      # re-fetch a tagged revision
+cargo xtask refresh-spec draft --newest   # re-resolve main, repin, and re-fetch
+```
+
+Full details — layout, what each field is for, how to vendor a new
+revision — are in
+[`crates/protocol-droid-schema/spec/README.md`](https://github.com/greysquirr3l/protocol-droid/blob/main/crates/protocol-droid-schema/spec/README.md).
