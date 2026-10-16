@@ -405,6 +405,16 @@ mod tests {
     /// The CLI's `?` propagation surfaces the
     /// anyhow context, so the operator sees both
     /// the path they passed and what went wrong.
+    ///
+    /// The platform-specific `io::Error` text is
+    /// asserted on the path the operator passed,
+    /// not on a literal phrase. On Unix the
+    /// underlying error is "No such file or
+    /// directory"; on Windows it is "The system
+    /// cannot find the path specified". Asserting
+    /// the path keeps the test portable, and the
+    /// path is the part the operator named in the
+    /// diagnostic anyway.
     #[test]
     fn load_vectors_reports_missing_files() {
         let path = std::path::Path::new("/nonexistent/a2a_v1_0.jsonl");
@@ -417,8 +427,8 @@ mod tests {
             "a missing file is a line-0 error, not a parse error"
         );
         assert!(
-            error.message.contains("No such file"),
-            "the underlying io error should appear: {msg}",
+            error.message.contains(path.to_str().expect("path is valid UTF-8")),
+            "the operator's path should appear in the diagnostic: {msg}",
             msg = error.message
         );
     }
