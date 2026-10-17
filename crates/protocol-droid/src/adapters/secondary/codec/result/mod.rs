@@ -45,8 +45,10 @@ pub mod v2025_03_26;
 pub mod v2025_06_18;
 pub mod v2025_11_25;
 pub mod v2026_07_28;
+pub mod verbatim;
 
 pub use by_version::WireToolResults;
+pub use verbatim::verbatim;
 
 /// The key `_meta` travels under in the IR's extension bag.
 ///

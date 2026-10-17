@@ -23,6 +23,13 @@ pub(crate) struct Handler {
     pub(crate) positional: Vec<PatType>,
     /// Whether the signature returns a `Result`.
     pub(crate) returns_result: bool,
+    /// Whether the signature's answer is a `ToolResult`, bare or in a `Result`.
+    ///
+    /// Separate from `returns_result` because the two answer different
+    /// questions: this one decides *where the result document comes from*. A
+    /// `ToolResult` is already the document the wire wants, so it goes through
+    /// the codec; anything else is a plain answer the crate has to shape.
+    pub(crate) returns_tool_result: bool,
     /// The type's own name, which prefixes every generated item.
     pub(crate) prefix: String,
 }
@@ -160,6 +167,7 @@ pub(crate) fn read_handler(
         takes_context,
         positional,
         returns_result: returns_result(sig),
+        returns_tool_result: returns_tool_result(sig),
         prefix: String::new(),
     })
 }
@@ -304,6 +312,46 @@ pub(crate) fn tool_fn(handler: &Handler) -> TokenStream {
 /// type, and a body that decides the parameter list, the bounds, the decode and
 /// the outcome at once is four jobs wearing one function's name.
 fn outcome(handler: &Handler, call_args: &TokenStream) -> TokenStream {
+    // A `ToolResult` is already the document the wire wants, so it is lowered
+    // through the negotiated revision's codec rather than shaped here. This is
+    // the only way a generated handler can emit a `content` array holding an
+    // image, an audio block or an embedded resource: `success` builds its own
+    // single text block, so every other content type was unreachable from a
+    // `#[tool]` before this branch existed.
+    //
+    // The version comes from the session rather than being guessed, which is
+    // the whole reason the codec is reached for instead of a hand-rolled
+    // serialiser — the crate already knows how each revision spells a content
+    // block, and a second answer here is a second opinion that is wrong in
+    // exactly the cases nobody tests.
+    if handler.returns_tool_result {
+        // No type annotation here: `bounds` has already named the future's
+        // output as `ToolResult` in place of `__Answer`, so the call's type is
+        // known without the body's help. An annotation would be redundant, and
+        // would also have been wrong — `__Answer` is a free parameter, so
+        // annotating its value does not constrain it, it just fails to typecheck.
+        if is_result(handler) {
+            return quote! {
+                match function(#call_args).await {
+                    Ok(answer) => {
+                        ::protocol_droid::adapters::secondary::codec::result::verbatim(
+                            context.peer().negotiated(),
+                            &answer,
+                        )
+                    }
+                    Err(error) => {
+                        Ok(::protocol_droid::application::server::result::failure(error))
+                    }
+                }
+            };
+        }
+        return quote! {
+            ::protocol_droid::adapters::secondary::codec::result::verbatim(
+                context.peer().negotiated(),
+                &function(#call_args).await,
+            )
+        };
+    }
     if is_result(handler) {
         quote! {
             match function(#call_args).await {
@@ -355,10 +403,11 @@ fn generics(
     error_ty: &Ident,
     answer_ty: &Ident,
 ) -> TokenStream {
-    if is_result(handler) {
-        quote! { <#f_ty, #fut_ty, #error_ty, #answer_ty> }
-    } else {
-        quote! { <#f_ty, #fut_ty, #answer_ty> }
+    match (is_result(handler), handler.returns_tool_result) {
+        (true, false) => quote! { <#f_ty, #fut_ty, #error_ty, #answer_ty> },
+        (true, true) => quote! { <#f_ty, #fut_ty, #error_ty> },
+        (false, false) => quote! { <#f_ty, #fut_ty, #answer_ty> },
+        (false, true) => quote! { <#f_ty, #fut_ty> },
     }
 }
 
@@ -368,17 +417,41 @@ fn generics(
 /// the point: get one of the bounds wrong and the code still compiles, fails to
 /// satisfy `ToolHandler`, or — worst — compiles and is callable once.
 fn bounds(handler: &Handler, fut_ty: &Ident, error_ty: &Ident, answer_ty: &Ident) -> TokenStream {
+    // A `ToolResult` is not `Serialize`, on purpose: the IR deliberately has no
+    // serde impls, because the wire spelling of a content block is a
+    // per-revision fact and a derived one would answer for all six revisions at
+    // once. So on that path the answer is named concretely — `__Answer` is not
+    // declared at all (see `generics`) — and nothing is bound on it, because
+    // `verbatim` takes a `&ToolResult` and lowers it through the codec, which
+    // needs no `Serialize` anywhere.
+    //
+    // The comma *leads* the bound rather than trailing it. `handler_factory`
+    // splices this in as `#bounds_clause,`, so a trailing comma here would put
+    // two commas in the expansion for every non-`Result` tool — and a `where`
+    // clause with a doubled comma is a parse error pointing at the `#[server]`
+    // attribute rather than at the signature that caused it.
+    let concrete = quote! { ::protocol_droid::domain::ir::ToolResult };
+    let answer_ty = if handler.returns_tool_result {
+        concrete
+    } else {
+        quote! { #answer_ty }
+    };
+    let answer_bound = if handler.returns_tool_result {
+        quote! {}
+    } else {
+        quote! { , #answer_ty: ::protocol_droid::serde::Serialize }
+    };
     if is_result(handler) {
         quote! {
             #fut_ty: ::core::future::Future<Output = ::core::result::Result<#answer_ty, #error_ty>>
                 + ::core::marker::Send,
-            #answer_ty: ::protocol_droid::serde::Serialize,
             #error_ty: ::core::fmt::Display
+            #answer_bound
         }
     } else {
         quote! {
-            #fut_ty: ::core::future::Future<Output = #answer_ty> + ::core::marker::Send,
-            #answer_ty: ::protocol_droid::serde::Serialize
+            #fut_ty: ::core::future::Future<Output = #answer_ty> + ::core::marker::Send
+            #answer_bound
         }
     }
 }
@@ -534,6 +607,52 @@ pub(crate) fn returns_result(sig: &syn::Signature) -> bool {
         syn::ReturnType::Default => false,
         syn::ReturnType::Type(_, ty) => last_segment(ty).is_some_and(|ident| ident == "Result"),
     }
+}
+
+/// Whether a signature's answer is a `ToolResult`.
+///
+/// Matches by shape, the same way [`returns_result`] does, and for the same
+/// reason: the expansion decides which of two *shape* of answer it is holding,
+/// and a type alias spelling `ToolResult` under another name fails to compile
+/// at the call site, which is the better place to find out.
+///
+/// Both spellings count, because a handler that can fail and one that cannot
+/// are the same decision with an error arm wrapped round it. Reading only the
+/// bare form would make `-> Result<ToolResult, String>` fall back to the
+/// `Serialize` path and produce a `structuredContent` wrapping the whole
+/// result — which compiles, serialises, and is wrong on the wire.
+pub(crate) fn returns_tool_result(sig: &syn::Signature) -> bool {
+    let syn::ReturnType::Type(_, ty) = &sig.output else {
+        return false;
+    };
+    // `ReturnType::Type` hands back a `Box<Type>`. A function argument would
+    // coerce that to `&Type` on its own, but a *pattern* is not a coercion
+    // site, so the deref has to happen before the match rather than at it.
+    let ty = ty.as_ref();
+    if last_segment(ty).is_some_and(|ident| ident == "ToolResult") {
+        return true;
+    }
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Result" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    arguments.args.iter().any(|argument| match argument {
+        // `GenericArgument::Type` holds a `Type` directly, so the binding
+        // under a `&GenericArgument` is already the `&Type` `last_segment`
+        // wants. No coercion, unlike the `Box` the return type is wrapped in.
+        syn::GenericArgument::Type(inner) => {
+            last_segment(inner).is_some_and(|ident| ident == "ToolResult")
+        }
+        _ => false,
+    })
 }
 
 /// The `name = "..."`, `description = "..."` pairs on an attribute.

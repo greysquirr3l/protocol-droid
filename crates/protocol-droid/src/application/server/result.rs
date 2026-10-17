@@ -52,6 +52,17 @@ pub enum OutcomeError {
     /// loudly instead of producing an empty result.
     #[error("the assembled result is not a JSON object: {0}")]
     NotAnObject(JsonObjectError),
+
+    /// A handler answered with a [`ToolResult`](crate::domain::ir::ToolResult)
+    /// the negotiated revision cannot express.
+    ///
+    /// Reached only from `codec::result::verbatim`, which is the path a
+    /// `#[tool]` takes when its return type is a `ToolResult`. Carries the
+    /// codec's own error rather than a paraphrase of it: the revision, the
+    /// feature, and whether a policy named a rule for it are three different
+    /// fixes and the caller cannot pick between them without all three.
+    #[error("the result cannot be expressed at this revision: {0}")]
+    NotLowerable(crate::domain::ir::LowerError),
 }
 
 /// A handler's answer, as a `tools/call` result.

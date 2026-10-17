@@ -49,8 +49,26 @@ async fn yield_to_runtime() {
 }
 
 use protocol_droid::application::server::Server;
+use protocol_droid::domain::ir::{
+    AudioContent, Content, EmbeddedResource, ImageContent, ToolResult,
+};
 use protocol_droid::domain::registry::{Prompt, PromptArgument, Resource};
 use protocol_droid::serde::Serialize;
+
+/// A 1x1 transparent PNG, base64-encoded.
+///
+/// A real image rather than a placeholder string, because the suite decodes
+/// what the tool returns and an image block carrying `"aGk="` decodes to `hi`,
+/// which is not a PNG and would fail the scenario for a reason that has
+/// nothing to do with the shape under test.
+const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/// A 44-byte silent WAV header, base64-encoded.
+///
+/// The audio counterpart to [`PNG_1X1`]: an `audio/wav` block whose payload is
+/// not a WAV is a block that decodes cleanly and is still the wrong content,
+/// and the difference is invisible until something parses it.
+const WAV_SILENT: &str = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
 
 /// The name this server reports in its `initialize` reply.
 ///
@@ -131,6 +149,78 @@ impl ConformanceFixture {
     async fn add(a: i64, b: i64) -> Result<AddResult, String> {
         yield_to_runtime().await;
         Ok(AddResult { total: a + b })
+    }
+
+    /// The smallest conforming result: one text block and nothing else.
+    ///
+    /// Separate from `echo` on purpose. `echo` returns a structured object, so
+    /// its answer carries *both* `structuredContent` and a text block, and a
+    /// scenario asserting "the content array is exactly one plain text block"
+    /// cannot tell that answer from a tool with no structured output. This one
+    /// is the only shape with nothing to hide behind.
+    #[protocol_droid::tool]
+    async fn test_simple_text() -> ToolResult {
+        yield_to_runtime().await;
+        ToolResult::text("This is a simple text response.")
+    }
+
+    /// An image block, which is the first content type `success` could not
+    /// produce at all.
+    #[protocol_droid::tool]
+    async fn test_image_content() -> ToolResult {
+        yield_to_runtime().await;
+        ToolResult::new(vec![Content::Image(ImageContent::new(
+            PNG_1X1,
+            "image/png",
+        ))])
+    }
+
+    /// An audio block. `2025-03-26` and later — at `2024-11-05` this tool's
+    /// answer is refused rather than degraded, which is the behaviour the
+    /// revision gap is meant to expose.
+    #[protocol_droid::tool]
+    async fn test_audio_content() -> ToolResult {
+        yield_to_runtime().await;
+        ToolResult::new(vec![Content::Audio(AudioContent::new(
+            WAV_SILENT,
+            "audio/wav",
+        ))])
+    }
+
+    /// A resource inline in the result, rather than linked to.
+    ///
+    /// The inline form rather than a `ResourceLink` because they are different
+    /// blocks that arrived in different revisions, and a scenario reading one
+    /// while the fixture answers with the other reports a shape mismatch that
+    /// reads as a codec bug.
+    #[protocol_droid::tool]
+    async fn test_embedded_resource() -> ToolResult {
+        yield_to_runtime().await;
+        ToolResult::new(vec![Content::EmbeddedResource(EmbeddedResource::text(
+            "test://embedded-resource",
+            "This is an embedded resource's text.",
+        ))])
+    }
+
+    /// Several content types in one answer, which is the case that catches a
+    /// result builder that only ever holds one block.
+    ///
+    /// Text first: a client that concatenates the blocks in order has to be
+    /// able to start with one it can read, and an image-first answer forces
+    /// every one of them to handle binary before it has seen any text.
+    #[protocol_droid::tool]
+    async fn test_multiple_content_types() -> ToolResult {
+        yield_to_runtime().await;
+        ToolResult::new(vec![
+            Content::Text(protocol_droid::domain::ir::TextContent::new(
+                "This is a multi-type response.",
+            )),
+            Content::Image(ImageContent::new(PNG_1X1, "image/png")),
+            Content::EmbeddedResource(EmbeddedResource::text(
+                "test://embedded-resource",
+                "This is an embedded resource's text.",
+            )),
+        ])
     }
 
     /// A prompt that asks for a code review, with two arguments.

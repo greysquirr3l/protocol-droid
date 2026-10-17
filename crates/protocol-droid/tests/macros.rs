@@ -41,6 +41,7 @@ use protocol_droid::application::server::{Dispatcher, Server};
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
 use protocol_droid::domain::ir::JsonObject;
+use protocol_droid::domain::ir::{Content, ImageContent, ToolResult};
 use protocol_droid::domain::registry::{AuthContext, Prompt, PromptArgument, Resource};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
 use protocol_droid::domain::{CapabilitySet, ProtocolVersion, RequestId, TransportKind};
@@ -812,6 +813,17 @@ async fn two_servers_in_one_module_keep_their_own_primitives() -> Result<(), Tes
 
 /// A context for a direct dispatch.
 fn context() -> RequestContext {
+    context_with_id("r1")
+}
+
+/// A context whose request id is `id`.
+///
+/// The id is a parameter because dispatching twice through one id is not two
+/// calls. The dispatcher keys its idempotency record on the request, so a
+/// second dispatch under `"r1"` replays the first answer rather than calling
+/// the tool again — correct behaviour, and a trap for a test that varies its
+/// arguments and expects the tool to see the difference.
+fn context_with_id(id: &str) -> RequestContext {
     let version = ProtocolVersion::V2025_06_18;
     let peer = PeerSession::new(
         version,
@@ -827,7 +839,7 @@ fn context() -> RequestContext {
         Arc::new(NoSink),
     )
     .with_auth(AuthContext::unrestricted("tester"));
-    RequestContext::for_request(&peer, RequestId::text("r1"), CancellationToken::new(), None)
+    RequestContext::for_request(&peer, RequestId::text(id), CancellationToken::new(), None)
 }
 
 /// A context for a direct dispatch, carrying the state registered on `server`.
@@ -949,6 +961,122 @@ async fn a_tool_handler_with_no_state_registered_refuses() -> Result<(), TestErr
         return Err(Failure::from(format!(
             "expected the answer to be marked isError, got {}",
             answer.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// A server whose tools answer with something other than a text block.
+///
+/// The two shapes exist to cover both spellings the macro branches on: a bare
+/// `ToolResult`, and a `Result<ToolResult, E>` for a tool that can fail. Only
+/// the second would have compiled-and-wrong before — a `ToolResult` returned
+/// through the `Serialize` path serialises perfectly and produces a
+/// `structuredContent` wrapping the whole result, which is a document no peer
+/// asked for and no scenario expects.
+struct ContentDemo;
+
+#[protocol_droid::server(name = "content-demo")]
+impl ContentDemo {
+    /// An image block, which no `Serialize` path could ever reach the wire.
+    #[protocol_droid::tool]
+    async fn picture() -> ToolResult {
+        ToolResult::new(vec![Content::Image(ImageContent::new("aGk=", "image/png"))])
+    }
+
+    /// A text block the caller can ask to be marked as an error.
+    #[protocol_droid::tool]
+    async fn message(should_fail: bool) -> Result<ToolResult, String> {
+        let result = ToolResult::text("hello");
+        Ok(if should_fail { result.error() } else { result })
+    }
+}
+
+/// The `content` blocks of an answer, read off the wire as a peer would.
+fn blocks(answer: &JsonObject) -> Result<Vec<serde_json::Value>, Failure> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(answer.as_str()).map_err(|error| Failure::from(format!(
+            "the answer is not JSON: {error}"
+        )))?;
+    parsed
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .ok_or_else(|| Failure::from(format!("the answer has no content array: {parsed}")))
+}
+
+/// Whether an answer claims to be a failure.
+///
+/// `isError` is omitted rather than spelled `false` on a successful result —
+/// the generated wire types skip it, because `false` is the schema default —
+/// so absence counts as success here.
+fn claims_error(answer: &JsonObject) -> Result<bool, Failure> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(answer.as_str()).map_err(|error| Failure::from(format!(
+            "the answer is not JSON: {error}"
+        )))?;
+    Ok(matches!(
+        parsed.get("isError"),
+        Some(serde_json::Value::Bool(true))
+    ))
+}
+
+/// A `#[tool]` returning a `ToolResult` puts the content blocks on the wire
+/// rather than burying them under `structuredContent`.
+#[tokio::test]
+async fn a_tool_returning_a_tool_result_reaches_the_wire_as_content() -> Result<(), TestError> {
+    let server = ContentDemo.into_server()?;
+    let dispatcher = dispatcher(server);
+    let answer = dispatcher
+        .dispatch(&context(), "tools/call", &call("picture", "{}"))
+        .await
+        .map_err(|error| Failure::from(format!("picture was refused: {error}")))?;
+
+    let blocks = blocks(&answer)?;
+    let first = blocks
+        .first()
+        .ok_or_else(|| Failure::from("the answer had no blocks"))?;
+    if first.get("type").and_then(serde_json::Value::as_str) != Some("image") {
+        return Err(Failure::from(format!("the block was {first}")));
+    }
+    if first.get("data").and_then(serde_json::Value::as_str) != Some("aGk=") {
+        return Err(Failure::from(format!("the data was {first}")));
+    }
+    if answer.as_str().contains("structuredContent") {
+        return Err(Failure::from(format!(
+            "the answer was wrapped in structuredContent: {answer}"
+        )));
+    }
+    Ok(())
+}
+
+/// The `Result<ToolResult, E>` spelling reaches the same place, and the error
+/// arm of the `Result` still produces a refusal rather than a document.
+#[tokio::test]
+async fn a_tool_returning_a_result_of_a_tool_result_is_marked_on_request() -> Result<(), TestError> {
+    let server = ContentDemo.into_server()?;
+    let dispatcher = dispatcher(server);
+
+    let plain = dispatcher
+        .dispatch(&context(), "tools/call", &call("message", r#"{"should_fail": false}"#))
+        .await
+        .map_err(|error| Failure::from(format!("message was refused: {error}")))?;
+    assert_text(&plain, "hello")?;
+    if claims_error(&plain)? {
+        return Err(Failure::from("a successful result claimed an error"));
+    }
+
+    let failed = dispatcher
+        .dispatch(
+            &context_with_id("r2"),
+            "tools/call",
+            &call("message", r#"{"should_fail": true}"#),
+        )
+        .await
+        .map_err(|error| Failure::from(format!("message was refused: {error}")))?;
+    if !claims_error(&failed)? {
+        return Err(Failure::from(format!(
+            "expected isError, got {failed}"
         )));
     }
     Ok(())
