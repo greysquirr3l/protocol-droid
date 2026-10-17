@@ -9,7 +9,15 @@ repository.workspace = true
 documentation.workspace = true
 readme.workspace = true
 keywords.workspace = true
-categories.workspace = true
+# Both HTTP halves are first-class here — every transport ships a server and a
+# client. `web-programming::http-server` and `::http-client` are the slugs
+# crates.io actually carries; there is no bare `web-programming::http` leaf.
+categories = [
+    "network-programming",
+    "parser-implementations",
+    "web-programming::http-server",
+    "web-programming::http-client",
+]
 
 # No `[features]` table yet. The feature gates for each transport, the legacy
 # SSE path, and OAuth are introduced by the tasks that implement them (T13-T16),

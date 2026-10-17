@@ -24,6 +24,7 @@ use crate::application::session::SinkError;
 use crate::application::session::frame_sink::FrameSink;
 use crate::domain::feature::resolve;
 use crate::domain::ir::JsonObject;
+use crate::domain::registry::AuthContext;
 use crate::domain::session::SessionId;
 use crate::domain::{
     CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, TransportKind,
@@ -56,6 +57,7 @@ pub struct StdioBuilder {
     server: Server,
     version: ProtocolVersion,
     config: StdioConfig,
+    auth: AuthContext,
 }
 
 impl StdioBuilder {
@@ -66,7 +68,52 @@ impl StdioBuilder {
             server,
             version: default_ceiling(),
             config: StdioConfig::default(),
+            // Anonymous, and that is a decision rather than a gap: this
+            // transport has no credential to check, so a principal here is
+            // something the *deployment* asserts, not something the peer
+            // proves. `auth` is where it says so.
+            auth: AuthContext::anonymous(),
         }
+    }
+
+    /// The principal this server's peer acts as.
+    ///
+    /// A stdio peer is the child process on the other end of a pipe, and there
+    /// is nothing on a pipe to authenticate — no header, no token, no TLS peer
+    /// identity. So unlike the HTTP transports, where the principal arrives
+    /// with the request, here the deployment *declares* it and the crate holds
+    /// it for the life of the session.
+    ///
+    /// Needed because the alternative is unreachable rather than merely
+    /// inconvenient: a scope-gated tool is invisible to an anonymous session
+    /// ([`RegistryServer::call`] and the listing paths both read
+    /// `ctx.peer().auth()`), so a stdio server that registers a `Write`-scoped
+    /// tool could never serve it, and no setting existed that could change that.
+    /// This method is that setting.
+    ///
+    /// Defaults to [`AuthContext::anonymous`], so a stdio server that says
+    /// nothing serves exactly the primitives nobody had to authorise. Note the
+    /// one lifetime difference from HTTP: this principal covers the whole
+    /// connection, because there is no per-request credential here to differ
+    /// from.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::application::server::{Server, serve::StdioBuilder};
+    /// use protocol_droid::domain::registry::{AuthContext, Scope, ScopeSet};
+    ///
+    /// let server = Server::builder("greeter").build();
+    /// let trusted = StdioBuilder::new(server)
+    ///     .auth(AuthContext::new("local", ScopeSet::empty().with(Scope::Write)));
+    /// # let _ = trusted;
+    /// ```
+    ///
+    /// [`RegistryServer::call`]: crate::application::server::builder::RegistryServer::call
+    #[must_use]
+    pub fn auth(mut self, auth: AuthContext) -> Self {
+        self.auth = auth;
+        self
     }
 
     /// The newest revision this session is permitted to use before a peer
@@ -109,6 +156,12 @@ impl StdioBuilder {
             server_caps: CapabilitySet::all_for(self.version),
             transport: TransportKind::Stdio,
         });
+        // `without_auth` is deliberately *not* called here, unlike the HTTP
+        // transport's persisted session. On stdio the principal is a property of
+        // the connection rather than of one request: there is no per-request
+        // credential to differ from it, and the handshake narrows a copy of this
+        // peer — `with_profile` keeps `auth` — so the declared principal
+        // survives the profile swap that replaces the session.
         let peer = PeerSession::new(
             self.version,
             profile,
@@ -116,7 +169,8 @@ impl StdioBuilder {
             TransportKind::Stdio,
             Arc::new(NoCallbacks),
             Arc::new(NullSink),
-        );
+        )
+        .with_auth(self.auth);
         ServeLoop::new(
             tokio::io::stdin(),
             tokio::io::stdout(),
@@ -226,6 +280,40 @@ mod tests {
                 .profile()
                 .allows(crate::domain::Feature::Completions),
             "a 2024-11-05 session must not carry a 2025-03-26 feature"
+        );
+    }
+
+    /// The principal the deployment declared is the one the peer answers as.
+    ///
+    /// The claim is reachability. Every visibility gate reads
+    /// `ctx.peer().auth()`, so before this setter existed a stdio server had no
+    /// way to be anything but anonymous — and a `Write`-scoped tool it
+    /// registered was therefore invisible to it forever, with no error to
+    /// explain why. Asserting the scopes specifically rather than the principal
+    /// name is deliberate: `holds` is what the gate calls, so an implementation
+    /// that set a principal but dropped the scopes would pass a name assertion.
+    #[test]
+    fn the_declared_principal_reaches_the_peer() {
+        use crate::domain::registry::{Scope, ScopeSet};
+
+        let declared = ScopeSet::empty().with(Scope::Read).with(Scope::Write);
+        let anonymous = StdioBuilder::new(Server::builder("default").build()).build();
+        assert_eq!(
+            anonymous.peer().auth(),
+            &AuthContext::anonymous(),
+            "the default is anonymous: a stdio server that says nothing is served as nobody in particular",
+        );
+        assert!(
+            !anonymous.peer().auth().holds(declared),
+            "and so it sees nothing that requires a scope"
+        );
+
+        let named = StdioBuilder::new(Server::builder("trusted").build())
+            .auth(AuthContext::new("local", declared))
+            .build();
+        assert!(
+            named.peer().auth().holds(declared),
+            "a declared principal holds what it was declared with"
         );
     }
 }

@@ -15,6 +15,7 @@ use crate::adapters::primary::transport::legacy_sse::{
 };
 use crate::application::session::IdSource;
 use crate::domain::McpSessionId;
+use crate::domain::registry::AuthContext;
 use crate::domain::session::SessionId;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -99,7 +100,12 @@ struct Echo {
 }
 
 impl LegacyDispatcher for Echo {
-    fn dispatch(&self, _session: &McpSessionId, frame: &Value) -> Result<Vec<Value>, Refusal> {
+    fn dispatch(
+        &self,
+        _auth: &AuthContext,
+        _session: &McpSessionId,
+        frame: &Value,
+    ) -> Result<Vec<Value>, Refusal> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![json!({
             "jsonrpc": "2.0",

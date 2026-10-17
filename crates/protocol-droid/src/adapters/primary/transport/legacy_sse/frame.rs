@@ -36,6 +36,7 @@ use serde_json::Value;
 use crate::adapters::primary::transport::http::{
     EventTail, FramePayload, Refusal, SseError, SseEvent,
 };
+use crate::domain::registry::AuthContext;
 use crate::domain::{EventId, McpSessionId, MessageEndpoint, names};
 
 /// One frame on a legacy stream.
@@ -116,12 +117,14 @@ pub type LegacyTail = EventTail<LegacyFrame>;
 /// use protocol_droid::adapters::primary::transport::http::Refusal;
 /// use protocol_droid::adapters::primary::transport::legacy_sse::LegacyDispatcher;
 /// use protocol_droid::domain::McpSessionId;
+/// use protocol_droid::domain::registry::AuthContext;
 ///
 /// /// Answers every request with a fixed result, which is all this test needs.
 /// struct Echo;
 ///
 /// impl LegacyDispatcher for Echo {
-///     fn dispatch(&self, _session: &McpSessionId, frame: &serde_json::Value) -> Result<Vec<serde_json::Value>, Refusal> {
+///     fn dispatch(&self, auth: &AuthContext, _session: &McpSessionId, frame: &serde_json::Value) -> Result<Vec<serde_json::Value>, Refusal> {
+///         let _ = auth;
 ///         Ok(vec![frame.clone()])
 ///     }
 /// }
@@ -129,6 +132,18 @@ pub type LegacyTail = EventTail<LegacyFrame>;
 /// ```
 pub trait LegacyDispatcher: Send + Sync + 'static {
     /// Handles one client frame, returning every frame to send back.
+    ///
+    /// `auth` is the principal the router resolved for **this** request, after
+    /// the `Origin` check and the endpoint's [`AuthPolicy`] have both passed.
+    /// It is the only place a legacy-SSE deployment gets to see who is asking:
+    /// the router authenticates and this port is where that result goes, so an
+    /// implementation that ignores it is serving every caller as anonymous.
+    ///
+    /// Per request rather than per session, for the reason it is on
+    /// Streamable HTTP too — a bearer token can be refreshed or withdrawn
+    /// between two `POST`s to one session id — and a session here is nothing
+    /// but an event tail, so there is no session state for a principal to be
+    /// pinned to anyway.
     ///
     /// # Errors
     ///
@@ -138,7 +153,12 @@ pub trait LegacyDispatcher: Send + Sync + 'static {
     /// rather than a half-written batch, because a partial batch is
     /// indistinguishable from a complete one on a stream that carries no
     /// transaction.
-    fn dispatch(&self, session: &McpSessionId, frame: &Value) -> Result<Vec<Value>, Refusal>;
+    fn dispatch(
+        &self,
+        auth: &AuthContext,
+        session: &McpSessionId,
+        frame: &Value,
+    ) -> Result<Vec<Value>, Refusal>;
 }
 
 #[cfg(test)]

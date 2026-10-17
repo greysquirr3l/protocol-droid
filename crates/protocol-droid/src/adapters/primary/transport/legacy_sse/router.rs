@@ -57,6 +57,7 @@ use crate::adapters::primary::transport::http::{
 use crate::adapters::primary::transport::legacy_sse::{
     LegacyDispatcher, LegacyFrame, LegacyTail, OriginPolicy,
 };
+use crate::domain::registry::AuthContext;
 use crate::domain::{McpSessionId, MessageEndpoint, MessageEndpointError};
 
 /// The query parameter carrying the session id on the message endpoint.
@@ -336,6 +337,10 @@ async fn open_stream<D: LegacyDispatcher>(
     State(state): State<Arc<LegacyState<D>>>,
     headers: HeaderMap,
 ) -> Response {
+    // The `GET` opens the stream and dispatches nothing, so the principal it
+    // resolved has nowhere to go. It is still resolved, because the endpoint's
+    // policy applies to opening a stream exactly as it does to posting a
+    // message — an unauthenticated caller must not be able to open one.
     if let Err(response) = check_common(&state, &headers).await {
         return *response;
     }
@@ -372,9 +377,12 @@ async fn receive_message<D: LegacyDispatcher>(
     Query(query): Query<HashMap<String, String>>,
     body: Body,
 ) -> Response {
-    if let Err(response) = check_common(&state, &headers).await {
-        return *response;
-    }
+    // Kept rather than discarded: this is the request's principal, and
+    // `dispatch` is the only thing downstream that can act on it.
+    let auth = match check_common(&state, &headers).await {
+        Ok(auth) => auth,
+        Err(response) => return *response,
+    };
 
     let Some(raw) = query.get(SESSION_PARAMETER) else {
         return refuse(Refusal::MissingSession);
@@ -421,7 +429,7 @@ async fn receive_message<D: LegacyDispatcher>(
         }
     };
 
-    match state.dispatcher.dispatch(&id, &frame) {
+    match state.dispatcher.dispatch(&auth, &id, &frame) {
         Ok(replies) => {
             for reply in replies {
                 tail.push(LegacyFrame::Message(reply));
@@ -444,10 +452,15 @@ async fn check_common<D: LegacyDispatcher>(state: &LegacyState<D>, headers: &Hea
     if let Err(refusal) = state.origins.check(origin) {
         return Err(Box::new(refuse(refusal)));
     }
-    if let Err(refusal) = authenticate(state.authenticator.as_ref(), &state.policy, headers).await {
-        return Err(Box::new(refuse(refusal)));
+    // The resolved context is the *return value*, not a discarded result.
+    // This router authenticates on every route and there is no other path for
+    // the principal to reach the dispatcher, so returning `Ok(())` here is what
+    // made a legacy-SSE deployment authenticate every caller and then serve
+    // them all as anonymous.
+    match authenticate(state.authenticator.as_ref(), &state.policy, headers).await {
+        Ok(auth) => Ok(auth),
+        Err(refusal) => Err(Box::new(refuse(refusal))),
     }
-    Ok(())
 }
 
 /// Renders a refusal as the response it is.
@@ -455,13 +468,14 @@ fn refuse(refusal: Refusal) -> Response {
     refusal.into_response()
 }
 
-/// The two pre-checks, boxed into an error small enough to return cheaply.
+/// What the pre-checks leave behind: the caller, or the response that refuses
+/// it.
 ///
-/// [`Response`] is ~128 bytes, so a `Result<(), Response>` makes every `?` on
-/// this path pay for a response wrapper it is about to unwrap. The handlers
-/// each want to `return` the response, so the boxing is here rather than at
-/// two call sites that would each have to remember it.
-type Checked = Result<(), Box<Response>>;
+/// [`Response`] is ~128 bytes, so a `Result<AuthContext, Response>` makes every
+/// `?` on this path pay for a response wrapper it is about to unwrap. The
+/// handlers each want to `return` the response, so the boxing is here rather
+/// than at two call sites that would each have to remember it.
+type Checked = Result<AuthContext, Box<Response>>;
 
 #[cfg(test)]
 mod tests;

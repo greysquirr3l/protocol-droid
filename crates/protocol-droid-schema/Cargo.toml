@@ -6,10 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-documentation.workspace = true
+documentation = "https://docs.rs/protocol-droid-schema"
 readme.workspace = true
 keywords.workspace = true
-categories.workspace = true
+# `encoding` and `parser-implementations` are both observed in use on published
+# crates; the schema crate's whole job is deserialising wire shapes.
+categories = ["parser-implementations", "encoding"]
 
 [features]
 default = ["codegen"]

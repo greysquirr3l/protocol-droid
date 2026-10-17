@@ -106,6 +106,8 @@ impl Recorder {
 
 /// An authenticator that knows one token, so a test can prove the gate is
 /// wired rather than assuming the anonymous default is not doing the work.
+const TOKEN: &str = "Bearer good";
+
 struct OneToken;
 
 impl Authenticator for OneToken {
@@ -113,7 +115,7 @@ impl Authenticator for OneToken {
         &'a self,
         presented: &'a Credentials<'_>,
     ) -> Pin<Box<dyn Future<Output = AuthContext> + Send + 'a>> {
-        let context = if presented.authorization() == Some("Bearer good") {
+        let context = if presented.authorization() == Some(TOKEN) {
             AuthContext::new("holder", ScopeSet::all())
         } else {
             AuthContext::anonymous()
@@ -126,14 +128,19 @@ impl Authenticator for OneToken {
 struct Echo(Arc<Recorder>);
 
 impl LegacyDispatcher for Echo {
-    fn dispatch(&self, session: &McpSessionId, frame: &Value) -> Result<Vec<Value>, Refusal> {
+    fn dispatch(
+        &self,
+        auth: &AuthContext,
+        session: &McpSessionId,
+        frame: &Value,
+    ) -> Result<Vec<Value>, Refusal> {
         self.0.calls.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut seen) = self.0.seen.lock() {
-            // Both halves recorded, so a test can assert *which* session and
-            // *what* body the dispatcher was reached with. Recording the body
-            // too is what makes "the session came from the query string, not
-            // from the body" a claim a test can make rather than assert.
-            seen.push(format!("{session} {frame}"));
+            // All three recorded, so a test can assert *which* session, *what*
+            // body, and *who* the dispatcher was reached with. Recording the
+            // body too is what makes "the session came from the query string,
+            // not from the body" a claim a test can make rather than assert.
+            seen.push(format!("{session} {frame} {}", auth.principal()));
         }
         let scripted = self.0.reply.lock().ok().and_then(|r| r.clone());
         match scripted {
@@ -416,7 +423,7 @@ async fn a_post_is_accepted_and_its_answer_goes_to_the_stream() -> Result<(), Te
     require(
         &harness.recorder.seen(),
         &vec![format!(
-            "{id} {{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"ping\"}}"
+            "{id} {{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"ping\"}} anonymous"
         )],
         "carrying the session the query parameter named, not one the body could have chosen",
     )
@@ -708,7 +715,7 @@ async fn a_request_carrying_the_credential_is_answered() -> Result<(), TestError
         |mut request: axum::http::Request<Body>| -> Result<axum::http::Request<Body>, TestError> {
             request.headers_mut().insert(
                 header::AUTHORIZATION,
-                header::HeaderValue::from_static("Bearer good"),
+                header::HeaderValue::from_static(TOKEN),
             );
             Ok(request)
         };
@@ -731,5 +738,53 @@ async fn a_request_carrying_the_credential_is_answered() -> Result<(), TestError
             .status(),
         &StatusCode::ACCEPTED,
         "and so does the message route, so the gate is on both and not only the one that is easy to remember",
+    )
+}
+
+/// The principal the router authenticated reaches the dispatcher.
+///
+/// The claim the port signature change exists to make: `check_common`
+/// authenticated on every route and returned `Ok(())`, so the context it had
+/// just resolved had nowhere to go and every caller arrived at `dispatch` with
+/// no way to tell who they were. An implementation that filters by scope would
+/// therefore have refused everyone — including the caller holding the very
+/// token it just accepted.
+///
+/// Asserting on the principal name is what makes this a test. Asserting only
+/// that the dispatcher was reached would already pass before the change, and
+/// would keep passing if `auth` arrived as a default-constructed anonymous
+/// context.
+#[tokio::test]
+async fn the_authenticated_principal_reaches_the_dispatcher() -> Result<(), TestError> {
+    let harness = Harness::secured()?;
+    let id = harness.open()?;
+    // No `Origin` header: `secured()` permits none, and a present-but-unknown
+    // origin is refused as `ForeignOrigin` before authentication is read.
+    let mut request = post(
+        &message_uri(id),
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+    )?;
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        header::HeaderValue::from_static(TOKEN),
+    );
+
+    require(
+        &harness.send(request).await?.status(),
+        &StatusCode::ACCEPTED,
+        "a POST carrying the token is accepted",
+    )?;
+
+    let seen = harness.recorder.seen();
+    require(
+        &seen.len(),
+        &1,
+        "and it reached the dispatcher exactly once",
+    )?;
+    let reached = seen.first().ok_or("the dispatcher was reached")?;
+    require_str(
+        reached,
+        &format!("{id} {{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"ping\"}} holder"),
+        "the dispatcher was reached as the principal the token authenticates to",
     )
 }

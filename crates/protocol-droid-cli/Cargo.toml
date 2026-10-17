@@ -6,10 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-documentation.workspace = true
+documentation = "https://docs.rs/protocol-droid-cli"
 readme.workspace = true
 keywords.workspace = true
-categories.workspace = true
+# `command-line-interface` is what `clap` and the rest of the CLI ecosystem
+# carry; `command-line-utilities` does not exist as a slug.
+categories = ["command-line-interface", "network-programming"]
 
 [features]
 # T18. `bridge` is the subcommand that *serves*, so it needs both transports the

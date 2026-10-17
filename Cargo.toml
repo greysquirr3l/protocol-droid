@@ -58,12 +58,13 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/greysquirr3l/protocol-droid"
 documentation = "https://docs.rs/protocol-droid"
 readme = "README.md"
-keywords = ["mcp", "jsonrpc", "model-context-protocol", "protocol"]
-categories = [
-    "network-programming",
-    "parser-implementations",
-    "web-programming::http",
-]
+# crates.io caps a keyword at 20 characters, and `model-context-protocol` is
+# 22. The registry rejects the whole publish on that, not just the keyword, so
+# the long form is deliberately absent and `model-context` carries the search.
+# `categories` is NOT inherited: they differ per crate, and a category slug the
+# registry does not recognise fails the publish the same way an over-long
+# keyword does.
+keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 
 [workspace.dependencies]
 # Crate versions are collected here so a member only names the dependencies it

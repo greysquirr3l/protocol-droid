@@ -205,6 +205,7 @@ mod tests {
     use crate::application::bridge::{BridgeError, BridgePeer};
     use crate::application::session::IdSource;
     use crate::domain::McpSessionId;
+    use crate::domain::registry::AuthContext;
     use crate::domain::session::SessionId;
 
     use super::LegacySsePeer;
@@ -230,7 +231,12 @@ mod tests {
     }
 
     impl LegacyDispatcher for Pushes {
-        fn dispatch(&self, _session: &McpSessionId, frame: &Value) -> Result<Vec<Value>, Refusal> {
+        fn dispatch(
+            &self,
+            _auth: &AuthContext,
+            _session: &McpSessionId,
+            frame: &Value,
+        ) -> Result<Vec<Value>, Refusal> {
             let id = frame.get("id").cloned().unwrap_or(Value::Null);
             let answer = if self.decline {
                 json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no"}})

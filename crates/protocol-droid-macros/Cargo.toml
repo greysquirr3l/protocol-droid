@@ -6,10 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-documentation.workspace = true
+documentation = "https://docs.rs/protocol-droid-macros"
 readme.workspace = true
 keywords.workspace = true
-categories.workspace = true
+# The slugs `syn` and the other derive crates carry. A proc-macro crate has no
+# network or parser surface of its own, so claiming either would be a lie.
+categories = ["development-tools::procedural-macro-helpers", "parser-implementations"]
 
 [lib]
 # A proc-macro crate is built for the host and cannot be used by the crates that

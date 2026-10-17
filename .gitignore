@@ -15,6 +15,45 @@ capabilities/
 # IDE
 .vscode/
 
+# Operating systems
+# Both blocks are unconditional rather than per-directory. The
+# tools that create these files drop them anywhere in the tree —
+# Finder does it in every directory it has visited, and Explorer
+# does it in every one it has previewed — so a path-scoped rule
+# is a rule that eventually misses. The existing `assets/.DS_Store`
+# entry was already in that shape: correct until Finder touched a
+# second directory.
+#
+# macOS. `.DS_Store` is the directory metadata; `._*` are the
+# AppleDouble sidecars that appear in archives and on non-HFS
+# volumes. The Spotlight and version-history directories are
+# per-volume indices, never source.
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.DocumentRevisions-V100
+.LSOverride
+.apdisk
+Icon?
+
+# Windows. `Thumbs.db` and `ehthumbs.db` are the shell's image
+# cache; `Desktop.ini` is the per-folder view settings Explorer
+# maintains; `$RECYCLE.BIN` is the deleted-items staging area.
+# A `.lnk` is a shortcut, which is a path to something rather
+# than the thing, so it is machine-specific by construction.
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
 # Rust build artifacts
 /target/
 # `crates/protocol-droid/tests/interop_rmcp/` is a *non-workspace*
@@ -42,6 +81,8 @@ node_modules/
 tmp/
 .markdownlint.json
 .markdownlintignore
+.markdownlint-cli2.jsonc
+.markdownlint-cli2.json
 .mcp.json
 .taplo.toml
 docs/dev/uber-mcp-twitter.md
@@ -51,4 +92,3 @@ crates/protocol-droid/fuzz/fuzz/
 target/book/
 .papertowel/
 assets/img/protocol-droid.jpeg
-assets/.DS_Store
