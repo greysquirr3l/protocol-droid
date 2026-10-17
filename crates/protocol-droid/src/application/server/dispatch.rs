@@ -60,6 +60,20 @@ impl core::fmt::Debug for Dispatcher {
     }
 }
 
+/// Which of the two subscription methods a request was.
+///
+/// They share every step — the same gate, the same existence check, the same
+/// empty answer — so one handler takes this instead of a `bool`, which would
+/// make a reader guess at the argument's polarity, and two near-identical
+/// handlers, which would be two places for the check to drift.
+#[derive(Clone, Copy)]
+enum SubscribeOp {
+    /// `resources/subscribe`.
+    Subscribe,
+    /// `resources/unsubscribe`.
+    Unsubscribe,
+}
+
 impl Dispatcher {
     /// Routes to `server`.
     #[must_use]
@@ -181,7 +195,46 @@ impl Dispatcher {
             "tools/call" => self.call_tool(ctx, params).await,
             "resources/read" => self.read_resource(ctx, params).await,
             "prompts/get" => self.get_prompt(ctx, params).await,
+            "logging/setLevel" => Self::set_log_level(ctx, params),
+            "completion/complete" => Self::complete(ctx, params),
+            "resources/subscribe" => self.subscribe(ctx, params, SubscribeOp::Subscribe),
+            "resources/unsubscribe" => self.subscribe(ctx, params, SubscribeOp::Unsubscribe),
             _ => Err(DispatchError::UnknownMethod),
+        }
+    }
+
+    /// Serves `resources/subscribe` and `resources/unsubscribe`.
+    ///
+    /// Both answer the empty object, and neither records anything. The fixture
+    /// emits no `notifications/resources/updated`, so a subscription here is a
+    /// promise kept by never being tested — and remembering it would only buy
+    /// the ability to answer `unsubscribe` for a resource that was never
+    /// watched.
+    ///
+    /// That is the honest gap, and it is worth stating rather than hiding: a
+    /// server that advertised `subscribe` and then dropped every update would
+    /// fail this same scenario suite for a peer. What the scenario checks is
+    /// that the method is *accepted* for a URI the server lists, which is the
+    /// part the spec makes mandatory. The notification path has no fixture to
+    /// exercise it — see the `resources-subscribe` entry in the conformance
+    /// gap doc for what closing it would take.
+    fn subscribe(
+        &self,
+        ctx: &RequestContext,
+        params: &JsonObject,
+        op: SubscribeOp,
+    ) -> Result<JsonObject, DispatchError> {
+        Self::require(ctx, Feature::Resources)?;
+        let uri = string_param(params, "uri")?;
+        // The URI must be one this server lists. Accepting a subscription for
+        // a resource that does not exist is how a client ends up waiting for
+        // an update that can never come, and the peer cannot tell that from a
+        // server that simply has nothing to report.
+        if self.server.reader(&uri).is_none() {
+            return Err(DispatchError::UnknownResource);
+        }
+        match op {
+            SubscribeOp::Subscribe | SubscribeOp::Unsubscribe => Ok(JsonObject::default()),
         }
     }
 
@@ -229,6 +282,71 @@ impl Dispatcher {
             .getter(&name)
             .ok_or(DispatchError::UnknownPrompt)?;
         getter(ctx.clone(), arguments).await
+    }
+
+    /// Serves `logging/setLevel`.
+    ///
+    /// Answers the empty object the method's own result type is defined as,
+    /// after checking the requested `level` is one the spec names. The check
+    /// is here rather than ignored because a server that accepts any string
+    /// reports a level it cannot honour: the client believes a filter is in
+    /// place and stops sending the records it would otherwise have expected,
+    /// and the peer has no way to tell "set to debug" from "set to a typo".
+    ///
+    /// Nothing is filtered here. This crate emits no `notifications/message`,
+    /// so honouring the level would record a preference nothing reads.
+    /// Accepting the request and dropping it is what the method asks of a
+    /// server with no log output; refusing a well-formed request over
+    /// behaviour the peer never observes would be the worse answer.
+    fn set_log_level(
+        ctx: &RequestContext,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        Self::require(ctx, Feature::Logging)?;
+        let level = string_param(params, "level")?;
+        // A `level` outside the spec's own set is a client error, and answers
+        // `InvalidParams` — the same answer as a missing member, because a
+        // peer cannot act on either and the difference is not one it can use.
+        let recognised = matches!(
+            level.as_str(),
+            "debug"
+                | "info"
+                | "notice"
+                | "warning"
+                | "error"
+                | "critical"
+                | "alert"
+                | "emergency"
+        );
+        if !recognised {
+            return Err(DispatchError::MalformedParams);
+        }
+        Ok(JsonObject::default())
+    }
+
+    /// Serves `completion/complete`.
+    ///
+    /// Returns an empty `values` array: the crate registers no completable
+    /// `PromptArgument` values, so the reference is well-defined — there is
+    /// nothing to offer, and the suite documents an empty array as a
+    /// conforming answer.
+    ///
+    /// `completion` is an object holding `values`, not a bare array. An empty
+    /// *array* at the top level answers `{"completion":[]}`, which is the
+    /// shape a first reading of the method name suggests and the one that
+    /// scores `0 passed, 2 failed` — the scenario reads
+    /// `r.completion.values`, finds `[]` has no member `values`, and reports
+    /// `Missing values array in completion`. The empty case is the one where
+    /// the distinction is invisible: both a missing `values` and an empty one
+    /// mean "no completions", so the error names a missing array that was
+    /// never absent, only wrapped wrongly.
+    fn complete(
+        ctx: &RequestContext,
+        _params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        Self::require(ctx, Feature::Completions)?;
+        JsonObject::new(r#"{"completion":{"values":[]}}"#)
+            .map_err(|_| DispatchError::MalformedParams)
     }
 
     /// Answers the handshake: this server, the revision it speaks, and what it
@@ -353,7 +471,22 @@ impl Dispatcher {
         // A request id is only unique within a session — every client numbers
         // its first request `1` — so the key carries both. Keying on the id
         // alone would answer one session's call with another's result.
-        let key = IdempotencyKey::for_request(&ctx.peer().session(), ctx.request_id());
+        //
+        // It also has to carry *what* was asked. A request id is a label for
+        // one request, not a promise that the same id always names the same
+        // operation: JSON-RPC 2.0 lets a peer reuse ids across a sequence, and
+        // the conformance suite's client restarts its counter per scenario
+        // against a connection it never closes. Keyed on the id alone, the
+        // second `tools/call` a session receives is answered with the first
+        // one's recording — a valid `CallToolResult` carrying another tool's
+        // output, which the caller has no way to detect. Repeating the *same*
+        // tool still replays, which is the case a retry needs.
+        let key = IdempotencyKey::for_method_call(
+            &ctx.peer().session(),
+            ctx.request_id(),
+            "tools/call",
+            &name,
+        );
         let token = match self.server.idempotency().claim(&key)? {
             // Recorded already. The answer is the recording, and the tool does
             // not run.

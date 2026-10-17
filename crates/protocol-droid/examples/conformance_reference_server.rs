@@ -51,7 +51,7 @@ async fn yield_to_runtime() {
 use protocol_droid::application::server::Server;
 use protocol_droid::application::server::context::RequestContext;
 use protocol_droid::domain::ir::{
-    AudioContent, Content, EmbeddedResource, ImageContent, JsonObject, PromptMessage,
+    AudioContent, Content, EmbeddedResource, ImageContent, JsonObject, LogLevel, PromptMessage,
     ResourceContents, Role, TextContent, ToolResult,
 };
 use protocol_droid::domain::registry::{Prompt, PromptArgument, Resource};
@@ -196,34 +196,184 @@ impl ConformanceFixture {
     /// blocks that arrived in different revisions, and a scenario reading one
     /// while the fixture answers with the other reports a shape mismatch that
     /// reads as a codec bug.
+    ///
+    /// `mime_type` is set explicitly. `EmbeddedResource::text` leaves it
+    /// `None`, which is correct for the general case — the spec makes it
+    /// optional — but the suite's `tools-call-embedded-resource` scenario
+    /// asserts it is present and fails an embedded block without one. The
+    /// failure is reported as `No resource content found` rather than
+    /// "mimeType missing", because the suite finds the block by `type` and
+    /// then checks its members in sequence, aborting on the first failure:
+    /// a block with no `mimeType` and a block that was never found produce
+    /// the same headline error, and the first is the far likelier cause of a
+    /// scenario that otherwise looks right on the wire.
     #[protocol_droid::tool]
     async fn test_embedded_resource() -> ToolResult {
         yield_to_runtime().await;
-        ToolResult::new(vec![Content::EmbeddedResource(EmbeddedResource::text(
+        let mut embedded = EmbeddedResource::text(
             "test://embedded-resource",
             "This is an embedded resource's text.",
-        ))])
+        );
+        embedded.mime_type = Some("text/plain".to_owned());
+        ToolResult::new(vec![Content::EmbeddedResource(embedded)])
+    }
+
+    /// `test_logging_tool` / `test_tool_with_logging` — sends the three log
+    /// notifications the suite counts.
+    ///
+    /// The scenario needs at least three `notifications/message` records
+    /// emitted *during* the call, and it reads them off a client handler that
+    /// is registered before the tool runs. It sets the level to `debug` first,
+    /// so these pass the gate this server applies — `setLoggingLevel` records
+    /// nothing, so the level is whatever the session negotiated, and an
+    /// `info` notification is emitted at the default.
+    #[protocol_droid::tool]
+    async fn test_tool_with_logging(ctx: RequestContext) -> ToolResult {
+        yield_to_runtime().await;
+        for message in [
+            "Tool execution started",
+            "Tool processing data",
+            "Tool execution completed",
+        ] {
+            log_message(&ctx, message).await;
+        }
+        ToolResult::text("Logged three messages.")
+    }
+
+    /// `test_tool_with_progress` — emits progress notifications for the token
+    /// the caller supplied in `_meta.progressToken`.
+    ///
+    /// `report_progress` is what makes the token observable: without a
+    /// progress token on the call there is nothing to report against, and the
+    /// helper declines rather than inventing a token. The scenario sends
+    /// `progress-test-1`, so this returns the increments it asks for.
+    #[protocol_droid::tool]
+    async fn test_tool_with_progress(ctx: RequestContext) -> ToolResult {
+        yield_to_runtime().await;
+        for (progress, total) in [(0, 3), (1, 3), (2, 3)] {
+            progress_message(&ctx, progress, total).await;
+        }
+        ToolResult::text("Reported progress.")
+    }
+
+    /// `test_sampling` — asks the peer to sample from an LLM.
+    ///
+    /// The scenario registers a handler on its *client* and fails unless the
+    /// server issues `sampling/createMessage`. The answer this server gets
+    /// back is whatever the peer chose; the tool reports the prompt it sent
+    /// and whether the exchange completed, so a refusal is visible as a
+    /// refusal rather than as a tool that quietly said nothing happened.
+    #[protocol_droid::tool]
+    async fn test_sampling(ctx: RequestContext, prompt: String) -> ToolResult {
+        yield_to_runtime().await;
+        // The request is built before the call so a bad prompt is reported as a
+        // refusal rather than sent to the peer as malformed JSON: the
+        // scenario's client answers whatever it is handed, so an unserialisable
+        // request would otherwise surface as a confusing peer-side error
+        // instead of this tool's own.
+        let Some(request) = sampling_request(&prompt) else {
+            return ToolResult::text("The sampling request could not be built.");
+        };
+        match ctx.sample(&request).await {
+            Ok(_) => ToolResult::text("Sampling completed."),
+            // The reason is reported rather than discarded: a client that
+            // declines the request and a server whose gate refused it are the
+            // same `Err` here, and the suite only tells them apart by whether
+            // it saw a `sampling/createMessage` at all. Naming the cause in the
+            // result is what makes the two distinguishable from the outside.
+            Err(failure) => ToolResult::text(format!("Sampling was not completed: {failure}")),
+        }
+    }
+
+    /// `test_elicitation` — asks the peer to collect input from its user.
+    #[protocol_droid::tool]
+    async fn test_elicitation(ctx: RequestContext, message: String) -> ToolResult {
+        yield_to_runtime().await;
+        let Some(request) = elicitation_request(&message) else {
+            return ToolResult::text("The elicitation request could not be built.");
+        };
+        match ctx.elicit(&request).await {
+            Ok(_) => ToolResult::text("Elicitation completed."),
+            Err(failure) => ToolResult::text(format!("Elicitation was not completed: {failure}")),
+        }
+    }
+
+    /// `test_error_handling`, which the suite's `tools-call-error` scenario
+    /// calls to check the error envelope.
+    ///
+    /// This one is not a naming gap. Every other failure this fixture had was
+    /// "the suite asked for a name the server had never registered", which
+    /// reads as a missing entry. This scenario found the entry and then failed
+    /// on `Tool did not return isError: true` — so it is a real behaviour
+    /// question: a tool that fails is still a *successful* JSON-RPC response
+    /// carrying `isError: true` and content explaining what went wrong, and a
+    /// server that answers it with a JSON-RPC error object instead is
+    /// answering a different question.
+    #[protocol_droid::tool]
+    async fn test_error_handling() -> ToolResult {
+        yield_to_runtime().await;
+        ToolResult::text("This tool always returns an error.").error()
     }
 
     /// Several content types in one answer, which is the case that catches a
     /// result builder that only ever holds one block.
-    ///
     /// Text first: a client that concatenates the blocks in order has to be
     /// able to start with one it can read, and an image-first answer forces
     /// every one of them to handle binary before it has seen any text.
     #[protocol_droid::tool]
     async fn test_multiple_content_types() -> ToolResult {
         yield_to_runtime().await;
+        // The embedded block carries `mime_type` for the same reason the
+        // single-block tool does: `tools-call-mixed-content` asserts a
+        // `resource` block with a `mimeType`, and reports a block missing one
+        // as `Missing resource content`.
+        let mut embedded = EmbeddedResource::text(
+            "test://embedded-resource",
+            "This is an embedded resource's text.",
+        );
+        embedded.mime_type = Some("text/plain".to_owned());
         ToolResult::new(vec![
             Content::Text(protocol_droid::domain::ir::TextContent::new(
                 "This is a multi-type response.",
             )),
             Content::Image(ImageContent::new(PNG_1X1, "image/png")),
-            Content::EmbeddedResource(EmbeddedResource::text(
-                "test://embedded-resource",
-                "This is an embedded resource's text.",
-            )),
+            Content::EmbeddedResource(embedded),
         ])
+    }
+
+    /// `test_prompt_with_embedded_resource`, which
+    /// `prompts-get-embedded-resource` calls with `resourceUri`.
+    ///
+    /// The message embeds the URI it was given rather than a fixed one, so a
+    /// getter that ignored the argument would answer with a resource the peer
+    /// never asked about — and the scenario, which looks for *any* embedded
+    /// resource, would pass anyway. The value is echoed into the prompt text as
+    /// well so the substitution is visible without decoding the block.
+    #[protocol_droid::prompt(getter = get_test_prompt_with_embedded_resource)]
+    fn test_prompt_with_embedded_resource() -> Prompt {
+        Prompt {
+            description: Some("A prompt whose message embeds a resource.".to_owned()),
+            arguments: vec![PromptArgument {
+                name: "resourceUri".to_owned(),
+                description: Some("The URI of the resource to embed.".to_owned()),
+                title: None,
+                required: true,
+            }],
+            ..Prompt::new("test_prompt_with_embedded_resource")
+        }
+    }
+
+    /// `test_prompt_with_image`, which `prompts-get-with-image` calls.
+    ///
+    /// Carries no arguments, and its message is an image block — the prompt
+    /// analogue of the `tools-call-image` content shape, and the only place the
+    /// suite checks that a *prompt* can return binary content.
+    #[protocol_droid::prompt(getter = get_test_prompt_with_image)]
+    fn test_prompt_with_image() -> Prompt {
+        Prompt {
+            description: Some("A prompt whose message is an image.".to_owned()),
+            ..Prompt::new("test_prompt_with_image")
+        }
     }
 
     /// A prompt that asks for a code review, with two arguments.
@@ -270,6 +420,54 @@ impl ConformanceFixture {
         }
     }
 
+    /// `test_simple_prompt`, which the suite's `prompts-get-simple`
+    /// scenario calls by name.
+    ///
+    /// Same lesson as the `test://static-text` resources: `prompts-list`
+    /// passes for a fixture that registers `review` and `summarize`, because
+    /// the list is non-empty and every entry has a name. The `prompts/get`
+    /// scenario is the one that names a specific prompt, and it fails
+    /// `no such prompt` against names the suite never asked for. The two
+    /// fixtures coexist on purpose — the suite reads several prompts, and a
+    /// server that only answered the suite's names would prove nothing about
+    /// the general case.
+    #[protocol_droid::prompt(getter = get_test_simple_prompt)]
+    fn test_simple_prompt() -> Prompt {
+        Prompt {
+            description: Some("A simple prompt with no arguments.".to_owned()),
+            ..Prompt::new("test_simple_prompt")
+        }
+    }
+
+    /// `test_prompt_with_arguments`, which `prompts-get-with-args` calls
+    /// with `arg1` and `arg2`.
+    ///
+    /// Both arguments are required, which is what makes this scenario worth
+    /// having: it asserts the *values* come back substituted into the
+    /// message body, so a getter that ignored `arguments` and returned a
+    /// fixed string would pass `prompts-get-simple` and fail here.
+    #[protocol_droid::prompt(getter = get_test_prompt_with_arguments)]
+    fn test_prompt_with_arguments() -> Prompt {
+        Prompt {
+            description: Some("A prompt that substitutes two arguments.".to_owned()),
+            arguments: vec![
+                PromptArgument {
+                    name: "arg1".to_owned(),
+                    description: Some("First test argument.".to_owned()),
+                    title: None,
+                    required: true,
+                },
+                PromptArgument {
+                    name: "arg2".to_owned(),
+                    description: Some("Second test argument.".to_owned()),
+                    title: None,
+                    required: true,
+                },
+            ],
+            ..Prompt::new("test_prompt_with_arguments")
+        }
+    }
+
     /// A static readme resource, with a `text/` MIME type the conformance
     /// suite's `resources/list` and `resources/read` scenarios both read.
     #[protocol_droid::resource(reader = read_readme)]
@@ -293,6 +491,85 @@ impl ConformanceFixture {
         }
     }
 
+    /// `test://static-text`, which is the URI the suite's `resources-read-text`
+    /// scenario names verbatim.
+    ///
+    /// The URI is not this crate's choice. An earlier revision of this
+    /// fixture registered `file:///conformance/readme.md` and a
+    /// `file:///conformance/CHANGELOG.md`, both of which satisfy
+    /// `resources/list` — the list is non-empty and every entry has a `uri`
+    /// and a `name`. The scenario then failed on the *read*, with `no such
+    /// resource`, because it asks for `test://static-text` by name and the
+    /// server had nothing registered under that URI. A fixture whose names
+    /// are its own invention passes a list check and fails the read, which
+    /// is a worse failure to diagnose than having no resource at all: the
+    /// passing `resources-list` leg reads like evidence the surface is
+    /// right when the scenario that actually reads one says otherwise.
+    #[protocol_droid::resource(reader = read_static_text)]
+    fn static_text_resource() -> Resource {
+        Resource {
+            description: Some("A static text resource for the read scenario.".to_owned()),
+            mime_type: Some("text/plain".to_owned()),
+            ..Resource::new("test://static-text", "static_text")
+        }
+    }
+
+    /// `test://static-binary`, which the `resources-read-binary` scenario
+    /// names verbatim. Blob rather than text, and the same 1x1 PNG the
+    /// `tools-call-image` tool returns, so a decode failure in the suite
+    /// cannot be a bad fixture payload mistaken for a codec bug.
+    #[protocol_droid::resource(reader = read_static_binary)]
+    fn static_binary_resource() -> Resource {
+        Resource {
+            description: Some("A static binary resource for the read scenario.".to_owned()),
+            mime_type: Some("image/png".to_owned()),
+            ..Resource::new("test://static-binary", "static_binary")
+        }
+    }
+
+    /// `test://example-resource`, which `prompts-get-embedded-resource` embeds by
+    /// passing its URI as the `resourceUri` argument. Registered as a real
+    /// resource rather than only named in the prompt, so a peer that follows
+    /// the link it is handed finds something.
+    #[protocol_droid::resource(reader = read_example_resource)]
+    fn example_resource() -> Resource {
+        Resource {
+            description: Some("The resource the embedded-resource prompt embeds.".to_owned()),
+            mime_type: Some("text/plain".to_owned()),
+            ..Resource::new("test://example-resource", "example_resource")
+        }
+    }
+
+    /// `test://watched-resource`, which the `resources-subscribe` and
+    /// `resources-unsubscribe` scenarios name.
+    #[protocol_droid::resource(reader = read_watched_resource)]
+    fn watched_resource() -> Resource {
+        Resource {
+            description: Some("A resource the suite subscribes to.".to_owned()),
+            mime_type: Some("text/plain".to_owned()),
+            ..Resource::new("test://watched-resource", "watched_resource")
+        }
+    }
+
+    /// `test://template/123/data`, which `resources-templates-read` reads
+    /// directly by URI.
+    ///
+    /// Registered as a plain resource rather than a `ResourceTemplate`. The
+    /// spec's distinction is that a template advertises a URI *pattern* to be
+    /// filled in, and the suite's scenario reads a concrete URI without
+    /// filling one in — the value is already complete. A template would also
+    /// be the more instructive shape for a real server, but registering one
+    /// changes what `resources/templates/list` reports and this scenario does
+    /// not read that.
+    #[protocol_droid::resource(reader = read_template_data)]
+    fn template_data() -> Resource {
+        Resource {
+            description: Some("The resource a template URI resolves to.".to_owned()),
+            mime_type: Some("text/plain".to_owned()),
+            ..Resource::new("test://template/123/data", "template_data")
+        }
+    }
+
     /// Serves the readme. Takes the URI the peer named rather than closing
     /// over the listing's, so a read is answered for the resource that was
     /// actually asked for.
@@ -309,6 +586,89 @@ impl ConformanceFixture {
         vec![static_text(
             uri,
             "# Changelog\n\n## 0.1.0\n\n- First release.\n",
+        )]
+    }
+
+    /// Serves `test://static-text`. `text/plain` rather than the
+    /// `text/markdown` the two file-backed resources use, because the
+    /// scenario asserts a `mimeType` is present and the spec treats the
+    /// two as distinct types.
+    fn read_static_text(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![static_text(
+            uri,
+            "This is the content of the static text resource.",
+        )]
+    }
+
+    /// Serves `test://static-binary` as a `blob`, which is the member a
+    /// binary resource carries and a text resource does not. Emitting
+    /// `text` here would satisfy "contents is not empty" and fail the
+    /// scenario's read of a binary body, which is the distinction the
+    /// scenario exists to check.
+    fn read_static_binary(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![ResourceContents::blob(uri, PNG_1X1).with_mime_type("image/png")]
+    }
+
+    /// Serves `test://example-resource`.
+    fn read_example_resource(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![static_text(uri, "This is the example resource's text.")]
+    }
+
+    /// Serves `test://watched-resource`.
+    ///
+    /// The body says it is watched, which it is not — nothing in this fixture
+    /// emits `notifications/resources/updated`. The scenario that exercises a
+    /// subscription checks that subscribing is *accepted*; the fixture has no
+    /// change to report, so a body that claims otherwise would be a lie the
+    /// suite could not catch but the next reader would.
+    fn read_watched_resource(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![static_text(uri, "This resource is watched by the client.")]
+    }
+
+    /// Serves `test://template/123/data`.
+    fn read_template_data(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        // The id is lifted out of the URI and echoed into the body, because the
+        // scenario checks that a template's variable reached the content: a
+        // server that returns a fixed string passes a read and fails the
+        // substitution it was actually testing for. The body is JSON for the
+        // same reason — the scenario documents this resource as
+        // `application/json`, and a `text/plain` answer to it is a different
+        // resource than the one it asked for.
+        let id = uri
+            .split('/')
+            .nth(3)
+            .filter(|segment| !segment.is_empty())
+            .unwrap_or_default();
+        let body = format!(r#"{{"id":"{id}","templateTest":true,"data":"Data for ID: {id}"}}"#);
+        vec![ResourceContents::text(uri, &body).with_mime_type("application/json")]
+    }
+
+    /// Builds `test_prompt_with_embedded_resource`'s messages, embedding the
+    /// URI the caller named.
+    fn get_test_prompt_with_embedded_resource(
+        _context: RequestContext,
+        arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        let uri = string_argument(arguments, "resourceUri")
+            .unwrap_or_else(|| "test://example-resource".to_owned());
+        vec![PromptMessage::new(
+            Role::User,
+            Content::EmbeddedResource(EmbeddedResource::text(
+                uri,
+                "This is an embedded resource's text.",
+            )),
+        )]
+    }
+
+    /// Builds `test_prompt_with_image`'s messages: an image block, which is
+    /// the prompt-side counterpart of `tools-call-image`.
+    fn get_test_prompt_with_image(
+        _context: RequestContext,
+        _arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Image(ImageContent::new(PNG_1X1, "image/png")),
         )]
     }
 
@@ -335,6 +695,100 @@ impl ConformanceFixture {
             Content::Text(TextContent::new("Summarize the following.")),
         )]
     }
+
+    /// Builds `test_simple_prompt`'s messages, which take no arguments.
+    fn get_test_simple_prompt(
+        _context: RequestContext,
+        _arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new(
+                "This is a simple prompt for testing.",
+            )),
+        )]
+    }
+
+    /// Builds `test_prompt_with_arguments`'s messages.
+    ///
+    /// Both values are interpolated rather than echoed into a fixed string,
+    /// because the scenario asserts that the arguments it sent appear in the
+    /// message body. A getter that ignored `arguments` would satisfy the
+    /// "messages is a non-empty array of role+content" check and fail the
+    /// substitution check, which is the only part of this scenario a real
+    /// implementation can get wrong.
+    fn get_test_prompt_with_arguments(
+        _context: RequestContext,
+        arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        let arg1 = string_argument(arguments, "arg1").unwrap_or_else(|| "<missing>".to_owned());
+        let arg2 = string_argument(arguments, "arg2").unwrap_or_else(|| "<missing>".to_owned());
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new(format!(
+                "Prompt with arguments: arg1='{arg1}', arg2='{arg2}'"
+            ))),
+        )]
+    }
+}
+
+/// Builds a `sampling/createMessage` request carrying one user message.
+///
+/// `None` when the prompt will not serialise, which a `String` from a JSON
+/// peer can only do if the peer sent something that was not text. Answering
+/// with a refusal is better than sending a half-built request.
+fn sampling_request(prompt: &str) -> Option<JsonObject> {
+    serde_json::to_string(prompt)
+        .ok()
+        .and_then(|text| {
+            JsonObject::new(format!(
+                r#"{{"messages":[{{"role":"user","content":{{"type":"text","text":{text}}}}}],"maxTokens":16}}"#
+            ))
+            .ok()
+        })
+}
+
+/// Builds an `elicitation/create` request carrying one message.
+fn elicitation_request(message: &str) -> Option<JsonObject> {
+    // `requestedSchema` is required by the schema, not optional with a
+    // default, and a client validating against the schema rejects the request
+    // without it — which reads at the suite as "the server never elicited",
+    // because the failure happens before it can record that it was asked.
+    //
+    // One top-level property, no nesting: the schema allows only the
+    // `PrimitiveSchemaDefinition` subset, and a nested object here is refused
+    // by the client for the same reason.
+    serde_json::to_string(message).ok().and_then(|text| {
+        JsonObject::new(format!(
+            r#"{{"message":{text},"requestedSchema":{{"type":"object","properties":{{"answer":{{"type":"string","title":"Answer"}}}},"required":["answer"]}}}}"#
+        ))
+        .ok()
+    })
+}
+
+/// Emits one `notifications/message` record at `info`.
+///
+/// `ctx.log` is gated on the session having negotiated logging, and returns a
+/// typed error rather than writing nothing, so a fixture that ignored it would
+/// silently emit zero records on a session that never negotiated the feature —
+/// and `tools-call-with-logging` would report `No log notifications received`
+/// with nothing to distinguish "the server declined" from "the server sent
+/// none". The result is deliberately discarded here for the opposite reason:
+/// the scenario's own server is the one that decides whether to advertise
+/// logging, and it does.
+async fn log_message(ctx: &RequestContext, message: &str) {
+    let _outcome = ctx.log(LogLevel::Info, message).await;
+}
+
+/// Emits one `notifications/progress` increment against the caller's token.
+async fn progress_message(ctx: &RequestContext, progress: i64, total: i64) {
+    let Ok(params) = JsonObject::new(format!(r#"{{"progress":{progress},"total":{total}}}"#)) else {
+        // The arguments are two `i64`s interpolated into a literal, so this
+        // branch is unreachable; returning quietly is better than unwrapping a
+        // value this crate built itself.
+        return;
+    };
+    let _outcome = ctx.report_progress(&params).await;
 }
 
 /// A `text/markdown` resource body.

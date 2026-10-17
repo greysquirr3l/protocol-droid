@@ -49,6 +49,7 @@ mod content;
 mod extensions;
 mod features;
 mod json;
+pub mod loglevel;
 pub mod lower;
 mod message;
 mod prompt;
@@ -66,6 +67,7 @@ pub use envelope::{EnvelopeError, lift as lift_envelope, lower as lower_envelope
 pub use extensions::{ExtensionValue, Extensions};
 pub use features::FeatureSet;
 pub use json::{JsonObject, JsonObjectError};
+pub use loglevel::{Level as LogLevel, LevelError as LogLevelError};
 pub use lower::{DegradeRule, Loss, LowerError, Lowering, TranslationReport, TranslationStep};
 pub use message::{
     IrError, IrErrorCode, IrMessage, IrNotification, IrParams, IrRequest, IrResult, MethodName,

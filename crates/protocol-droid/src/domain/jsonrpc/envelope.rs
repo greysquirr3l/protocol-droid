@@ -79,6 +79,20 @@ pub enum WireId<'a> {
 }
 
 impl<'a> WireId<'a> {
+    /// This id, owned.
+    ///
+    /// A handler can outlive the frame it was invoked for — a tool that asks
+    /// its peer a question keeps running while the request that called it is
+    /// being answered — so an id borrowed from a request body has to become an
+    /// owned one before it crosses into anything longer-lived than that body.
+    #[must_use]
+    pub fn to_owned(&self) -> WireId<'static> {
+        match self {
+            Self::Number(value) => WireId::Number(*value),
+            Self::Text(text) => WireId::Text(Cow::Owned(text.as_ref().to_owned())),
+        }
+    }
+
     /// Parses an id from its raw JSON, borrowed.
     ///
     /// The spec allows a number or a string and nothing else, so `null`,

@@ -112,6 +112,42 @@ impl IdempotencyKey {
         Self(Arc::from(format!("{session}/{id}").as_str()))
     }
 
+    /// The key for a method invocation, which is the form every
+    /// observable-side-effect handler wants.
+    ///
+    /// [`Self::for_request`] keys on the session and the request id alone, and
+    /// that is exactly right for *retrying the same call*: a client whose POST
+    /// never got an answer resends the identical request and must not run the
+    /// tool twice.
+    ///
+    /// It is wrong as the only form, because a request id is not a promise that
+    /// the same id names the same operation. JSON-RPC 2.0 requires the peer to
+    /// be able to reuse ids across a *sequence* of requests, and real clients
+    /// do — the conformance suite restarts its counter at `1` per scenario
+    /// against a session it never closed. Keyed on the id alone, the second
+    /// `tools/call` of a session is answered with the first one's recording: ask
+    /// `test_audio_content` as id 1 and `test_embedded_resource` as id 2 in
+    /// separate scenarios sharing a connection, and the second is handed back
+    /// an audio block. That is worse than a wrong answer, because the caller
+    /// cannot tell it from a correct one — it is a *valid* `CallToolResult`
+    /// carrying the wrong tool's output.
+    ///
+    /// Adding the method and the tool name makes the key identify *what was
+    /// asked* as well as *who asked and when*, so a genuinely repeated
+    /// `tools/call` for the same tool still replays, and a different tool under
+    /// a reused id runs. It cannot distinguish a *retry* of a different-argument
+    /// call under the same id, which is a caller violating JSON-RPC in the other
+    /// direction; treating that as a fresh call is the answer that loses less.
+    #[must_use]
+    pub fn for_method_call(
+        session: &SessionId,
+        id: &RequestId,
+        method: &str,
+        target: &str,
+    ) -> Self {
+        Self(Arc::from(format!("{session}/{id}/{method}/{target}").as_str()))
+    }
+
     /// The key as a string.
     #[must_use]
     pub fn as_str(&self) -> &str {

@@ -34,7 +34,7 @@ use std::sync::Arc;
 use crate::application::server::error::GatedError;
 use crate::application::session::DynFrameSink;
 use crate::domain::feature::{Feature, FeatureProfile};
-use crate::domain::ir::JsonObject;
+use crate::domain::ir::{JsonObject, LogLevel};
 use crate::domain::registry::AuthContext;
 use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
 use crate::domain::{ProtocolVersion, RequestId, TransportKind};
@@ -329,6 +329,61 @@ impl PeerSession {
         self
     }
 
+    /// This peer, opening server-initiated requests through `exchange`.
+    ///
+    /// The partner to [`Self::with_sink`]: the sink is where a notification
+    /// *goes*, the exchange is how a request *leaves and waits*. A transport
+    /// that publishes both a tool's log records and its `sampling/createMessage`
+    /// through one session has to bind both to that session, or the log records
+    /// reach one client and the sampling request waits for another.
+    ///
+    /// Replaces rather than layers: a peer has one exchange, and keeping a
+    /// second that silently refuses would make a mis-bound peer refuse rather
+    /// than fail loudly.
+    #[must_use]
+    pub fn with_exchange(mut self, exchange: Arc<dyn DynExchange>) -> Self {
+        self.exchange = exchange;
+        self
+    }
+
+    /// This peer, identified as `id` rather than as the seed it was built from.
+    ///
+    /// A transport that opens more than one session needs this, and the reason
+    /// is invisible until two sessions are live. Everything a session *does* is
+    /// keyed on its id: the idempotency store that makes a retried `tools/call`
+    /// replay its recorded answer, the in-flight map that refuses a duplicate.
+    /// Both read `peer.session()`. A peer seeded with one id and never rebind
+    /// therefore gives every session the same key space, so the first session's
+    /// recorded `tools/call` answer is handed back to the second session's
+    /// call as its "already completed" result — another tool's output, served
+    /// as if it were this one's.
+    ///
+    /// The store allocates the id; this is where it reaches the peer.
+    #[must_use]
+    pub const fn with_session(mut self, id: SessionId) -> Self {
+        self.session = id;
+        self
+    }
+
+    /// This peer, publishing its server-initiated messages through `sink`.
+    ///
+    /// The peer is constructed with a sink long before a transport knows where
+    /// that session's messages will be read from — a handshake happens inside
+    /// a request whose response stream does not exist yet, and a transport
+    /// that seeds a session with one placeholder and persists it finds later
+    /// that the placeholder is still what the session writes to. Binding it
+    /// here, once the session has a tail worth publishing to, is the only
+    /// point where the two can be made the same object.
+    ///
+    /// Replaces rather than layers: a peer has exactly one sink, and keeping a
+    /// second that quietly discards would restore the failure this exists to
+    /// prevent.
+    #[must_use]
+    pub fn with_sink(mut self, sink: Arc<dyn DynFrameSink>) -> Self {
+        self.sink = sink;
+        self
+    }
+
     /// The revision this connection settled on.
     #[must_use]
     pub const fn negotiated(&self) -> ProtocolVersion {
@@ -584,6 +639,44 @@ impl RequestContext {
             .await
             .map_err(|_| GatedError::MalformedAnswer {
                 reason: "the progress notification did not reach the peer".to_string(),
+            })
+    }
+
+    /// Emits a `notifications/message` log record.
+    ///
+    /// The fourth of the server-side channels a handler can open, alongside
+    /// progress, sampling and elicitation, and the only one that needs no
+    /// token from the caller: a log record is addressed to the peer as a whole
+    /// rather than to a request, so there is nothing to correlate it against.
+    /// That is what makes it the odd one out here — every other gated
+    /// operation has a precondition the peer establishes first, and this one
+    /// has none.
+    ///
+    /// Gated on [`Feature::Logging`], and like the other gates it runs before
+    /// anything is written, so a session that never negotiated logging emits
+    /// nothing at all rather than a record the peer will ignore.
+    ///
+    /// # Errors
+    ///
+    /// [`GatedError::FeatureUnavailable`] when logging was not negotiated,
+    /// having written nothing. [`GatedError::MalformedAnswer`] when the
+    /// notification did not reach the peer.
+    pub async fn log(&self, level: LogLevel, message: &str) -> Result<(), GatedError> {
+        self.peer.require(Feature::Logging)?;
+        let escaped = serde_json::to_string(message).unwrap_or_else(|reason| {
+            format!("\"the log message could not be serialised: {reason}\"")
+        });
+        let frame = format!(
+            r#"{{"jsonrpc":"2.0","method":"notifications/message","params":{{"level":{},"data":{}}}}}"#,
+            serde_json::to_string(level.as_str()).unwrap_or_else(|_| "\"info\"".to_owned()),
+            escaped
+        );
+        self.peer
+            .sink
+            .send(&frame)
+            .await
+            .map_err(|_| GatedError::MalformedAnswer {
+                reason: "the log notification did not reach the peer".to_string(),
             })
     }
 

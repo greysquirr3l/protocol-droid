@@ -556,6 +556,203 @@ where
             closed: false,
         })
     }
+
+    /// The response for a `POST`, which ends when the tail has been drained.
+    ///
+    /// The long-lived [`Self::into_response`] is the wrong shape for a
+    /// `POST`: it stays open so a client can receive messages the server
+    /// initiates after the reply, which is what a `GET` is for. A `POST` is
+    /// one request and one exchange, and a client that waits for its stream to
+    /// close waits forever — the request it sent is complete, and nothing else
+    /// is coming on *this* stream.
+    ///
+    /// So this closes once everything the handler published has been written,
+    /// which is exactly the set of frames a single request produced: the
+    /// notifications a tool emitted while it ran, and then the reply. Draining
+    /// rather than snapshotting is what lets a progress notification emitted
+    /// mid-call reach the client at all.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::try_stream`] does, so a plan that resolves
+    /// to a refusal is still answered with that refusal rather than an empty
+    /// stream.
+    pub fn into_draining_response(&self, keep_alive: Duration) -> Result<Response, StreamError> {
+        let stream = self
+            .try_stream(keep_alive)
+            .map_err(|_| StreamError::Response("the stream could not open".to_owned()))?;
+        stream_response(stream.finishing_when_drained())
+    }
+
+    /// The response for a `POST`, ending when `finished` is signalled.
+    ///
+    /// [`Self::into_draining_response`] ends when the tail runs dry, which is
+    /// right for a request that publishes and returns. It is wrong for one that
+    /// publishes and then *waits*: a tool that asks the peer to sample parks on
+    /// that answer, publishes nothing further while it waits, and a stream that
+    /// ends on an empty tail closes before the peer's reply — which arrives on
+    /// a different request entirely — can be read. The tool waits forever on a
+    /// request the client already stopped listening to.
+    ///
+    /// So the end is a fact about the *handler*, not about the buffer: the
+    /// caller signals it, and the stream lasts until it does.
+    pub fn into_finishable_response(
+        &self,
+        finished: Finishing,
+        keep_alive: Duration,
+    ) -> Result<Response, StreamError> {
+        let stream = self
+            .try_stream(keep_alive)
+            .map_err(|_| StreamError::Response("the stream could not open".to_owned()))?;
+        stream_response(stream.finishing_on(finished))
+    }
+}
+
+/// What ends a [`FinishingStream`].
+///
+/// An enum rather than a bare flag because the two ends answer different
+/// questions: "has the handler returned?" is about the task, and "is the tail
+/// empty?" is about the buffer. One flag can express only one of them, and
+/// picking the wrong one closes the stream at exactly the moment the other
+/// still matters.
+#[derive(Debug, Clone)]
+enum Until {
+    /// The tail has nothing left — the handler published and returned.
+    Drained,
+    /// The handler has returned, whether or not the tail is empty.
+    Signalled(Finishing),
+}
+
+/// The one-shot signal that a handler has returned.
+///
+/// A signal rather than a flag under a mutex so the stream *wakes* when it is
+/// set. A flag alone would leave a stream parked in `Pending` with no event to
+/// poll it, so the end would only be noticed on the next unrelated frame —
+/// which for a handler that returned without publishing is never.
+#[derive(Debug, Clone)]
+pub struct Finishing {
+    inner: Arc<FinishingInner>,
+}
+
+impl Finishing {
+    /// A signal nobody has fired yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(FinishingInner::new()),
+        }
+    }
+
+    /// Whether the handler has returned.
+    #[must_use]
+    pub fn is_fired(&self) -> bool {
+        self.inner.fired.load(Ordering::SeqCst)
+    }
+
+    /// Signals that the handler has returned.
+    ///
+    /// Idempotent: a handler that returns twice — which a `catch_unwind` or a
+    /// dropped guard can arrange — must not panic, because "finished" is not
+    /// something with a legal second answer.
+    pub fn fire(&self) {
+        self.inner.fire();
+    }
+}
+
+impl Default for Finishing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The shared half of a [`Finishing`].
+#[derive(Debug)]
+struct FinishingInner {
+    fired: std::sync::atomic::AtomicBool,
+    wakers: std::sync::Mutex<Vec<Waker>>,
+}
+
+impl FinishingInner {
+    const fn new() -> Self {
+        Self {
+            fired: std::sync::atomic::AtomicBool::new(false),
+            wakers: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Records the fire, and hands back anyone waiting to hear about it.
+    fn fire(&self) {
+        self.fired.store(true, Ordering::SeqCst);
+        let wakers =
+            std::mem::take(&mut *self.wakers.lock().unwrap_or_else(PoisonError::into_inner));
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    /// Wakes `waker` when this fires, if it has not already.
+    fn subscribe(&self, waker: &Waker) {
+        if self.fired.load(Ordering::SeqCst) {
+            waker.wake_by_ref();
+            return;
+        }
+        self.wakers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(waker.clone());
+    }
+}
+
+struct FinishingStream<T> {
+    /// The stream doing the work.
+    inner: EventStream<T>,
+    /// What ends it.
+    ///
+    /// An enum rather than a bare flag because the two ends answer different
+    /// questions: "has the handler finished?" is about the task, and "is the
+    /// tail empty?" is about the buffer. A single flag can express only one of
+    /// them, and picking the wrong one closes the stream at exactly the moment
+    /// the other still matters.
+    until: Until,
+}
+
+impl<T: FramePayload> Stream for FinishingStream<T> {
+    type Item = Result<Bytes, StreamError>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_next(context) {
+            Poll::Ready(Some(frame)) => return Poll::Ready(Some(frame)),
+            Poll::Ready(None) => {
+                this.inner.finish();
+                return Poll::Ready(None);
+            }
+            Poll::Pending => {}
+        }
+
+        // Parked with nothing to write. Whether that is the end depends on
+        // what this stream is waiting for: a drained tail means the handler
+        // published its last frame and returned, but a handler still running
+        // can publish again at any moment — and closing then is exactly the
+        // deadlock above.
+        let ended = match &this.until {
+            Until::Drained => !this.inner.has_pending(),
+            Until::Signalled(finishing) => {
+                let ready = finishing.is_fired() && !this.inner.has_pending();
+                if !ready {
+                    // Park until the handler returns, or until it publishes
+                    // something the inner stream can write.
+                    finishing.inner.subscribe(context.waker());
+                }
+                ready
+            }
+        };
+        if ended {
+            this.inner.finish();
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    }
 }
 
 /// The response-building half of [`Planned`], separated by its bound.
@@ -636,6 +833,46 @@ impl<T> EventStream<T> {
     #[must_use]
     pub const fn is_subscribed(&self) -> bool {
         self.registration.is_some()
+    }
+
+    /// Whether a frame is waiting to be written.
+    ///
+    /// Distinct from "the tail is empty": a frame can be buffered while the
+    /// tail is already spent, which is the state a stream sits in between
+    /// writing one frame and being polled for the next.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        !self.queued.is_empty()
+    }
+
+    /// Ends this stream after whatever it has already written.
+    ///
+    /// Only meaningful for a stream that will not be written to again — a
+    /// `POST`'s. Calling it on a long-lived `GET` stream truncates the
+    /// connection the client is holding open, which is why
+    /// [`Self::finishing_when_drained`] is the only caller and it calls only
+    /// when the tail is spent.
+    fn finish(&mut self) {
+        self.unregister();
+        self.closed = true;
+    }
+
+    /// This stream, ending once the tail is drained.
+    ///
+    /// See [`FinishingStream`] for why a `POST` needs this and a `GET` does not.
+    const fn finishing_when_drained(self) -> FinishingStream<T> {
+        FinishingStream {
+            inner: self,
+            until: Until::Drained,
+        }
+    }
+
+    /// This stream, ending when `finished` is signalled.
+    const fn finishing_on(self, finished: Finishing) -> FinishingStream<T> {
+        FinishingStream {
+            inner: self,
+            until: Until::Signalled(finished),
+        }
     }
 
     /// Removes this stream's registration, if it has one.
@@ -876,9 +1113,9 @@ where
 /// # Errors
 ///
 /// [`StreamError::Response`] if the response headers cannot be assembled.
-fn stream_response<T>(stream: EventStream<T>) -> Result<Response, StreamError>
+fn stream_response<S>(stream: S) -> Result<Response, StreamError>
 where
-    T: FramePayload + Send + 'static,
+    S: Stream<Item = Result<Bytes, StreamError>> + Send + 'static,
 {
     // Three headers, and each is load-bearing in a way that is invisible from
     // the frame encoder:

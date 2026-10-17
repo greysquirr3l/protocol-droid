@@ -91,7 +91,7 @@ use thiserror::Error;
 
 use crate::application::session::{Clock, IdSource};
 use crate::domain::mcp::McpSessionId;
-use crate::domain::session::Instant;
+use crate::domain::session::{Instant, SessionId};
 
 /// The sessions this server currently holds open.
 ///
@@ -240,6 +240,50 @@ impl<S> SessionStore<S> {
     /// [`SessionStoreError::Unavailable`] if the lock is poisoned.
     pub fn open(&self, session: Arc<S>) -> Result<McpSessionId, SessionStoreError> {
         let id = McpSessionId::new(self.ids.next_session_id());
+        self.insert(id, session)?;
+        Ok(id)
+    }
+
+    /// Opens a session under an id the caller has already taken.
+    ///
+    /// Separate from [`Self::open`] because a session's *peer* has to know its
+    /// own id before it is inserted — the peer is part of the value being
+    /// inserted, and everything the peer keys on (idempotency, in-flight
+    /// requests) reads the id from inside it. A store that allocated the id on
+    /// the way in could only hand the peer that id afterwards, by which point
+    /// the peer has already been constructed with the wrong one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`]: [`SessionStoreError::DuplicateId`] if the id is
+    /// already held, [`SessionStoreError::Unavailable`] if the lock is poisoned.
+    pub fn open_with_id(
+        &self,
+        session: Arc<S>,
+        id: SessionId,
+    ) -> Result<McpSessionId, SessionStoreError> {
+        let id = McpSessionId::new(id);
+        self.insert(id, session)?;
+        Ok(id)
+    }
+
+    /// The next id this store would hand out.
+    ///
+    /// For a caller that must build a session *around* a known id before it
+    /// can hand that session to [`Self::open_with_id`]. The contract is the
+    /// same as the one `open` relies on: a source that repeats an id is caught
+    /// by the duplicate check there, so reading an id early is safe even
+    /// though nothing reserves it in the meantime.
+    ///
+    /// Two callers racing here get two different ids and both open; the loser
+    /// is refused by the duplicate check, which is the answer for a source that
+    /// repeats one.
+    pub fn next_id(&self) -> SessionId {
+        self.ids.next_session_id()
+    }
+
+    /// Inserts a session under an id already wrapped as a header id.
+    fn insert(&self, id: McpSessionId, session: Arc<S>) -> Result<(), SessionStoreError> {
         // The guard is scoped to the block so it is released before the
         // `Ok`, not at the end of the function: a caller that has just opened a
         // session should not still be holding the lock by the time it starts
@@ -255,7 +299,7 @@ impl<S> SessionStore<S> {
             sessions.insert(id, session);
         }
         self.record_touched(id)?;
-        Ok(id)
+        Ok(())
     }
 
     /// The session under `id`, if this server still has it.
