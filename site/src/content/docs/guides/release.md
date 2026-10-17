@@ -48,8 +48,14 @@ two-change re-enable path is documented at the top of
 each crate in dependency order:
 
 ```text
-protocol-droid-schema → protocol-droid → protocol-droid-macros → protocol-droid-cli
+protocol-droid-schema → protocol-droid-macros → protocol-droid → protocol-droid-cli
 ```
+
+The order is the dependency graph, not the directory listing.
+`protocol-droid` depends on both the schema and the macros, so both have to be
+on the registry first; the CLI depends on the library. Publishing the macros
+after the library fails, because crates.io cannot resolve a dependency that does
+not exist yet.
 
 A failed dry-run is a failed release: a manifest typo, a
 missing path dep, a `rust-version` that is not the

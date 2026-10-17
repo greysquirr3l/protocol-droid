@@ -120,7 +120,11 @@ acp-experimental = [
 # optional: the capability's requirement is that reads are lock-free, and an
 # `RwLock` would make `tools/list` contend with a publish.
 arc-swap = { workspace = true }
-protocol-droid-macros = { version = "0.1.0", path = "../protocol-droid-macros" }
+# `version` inherits from [workspace.package] like every other sibling dep. It
+# used to be hardcoded at "0.1.0", which is how a workspace version bump
+# becomes a build failure here instead of a version bump — the pin has to be
+# the one place that changes, or it is the one place that stops you changing it.
+protocol-droid-macros = { workspace = true }
 protocol-droid-schema = { workspace = true }
 schemars = "1.2.2"
 serde = { workspace = true }

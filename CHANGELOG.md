@@ -9,9 +9,19 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
-Five commits past the `v0.1.0` tag. All five close gaps on the path a
-consuming project takes: what a tool can answer with, what a server can serve,
-and who the server thinks is calling.
+Nothing yet.
+
+## [0.2.0] — 2026-10-17
+
+A minor bump, not a patch: `ServerBuilder::resource` and `::prompt` are renamed
+to `resource_with` / `prompt_with`, and a bare `#[resource]` is now a compile
+error. That breaks source for anyone who registered a listing-only resource,
+so under semver it is `0.2.x` rather than `0.1.x`. All four crates ship at the
+same version.
+
+The five commits below are the whole of the delta since `v0.1.0`, and all of
+them close gaps on the path a consuming project takes: what a tool can answer
+with, what a server can serve, and who the server thinks is calling.
 
 ### Added
 
@@ -51,6 +61,21 @@ and who the server thinks is calling.
   #[resource(reader = serve_it)]   // a reader must be named
   ```
 
+  **Migrating from 0.1.x.** `ServerBuilder::resource` and `::prompt` become
+  `resource_with` and `prompt_with`, taking the handler as a second argument:
+
+  ```rust
+  // 0.1.x
+  Server::builder("app").build().resource(my_resource);
+  // 0.2.0
+  Server::builder("app").build().resource_with(my_resource, serve_it);
+  ```
+
+  The methods are renamed rather than the old pair deprecated, so the compiler
+  names the replacement instead of leaving a listing that still does not serve.
+  `resources/read` and `prompts/get` did not work in 0.1.x at all — the
+  dispatcher answered `UnknownMethod` — so nothing that worked stops working.
+
   The reader is named rather than inferred from a convention: a convention works
   until a resource's contents are read by a helper three impls away, and then it
   registers the wrong method or silently registers nothing — both surface to a
@@ -58,6 +83,23 @@ and who the server thinks is calling.
   pin each error message.
 
 ### Fixed
+
+- **The release workflow published crates in the wrong order.** The loop read
+  `schema → protocol-droid → macros → cli`, but `protocol-droid` depends on
+  `protocol-droid-macros`, so crates.io cannot resolve it until the macros
+  crate is published. Publishing the macros *last* makes the library's own
+  `cargo publish` fail with `no matching package named
+  \`protocol-droid-macros\` found`. Both the dry-run and the real publish loop
+  now order by the dependency graph: `schema → macros → protocol-droid → cli`.
+  The same wrong order was documented in the release guide and is fixed there
+  too. This would have failed at tag time, on the first real release, with
+  nothing in CI to have caught it.
+- **The library no longer hardcodes its sibling versions.** `protocol-droid`
+  depended on `protocol-droid-macros` with a literal `version = "0.1.0"`, so
+  bumping `[workspace.package]` produced a build failure rather than a version
+  bump. The macro crate is now a proper `[workspace.dependencies]` entry and
+  inherits, which means one list to bump instead of a pin that silently
+  disagrees with it.
 
 - **A handler now sees the authenticated principal on every transport**
   (`6a81010`, `2f91316`). `PeerSession` documented `with_auth` as the way a

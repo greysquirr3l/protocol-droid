@@ -43,7 +43,12 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+# 0.2.0, not 0.1.1: `ServerBuilder::resource` and `::prompt` are renamed to
+# `resource_with` / `prompt_with` (a bare `#[resource]` is now a compile error),
+# which breaks source for anyone who registered a listing-only resource. Under
+# semver a breaking change from 0.1.x is 0.2.x. Every member inherits this, so
+# the four crates always ship at the same version.
+version = "0.2.0"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -70,9 +75,13 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # Crate versions are collected here so a member only names the dependencies it
 # actually uses. The `version` fields on the internal path dependencies must be
 # bumped in lockstep with `version` above: Cargo does not interpolate
-# `version.workspace = true` inside [workspace.dependencies].
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.1.0" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.1.0" }
+# `version.workspace = true` inside [workspace.dependencies]. That is why the
+# macros entry exists rather than the library naming `../protocol-droid-macros`
+# directly — one list to bump, and `cargo` cannot resolve a workspace
+# dependency for a crate the workspace forgot to declare.
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.2.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.2.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.2.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

@@ -4,6 +4,12 @@
   <img src="https://raw.githubusercontent.com/greysquirr3l/protocol-droid/main/assets/img/protocol-droid.svg" alt="protocol-droid" width="180">
 </p>
 
+[![crates.io](https://img.shields.io/crates/v/protocol-droid.svg)](https://crates.io/crates/protocol-droid)
+[![docs.rs](https://img.shields.io/docsrs/protocol-droid.svg)](https://docs.rs/protocol-droid)
+[![CI](https://github.com/greysquirr3l/protocol-droid/actions/workflows/ci.yml/badge.svg)](https://github.com/greysquirr3l/protocol-droid/actions/workflows/ci.yml)
+[![Conformance](https://github.com/greysquirr3l/protocol-droid/actions/workflows/conformance.yml/badge.svg)](https://github.com/greysquirr3l/protocol-droid/actions/workflows/conformance.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.98-blue.svg)](rust-toolchain.toml)
+
 A Rust toolkit for the [Model Context Protocol](https://modelcontextprotocol.io)
 that speaks **every** published spec revision — `2024-11-05`, `2025-03-26`,
 `2025-06-18`, `2025-11-25`, `2026-07-28`, and the floating `draft` — in a
@@ -38,49 +44,55 @@ Three ideas set it apart:
    (`2024-11-05`), Streamable HTTP (stateful), and the `2026-07-28` stateless
    lifecycle — each with both a server and a client half. The CLI on top is
    being built to a Swiss-army knife; today it has `bridge`, `probe`,
-   `inspect`, `record`, `replay`, and `conformance` (see [Status](#status)).
+   `inspect`, `record`, `replay`, and `conformance`.
 
-## Status
+## Installing
 
-Twenty-six of twenty-nine tasks are complete, with three in flight.
-Preflight is green at **2,343 tests** across the workspace
-(`cargo test --workspace --all-features`).
+```toml
+[dependencies]
+protocol-droid = "0.2"
+```
 
-| Done        | What it built                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------- |
-| T01–T03     | Workspace, vendored schemas at pinned commits, per-revision wire types generated at build time          |
-| T04–T06     | `ProtocolVersion`, the 37-feature catalogue, `FeatureProfile` resolution, negotiation as pure functions |
-| T07–T08     | The canonical IR, and six lift/lower codecs with `DegradePolicy` and `TranslationReport`                |
-| T09–T12     | Single-pass JSON-RPC router, session engine, lock-free dynamic registry, `#[server]`/`#[tool]` macros   |
-| T13–T15     | stdio, Streamable HTTP, stateless HTTP, and legacy HTTP+SSE — server **and** client halves              |
-| T16         | OAuth 2.1: resource server, PKCE client, RFC 7591 + CIMD registration, RFC 7662 introspection, JWT/JWKS |
-| T17         | HTTP hardening: `Origin`/DNS-rebinding, rate limiting, request deadline, concurrency ceiling            |
-| T18, T21, T22, T24, T25 | The version-translating `bridge` serving loop; the official conformance suite (`conformance self/server/client`); differential interop vs `rmcp` and the TypeScript SDK across four revisions; security audit (no exploitable findings, `SECURITY-REVIEW.md` committed); wiring stub audit |
-| T19         | `probe` and `inspect` — the operator-side fingerprinter and the typed JSON-RPC inspector              |
-| T20         | `record` and `replay` — capture a session's frames to a `.jsonl` and replay them with version downgrade |
-| T27         | A2A v1.0 — full server + client + `a2a_*_wire` end-to-end tests against a vanilla-Node reference         |
-| T28         | `bridge_a2a` — the MCP ↔ A2A cross-protocol bridge, sharing the same `bridge` loop the MCP bridge uses  |
-| T29         | ACP v1.25.0 — typed `AcpStdioPeer` plus a vanilla-Node reference agent for interop coverage            |
+The default build is `serde` + `stdio`, which is enough to *serve* over stdio
+and to speak every protocol revision. Everything else is a feature, because a
+consumer that links this as a library should not pay for a server it never
+starts:
 
-**In progress.** T23 (perf + fuzz baselines committed; the
-comparative bench against `rmcp` is the one open piece), T26
-(docs site **live** at [greysquirr3l.github.io/protocol-droid](https://greysquirr3l.github.io/protocol-droid/);
-the automated crates.io publish stays deliberately disabled so
-a human reviews the push), and the conformance work — the
-suite runs end-to-end now, but the per-scenario pass rate is
-below the MCP target on three revisions (`2025-06-18`,
-`2025-11-25`, `2026-07-28`), and closing the gaps is the last
-gate before MVP sign-off. The root-cause analysis and the
-six-step order of operations for closing the matrix are in
-[`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
+| Feature         | What it turns on                                                       |
+| --------------- | ---------------------------------------------------------------------- |
+| `stdio`         | The stdio transport, server and client. **On by default**               |
+| `http`          | Streamable HTTP plus the `2026-07-28` stateless lifecycle              |
+| `legacy-sse`    | The deprecated `2024-11-05` HTTP+SSE transport. Implies `http`         |
+| `oauth`         | The OAuth 2.1 resource server and PKCE client. Implies `http`          |
+| `a2a`           | The A2A v1.0 server, client, and cross-protocol bridge                  |
+| `acp-experimental` | Zed's ACP v1.25.0. Pre-1.0, so it carries no semver guarantee         |
+| `random-ids`    | CSPRNG session ids instead of a counter                                |
 
-**Not started.** Nothing the strategy document named. Anything that
-lands after MVP sign-off (post-MVP A2A work, additional cross-protocol
-bridges, third-party protocol modules) is a separate workstream, not
-a deferred Phase 1 task.
+A `simd` envelope parser is described in the manifest but is not yet wired to a
+feature — it exists so the two decoders can be benchmarked rather than argued
+about, and it will not appear here until it does.
 
-The three ideas above describe the finished design. Where the code does not yet
-match the design, the architecture document says so rather than rounding up.
+A lean build — the IR, every codec, every wire type, and no executor at all:
+
+```toml
+protocol-droid = { version = "0.2", default-features = false, features = ["serde"] }
+```
+
+`default-features = false` drops the executor, the transport adapters, and the
+diagnostics channel with it. What it never drops is a spec revision: the schema
+types for all six are data, not features, so `--no-default-features` is a
+smaller binary and never a smaller protocol surface.
+
+The CLI is a separate crate, so it installs on its own:
+
+```bash
+cargo install protocol-droid-cli
+```
+
+It versions in lockstep with the library rather than independently — the four
+crates are published from one workspace and share a version, which is what
+makes `cargo install protocol-droid-cli` pull a `protocol-droid` that matches
+what its `bridge` subcommand was built against.
 
 ## Using it
 
@@ -296,6 +308,28 @@ test (windows-latest, all-features)         test (windows-latest, no-default-fea
 
 Renaming a CI job means updating this file in the same commit, or `main` becomes
 unmergeable on a context that will never report.
+
+## Project status
+
+The crate is at **0.2.0** and has not been published to crates.io yet; the
+automated publish is deliberately disabled pending a release-environment review
+gate (see [Releasing](#releasing)). The four crates version together, so
+`protocol-droid = "0.2"` pulls a matching `protocol-droid-schema`,
+`protocol-droid-macros`, and `protocol-droid-cli`.
+
+Preflight is green: **2,370 tests** across the workspace
+(`cargo test --workspace --all-features`), plus `cargo l` and
+`cargo deny --all-features check`.
+
+**Conformance is not complete.** The official
+[`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance)
+suite runs end-to-end against a reference server across four revisions, and
+`tools-call-error` currently fails on `2025-06-18`, `2025-11-25`, and
+`2026-07-28`. The cause is a fixture gap rather than a codec defect — the
+scenarios call for tools and prompts the reference server does not yet register,
+while the codecs and the session engine round-trip every wire shape the suite
+checks. The root-cause analysis and the six-step order of operations for closing
+the matrix are in [`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
 
 ## Releasing
 
