@@ -179,8 +179,56 @@ impl Dispatcher {
             }
             "prompts/list" => self.list(ctx, PrimitiveKind::Prompt, "prompts"),
             "tools/call" => self.call_tool(ctx, params).await,
+            "resources/read" => self.read_resource(ctx, params).await,
+            "prompts/get" => self.get_prompt(ctx, params).await,
             _ => Err(DispatchError::UnknownMethod),
         }
+    }
+
+    /// Serves `resources/read`.
+    ///
+    /// Not idempotency-keyed, unlike `tools/call`. A read has no side effect
+    /// the peer can observe, so a retried read costs another read and nothing
+    /// else — while a key would make two legitimate concurrent reads of the
+    /// same URI collide into `DuplicateInFlight`, which is exactly wrong for a
+    /// request whose whole purpose is to be repeatable.
+    async fn read_resource(
+        &self,
+        ctx: &RequestContext,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        Self::require(ctx, Feature::Resources)?;
+        let uri = string_param(params, "uri")?;
+        let reader = self
+            .server
+            .reader(&uri)
+            .ok_or(DispatchError::UnknownResource)?;
+        reader(ctx.clone(), &uri).await
+    }
+
+    /// Serves `prompts/get`.
+    ///
+    /// Also not idempotency-keyed, for the same reason as `read_resource`: a
+    /// prompt getter produces a message list, and running it twice produces the
+    /// same list twice at no cost to anybody.
+    async fn get_prompt(
+        &self,
+        ctx: &RequestContext,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        Self::require(ctx, Feature::Prompts)?;
+        let name = string_param(params, "name")?;
+        let arguments = match parsed_param(params, "arguments")? {
+            None | Some(serde_json::Value::Null) => JsonObject::default(),
+            Some(arguments) => {
+                JsonObject::from_value(arguments).map_err(|_| DispatchError::MalformedParams)?
+            }
+        };
+        let getter = self
+            .server
+            .getter(&name)
+            .ok_or(DispatchError::UnknownPrompt)?;
+        getter(ctx.clone(), &arguments).await
     }
 
     /// Answers the handshake: this server, the revision it speaks, and what it
@@ -420,6 +468,28 @@ fn split_call_params(params: &JsonObject) -> Result<(String, JsonObject), Dispat
     };
 
     Ok((name, arguments))
+}
+
+/// The string member `key` of a params object.
+fn string_param(params: &JsonObject, key: &str) -> Result<String, DispatchError> {
+    parsed_param(params, key)?
+        .and_then(|value| value.as_str().map(str::to_string))
+        .ok_or(DispatchError::MalformedParams)
+}
+
+/// One member of a params object, already parsed.
+///
+/// `None` for an absent member as well as `null`, because both mean the same
+/// thing to every caller here and the specification's params are optional
+/// throughout. A non-object params document is malformed either way.
+fn parsed_param(
+    params: &JsonObject,
+    key: &str,
+) -> Result<Option<serde_json::Value>, DispatchError> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(params.as_str()).map_err(|_| DispatchError::MalformedParams)?;
+    let object = parsed.as_object().ok_or(DispatchError::MalformedParams)?;
+    Ok(object.get(key).cloned())
 }
 
 /// Wraps a listing's visible entries under `key`.

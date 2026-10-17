@@ -51,6 +51,8 @@ mod features;
 mod json;
 pub mod lower;
 mod message;
+mod prompt;
+mod resource;
 mod tool;
 
 mod envelope;
@@ -65,6 +67,8 @@ pub use extensions::{ExtensionValue, Extensions};
 pub use features::FeatureSet;
 pub use json::{JsonObject, JsonObjectError};
 pub use lower::{DegradeRule, Loss, LowerError, Lowering, TranslationReport, TranslationStep};
+pub use prompt::{GetPromptResult, PromptMessage};
+pub use resource::{ResourceBody, ResourceContents};
 pub use message::{
     IrError, IrErrorCode, IrMessage, IrNotification, IrParams, IrRequest, IrResult, MethodName,
     MethodNameError,

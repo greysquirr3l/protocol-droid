@@ -46,6 +46,35 @@ pub type ToolHandler = Arc<dyn Fn(RequestContext, JsonObject) -> BoxFuture + Sen
 /// call site is how one of them ends up without the `Send`.
 pub type BoxFuture = std::pin::Pin<Box<dyn Future<Output = JsonObject> + Send>>;
 
+/// The future a [`ResourceHandler`] or [`PromptHandler`] returns.
+///
+/// Fallsible where [`BoxFuture`] is not, because a read is allowed to fail for
+/// a reason the peer should see as a refusal: a resource whose backing store
+/// is unreachable is not an empty resource.
+pub type BoxReadFuture =
+    std::pin::Pin<Box<dyn Future<Output = Result<JsonObject, DispatchError>> + Send>>;
+
+/// Serves one `resources/read`, given the URI the peer asked for.
+///
+/// Takes the URI rather than closing over it, because the URI is the request.
+/// A handler that closed over its own registration would have to be one per
+/// resource, and the point of the lookup table is that the dispatcher finds the
+/// right one from the request the peer actually sent.
+///
+/// The lifetime is higher-ranked, so a caller may pass a borrow of any
+/// lifetime rather than having to own the URI for as long as the handler lives.
+pub type ResourceHandler =
+    Arc<dyn for<'uri> Fn(RequestContext, &'uri str) -> BoxReadFuture + Send + Sync>;
+
+/// Serves one `prompts/get`, given the `arguments` the peer sent.
+///
+/// Takes the whole argument object rather than a decoded one: prompt arguments
+/// are free-form by revision — a template like `{diff}` or `{focus}` is the
+/// specification's own idiom — so there is no fixed struct to decode into
+/// without turning a user's template into this crate's invention.
+pub type PromptHandler =
+    Arc<dyn for<'args> Fn(RequestContext, &'args JsonObject) -> BoxReadFuture + Send + Sync>;
+
 /// A tool: what it is, and how to run it.
 ///
 /// Handwritten `Debug` rather than derived, for the same reason the session
@@ -118,6 +147,10 @@ pub struct Server {
     version: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
+    /// Resources with their readers, in registration order.
+    resource_reads: Vec<(PrimitiveId, ResourceHandler)>,
+    /// Prompts with their getters, in registration order.
+    prompt_gets: Vec<(PrimitiveId, PromptHandler)>,
     /// Deduplicates `tools/call` by request.
     ///
     /// A trait object rather than a concrete store because a caller serving
@@ -260,6 +293,8 @@ impl Server {
             version: env!("CARGO_PKG_VERSION").to_string(),
             registry: RegistryStore::new(),
             tools: Vec::new(),
+            resource_reads: Vec::new(),
+            prompt_gets: Vec::new(),
             idempotency: None,
             state: Vec::new(),
         }
@@ -355,6 +390,29 @@ impl Server {
             .map(|entry| &entry.handler)
     }
 
+    /// The reader for `uri`, if one is registered.
+    ///
+    /// `None` for a resource that is listed but has no reader, which is a
+    /// state [`ServerBuilder::resource`] cannot produce — registration takes
+    /// both together — and which therefore means the URI is simply not this
+    /// server's.
+    pub fn reader(&self, uri: &str) -> Option<&ResourceHandler> {
+        self.resource_reads
+            .iter()
+            .find(|(registered, _)| registered.as_str() == uri)
+            .map(|(_, handler)| handler)
+    }
+
+    /// The getter for `name`, if one is registered.
+    ///
+    /// `None` under the same reasoning as [`reader`](Self::reader).
+    pub fn getter(&self, name: &str) -> Option<&PromptHandler> {
+        self.prompt_gets
+            .iter()
+            .find(|(registered, _)| registered.as_str() == name)
+            .map(|(_, handler)| handler)
+    }
+
     /// Finds `name` and runs it.
     ///
     /// The lookup and the call together rather than a `handler()` the caller
@@ -438,6 +496,26 @@ pub enum DispatchError {
     /// and there is no tool to say anything about.
     #[error("no such method")]
     UnknownMethod,
+    /// No resource of that URI is registered, or it is listed without a
+    /// reader.
+    ///
+    /// Two causes share one answer because a peer cannot tell them apart: a
+    /// listing is a promise, so a resource that appears in `resources/list`
+    /// and then refuses to be read is the same failure as one that was never
+    /// there, and naming which of the two happened tells the peer nothing it
+    /// can act on.
+    #[error("no such resource")]
+    UnknownResource,
+    /// No prompt of that name is registered, or it is listed without a getter.
+    #[error("no such prompt")]
+    UnknownPrompt,
+    /// A registered reader or getter refused, naming why.
+    ///
+    /// Carries the handler's own message rather than a category, because the
+    /// peer is a client and the only thing it can do with a category is show it
+    /// to a user who would rather read what went wrong.
+    #[error("the handler refused: {0}")]
+    HandlerFailed(String),
 
     /// `tools/call` params were not the shape a call has to be: not an object,
     /// no string `name`, or an `arguments` that is not an object.
@@ -539,6 +617,12 @@ impl DispatchError {
             Self::MalformedParams | Self::MalformedInitialize | Self::UnknownTool => {
                 IrErrorCode::InvalidParams
             }
+            // A URI or a prompt name that is not registered is the same
+            // failure as a tool name that is not, and answers the same way. The
+            // specification is explicit that an unknown tool is reported as an
+            // error rather than an empty result, and a client cannot act on a
+            // distinction between "no such thing" and "this thing is empty".
+            Self::UnknownResource | Self::UnknownPrompt => IrErrorCode::InvalidParams,
             // A request that names an id this session is already working on is
             // a frame that violates JSON-RPC, so it takes the code for a frame
             // the specification does not permit — not the code for a tool it
@@ -551,6 +635,12 @@ impl DispatchError {
             Self::NotCallable | Self::UnnegotiableVersion | Self::IdempotencyUnavailable(_) => {
                 IrErrorCode::InternalError
             }
+            // A handler that refused is this server's problem whatever the peer
+            // sent. The peer asked for a resource or a prompt, named it
+            // correctly, and the answer is that the backing store is
+            // unreachable — reporting that as the caller's fault would send a
+            // client hunting in its own request for something it got right.
+            Self::HandlerFailed(_) => IrErrorCode::InternalError,
         }
     }
 
@@ -563,6 +653,19 @@ impl DispatchError {
     #[must_use]
     pub fn as_wire(&self) -> (IrErrorCode, String) {
         (self.jsonrpc_code(), self.to_string())
+    }
+}
+
+impl From<crate::application::server::result::OutcomeError> for DispatchError {
+    /// A reader or getter that could not produce a document failed.
+    ///
+    /// Every variant becomes [`DispatchError::HandlerFailed`] carrying the
+    /// outcome's own message. None of them is a bad request — the peer named a
+    /// resource or a prompt that exists and sent well-formed params — so
+    /// reporting any of them as `InvalidParams` would send a client looking in
+    /// its own request for something it got right.
+    fn from(error: crate::application::server::result::OutcomeError) -> Self {
+        Self::HandlerFailed(error.to_string())
     }
 }
 
@@ -579,6 +682,14 @@ pub struct ServerBuilder {
     version: String,
     registry: RegistryStore,
     tools: Vec<ToolEntry>,
+    /// Resources with their readers, in registration order.
+    ///
+    /// A `Vec` rather than a map because a server registers a handful of
+    /// resources and a linear scan over a few entries beats a hash of a
+    /// `PrimitiveId` that has to be computed first.
+    resource_reads: Vec<(PrimitiveId, ResourceHandler)>,
+    /// Prompts with their getters, in registration order.
+    prompt_gets: Vec<(PrimitiveId, PromptHandler)>,
     idempotency: Option<Arc<dyn IdempotencyStore<Result = JsonObject>>>,
     /// The state entries built up through `with_state` calls. Held as a
     /// `Vec<(TypeId, Arc<dyn Any>)>` and re-keyed at build time because
@@ -735,6 +846,18 @@ impl ServerBuilder {
         self
     }
 
+    /// The same as [`resource`](Self::resource), with the reader that answers
+    /// `resources/read` for it.
+    #[must_use]
+    pub fn resource_with(self, resource: Resource, reader: ResourceHandler) -> Self {
+        let mut builder = self;
+        builder.resource_reads.push((resource.uri.clone(), reader));
+        builder
+            .registry
+            .register(Registered::from(Primitive::from(resource)));
+        builder
+    }
+
     /// Adds a resource template.
     ///
     /// Templates are listed by their own method, and they are a distinct
@@ -753,6 +876,18 @@ impl ServerBuilder {
         self.registry
             .register(Registered::from(Primitive::from(prompt)));
         self
+    }
+
+    /// The same as [`prompt`](Self::prompt), with the getter that answers
+    /// `prompts/get` for it.
+    #[must_use]
+    pub fn prompt_with(self, prompt: Prompt, getter: PromptHandler) -> Self {
+        let mut builder = self;
+        builder.prompt_gets.push((prompt.name.clone(), getter));
+        builder
+            .registry
+            .register(Registered::from(Primitive::from(prompt)));
+        builder
     }
 
     /// Finishes the server.
@@ -781,6 +916,8 @@ impl ServerBuilder {
             version: self.version,
             registry: self.registry,
             tools: self.tools,
+            resource_reads: self.resource_reads,
+            prompt_gets: self.prompt_gets,
             idempotency,
             state: Arc::new(
                 self.state
