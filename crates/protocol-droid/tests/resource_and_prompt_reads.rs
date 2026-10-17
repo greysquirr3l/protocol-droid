@@ -7,9 +7,7 @@
 
 use std::sync::Arc;
 
-use protocol_droid::application::server::builder::{
-    BoxReadFuture, PromptHandler, ResourceHandler,
-};
+use protocol_droid::application::server::builder::{BoxReadFuture, PromptHandler, ResourceHandler};
 use protocol_droid::application::server::context::{
     CallbackExchange, ExchangeError, PeerSession, RequestContext,
 };
@@ -17,13 +15,13 @@ use protocol_droid::application::server::read::{prompt_messages, read_contents};
 use protocol_droid::application::server::{DispatchError, Dispatcher, Server};
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
+use protocol_droid::domain::ir::Role;
 use protocol_droid::domain::ir::{
     Content, GetPromptResult, ImageContent, JsonObject, PromptMessage, ResourceContents,
     TextContent,
 };
 use protocol_droid::domain::registry::{AuthContext, Prompt, Resource};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
-use protocol_droid::domain::ir::Role;
 use protocol_droid::domain::{CapabilitySet, ProtocolVersion, RequestId, TransportKind};
 
 struct NoExchange;
@@ -103,12 +101,7 @@ fn context(version: ProtocolVersion, id: &str) -> RequestContext {
         Arc::new(NoSink),
     )
     .with_auth(AuthContext::unrestricted("tester"));
-    RequestContext::for_request(
-        &peer,
-        RequestId::text(id),
-        CancellationToken::new(),
-        None,
-    )
+    RequestContext::for_request(&peer, RequestId::text(id), CancellationToken::new(), None)
 }
 
 /// The answer as a peer would read it.
@@ -186,7 +179,10 @@ async fn a_get_returns_the_prompts_messages() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let document = parsed(&answer)?;
-    match document.get("description").and_then(serde_json::Value::as_str) {
+    match document
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+    {
         Some("asks for something") => {}
         other => return Err(format!("the description was {other:?}")),
     }
@@ -237,8 +233,8 @@ async fn a_prompt_may_carry_an_image_block() -> Result<(), String> {
         Role::User,
         Content::Image(ImageContent::new("aGk=", "image/png")),
     )]);
-    let document =
-        prompt_messages(&result, ProtocolVersion::V2025_06_18).map_err(|error| error.to_string())?;
+    let document = prompt_messages(&result, ProtocolVersion::V2025_06_18)
+        .map_err(|error| error.to_string())?;
 
     let parsed = parsed(&document)?;
     let content = parsed

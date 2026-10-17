@@ -302,8 +302,7 @@ impl Mark {
                 ),
             ));
         }
-        Ok(ReaderShape::Context)
-        .and_then(|shape| {
+        Ok(ReaderShape::Context).and_then(|shape| {
             let syn::ReturnType::Type(_, ty) = &reader.sig.output else {
                 return Err(syn::Error::new_spanned(
                     &reader.sig,
@@ -312,18 +311,20 @@ impl Mark {
             };
             let found = element_segment(ty);
             if found.as_deref() == Some(expected) {
-            Ok(shape)
-        } else {
-            Err(syn::Error::new_spanned(
-                ty,
-                format!(
-                    "a {} named by #[{}] returns a collection of `{expected}`, not `{}`",
-                    self.reader_word(),
-                    self.attribute(),
-                    found.as_deref().unwrap_or("a type that is not a named collection"),
-                ),
-            ))
-        }
+                Ok(shape)
+            } else {
+                Err(syn::Error::new_spanned(
+                    ty,
+                    format!(
+                        "a {} named by #[{}] returns a collection of `{expected}`, not `{}`",
+                        self.reader_word(),
+                        self.attribute(),
+                        found
+                            .as_deref()
+                            .unwrap_or("a type that is not a named collection"),
+                    ),
+                ))
+            }
         })
     }
 
@@ -334,8 +335,6 @@ impl Mark {
             Self::Prompt => "PromptMessage",
         }
     }
-
-
 
     /// What a reader is called, in prose.
     pub(crate) const fn reader_word(self) -> &'static str {
@@ -356,7 +355,11 @@ impl Mark {
         let attribute = self.attribute();
         let keyword = self.reader_keyword();
         // One attribute per method, so this is a search rather than a loop.
-        if let Some(attr) = method.attrs.iter().find(|attr| crate::is_attr(attr, attribute)) {
+        if let Some(attr) = method
+            .attrs
+            .iter()
+            .find(|attr| crate::is_attr(attr, attribute))
+        {
             // `#[resource]` with no parentheses is a bare path attribute and
             // has nothing for `parse_args_with` to read. Treating that as a
             // parse failure would make the unmarked spelling a compile error,
@@ -413,7 +416,6 @@ impl Mark {
         Ok(None)
     }
 
-
     /// What the reader is called, as a noun, for prose.
     pub(crate) const fn reader_noun(self) -> &'static str {
         match self {
@@ -448,17 +450,14 @@ fn element_segment(ty: &syn::Type) -> Option<String> {
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return Some(segment.ident.to_string());
     };
-    arguments
-        .args
-        .iter()
-        .find_map(|argument| match argument {
-            syn::GenericArgument::Type(syn::Type::Path(inner_path)) => inner_path
-                .path
-                .segments
-                .last()
-                .map(|last| last.ident.to_string()),
-            _ => None,
-        })
+    arguments.args.iter().find_map(|argument| match argument {
+        syn::GenericArgument::Type(syn::Type::Path(inner_path)) => inner_path
+            .path
+            .segments
+            .last()
+            .map(|last| last.ident.to_string()),
+        _ => None,
+    })
 }
 
 /// Lowercases a type name's first letter, for prose.

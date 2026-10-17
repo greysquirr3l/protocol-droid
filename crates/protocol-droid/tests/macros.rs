@@ -40,8 +40,8 @@ use protocol_droid::application::server::context::{
 use protocol_droid::application::server::{Dispatcher, Server};
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
-use protocol_droid::domain::ir::{JsonObject, PromptMessage, ResourceContents, Role, TextContent};
 use protocol_droid::domain::ir::{Content, ImageContent, ToolResult};
+use protocol_droid::domain::ir::{JsonObject, PromptMessage, ResourceContents, Role, TextContent};
 use protocol_droid::domain::registry::{AuthContext, Prompt, PromptArgument, Resource};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
 use protocol_droid::domain::{CapabilitySet, ProtocolVersion, RequestId, TransportKind};
@@ -227,10 +227,7 @@ impl Other {
     }
 
     /// The other review, so the second `review` is gettable too.
-    fn get_review(
-        _context: RequestContext,
-        _arguments: &JsonObject,
-    ) -> Vec<PromptMessage> {
+    fn get_review(_context: RequestContext, _arguments: &JsonObject) -> Vec<PromptMessage> {
         vec![PromptMessage::new(
             Role::User,
             Content::Text(TextContent::new("review this")),
@@ -1039,10 +1036,8 @@ impl ContentDemo {
 
 /// The `content` blocks of an answer, read off the wire as a peer would.
 fn blocks(answer: &JsonObject) -> Result<Vec<serde_json::Value>, Failure> {
-    let parsed: serde_json::Value =
-        serde_json::from_str(answer.as_str()).map_err(|error| Failure::from(format!(
-            "the answer is not JSON: {error}"
-        )))?;
+    let parsed: serde_json::Value = serde_json::from_str(answer.as_str())
+        .map_err(|error| Failure::from(format!("the answer is not JSON: {error}")))?;
     parsed
         .get("content")
         .and_then(serde_json::Value::as_array)
@@ -1056,10 +1051,8 @@ fn blocks(answer: &JsonObject) -> Result<Vec<serde_json::Value>, Failure> {
 /// the generated wire types skip it, because `false` is the schema default —
 /// so absence counts as success here.
 fn claims_error(answer: &JsonObject) -> Result<bool, Failure> {
-    let parsed: serde_json::Value =
-        serde_json::from_str(answer.as_str()).map_err(|error| Failure::from(format!(
-            "the answer is not JSON: {error}"
-        )))?;
+    let parsed: serde_json::Value = serde_json::from_str(answer.as_str())
+        .map_err(|error| Failure::from(format!("the answer is not JSON: {error}")))?;
     Ok(matches!(
         parsed.get("isError"),
         Some(serde_json::Value::Bool(true))
@@ -1098,12 +1091,17 @@ async fn a_tool_returning_a_tool_result_reaches_the_wire_as_content() -> Result<
 /// The `Result<ToolResult, E>` spelling reaches the same place, and the error
 /// arm of the `Result` still produces a refusal rather than a document.
 #[tokio::test]
-async fn a_tool_returning_a_result_of_a_tool_result_is_marked_on_request() -> Result<(), TestError> {
+async fn a_tool_returning_a_result_of_a_tool_result_is_marked_on_request() -> Result<(), TestError>
+{
     let server = ContentDemo.into_server()?;
     let dispatcher = dispatcher(server);
 
     let plain = dispatcher
-        .dispatch(&context(), "tools/call", &call("message", r#"{"should_fail": false}"#))
+        .dispatch(
+            &context(),
+            "tools/call",
+            &call("message", r#"{"should_fail": false}"#),
+        )
         .await
         .map_err(|error| Failure::from(format!("message was refused: {error}")))?;
     assert_text(&plain, "hello")?;
@@ -1120,9 +1118,7 @@ async fn a_tool_returning_a_result_of_a_tool_result_is_marked_on_request() -> Re
         .await
         .map_err(|error| Failure::from(format!("message was refused: {error}")))?;
     if !claims_error(&failed)? {
-        return Err(Failure::from(format!(
-            "expected isError, got {failed}"
-        )));
+        return Err(Failure::from(format!("expected isError, got {failed}")));
     }
     Ok(())
 }

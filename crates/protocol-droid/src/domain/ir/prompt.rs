@@ -66,7 +66,6 @@ impl GetPromptResult {
         self.description = Some(description.into());
         self
     }
-
 }
 
 #[cfg(test)]

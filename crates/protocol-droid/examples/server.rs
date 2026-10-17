@@ -128,8 +128,10 @@ impl Scratchpad {
     /// The URI is a parameter rather than a captured value so the reader sees
     /// the URI the peer actually sent.
     fn read_readme(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
-        vec![ResourceContents::text(uri, "# Scratchpad\n\nNotes go in `notes/`.\n")
-            .with_mime_type("text/markdown")]
+        vec![
+            ResourceContents::text(uri, "# Scratchpad\n\nNotes go in `notes/`.\n")
+                .with_mime_type("text/markdown"),
+        ]
     }
 
     /// Builds the digest prompt's messages.
@@ -151,7 +153,9 @@ impl Scratchpad {
             .unwrap_or("yesterday");
         vec![PromptMessage::new(
             Role::User,
-            Content::Text(TextContent::new(format!("Summarise the notes written since {since}."))),
+            Content::Text(TextContent::new(format!(
+                "Summarise the notes written since {since}."
+            ))),
         )]
     }
 }

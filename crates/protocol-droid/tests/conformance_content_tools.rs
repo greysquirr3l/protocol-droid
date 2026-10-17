@@ -196,18 +196,12 @@ fn context(version: ProtocolVersion, id: &str) -> RequestContext {
         Arc::new(NoSink),
     )
     .with_auth(AuthContext::unrestricted("tester"));
-    RequestContext::for_request(
-        &peer,
-        RequestId::text(id),
-        CancellationToken::new(),
-        None,
-    )
+    RequestContext::for_request(&peer, RequestId::text(id), CancellationToken::new(), None)
 }
 
 /// The `tools/call` params for a tool with no arguments.
 fn call(name: &str) -> JsonObject {
-    JsonObject::from_value(serde_json::json!({ "name": name, "arguments": {} }))
-        .unwrap_or_default()
+    JsonObject::from_value(serde_json::json!({ "name": name, "arguments": {} })).unwrap_or_default()
 }
 
 /// The answer as a peer would read it.
@@ -243,7 +237,10 @@ fn block_type(block: &serde_json::Value) -> Result<&str, Failure> {
 /// For assertions about a sequence, where "wrong block" and "no block" both
 /// mean the shape is wrong and the difference does not change the fix.
 fn block_type_or_empty(block: &serde_json::Value) -> &str {
-    block.get("type").and_then(serde_json::Value::as_str).unwrap_or("")
+    block
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
 }
 
 /// Whether an answer claims to be a failure.
@@ -260,14 +257,23 @@ async fn a_simple_text_tool_answers_with_one_text_block() -> Result<(), TestErro
     let version = ProtocolVersion::V2025_06_18;
     let dispatcher = dispatcher(ContentFixture.into_server()?);
     let answer = dispatcher
-        .dispatch(&context(version, "r1"), "tools/call", &call("test_simple_text"))
+        .dispatch(
+            &context(version, "r1"),
+            "tools/call",
+            &call("test_simple_text"),
+        )
         .await?;
 
     let blocks = blocks(&answer)?;
     if blocks.len() != 1 {
-        return Err(Failure::Shape(format!("expected 1 block, got {}", blocks.len())));
+        return Err(Failure::Shape(format!(
+            "expected 1 block, got {}",
+            blocks.len()
+        )));
     }
-    let first = blocks.first().ok_or_else(|| Failure::Shape("no block".to_owned()))?;
+    let first = blocks
+        .first()
+        .ok_or_else(|| Failure::Shape("no block".to_owned()))?;
     if block_type(first)? != "text" {
         return Err(Failure::Shape(format!("the block was {first}")));
     }
@@ -283,11 +289,17 @@ async fn an_image_tool_answers_with_an_image_block() -> Result<(), TestError> {
     let version = ProtocolVersion::V2025_06_18;
     let dispatcher = dispatcher(ContentFixture.into_server()?);
     let answer = dispatcher
-        .dispatch(&context(version, "r1"), "tools/call", &call("test_image_content"))
+        .dispatch(
+            &context(version, "r1"),
+            "tools/call",
+            &call("test_image_content"),
+        )
         .await?;
 
     let blocks = blocks(&answer)?;
-    let first = blocks.first().ok_or_else(|| Failure::Shape("no block".to_owned()))?;
+    let first = blocks
+        .first()
+        .ok_or_else(|| Failure::Shape("no block".to_owned()))?;
     if block_type(first)? != "image" {
         return Err(Failure::Shape(format!("the block was {first}")));
     }
@@ -315,7 +327,9 @@ async fn an_embedded_resource_tool_answers_with_a_resource_block() -> Result<(),
         .await?;
 
     let blocks = blocks(&answer)?;
-    let first = blocks.first().ok_or_else(|| Failure::Shape("no block".to_owned()))?;
+    let first = blocks
+        .first()
+        .ok_or_else(|| Failure::Shape("no block".to_owned()))?;
     if block_type(first)? != "resource" {
         return Err(Failure::Shape(format!("the block was {first}")));
     }
@@ -368,7 +382,9 @@ async fn audio_is_answered_after_its_revision_and_refused_before_it() -> Result<
         )
         .await?;
     let blocks = blocks(&answer)?;
-    let first = blocks.first().ok_or_else(|| Failure::Shape("no block".to_owned()))?;
+    let first = blocks
+        .first()
+        .ok_or_else(|| Failure::Shape("no block".to_owned()))?;
     if block_type(first)? != "audio" {
         return Err(Failure::Shape(format!("the block was {first}")));
     }

@@ -25,15 +25,14 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::adapters::secondary::codec::result::verbatim;
+use crate::application::server::DispatchError;
 use crate::application::server::builder::{BoxReadFuture, PromptHandler, ResourceHandler};
 use crate::application::server::context::RequestContext;
-use crate::application::server::DispatchError;
 use crate::application::server::result::OutcomeError;
-use crate::domain::ir::{
-    Content, GetPromptResult, JsonObject, PromptMessage, ResourceBody, ResourceContents,
-    ToolResult,
-};
 use crate::domain::ProtocolVersion;
+use crate::domain::ir::{
+    Content, GetPromptResult, JsonObject, PromptMessage, ResourceBody, ResourceContents, ToolResult,
+};
 
 /// The `ReadResourceResult` for `contents`.
 ///

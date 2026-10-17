@@ -48,8 +48,8 @@ async fn yield_to_runtime() {
     tokio::task::yield_now().await;
 }
 
-use protocol_droid::application::server::context::RequestContext;
 use protocol_droid::application::server::Server;
+use protocol_droid::application::server::context::RequestContext;
 use protocol_droid::domain::ir::{
     AudioContent, Content, EmbeddedResource, ImageContent, JsonObject, PromptMessage,
     ResourceContents, Role, TextContent, ToolResult,
@@ -297,13 +297,19 @@ impl ConformanceFixture {
     /// over the listing's, so a read is answered for the resource that was
     /// actually asked for.
     fn read_readme(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
-        vec![static_text(uri, "# Reference server\n\nA fixture for the conformance suite.\n")]
+        vec![static_text(
+            uri,
+            "# Reference server\n\nA fixture for the conformance suite.\n",
+        )]
     }
 
     /// Serves the changelog, which is a second body so the two reads do not
     /// return identical bytes.
     fn read_changelog(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
-        vec![static_text(uri, "# Changelog\n\n## 0.1.0\n\n- First release.\n")]
+        vec![static_text(
+            uri,
+            "# Changelog\n\n## 0.1.0\n\n- First release.\n",
+        )]
     }
 
     /// Builds the review prompt's messages.
@@ -311,9 +317,7 @@ impl ConformanceFixture {
     /// The `diff` argument is required by the prompt's schema above, so its
     /// absence here is a peer's error rather than something to paper over:
     /// the message says which argument is missing and names it.
-    fn get_review(_context: RequestContext,
-        arguments: &JsonObject,
-    ) -> Vec<PromptMessage> {
+    fn get_review(_context: RequestContext, arguments: &JsonObject) -> Vec<PromptMessage> {
         let focus = string_argument(arguments, "focus");
         vec![PromptMessage::new(
             Role::User,
@@ -325,9 +329,7 @@ impl ConformanceFixture {
     }
 
     /// Builds the summarize prompt's messages, which take no arguments.
-    fn get_summarize(_context: RequestContext,
-        _arguments: &JsonObject,
-    ) -> Vec<PromptMessage> {
+    fn get_summarize(_context: RequestContext, _arguments: &JsonObject) -> Vec<PromptMessage> {
         vec![PromptMessage::new(
             Role::User,
             Content::Text(TextContent::new("Summarize the following.")),

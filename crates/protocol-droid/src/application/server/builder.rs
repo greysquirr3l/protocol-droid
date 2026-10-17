@@ -67,8 +67,7 @@ pub type BoxReadFuture =
 /// with a lifetime error aimed at the `#[server]` attribute. The dispatcher
 /// already owns the string it parsed out of the request, so this costs one
 /// clone and buys a handler type with no lifetimes in it at all.
-pub type ResourceHandler =
-    Arc<dyn Fn(RequestContext, String) -> BoxReadFuture + Send + Sync>;
+pub type ResourceHandler = Arc<dyn Fn(RequestContext, String) -> BoxReadFuture + Send + Sync>;
 
 /// Serves one `prompts/get`, given the `arguments` the peer sent.
 ///
@@ -77,8 +76,7 @@ pub type ResourceHandler =
 /// specification's own idiom — so there is no fixed struct to decode into
 /// without turning a user's template into this crate's invention.
 /// Owned arguments, for the same reason as [`ResourceHandler`].
-pub type PromptHandler =
-    Arc<dyn Fn(RequestContext, JsonObject) -> BoxReadFuture + Send + Sync>;
+pub type PromptHandler = Arc<dyn Fn(RequestContext, JsonObject) -> BoxReadFuture + Send + Sync>;
 
 /// A tool: what it is, and how to run it.
 ///
