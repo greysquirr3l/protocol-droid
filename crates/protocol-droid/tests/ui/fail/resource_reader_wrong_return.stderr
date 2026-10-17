@@ -1,0 +1,5 @@
+error: a URI named by #[resource] returns a collection of `ResourceContents`, not `String`
+  --> tests/ui/fail/resource_reader_wrong_return.rs:23:10
+   |
+23 |     ) -> Vec<String> {
+   |          ^^^^^^^^^^^

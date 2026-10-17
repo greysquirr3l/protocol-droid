@@ -1,4 +1,4 @@
-error: a #[resource] method is registered as `Self::readme()`, and that call has no receiver to supply one from: take no `self` argument. A primitive that needs state to describe itself belongs in `into_server` itself, or is added through `ServerBuilder::resource` where the value can be passed directly.
+error: a #[resource] method is registered as `Self::readme()`, and that call has no receiver to supply one from: take no `self` argument. A primitive that needs state to describe itself belongs in `into_server` itself, or is added through `ServerBuilder::resource_with` where the value can be passed directly.
   --> tests/ui/fail/resource_receiver.rs:19:15
    |
 19 |     fn readme(&self) -> protocol_droid::domain::registry::Resource {

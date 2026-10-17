@@ -1,0 +1,5 @@
+error: `reader` names one method in this `impl`
+  --> tests/ui/fail/resource_reader_not_a_method.rs:13:41
+   |
+13 |     #[protocol_droid::resource(reader = "read_readme")]
+   |                                         ^^^^^^^^^^^^^

@@ -61,10 +61,14 @@ pub type BoxReadFuture =
 /// resource, and the point of the lookup table is that the dispatcher finds the
 /// right one from the request the peer actually sent.
 ///
-/// The lifetime is higher-ranked, so a caller may pass a borrow of any
-/// lifetime rather than having to own the URI for as long as the handler lives.
+/// Takes the URI by value rather than by reference. A reference would put a
+/// lifetime on the handler type, and a closure whose signature carries one
+/// cannot be inferred as higher-ranked — so the coercion to this type fails
+/// with a lifetime error aimed at the `#[server]` attribute. The dispatcher
+/// already owns the string it parsed out of the request, so this costs one
+/// clone and buys a handler type with no lifetimes in it at all.
 pub type ResourceHandler =
-    Arc<dyn for<'uri> Fn(RequestContext, &'uri str) -> BoxReadFuture + Send + Sync>;
+    Arc<dyn Fn(RequestContext, String) -> BoxReadFuture + Send + Sync>;
 
 /// Serves one `prompts/get`, given the `arguments` the peer sent.
 ///
@@ -72,8 +76,9 @@ pub type ResourceHandler =
 /// are free-form by revision — a template like `{diff}` or `{focus}` is the
 /// specification's own idiom — so there is no fixed struct to decode into
 /// without turning a user's template into this crate's invention.
+/// Owned arguments, for the same reason as [`ResourceHandler`].
 pub type PromptHandler =
-    Arc<dyn for<'args> Fn(RequestContext, &'args JsonObject) -> BoxReadFuture + Send + Sync>;
+    Arc<dyn Fn(RequestContext, JsonObject) -> BoxReadFuture + Send + Sync>;
 
 /// A tool: what it is, and how to run it.
 ///
@@ -834,20 +839,17 @@ impl ServerBuilder {
 
     /// Adds a resource.
     ///
-    /// Publishes to the registry rather than holding a side list, for the same
-    /// reason `tool` does: a resource in a builder field but not in the
-    /// registry is a resource no `resources/list` can name. The field it used
-    /// to live in was dropped by `build`, so a server with resources had a
-    /// builder that looked populated and an always-empty listing.
-    #[must_use]
-    pub fn resource(self, resource: Resource) -> Self {
-        self.registry
-            .register(Registered::from(Primitive::from(resource)));
-        self
-    }
-
-    /// The same as [`resource`](Self::resource), with the reader that answers
-    /// `resources/read` for it.
+    /// Adds a resource together with the reader that answers `resources/read`
+    /// for it.
+    ///
+    /// Both at once, and there is deliberately no `resource(resource)` beside
+    /// it. A resource that is listed by `resources/list` and then refused by
+    /// `resources/read` is a server telling a peer something false, and the
+    /// dispatcher has to answer `InvalidParams` for the read because it has no
+    /// other way to distinguish that from a URI the server never had. Making
+    /// the reader a separate opt-in would put that state one method call away,
+    /// and the failure would surface to a client rather than at the call site
+    /// that built it.
     #[must_use]
     pub fn resource_with(self, resource: Resource, reader: ResourceHandler) -> Self {
         let mut builder = self;
@@ -870,16 +872,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Adds a prompt.
-    #[must_use]
-    pub fn prompt(self, prompt: Prompt) -> Self {
-        self.registry
-            .register(Registered::from(Primitive::from(prompt)));
-        self
-    }
-
-    /// The same as [`prompt`](Self::prompt), with the getter that answers
-    /// `prompts/get` for it.
+    /// Adds a prompt together with the getter that answers `prompts/get` for it.
+    ///
+    /// Required together for the reason [`resource_with`](Self::resource_with)
+    /// takes both.
     #[must_use]
     pub fn prompt_with(self, prompt: Prompt, getter: PromptHandler) -> Self {
         let mut builder = self;

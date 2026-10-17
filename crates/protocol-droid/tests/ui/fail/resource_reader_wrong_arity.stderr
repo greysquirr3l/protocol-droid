@@ -1,0 +1,5 @@
+error: a URI named by #[resource] takes a RequestContext and the request's URI — two arguments. The context is not optional: it carries the caller's identity, and a reader that could not see it would serve every request as whoever opened the connection. This one takes 1.
+  --> tests/ui/fail/resource_reader_wrong_arity.rs:19:5
+   |
+19 |     fn read_readme(_uri: &str) -> Vec<protocol_droid::domain::ir::ResourceContents> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

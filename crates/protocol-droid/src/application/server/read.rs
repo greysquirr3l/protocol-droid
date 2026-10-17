@@ -21,10 +21,17 @@
 //! per-revision codecs answering the same question, and the two would agree
 //! until the next revision added a field to one of them and not the other.
 
+use std::future::Future;
+use std::sync::Arc;
+
 use crate::adapters::secondary::codec::result::verbatim;
+use crate::application::server::builder::{BoxReadFuture, PromptHandler, ResourceHandler};
+use crate::application::server::context::RequestContext;
+use crate::application::server::DispatchError;
 use crate::application::server::result::OutcomeError;
 use crate::domain::ir::{
-    Content, GetPromptResult, JsonObject, ResourceBody, ResourceContents, ToolResult,
+    Content, GetPromptResult, JsonObject, PromptMessage, ResourceBody, ResourceContents,
+    ToolResult,
 };
 use crate::domain::ProtocolVersion;
 
@@ -106,4 +113,106 @@ fn one_block(content: &Content, version: ProtocolVersion) -> Result<JsonObject, 
         .cloned()
         .ok_or_else(|| OutcomeError::Answer("the lowered result carried no block".to_owned()))?;
     JsonObject::from_value(block).map_err(OutcomeError::NotAnObject)
+}
+
+/// Adapts a resource reader into the [`ResourceHandler`] a server stores.
+///
+/// Takes the URI by value rather than by reference. A reference here would put
+/// a lifetime on the bound, and a higher-ranked `for<'uri>` in a `where` clause
+/// also binds the *return* type: an `async fn` returns a different future for
+/// each `'uri`, so no single `Fut` can satisfy it and the bound rejects every
+/// async reader. Owned arguments leave the future type independent of any
+/// lifetime. `#[server]`'s expansion wraps a reference-taking reader into this
+/// shape, so `#[resource]` readers are still written as `fn(&str)`.
+///
+/// The reader takes and returns owned values, so the boxed future is
+/// `'static` and does not borrow the request.
+///
+/// # Examples
+///
+/// ```
+/// use protocol_droid::application::server::builder::ResourceHandler;
+/// use protocol_droid::application::server::context::RequestContext;
+/// use protocol_droid::application::server::read::resource_reader;
+/// use protocol_droid::domain::ir::ResourceContents;
+///
+/// // The context is required rather than optional: it carries who is asking,
+/// // and a reader that could not see it would serve every caller as whoever
+/// // opened the connection.
+/// async fn readme(_context: RequestContext, uri: String) -> Vec<ResourceContents> {
+///     vec![ResourceContents::text(uri, "the body")]
+/// }
+///
+/// let handler: ResourceHandler = resource_reader(readme);
+/// assert!(std::sync::Arc::strong_count(&handler) >= 1);
+/// ```
+pub fn resource_reader<F, Fut>(read: F) -> ResourceHandler
+where
+    F: Fn(RequestContext, String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Vec<ResourceContents>> + Send + 'static,
+{
+    // Shared rather than captured. The handler is `Fn`, so it may be called
+    // more than once, and a future that moved the reader out of the closure
+    // would make the second call impossible. An `Arc` clone is cheap and the
+    // future owns it, which is what lets the boxed future stay `'static`.
+    let read = Arc::new(read);
+    let handler: ResourceHandler = Arc::new(move |context, uri: String| {
+        let read = Arc::clone(&read);
+        Box::pin(async move {
+            let contents = read(context, uri).await;
+            read_contents(&contents).map_err(DispatchError::from)
+        }) as BoxReadFuture
+    });
+    handler
+}
+
+/// Adapts a prompt getter into the [`PromptHandler`] a server stores.
+///
+/// Takes a future, as [`resource_reader`] does. A reader that has nothing to
+/// await is written as a plain `fn` and wrapped by `#[server]`'s expansion;
+/// calling the adapter directly means passing an `async fn`, because wrapping
+/// is the macro's job and doing it here would mean every caller writes it.
+///
+/// The revision the content blocks are spelled for comes from the context, not
+/// from a parameter, because it is the session's answer and not the caller's to
+/// guess.
+///
+/// # Examples
+///
+/// ```
+/// use protocol_droid::application::server::builder::PromptHandler;
+/// use protocol_droid::application::server::context::RequestContext;
+/// use protocol_droid::application::server::read::prompt_getter;
+/// use protocol_droid::domain::ir::{
+///     Content, JsonObject, PromptMessage, Role, TextContent,
+/// };
+///
+/// async fn greeting(_context: RequestContext, _arguments: JsonObject) -> Vec<PromptMessage> {
+///     vec![PromptMessage::new(
+///         Role::User,
+///         Content::Text(TextContent::new("hello")),
+///     )]
+/// }
+///
+/// let handler: PromptHandler = prompt_getter(greeting);
+/// assert!(std::sync::Arc::strong_count(&handler) >= 1);
+/// ```
+pub fn prompt_getter<F, Fut>(get: F) -> PromptHandler
+where
+    F: Fn(RequestContext, JsonObject) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Vec<PromptMessage>> + Send + 'static,
+{
+    let get = Arc::new(get);
+    let handler: PromptHandler = Arc::new(move |context, arguments: JsonObject| {
+        let get = Arc::clone(&get);
+        Box::pin(async move {
+            // Read before the move, because the revision this result is
+            // spelled for comes from the same context the getter consumes.
+            let version = context.peer().negotiated();
+            let messages = get(context, arguments).await;
+            let result = GetPromptResult::new(messages);
+            prompt_messages(&result, version).map_err(DispatchError::from)
+        }) as BoxReadFuture
+    });
+    handler
 }

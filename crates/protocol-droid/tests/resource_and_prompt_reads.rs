@@ -52,9 +52,10 @@ impl FrameSink for NoSink {
 
 /// A reader that answers with one text resource, whatever URI is asked for.
 fn reader() -> ResourceHandler {
-    let handler: ResourceHandler = Arc::new(move |_ctx: RequestContext, uri: &str| {
-        let contents = vec![ResourceContents::text(uri, "the body").with_mime_type("text/plain")];
+    let handler: ResourceHandler = Arc::new(move |_ctx: RequestContext, uri: String| {
         Box::pin(async move {
+            let contents =
+                vec![ResourceContents::text(uri, "the body").with_mime_type("text/plain")];
             read_contents(&contents).map_err(DispatchError::from)
         }) as BoxReadFuture
     });
@@ -63,7 +64,7 @@ fn reader() -> ResourceHandler {
 
 /// A getter that answers with one user message.
 fn getter() -> PromptHandler {
-    let handler: PromptHandler = Arc::new(move |_ctx: RequestContext, _args: &JsonObject| {
+    let handler: PromptHandler = Arc::new(move |_ctx: RequestContext, _args: JsonObject| {
         let result = GetPromptResult::new(vec![PromptMessage::new(
             Role::User,
             Content::Text(TextContent::new("say something")),

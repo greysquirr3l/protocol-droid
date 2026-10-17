@@ -1,0 +1,5 @@
+error: #[resource] takes no arguments, or one `reader = ..` naming the method that serves it
+  --> tests/ui/fail/resource_reader_wrong_keyword.rs:13:32
+   |
+13 |     #[protocol_droid::resource(handler = read_readme)]
+   |                                ^^^^^^^

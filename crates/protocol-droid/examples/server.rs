@@ -38,9 +38,12 @@
 )]
 
 use protocol_droid::application::server::context::RequestContext;
-use protocol_droid::domain::ir::JsonObjectError;
+use protocol_droid::domain::ir::{
+    Content, JsonObject, JsonObjectError, PromptMessage, ResourceContents, Role, TextContent,
+};
 use protocol_droid::domain::registry::{Primitive, PrimitiveKind, Prompt, Resource};
 use protocol_droid::serde::Serialize;
+use protocol_droid::serde_json;
 
 /// What `shout` answers with.
 #[derive(Serialize)]
@@ -93,7 +96,7 @@ impl Scratchpad {
     /// and mime type, so those are set in the body rather than in the
     /// attribute. The body is ordinary Rust, so anything computable — a
     /// config value, a `match` — is available here.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_readme)]
     fn readme() -> Resource {
         Resource {
             description: Some("How the scratchpad is meant to be used.".to_string()),
@@ -107,11 +110,49 @@ impl Scratchpad {
     /// A prompt's arguments are an ordered list with a required flag each, and
     /// a comma-separated attribute list cannot express that without a second
     /// parallel spelling of every name. They are declared in the body instead.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_digest)]
     fn digest() -> Prompt {
         let mut prompt = Prompt::new("digest");
         prompt.description = Some("Summarise the notes written since a date.".to_string());
         prompt.with_argument("since", true)
+    }
+
+    /// Serves the readme's contents.
+    ///
+    /// Named by `reader = ..` on the attribute above rather than inferred, and
+    /// separate from it because the two answer different methods: the listing
+    /// is read by `resources/list`, this by `resources/read`. A reader took
+    /// the URI from the listing it was registered with it would be answering a
+    /// different question from the one the peer asked.
+    ///
+    /// The URI is a parameter rather than a captured value so the reader sees
+    /// the URI the peer actually sent.
+    fn read_readme(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![ResourceContents::text(uri, "# Scratchpad\n\nNotes go in `notes/`.\n")
+            .with_mime_type("text/markdown")]
+    }
+
+    /// Builds the digest prompt's messages.
+    ///
+    /// Takes the arguments the peer sent, so a template can be filled in here
+    /// rather than by the macro guessing which of the prompt's declared
+    /// arguments a given one used.
+    fn get_digest(_context: RequestContext, arguments: &JsonObject) -> Vec<PromptMessage> {
+        // `JsonObject` holds a validated document rather than a map, so a
+        // lookup is a parse. Prompt arguments are read once per request, which
+        // is not a path worth optimising.
+        let parsed: serde_json::Value = match serde_json::from_str(arguments.as_str()) {
+            Ok(parsed) => parsed,
+            Err(_) => return Vec::new(),
+        };
+        let since = parsed
+            .get("since")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("yesterday");
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new(format!("Summarise the notes written since {since}."))),
+        )]
     }
 }
 

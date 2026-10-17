@@ -5,10 +5,29 @@ server-scenarios against [`crates/protocol-droid/examples/conformance_reference_
 through `protocol-droid conformance self`. The matrix
 (pinned suite `0.2.0-alpha.12` × four spec revisions) currently lands
 at the per-revision pass rates below. The row "Suite" is what the
-suite's own tooling reports; "Spec gap" is a count of scenarios that
-expose a missing feature in this crate; "Fixture gap" is a count of
-scenarios that fail because the reference server does not yet
-implement the tool/prompt/resource the scenario calls.
+suite's own tooling reports. "Spec gap" and "Fixture gap" are *derived*
+from the reason each scenario failed, not reported by the suite, and the
+derivation has a known blind spot:
+
+> **A scenario that failed because the method did not exist was counted as
+> a fixture gap.** The suite does not distinguish "this server has no such
+> tool" from "this server does not implement the method at all" — both are a
+> non-2xx reply with a JSON-RPC error. So the "Fixture gap" column is an
+> upper bound and the "Spec gap" column is a lower bound; the two do not sum
+> to the failed total, and they cannot both be right.
+
+That was not hypothetical. Until `2fcb9d6` the dispatcher answered seven
+methods and refused everything else, so `resources/read` and `prompts/get`
+returned `UnknownMethod` — a spec gap — and were counted as fixture gaps,
+because the reference server also had nothing to hand back. Those methods are
+served now, and the reader requirement in `56fb180` means a fixture can no
+longer register a listing it cannot serve, which is what made the two counts
+hard to tell apart in the first place.
+
+**The matrix above predates both commits and has not been re-measured.** The
+suite is not runnable from the environment these changes were made in, so the
+`Spec gap` / `Fixture gap` split still reflects the old failure set. Re-run it
+before trusting either column.
 
 | Revision       | Passed | Failed | Total | Spec gap | Fixture gap |
 | -------------- | -----: | -----: | ----: | -------: | ----------: |
@@ -138,14 +157,23 @@ tool-name-format) are SHOULDs and the suite reports them
 as warnings, not failures — they appear in the "1 passed"
 half of each row and are not on the critical path.
 
-## What this is not
+## What this is not, and what it once claimed to be
 
-This is a fixture problem, not a library problem. The
-codecs and the session engine round-trip every wire shape
-the suite checks; the conformance runner reports "1 passed"
-on every content-shape scenario, which is the leg where
-the wire round-trip succeeded. The "1 failed" leg is
-where the suite asserts the content shape the reference
-server returns, and the reference server is what
-implements that shape. Closing the fixture gap is closing
-the matrix, not closing a real spec bug.
+This was previously written as: *this is a fixture problem, not a library
+problem. The codecs and the session engine round-trip every wire shape the
+suite checks.*
+
+That second sentence was false while it stood, and the falsity is worth
+recording. `resources/read` and `prompts/get` were not round-tripped at all —
+they were refused by the dispatcher before any codec saw them. The "passing
+leg" of a content-shape scenario proved the scenario reached the server and
+got a well-formed error back, not that the crate understood the message. A
+handful of well-formed errors and a handful of well-formed results look
+identical from the suite's side, which is exactly why the counting note at the
+top of this file is in terms of failure *reason* and needs re-measuring.
+
+The narrower claim is the one that holds: the suite's assertion on the
+content-shape scenarios is about what the *reference server* returns, and
+that server is what implements those shapes. Closing the fixture gap closes
+the matrix. It should not be read as evidence that no library gap remains —
+it is evidence that this particular measurement could not see one.

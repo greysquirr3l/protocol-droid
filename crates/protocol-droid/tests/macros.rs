@@ -40,7 +40,7 @@ use protocol_droid::application::server::context::{
 use protocol_droid::application::server::{Dispatcher, Server};
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
-use protocol_droid::domain::ir::JsonObject;
+use protocol_droid::domain::ir::{JsonObject, PromptMessage, ResourceContents, Role, TextContent};
 use protocol_droid::domain::ir::{Content, ImageContent, ToolResult};
 use protocol_droid::domain::registry::{AuthContext, Prompt, PromptArgument, Resource};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
@@ -120,7 +120,7 @@ impl Demo {
     /// A resource, described by the method rather than by the doc comment
     /// above it: a `#[resource]` is a value, and a value carries its own
     /// description, so there is nothing to derive.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_readme)]
     fn readme() -> Resource {
         let mut resource = Resource::new("file:///README.md", "readme");
         resource.description = Some("The project's readme.".to_string());
@@ -128,16 +128,26 @@ impl Demo {
         resource
     }
 
+    /// Serves the readme, by the URI the peer named.
+    fn read_readme(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![ResourceContents::text(uri, "# Readme").with_mime_type("text/markdown")]
+    }
+
     /// A second resource, so "the first one registered" is not a claim the
     /// test can make by looking at one entry.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_licence)]
     fn licence() -> Resource {
         Resource::new("file:///LICENSE", "licence")
     }
 
+    /// Serves the licence, so the second resource is readable as well.
+    fn read_licence(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![ResourceContents::text(uri, "MIT")]
+    }
+
     /// A prompt, with two arguments of differing requiredness, so a
     /// `prompts/list` that flattened them to names — or lost the flag — fails.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_review)]
     fn review() -> Prompt {
         let mut prompt = Prompt::new("review");
         prompt.arguments.push(PromptArgument {
@@ -153,6 +163,25 @@ impl Demo {
             required: false,
         });
         prompt
+    }
+
+    /// Builds the review prompt's messages, reading the optional `focus`.
+    fn get_review(_context: RequestContext, arguments: &JsonObject) -> Vec<PromptMessage> {
+        let focus = serde_json::from_str::<serde_json::Value>(arguments.as_str())
+            .ok()
+            .and_then(|parsed| {
+                parsed
+                    .get("focus")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            });
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new(format!(
+                "Review this diff{}",
+                focus.map_or_else(String::new, |focus| format!(", focusing on {focus}")),
+            ))),
+        )]
     }
 
     /// Not a tool, so the server must leave it out.
@@ -181,15 +210,31 @@ impl Other {
     }
 
     /// Also the same name as `Demo::readme`, and also a resource.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_readme)]
     fn readme() -> Resource {
         Resource::new("file:///other/README.md", "other-readme")
     }
 
     /// Also the same name as `Demo::review`, and also a prompt.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_review)]
     fn review() -> Prompt {
         Prompt::new("other-review")
+    }
+
+    /// The other readme, so the second `readme` is readable too.
+    fn read_readme(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![ResourceContents::text(uri, "# Other")]
+    }
+
+    /// The other review, so the second `review` is gettable too.
+    fn get_review(
+        _context: RequestContext,
+        _arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new("review this")),
+        )]
     }
 }
 

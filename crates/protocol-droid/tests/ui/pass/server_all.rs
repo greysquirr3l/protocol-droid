@@ -36,15 +36,31 @@ impl Kitchen {
     }
 
     /// The project's readme.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_readme)]
     fn readme() -> protocol_droid::domain::registry::Resource {
         protocol_droid::domain::registry::Resource::new("file:///README.md", "readme")
     }
 
     /// Asks for a review of a diff.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_review)]
     fn review() -> protocol_droid::domain::registry::Prompt {
         protocol_droid::domain::registry::Prompt::new("review")
+    }
+
+    /// Serves the readme, by the URI the peer named.
+    fn read_readme(
+        _context: protocol_droid::application::server::context::RequestContext,
+        _uri: &str,
+    ) -> Vec<protocol_droid::domain::ir::ResourceContents> {
+        Vec::new()
+    }
+
+    /// Serves the review prompt's messages.
+    fn get_review(
+        _context: protocol_droid::application::server::context::RequestContext,
+        _arguments: &protocol_droid::domain::ir::JsonObject,
+    ) -> Vec<protocol_droid::domain::ir::PromptMessage> {
+        Vec::new()
     }
 }
 

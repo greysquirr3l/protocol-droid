@@ -12,7 +12,8 @@
 //! owns the function behind an `Arc` because `BoxFuture` is `'static`. All of
 //! that is work, and none of it is work a resource or a prompt needs.
 //!
-//! `ServerBuilder::resource` and `ServerBuilder::prompt` each take one value
+//! `ServerBuilder::resource_with` and `ServerBuilder::prompt_with` each take the
+//! listing and the reader that serves it
 //! and nothing else. So a method marked with either returns that value and is
 //! called once, synchronously, while `into_server` is still building the
 //! server. Which is also why the shape is a plain `fn`: a primitive is
@@ -21,7 +22,7 @@
 //!
 //! # What is generated
 //!
-//! One statement per marked method: `builder = builder.resource(Self::name());`.
+//! One statement per marked method: `builder = builder.resource_with(Self::name(), reader);`.
 //! Nothing is minted at module scope, so unlike `#[tool]` there is no
 //! generated name for `Demo::a` and `Other::a` to collide over — there is no
 //! generated name at all.
@@ -58,11 +59,24 @@ impl Mark {
         }
     }
 
-    /// The `ServerBuilder` method that registers one.
+    /// The `ServerBuilder` method that registers one, when it has no reader.
     pub(crate) const fn builder_method(self) -> &'static str {
         match self {
             Self::Resource => "resource",
             Self::Prompt => "prompt",
+        }
+    }
+
+    /// The `ServerBuilder` method that registers one *and* its reader.
+    ///
+    /// A separate method rather than an optional argument, because a resource
+    /// that is listed but cannot be read is exactly the state the dispatcher
+    /// refuses to serve — and a builder that accepted the listing on its own
+    /// would let that state be built.
+    pub(crate) const fn registers_with(self) -> &'static str {
+        match self {
+            Self::Resource => "resource_with",
+            Self::Prompt => "prompt_with",
         }
     }
 
@@ -99,6 +113,7 @@ impl Mark {
     pub(crate) fn check(self, method: &ImplItemFn) -> syn::Result<()> {
         let attribute = self.attribute();
         let expected = self.returns();
+
         let name = method.sig.ident.clone();
 
         if let Some(asyncness) = &method.sig.asyncness {
@@ -121,7 +136,7 @@ impl Mark {
                      has no receiver to supply one from: take no `self` argument. A primitive \
                      that needs state to describe itself belongs in `into_server` itself, or is \
                      added through `ServerBuilder::{}` where the value can be passed directly.",
-                    self.builder_method()
+                    self.registers_with()
                 ),
             ));
         }
@@ -165,19 +180,285 @@ impl Mark {
     /// is written where the type is in scope. `#[resource]` cannot see it — it
     /// expands inside the `impl` — which is the same blindness `#[tool]`
     /// works around by having `#[server]` pass the path in.
-    pub(crate) fn registration(self, method: &ImplItemFn) -> TokenStream {
+    ///
+    /// `reader` is the method named by `reader = ..` or `getter = ..`, and
+    /// `reader_fn` is that method's signature, needed to decide whether it
+    /// takes a context and whether it has to be awaited.
+    pub(crate) fn registration(
+        self,
+        method: &ImplItemFn,
+        reader: Option<&syn::Ident>,
+        reader_fn: Option<&ImplItemFn>,
+    ) -> syn::Result<TokenStream> {
+        let attribute = self.attribute();
+        let keyword = self.reader_keyword();
+        let expected = self.returns();
+
         // `builder_method` is a `&'static str` because the same name goes
         // into `format!` error messages, where a string is what is wanted.
         // Interpolating it into `quote!` is not: quote renders a `&str` as a
         // *string literal*, so `builder.#registers(..)` expands to
         // `builder."resource"(..)` and rustc rejects it at the `#[server]`
         // span. The name has to become an `Ident` first.
-        let registers = format_ident!("{}", self.builder_method());
         let name = &method.sig.ident;
-        quote! {
-            builder = builder.#registers(Self::#name());
+
+        // A reader is required, not optional. A bare `#[resource]` used to
+        // register the listing alone, which produced a server that advertised a
+        // resource and then answered `InvalidParams` for every read of it — a
+        // promise the peer could see being broken. The error names the fix
+        // rather than emitting a registration that cannot be served.
+        let (Some(reader), Some(reader_fn)) = (reader, reader_fn) else {
+            if let Some(named) = reader {
+                // Distinguished from "no reader named at all": the author wrote
+                // a name, and it is the name that is wrong. Reporting this as a
+                // missing reader sends them to add the argument they already
+                // wrote.
+                return Err(syn::Error::new_spanned(
+                    &method.sig,
+                    format!(
+                        "#[{attribute}] names a {noun} `{named}`, and this `impl` declares no \
+                         method of that name",
+                        noun = self.reader_noun(),
+                    ),
+                ));
+            }
+            return Err(syn::Error::new_spanned(
+                &method.sig,
+                format!(
+                    "#[{attribute}] needs `{keyword} = ..` naming the {} method, as in \
+                     `#[{attribute}({keyword} = serve_it)]` on an `fn serve_it(...) -> \
+                     Vec<{}>`. Registering the listing alone advertises a {expected} to peers who \
+                     cannot then be served one.",
+                    self.reader_word(),
+                    self.reader_returns(),
+                ),
+            ));
+        };
+        let registers = format_ident!("{}", self.registers_with());
+        let _ = self.reader_shape(reader_fn)?;
+
+        // The whole adaptation lives in the library rather than in generated
+        // code. A closure written here would have to be inferred as
+        // higher-ranked, and a closure whose signature carries a lifetime
+        // cannot be — the coercion fails with a lifetime error pointing at the
+        // `#[server]` attribute. A function item satisfies the bound as it
+        // stands, so the expansion stays a call to a named function.
+        let adapter = match self {
+            Self::Resource => {
+                quote! { ::protocol_droid::application::server::read::resource_reader }
+            }
+            Self::Prompt => {
+                quote! { ::protocol_droid::application::server::read::prompt_getter }
+            }
+        };
+
+        // Wrapped unconditionally, and awaited when the reader is async.
+        //
+        // The wrapper takes owned arguments, which is what makes this work. The
+        // adapter's bound is `Fn(RequestContext, String) -> Fut` with one
+        // concrete future type; a higher-ranked `for<'uri>` version would bind
+        // the return type too, and an `async fn read(uri: &str)` returns a
+        // *different* future per `'uri`, so no single `Fut` satisfies it. The
+        // closure's signature has no lifetime in it, so its future type does
+        // not depend on one, and the reader keeps the natural `&str`.
+        let await_token = if reader_fn.sig.asyncness.is_some() {
+            quote! { .await }
+        } else {
+            TokenStream::new()
+        };
+        let passed = quote! {
+            move |__pd_ctx, __pd_uri| {
+                let __pd_value = Self::#reader(__pd_ctx, &__pd_uri) #await_token;
+                async move { __pd_value }
+            }
+        };
+
+        Ok(quote! {
+            builder = builder.#registers(Self::#name(), #adapter(#passed));
+        })
+    }
+
+    /// How a reader takes its one argument.
+    ///
+    /// Checks the shape and the return type, and nothing else. The call is
+    /// `Self::reader`, so the arguments a function item accepts are whatever it
+    /// declares and rustc reports a mismatch against the adapter's own bound —
+    /// a message naming the adapter, which is more useful than one the macro
+    /// wrote about a signature it only partly reads.
+    fn reader_shape(self, reader: &ImplItemFn) -> syn::Result<ReaderShape> {
+        let expected = self.reader_returns();
+        let arity = reader.sig.inputs.len();
+        if arity != 2 {
+            return Err(syn::Error::new_spanned(
+                &reader.sig,
+                format!(
+                    "a {} named by #[{}] takes a RequestContext and the request's {} — two \
+                     arguments. The context is not optional: it carries the caller's \
+                     identity, and a reader that could not see it would serve every \
+                     request as whoever opened the connection. This one takes {arity}.",
+                    self.reader_word(),
+                    self.attribute(),
+                    self.reader_word(),
+                ),
+            ));
+        }
+        Ok(ReaderShape::Context)
+        .and_then(|shape| {
+            let syn::ReturnType::Type(_, ty) = &reader.sig.output else {
+                return Err(syn::Error::new_spanned(
+                    &reader.sig,
+                    format!("a reader must return `{expected}`"),
+                ));
+            };
+            let found = element_segment(ty);
+            if found.as_deref() == Some(expected) {
+            Ok(shape)
+        } else {
+            Err(syn::Error::new_spanned(
+                ty,
+                format!(
+                    "a {} named by #[{}] returns a collection of `{expected}`, not `{}`",
+                    self.reader_word(),
+                    self.attribute(),
+                    found.as_deref().unwrap_or("a type that is not a named collection"),
+                ),
+            ))
+        }
+        })
+    }
+
+    /// The type a reader returns.
+    pub(crate) const fn reader_returns(self) -> &'static str {
+        match self {
+            Self::Resource => "ResourceContents",
+            Self::Prompt => "PromptMessage",
         }
     }
+
+
+
+    /// What a reader is called, in prose.
+    pub(crate) const fn reader_word(self) -> &'static str {
+        match self {
+            Self::Resource => "URI",
+            Self::Prompt => "arguments",
+        }
+    }
+
+    /// The argument `#[resource]` or `#[prompt]` names its reader with.
+    ///
+    /// Read from the attribute rather than inferred from a naming convention.
+    /// A convention would work until someone has a resource whose contents are
+    /// read by a helper three impls away, and the macro would either register
+    /// the wrong method or say nothing — both of which surface as a resource
+    /// that lists and then refuses to be read.
+    pub(crate) fn reader_of(self, method: &ImplItemFn) -> syn::Result<Option<syn::Ident>> {
+        let attribute = self.attribute();
+        let keyword = self.reader_keyword();
+        // One attribute per method, so this is a search rather than a loop.
+        if let Some(attr) = method.attrs.iter().find(|attr| crate::is_attr(attr, attribute)) {
+            // `#[resource]` with no parentheses is a bare path attribute and
+            // has nothing for `parse_args_with` to read. Treating that as a
+            // parse failure would make the unmarked spelling a compile error,
+            // and the unmarked spelling is the one that has always worked.
+            if matches!(attr.meta, syn::Meta::Path(_)) {
+                return Ok(None);
+            }
+            let parsed = attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .map_err(|error| {
+                    syn::Error::new(
+                        error.span(),
+                        format!(
+                            "#[{attribute}] takes no arguments, or one `{keyword} = ..` naming \
+                             the method that serves it"
+                        ),
+                    )
+                })?;
+            // Every arm returns, so this is a single step rather than a loop.
+            if let Some(meta) = parsed.into_iter().next() {
+                let syn::Meta::NameValue(pair) = meta else {
+                    return Err(syn::Error::new_spanned(
+                        meta,
+                        format!("#[{attribute}] takes no arguments, or one `{keyword} = ..`"),
+                    ));
+                };
+                if !pair.path.is_ident(keyword) {
+                    return Err(syn::Error::new_spanned(
+                        pair.path,
+                        format!(
+                            "#[{attribute}] takes no arguments, or one `{keyword} = ..` naming \
+                             the method that serves it"
+                        ),
+                    ));
+                }
+                return match &pair.value {
+                    syn::Expr::Path(path) => match path.path.get_ident() {
+                        Some(ident) => Ok(Some(ident.clone())),
+                        None => Err(syn::Error::new_spanned(
+                            &pair.value,
+                            format!("`{keyword}` names one method in this `impl`"),
+                        )),
+                    },
+                    other => Err(syn::Error::new_spanned(
+                        other,
+                        format!("`{keyword}` names one method in this `impl`"),
+                    )),
+                };
+            }
+            return Ok(None);
+        }
+        Ok(None)
+    }
+
+
+    /// What the reader is called, as a noun, for prose.
+    pub(crate) const fn reader_noun(self) -> &'static str {
+        match self {
+            Self::Resource => "reader",
+            Self::Prompt => "getter",
+        }
+    }
+
+    /// The argument name a reader is written with.
+    pub(crate) const fn reader_keyword(self) -> &'static str {
+        match self {
+            Self::Resource => "reader",
+            Self::Prompt => "getter",
+        }
+    }
+}
+
+/// The last path segment of a type's element, looking through one container.
+///
+/// A reader returns `Vec<ResourceContents>`, and `last_segment` of that is
+/// `Vec`. The container is unwrapped here so the check is about the element —
+/// the thing the caller actually has to name correctly — rather than about the
+/// `Vec` the crate already knows is there.
+fn element_segment(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Vec" {
+        return Some(segment.ident.to_string());
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Some(segment.ident.to_string());
+    };
+    arguments
+        .args
+        .iter()
+        .find_map(|argument| match argument {
+            syn::GenericArgument::Type(syn::Type::Path(inner_path)) => inner_path
+                .path
+                .segments
+                .last()
+                .map(|last| last.ident.to_string()),
+            _ => None,
+        })
 }
 
 /// Lowercases a type name's first letter, for prose.
@@ -191,6 +472,12 @@ fn lower_first(name: &str) -> String {
     characters.next().map_or_else(String::new, |first| {
         first.to_lowercase().chain(characters).collect()
     })
+}
+
+/// How a reader takes the request's argument.
+enum ReaderShape {
+    /// `fn(RequestContext, URI)`.
+    Context,
 }
 
 #[cfg(test)]
@@ -354,7 +641,7 @@ mod tests {
             return Err(Failure::Accepted("a resource method taking &self"));
         };
 
-        assert!(error.to_string().contains("ServerBuilder::resource"));
+        assert!(error.to_string().contains("ServerBuilder::resource_with"));
         Ok(())
     }
 

@@ -370,7 +370,16 @@ fn expand_server(
         // derive a schema.
         if let Some(mark) = primitives::Mark::of(function) {
             mark.check(function)?;
-            registrations.push(mark.registration(function));
+            let reader = mark.reader_of(function)?;
+            let reader_fn = reader.as_ref().and_then(|wanted| {
+                block.items.iter().find_map(|item| {
+                    let syn::ImplItem::Fn(candidate) = item else {
+                        return None;
+                    };
+                    (candidate.sig.ident == *wanted).then_some(candidate)
+                })
+            });
+            registrations.push(mark.registration(function, reader.as_ref(), reader_fn)?);
             continue;
         }
 

@@ -1,0 +1,5 @@
+error: #[resource] needs `reader = ..` naming the URI method, as in `#[resource(reader = serve_it)]` on an `fn serve_it(...) -> Vec<ResourceContents>`. Registering the listing alone advertises a Resource to peers who cannot then be served one.
+  --> tests/ui/fail/resource_missing_reader.rs:15:5
+   |
+15 |     fn readme() -> protocol_droid::domain::registry::Resource {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

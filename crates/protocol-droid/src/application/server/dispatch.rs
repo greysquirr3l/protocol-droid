@@ -203,7 +203,7 @@ impl Dispatcher {
             .server
             .reader(&uri)
             .ok_or(DispatchError::UnknownResource)?;
-        reader(ctx.clone(), &uri).await
+        reader(ctx.clone(), uri).await
     }
 
     /// Serves `prompts/get`.
@@ -228,7 +228,7 @@ impl Dispatcher {
             .server
             .getter(&name)
             .ok_or(DispatchError::UnknownPrompt)?;
-        getter(ctx.clone(), &arguments).await
+        getter(ctx.clone(), arguments).await
     }
 
     /// Answers the handshake: this server, the revision it speaks, and what it

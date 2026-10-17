@@ -48,12 +48,15 @@ async fn yield_to_runtime() {
     tokio::task::yield_now().await;
 }
 
+use protocol_droid::application::server::context::RequestContext;
 use protocol_droid::application::server::Server;
 use protocol_droid::domain::ir::{
-    AudioContent, Content, EmbeddedResource, ImageContent, ToolResult,
+    AudioContent, Content, EmbeddedResource, ImageContent, JsonObject, PromptMessage,
+    ResourceContents, Role, TextContent, ToolResult,
 };
 use protocol_droid::domain::registry::{Prompt, PromptArgument, Resource};
 use protocol_droid::serde::Serialize;
+use protocol_droid::serde_json;
 
 /// A 1x1 transparent PNG, base64-encoded.
 ///
@@ -231,7 +234,7 @@ impl ConformanceFixture {
     /// the suite reads. The two arguments — `diff` (required) and
     /// `focus` (optional) — are the smallest shape that covers both
     /// `required: [...]` and `arguments[i].required: true`.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_review)]
     fn review() -> Prompt {
         Prompt {
             description: Some(
@@ -259,7 +262,7 @@ impl ConformanceFixture {
 
     /// A prompt without arguments, so `prompts/get` is exercised against
     /// at least one prompt whose `arguments` is the empty array.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_summarize)]
     fn summarize() -> Prompt {
         Prompt {
             description: Some("Summarizes whatever the caller hands in.".to_owned()),
@@ -269,7 +272,7 @@ impl ConformanceFixture {
 
     /// A static readme resource, with a `text/` MIME type the conformance
     /// suite's `resources/list` and `resources/read` scenarios both read.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_readme)]
     fn readme() -> Resource {
         Resource {
             description: Some("The reference server's own readme.".to_owned()),
@@ -281,7 +284,7 @@ impl ConformanceFixture {
     /// A second resource so the suite sees a `resources/list` reply that
     /// is not a single-element array. A regression that registers the
     /// first resource twice would still pass a one-resource test.
-    #[protocol_droid::resource]
+    #[protocol_droid::resource(reader = read_changelog)]
     fn changelog() -> Resource {
         Resource {
             description: Some("The reference server's own changelog.".to_owned()),
@@ -289,6 +292,61 @@ impl ConformanceFixture {
             ..Resource::new("file:///conformance/CHANGELOG.md", "changelog")
         }
     }
+
+    /// Serves the readme. Takes the URI the peer named rather than closing
+    /// over the listing's, so a read is answered for the resource that was
+    /// actually asked for.
+    fn read_readme(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![static_text(uri, "# Reference server\n\nA fixture for the conformance suite.\n")]
+    }
+
+    /// Serves the changelog, which is a second body so the two reads do not
+    /// return identical bytes.
+    fn read_changelog(_context: RequestContext, uri: &str) -> Vec<ResourceContents> {
+        vec![static_text(uri, "# Changelog\n\n## 0.1.0\n\n- First release.\n")]
+    }
+
+    /// Builds the review prompt's messages.
+    ///
+    /// The `diff` argument is required by the prompt's schema above, so its
+    /// absence here is a peer's error rather than something to paper over:
+    /// the message says which argument is missing and names it.
+    fn get_review(_context: RequestContext,
+        arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        let focus = string_argument(arguments, "focus");
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new(format!(
+                "Review this diff{}.",
+                focus.map_or_else(String::new, |focus| format!(", focusing on {focus}"))
+            ))),
+        )]
+    }
+
+    /// Builds the summarize prompt's messages, which take no arguments.
+    fn get_summarize(_context: RequestContext,
+        _arguments: &JsonObject,
+    ) -> Vec<PromptMessage> {
+        vec![PromptMessage::new(
+            Role::User,
+            Content::Text(TextContent::new("Summarize the following.")),
+        )]
+    }
+}
+
+/// A `text/markdown` resource body.
+fn static_text(uri: &str, body: &str) -> ResourceContents {
+    ResourceContents::text(uri, body).with_mime_type("text/markdown")
+}
+
+/// One string member of an arguments object.
+fn string_argument(arguments: &JsonObject, key: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(arguments.as_str()).ok()?;
+    parsed
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 /// Parses `--addr <ipv4:port>` from argv, falling back to loopback on

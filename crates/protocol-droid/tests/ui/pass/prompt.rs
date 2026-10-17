@@ -10,7 +10,7 @@ struct Reviewer;
 #[protocol_droid::server(name = "reviewer")]
 impl Reviewer {
     /// Asks for a review of a diff.
-    #[protocol_droid::prompt]
+    #[protocol_droid::prompt(getter = get_review)]
     fn review() -> protocol_droid::domain::registry::Prompt {
         let mut prompt = protocol_droid::domain::registry::Prompt::new("review");
         prompt
@@ -22,6 +22,14 @@ impl Reviewer {
                 required: true,
             });
         prompt
+    }
+
+    /// Serves the prompt's messages, by the arguments the peer sent.
+    fn get_review(
+        _context: protocol_droid::application::server::context::RequestContext,
+        _arguments: &protocol_droid::domain::ir::JsonObject,
+    ) -> Vec<protocol_droid::domain::ir::PromptMessage> {
+        Vec::new()
     }
 }
 
