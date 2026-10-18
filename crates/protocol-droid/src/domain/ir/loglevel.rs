@@ -31,9 +31,7 @@ use serde::{Deserialize, Serialize};
 /// Ordered lowest-severity first, matching the spec's own ordering: `debug`
 /// through `emergency`. Ordering is what a client filter needs, and the spec
 /// defines the order, so there is nothing for this crate to choose.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum Level {
@@ -178,14 +176,8 @@ mod tests {
     fn an_unknown_spelling_is_refused_rather_than_guessed() {
         // Case is part of the answer: `Info` is not `info`, and accepting it
         // would emit a level no conforming peer recognises.
-        assert!(matches!(
-            Level::parse("Info"),
-            Err(LevelError(_))
-        ));
-        assert!(matches!(
-            Level::parse("verbose"),
-            Err(LevelError(_))
-        ));
+        assert!(matches!(Level::parse("Info"), Err(LevelError(_))));
+        assert!(matches!(Level::parse("verbose"), Err(LevelError(_))));
     }
 
     #[test]

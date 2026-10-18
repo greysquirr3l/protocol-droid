@@ -106,8 +106,8 @@ pub use auth::{
     Anonymous, AuthPolicy, Authenticator, Credentials, OAuthAuthenticator, SystemClock, WallClock,
 };
 pub use bridge::{Bound, BridgeServeError, BridgeSession, HttpBridge};
-pub use exchange::{Answer, ExchangeTable, HttpExchange};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
+pub use exchange::{Answer, ExchangeTable, HttpExchange};
 pub use frame_payload::FramePayload;
 pub use refusal::Refusal;
 pub use resume::{Resume, decide, plan};

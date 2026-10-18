@@ -145,7 +145,9 @@ impl IdempotencyKey {
         method: &str,
         target: &str,
     ) -> Self {
-        Self(Arc::from(format!("{session}/{id}/{method}/{target}").as_str()))
+        Self(Arc::from(
+            format!("{session}/{id}/{method}/{target}").as_str(),
+        ))
     }
 
     /// The key as a string.

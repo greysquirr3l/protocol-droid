@@ -703,9 +703,7 @@ impl ConformanceFixture {
     ) -> Vec<PromptMessage> {
         vec![PromptMessage::new(
             Role::User,
-            Content::Text(TextContent::new(
-                "This is a simple prompt for testing.",
-            )),
+            Content::Text(TextContent::new("This is a simple prompt for testing.")),
         )]
     }
 
@@ -782,7 +780,8 @@ async fn log_message(ctx: &RequestContext, message: &str) {
 
 /// Emits one `notifications/progress` increment against the caller's token.
 async fn progress_message(ctx: &RequestContext, progress: i64, total: i64) {
-    let Ok(params) = JsonObject::new(format!(r#"{{"progress":{progress},"total":{total}}}"#)) else {
+    let Ok(params) = JsonObject::new(format!(r#"{{"progress":{progress},"total":{total}}}"#))
+    else {
         // The arguments are two `i64`s interpolated into a literal, so this
         // branch is unreachable; returning quietly is better than unwrapping a
         // value this crate built itself.

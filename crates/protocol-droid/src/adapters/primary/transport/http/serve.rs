@@ -35,13 +35,13 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::adapters::primary::transport::http::config::ServerConfig;
+use crate::adapters::primary::transport::http::exchange::{Answer, ExchangeTable, HttpExchange};
 use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::router::{
     EventSource, Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned,
 };
 use crate::adapters::primary::transport::http::session_store::SessionStore;
-use crate::adapters::primary::transport::http::exchange::{Answer, ExchangeTable, HttpExchange};
 use crate::adapters::primary::transport::http::stream::{EventTail, Finishing};
 use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
@@ -595,11 +595,14 @@ impl RequestHandler<HttpSession> for HttpHandler {
                 let peer = peer.with_session(id_source);
                 let minted = self
                     .sessions
-                    .open_with_id(Arc::new(HttpSession {
-                        peer,
-                        tail,
-                        exchange,
-                    }), id_source)
+                    .open_with_id(
+                        Arc::new(HttpSession {
+                            peer,
+                            tail,
+                            exchange,
+                        }),
+                        id_source,
+                    )
                     .map_err(|error| Refusal::Handler(format!("no session: {error}")))?;
                 return Self::response(&document, Some(&minted), None);
             }
@@ -611,11 +614,10 @@ impl RequestHandler<HttpSession> for HttpHandler {
             )
         }
     }
-
 }
 
 impl HttpHandler {
-/// The answer document, with the session header when one was minted.
+    /// The answer document, with the session header when one was minted.
     ///
     /// # Errors
     ///
@@ -642,7 +644,10 @@ impl HttpHandler {
             // a binding rather than built inline because the reference has to
             // outlive the call.
             let since = cursor.map(|id| id.to_string());
-            return match tail.plan(since.as_deref()).into_draining_response(KEEP_ALIVE) {
+            return match tail
+                .plan(since.as_deref())
+                .into_draining_response(KEEP_ALIVE)
+            {
                 Ok(response) => {
                     let mut response = response;
                     if let Some(id) = id {
@@ -1156,7 +1161,7 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
 /// is a guessable session. Failing is the honest answer for a lean build, and
 /// it fails once at startup rather than per request.
 #[cfg(feature = "random-ids")]
-    /// The `params._meta.progressToken` a request carried, if any.
+/// The `params._meta.progressToken` a request carried, if any.
 ///
 /// `None` for a request with no `_meta`, a `_meta` without the member, or a
 /// member that is not a string or a number — the three shapes the vendored
@@ -1307,7 +1312,7 @@ mod tests {
         if let Ok(document) = serde_json::from_str::<Value>(text) {
             return Ok(document);
         }
-                // The *last* frame, not the first. A sessioned `POST` is answered with
+        // The *last* frame, not the first. A sessioned `POST` is answered with
         // an event stream, and the frames in it are ordered as they happened —
         // so a tool that logs or reports progress puts its notification ahead
         // of its result, and taking the first frame answers the question with
@@ -1345,7 +1350,9 @@ mod tests {
                 }
             }
         }
-        found.ok_or(Failure::Expectation("the reply to carry a JSON-RPC document"))
+        found.ok_or(Failure::Expectation(
+            "the reply to carry a JSON-RPC document",
+        ))
     }
 
     /// The request id a reply answers, read off the frames themselves.

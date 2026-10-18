@@ -309,14 +309,7 @@ impl Dispatcher {
         // peer cannot act on either and the difference is not one it can use.
         let recognised = matches!(
             level.as_str(),
-            "debug"
-                | "info"
-                | "notice"
-                | "warning"
-                | "error"
-                | "critical"
-                | "alert"
-                | "emergency"
+            "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
         );
         if !recognised {
             return Err(DispatchError::MalformedParams);
@@ -340,10 +333,7 @@ impl Dispatcher {
     /// the distinction is invisible: both a missing `values` and an empty one
     /// mean "no completions", so the error names a missing array that was
     /// never absent, only wrapped wrongly.
-    fn complete(
-        ctx: &RequestContext,
-        _params: &JsonObject,
-    ) -> Result<JsonObject, DispatchError> {
+    fn complete(ctx: &RequestContext, _params: &JsonObject) -> Result<JsonObject, DispatchError> {
         Self::require(ctx, Feature::Completions)?;
         JsonObject::new(r#"{"completion":{"values":[]}}"#)
             .map_err(|_| DispatchError::MalformedParams)

@@ -54,8 +54,8 @@ use std::sync::atomic::Ordering;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::application::server::context::{CallbackExchange, ExchangeError};
 use crate::adapters::primary::transport::http::stream::EventTail;
+use crate::application::server::context::{CallbackExchange, ExchangeError};
 use crate::domain::ir::JsonObject;
 
 /// The stream a session's server-initiated messages go out on.
