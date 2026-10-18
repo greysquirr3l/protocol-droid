@@ -124,7 +124,7 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("--server is not a usable spec: {}", args.server))?;
     let versions = resolve_versions(&args.versions)?;
 
-    let mut report = probe_spec(&spec, &versions).await?;
+    let report = probe_spec(&spec, &versions).await?;
 
     // The backward-compatibility rule from the 2025-03-26 transport page: a
     // server that refuses a `POST` with a 4xx may still be the old HTTP+SSE
@@ -132,15 +132,7 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
     // `endpoint` event on it. Only tried when the endpoint was refused
     // outright, and only reported if it works.
     #[cfg(feature = "bridge")]
-    if spec.kind() == TransportKind::StreamableHttp
-        && refused_by_every_post(&report)
-        && let Ok(legacy) = TransportSpec::new(TransportKind::LegacySse, spec.target())
-        && let Ok(found) = probe_spec(&legacy, &versions).await
-        && found.rows.iter().any(|row| row.accepted)
-    {
-        eprintln!("{spec} refuses POST but serves an HTTP+SSE stream; probed it as {legacy}");
-        report = found;
-    }
+    let report = legacy_instead(&spec, &versions, report).await;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -171,6 +163,26 @@ async fn probe_spec(
         spec.to_string(),
     )
     .await)
+}
+
+/// `report`, or the same server probed as legacy HTTP+SSE when every `POST` was
+/// refused and that probe finds a revision it accepts.
+#[cfg(feature = "bridge")]
+async fn legacy_instead(
+    spec: &TransportSpec,
+    versions: &[ProtocolVersion],
+    report: ProbeReport,
+) -> ProbeReport {
+    if spec.kind() == TransportKind::StreamableHttp
+        && refused_by_every_post(&report)
+        && let Ok(legacy) = TransportSpec::new(TransportKind::LegacySse, spec.target())
+        && let Ok(found) = probe_spec(&legacy, versions).await
+        && found.rows.iter().any(|row| row.accepted)
+    {
+        eprintln!("{spec} refuses POST but serves an HTTP+SSE stream; probed it as {legacy}");
+        return found;
+    }
+    report
 }
 
 /// Whether every row was refused with a client-error status on the `POST`.
