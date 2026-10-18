@@ -74,6 +74,9 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   once, and each forwarded request carries it and the bridge's capabilities in
   its own `_meta`. `TransportPeer` is the library piece, usable over any
   `ClientTransport`.
+- **`conformance_reference_server --legacy-sse`** mounts the `2024-11-05` routes
+  beside `/mcp`, as a runnable example of `HttpBuilder::legacy_sse()`; probe it
+  with `protocol-droid probe sse:http://127.0.0.1:8080/sse`.
 - **`Host` checking and rate limiting on the legacy routes.** They had `Origin`
   and authentication but neither of these, so a rebound DNS name or a flood of
   `POST`s reached the dispatcher.

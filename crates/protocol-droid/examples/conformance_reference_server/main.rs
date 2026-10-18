@@ -1118,6 +1118,16 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let builder = protocol_droid::adapters::primary::transport::http::HttpBuilder::new(server)
         .addr(addr)
         .config(config);
+    // `--legacy-sse` also mounts the `2024-11-05` HTTP+SSE routes (`/sse` and
+    // `/messages`) beside `/mcp`, for trying a legacy client against the same
+    // tools. Off by default: that transport has been deprecated since
+    // `2025-03-26`, and the conformance suite has nothing to say about it.
+    #[cfg(feature = "legacy-sse")]
+    let builder = if std::env::args().any(|arg| arg == "--legacy-sse") {
+        builder.legacy_sse()
+    } else {
+        builder
+    };
     let bound = builder.serve().await?;
     eprintln!("{}: listening on {}", SERVER_NAME, bound.addr);
     Ok(())
