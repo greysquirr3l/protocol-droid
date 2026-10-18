@@ -213,8 +213,25 @@ jobs:
           # "no matching package named ... found" that `verify` documents,
           # this time after a partial upload. So each upload waits for its
           # version to become resolvable before the next one starts.
+          version="${TAG#v}"
+
+          # Idempotent, for the same reason auto-tag is. Re-running this
+          # workflow must not fail on work that is already done: a second
+          # dispatch after a partial publish — or a re-run once a later fix
+          # has repaired the binary archives — would otherwise stop at
+          # "crate version already exists" and never reach the job that
+          # actually still has work to do. crates.io versions are immutable,
+          # so "already resolvable" is the strongest possible statement that
+          # this crate needs no upload.
           for crate in protocol-droid-schema protocol-droid-macros protocol-droid protocol-droid-cli; do
-            echo "::group::publish ${crate}"
+            code="$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'User-Agent: protocol-droid-release' \
+              "https://crates.io/api/v1/crates/${crate}/${version}")"
+            if [ "${code}" = "200" ]; then
+              echo "::notice::${crate} ${version} is already on crates.io; skipping"
+              continue
+            fi
+            echo "::group::publish ${crate} ${version}"
             cargo publish -p "${crate}"
             echo "::endgroup::"
           done
@@ -223,8 +240,8 @@ jobs:
           # strength of a command that exited 0 while crates.io was still
           # deciding what to do with it. `publish` returning means the tarball
           # was accepted, not that the version is resolvable, so each crate is
-          # polled until the registry serves it.
-          version="${TAG#v}"
+          # polled until the registry serves it. A crate skipped as already
+          # published satisfies this immediately, which is the point.
           for crate in protocol-droid-schema protocol-droid-macros protocol-droid protocol-droid-cli; do
             echo -n "Waiting for ${crate} ${version} to appear on crates.io"
             for _ in $(seq 1 60); do
@@ -320,12 +337,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          # Package from inside the release directory, so both branches write
+          # the archive to the same place: `target/<triple>/release` is three
+          # levels down, which makes `../../../dist` the workspace `dist` the
+          # mkdir above just made.
+          #
+          # `tar -C target/<triple>/release` here would be wrong twice over —
+          # the path is relative to the directory this block just cd'd into, so
+          # it names `target/<triple>/release/target/<triple>/release`, and it
+          # would be redundant even if it resolved.
           cd "target/${{ matrix.target }}/release"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             7z a "../../../dist/${{ matrix.binary }}-${{ matrix.label }}.zip" "${{ matrix.binary }}"
           else
-            tar -C "target/${{ matrix.target }}/release" \
-              -czf "dist/${{ matrix.binary }}-${{ matrix.label }}.tar.gz" \
+            tar -czf "../../../dist/${{ matrix.binary }}-${{ matrix.label }}.tar.gz" \
               "${{ matrix.binary }}"
           fi
       - name: Upload to release
