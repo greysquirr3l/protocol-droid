@@ -269,22 +269,17 @@ mod tests {
         }
     }
 
-    /// The ceiling is visible through the adapter, and a full store refuses a
-    /// new key rather than discarding a result.
+    /// The ceiling is visible through the adapter, and a full store of running
+    /// work refuses a new key rather than discarding a live claim.
     #[test]
     fn the_ceiling_is_observable_and_fail_secure() -> Result<(), Failure> {
         let store = store(1)?;
         if store.capacity()? != 1 {
             return Err(Failure::Unexpected("capacity".to_owned()));
         }
+        // Held and never completed: the one thing that is not evicted.
         let key = IdempotencyKey::new("req-1");
-        let claim = store.claim(&key)?;
-        store.complete(
-            claim
-                .token()
-                .ok_or_else(|| Failure::Unexpected("no token".to_owned()))?,
-            "kept".to_owned(),
-        )?;
+        let _running = store.claim(&key)?;
 
         match store.claim(&IdempotencyKey::new("req-2")) {
             Err(IdempotencyError::StoreFull { capacity }) => {

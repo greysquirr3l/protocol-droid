@@ -131,12 +131,37 @@ turns up; the actual regression gate lives in
 
 ## Comparative bench vs rmcp
 
-Not yet filled in. The shape is: an identical workload
-(`tools/list` against a 1 000-tool registry, then
-`tools/call add` 1 000 times) driven by the same harness
-on top of `rmcp 3.5.1` and on top of `protocol-droid`,
-with the two numbers in the same row of the same table.
-The harness lives in
-[`crates/protocol-droid/tests/interop_rmcp`](../crates/protocol-droid/tests/interop_rmcp/)
-once it is wired up; the comparison here is what the next
-session produces.
+[`compare`](../crates/protocol-droid/tests/interop_rmcp/src/bin/compare.rs)
+in the interop crate drives both servers with the **same** client (a
+`protocol-droid` `StdioClient`), after the same handshake, so the only thing
+that differs between the two runs is the server on the other end of the pipe.
+It makes 200 warm-up calls and then N sequential `tools/call` requests on one
+connection, and prints the median, 90th and 99th percentile, and calls per
+second.
+
+```text
+cargo build --release --example stdio_server -p protocol-droid
+cargo run --release --manifest-path crates/protocol-droid/tests/interop_rmcp/Cargo.toml \
+    --bin compare -- --calls 8000
+```
+
+Three runs of 8 000 calls on an Apple M3 Pro, rustc 1.98.1, `rmcp 3.5.1`:
+
+| Server           | p50 (µs) | p90 (µs) | p99 (µs) | calls/s         |
+| ---------------- | -------: | -------: | -------: | --------------- |
+| `protocol-droid` |       29 |    32–33 |    37–49 | 33 100 – 33 900 |
+| `rmcp`           |       30 |    33–34 |    38–42 | 31 900 – 32 500 |
+
+That is parity, with `protocol-droid` about 4 % ahead on throughput. It should
+not be read as more than that. The workload is one connection, one request in
+flight, a trivial tool, over a pipe on one machine: it says how much a server
+adds to a round trip, and nothing about concurrency, large payloads, many
+tools, or HTTP. The two tools differ (`shout` and `add`), though both return a
+few dozen bytes. A shorter run (3 000 calls) once read 33 µs against 41 µs; the
+longer runs did not reproduce that, so short runs on a laptop are noise at this
+scale.
+
+The first version of this harness also found a real bug: the server's
+idempotency store refused every `tools/call` after its 4 096th, because it
+filled with finished results and never made room. It now drops the oldest
+finished result instead.

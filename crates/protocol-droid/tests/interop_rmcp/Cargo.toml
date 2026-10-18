@@ -36,6 +36,11 @@ name = "interop_rmcp"
 path = "src/lib.rs"
 
 [[bin]]
+# Side-by-side latency of the two servers; see the module docs in the source.
+name = "compare"
+path = "src/bin/compare.rs"
+
+[[bin]]
 # The rmcp-server binary the protocol-droid `StdioClient` drives. Spawned
 # by `pd_client_to_rmcp_server` as a child process; the test then talks
 # JSON-RPC over its stdin/stdout and asserts the round trip.

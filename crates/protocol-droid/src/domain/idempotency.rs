@@ -54,7 +54,7 @@
 use core::fmt;
 use core::num::NonZeroUsize;
 use core::str::FromStr;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -282,6 +282,9 @@ enum Slot<T> {
 #[derive(Debug)]
 pub struct CompletedResults<T> {
     slots: HashMap<IdempotencyKey, Slot<T>>,
+    /// Completed keys, oldest first. A key joins when it completes and leaves
+    /// only by eviction, so every key in here is `Done`.
+    completed_order: VecDeque<IdempotencyKey>,
     next_generation: u64,
     capacity: NonZeroUsize,
 }
@@ -300,6 +303,7 @@ impl<T> CompletedResults<T> {
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
         Self {
             slots: HashMap::with_capacity(capacity.get()),
+            completed_order: VecDeque::new(),
             next_generation: 0,
             capacity,
         }
@@ -327,12 +331,21 @@ impl<T> CompletedResults<T> {
     ///
     /// # Errors
     ///
-    /// [`IdempotencyError::StoreFull`] when the store is at capacity and
-    /// `key` is not already present. The refusal is deliberate: the
-    /// alternative — evicting a completed entry to make room — would make a
-    /// later retry re-run a side effect that already happened, which is the
-    /// precise failure this type exists to prevent. Failing the new request is
-    /// visible; a silent re-execution is not.
+    /// [`IdempotencyError::StoreFull`] when the store is at capacity, `key` is
+    /// not already present, and every slot is held by a request still running.
+    /// That is genuine overload, and refusing the new request is visible where
+    /// discarding a live claim would let two callers run one request.
+    ///
+    /// # Retention
+    ///
+    /// When the store is full and `key` is new, the **oldest completed**
+    /// result is dropped to make room. A retry replays its recorded result for
+    /// as long as it is among the last `capacity` completed requests; a retry
+    /// of something older than that runs again. The alternative, refusing every
+    /// new key once the store has filled with finished work, turns a long-lived
+    /// session into one that fails every call after the first `capacity`, which
+    /// is the common case and not an edge. A dropped connection is retried in
+    /// seconds, so the window is far longer than any retry needs.
     ///
     /// `T: Clone` because handing a recorded result to the retrying caller
     /// leaves the recorded copy in place — a claim that consumed it would break
@@ -348,9 +361,12 @@ impl<T> CompletedResults<T> {
             });
         }
         if self.slots.len() >= self.capacity.get() {
-            return Err(IdempotencyError::StoreFull {
-                capacity: self.capacity.get(),
-            });
+            let Some(oldest) = self.completed_order.pop_front() else {
+                return Err(IdempotencyError::StoreFull {
+                    capacity: self.capacity.get(),
+                });
+            };
+            self.slots.remove(&oldest);
         }
         self.next_generation += 1;
         let generation = self.next_generation;
@@ -379,6 +395,7 @@ impl<T> CompletedResults<T> {
             _ => return Err(StaleClaim::new(token)),
         }
         self.slots.insert(token.key.clone(), Slot::Done(result));
+        self.completed_order.push_back(token.key.clone());
         Ok(())
     }
 
@@ -451,12 +468,10 @@ impl StaleClaim {
 /// Why a claim could not be taken.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IdempotencyError {
-    /// The store is at capacity and the key is new.
+    /// Every slot is held by a request that has not finished, and the key is new.
     ///
-    /// A new request is refused rather than an old result discarded, because
-    /// discarding one would let the retry of a *completed* request re-run a
-    /// side effect that already happened. See
-    /// [`CompletedResults::claim`].
+    /// Finished results are evicted oldest-first to make room, so this means the
+    /// store is full of work in progress. See [`CompletedResults::claim`].
     #[error(
         "the idempotency store holds {capacity} keys and cannot claim another without risking a lost result"
     )]
@@ -801,12 +816,11 @@ mod tests {
         Ok(())
     }
 
-    /// A full store refuses a *new* key rather than discarding a completed
-    /// result. Losing a recorded result would let the retry of a finished
-    /// request re-run the side effect, which is the failure this whole module
-    /// is arranged to prevent — so the ceiling fails visibly instead.
+    /// A full store of finished work makes room for a new key by dropping the
+    /// oldest result, so a long-lived session keeps working. Without this the
+    /// store fills once and every later call fails.
     #[test]
-    fn a_full_store_refuses_a_new_key_and_keeps_its_results() -> Result<(), Failure> {
+    fn a_full_store_drops_its_oldest_result_for_a_new_key() -> Result<(), Failure> {
         let mut results = store(2)?;
         for index in 0..2 {
             let key = IdempotencyKey::new(format!("req-{index}"));
@@ -815,22 +829,45 @@ mod tests {
         }
 
         let overflow = IdempotencyKey::new("req-overflow");
-        match results.claim(&overflow) {
+        if !results.claim(&overflow)?.is_execution_mine() {
+            return Err(Failure::WrongClaim("a full store refused a new key"));
+        }
+        if results.len() != 2 {
+            return Err(Failure::WrongResult("the ceiling was exceeded"));
+        }
+
+        // The newer result is still replayed; only the oldest went.
+        let kept = IdempotencyKey::new("req-1");
+        match results.claim(&kept)? {
+            Claim::Completed(result) if result == "result-1" => {}
+            _ => return Err(Failure::WrongResult("a full store lost the newer result")),
+        }
+        let dropped = IdempotencyKey::new("req-0");
+        if results.completed(&dropped).is_some() {
+            return Err(Failure::WrongResult("the oldest result was kept"));
+        }
+        Ok(())
+    }
+
+    /// A claim still running is never the one dropped: discarding it would let
+    /// two callers run one request. A store full of running work refuses.
+    #[test]
+    fn a_store_full_of_running_work_refuses_a_new_key() -> Result<(), Failure> {
+        let mut results = store(2)?;
+        for index in 0..2 {
+            let key = IdempotencyKey::new(format!("req-{index}"));
+            let _ = results.claim(&key)?;
+        }
+
+        match results.claim(&IdempotencyKey::new("req-overflow")) {
             Err(IdempotencyError::StoreFull { capacity }) => {
                 if capacity != 2 {
                     return Err(Failure::WrongError("the ceiling was misreported"));
                 }
+                Ok(())
             }
-            Err(other) => return Err(Failure::Unexpected(other.to_string())),
-            Ok(_) => return Err(Failure::WrongClaim("a full store handed out a claim")),
-        }
-
-        // A key already held is still served rather than refused on capacity —
-        // the ceiling bounds *new* work, not reads of work already done.
-        let existing = IdempotencyKey::new("req-0");
-        match results.claim(&existing)? {
-            Claim::Completed(result) if result == "result-0" => Ok(()),
-            _ => Err(Failure::WrongResult("a full store lost a recorded result")),
+            Err(other) => Err(Failure::Unexpected(other.to_string())),
+            Ok(_) => Err(Failure::WrongClaim("a full store handed out a claim")),
         }
     }
 

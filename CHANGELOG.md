@@ -98,6 +98,12 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
 
 ### Fixed
 
+- **A server stopped answering `tools/call` after its 4 096th call.** The
+  idempotency store filled with finished results and refused every new request
+  id from then on, so any long-lived session or server failed permanently. It
+  now drops the oldest *finished* result to make room, never one still running;
+  a retry is replayed for as long as it is among the last 4 096 completed calls.
+
 - **The bridge offered its upstream the oldest revision first**, so it negotiated
   `2024-11-05` with every server that still accepted it. It now offers the
   newest revision that has a handshake.

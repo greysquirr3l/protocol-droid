@@ -57,13 +57,14 @@ use crate::domain::idempotency::{Claim, ClaimToken, IdempotencyError, Idempotenc
 
 /// How many keys a store holds when nobody has measured its workload.
 ///
-/// A store for a `tools/call` result, sized for the concurrency a server
-/// actually sees rather than for a flood. The number is deliberately modest
-/// because the store is *not* a cache: a key it forgets is a request it will
-/// refuse rather than re-run, so being too small costs a failed request while
-/// being too large costs memory a peer can grow without bound. A deployment
-/// that knows its own rate replaces it — the capacity is a constructor argument
-/// on the adapter for exactly that reason.
+/// A store for a `tools/call` result. It keeps the last this-many completed
+/// results so a client that retries after a dropped connection gets the recorded
+/// answer; once full it drops the oldest finished result to make room, and
+/// never a request still running. A retry older than the window runs again,
+/// which is the price of a server that keeps serving. The number is modest
+/// because the store is keyed by a peer-chosen request id. A deployment that
+/// knows its own rate replaces it — the capacity is a constructor argument on
+/// the adapter for exactly that reason.
 ///
 /// A deployment that wants *no* ceiling sets a large capacity knowingly: the
 /// store is keyed by a peer-chosen request id, so an unbounded one is a memory
