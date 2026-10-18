@@ -334,6 +334,9 @@ fn describe(error: &HandshakeError) -> String {
         }) => format!("the server answered {answered}, which is not in the offer"),
         HandshakeError::Negotiation(_) => "the server and the client share no revision".to_owned(),
         HandshakeError::Transport(TransportError::Unavailable(reason)) => reason.clone(),
+        HandshakeError::Transport(TransportError::Refused { code, message, .. }) => {
+            format!("the server refused with {code}: {message}")
+        }
         HandshakeError::Assembling { method, .. } => {
             format!("the {method} request could not be built")
         }

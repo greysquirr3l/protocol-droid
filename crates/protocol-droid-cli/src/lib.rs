@@ -25,6 +25,7 @@ pub mod bridge;
 pub mod bridge_a2a;
 pub mod check;
 pub mod conformance;
+pub mod conformance_client;
 pub mod inspect;
 pub mod probe;
 // A2A's well-known card lives in the A2A domain, so the A2A probe

@@ -35,9 +35,11 @@ use crate::application::jsonrpc::document::{
     notification_document, reply_result, request_document,
 };
 use crate::domain::ir::{JsonObject, MethodName};
-use crate::domain::{EventId, McpSessionId, RequestId};
+use crate::domain::{EventId, McpSessionId, McpSessionIdError, RequestId};
 
 use super::error::{HttpClientError, preview};
+use super::opaque::WireStream;
+use crate::application::client::handler::ServerRequestHandler;
 use super::frames::{FrameError, FrameReader};
 
 /// Maps a frame failure onto the one enum a caller above this layer matches.
@@ -56,6 +58,26 @@ impl From<FrameError> for HttpClientError {
 
 /// The session header, as the peer spells it.
 const SESSION_HEADER: &str = "mcp-session-id";
+
+/// The handler, with a `Debug` that does not need the handler to have one.
+struct Handler(Arc<dyn ServerRequestHandler>);
+
+impl fmt::Debug for Handler {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Handler(..)")
+    }
+}
+
+/// How long to wait before resuming a stream whose server named no `retry`.
+const DEFAULT_RETRY: Duration = Duration::from_secs(1);
+
+/// How many times one answer may be resumed before the client gives up.
+const MAX_RESUMES: u32 = 5;
+
+/// Whether `frame` is a request (it has a method and an id), not a response.
+fn is_request(frame: &Map<String, Value>) -> bool {
+    frame.contains_key("method") && frame.contains_key("id")
+}
 
 /// The revision header every request after the handshake carries.
 const PROTOCOL_HEADER: &str = "mcp-protocol-version";
@@ -214,7 +236,12 @@ pub struct Resumable {
 pub struct HttpClient {
     inner: reqwest::Client,
     config: HttpClientConfig,
-    session: Mutex<Option<McpSessionId>>,
+    /// The id the server issued, verbatim.
+    ///
+    /// Opaque on purpose. The specification asks only that it be visible
+    /// ASCII; the sixteen-digit form is this crate's own server's choice, and a
+    /// client that insisted on it could talk to nobody else.
+    session: Mutex<Option<Arc<str>>>,
     /// The id to put on the next request.
     ///
     /// A counter and not a random value, for the reason `StdioClient` uses
@@ -229,6 +256,12 @@ pub struct HttpClient {
     /// `initialize`; a client that never sent it was relying on servers that
     /// tolerate its absence, which a conforming one is not obliged to do.
     protocol: Mutex<Option<String>>,
+    /// Answers the requests a server sends this client, when one is wired.
+    ///
+    /// Absent means such a request is parked with the other volunteered frames
+    /// — which is what a bridge wants, since it forwards them to its own
+    /// client instead of answering them itself.
+    handler: Option<Handler>,
     /// Frames a server volunteered on a response body this client was reading
     /// for something else.
     ///
@@ -280,6 +313,7 @@ impl HttpClient {
             session: Mutex::new(None),
             next_id: AtomicI64::new(1),
             protocol: Mutex::new(None),
+            handler: None,
             unsolicited: Arc::new(Unsolicited::new()),
         }
     }
@@ -287,6 +321,17 @@ impl HttpClient {
     /// The id for the next request on this client.
     pub fn next_request_id(&self) -> RequestId {
         RequestId::Number(self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// This client, answering the server's requests through `handler`.
+    ///
+    /// Without it a `sampling`, `elicitation` or `roots` request the server
+    /// sends mid-call is parked and never answered, and the tool waiting on it
+    /// waits forever.
+    #[must_use]
+    pub fn answering(mut self, handler: Arc<dyn ServerRequestHandler>) -> Self {
+        self.handler = Some(Handler(handler));
+        self
     }
 
     /// A client that already knows the session the peer issued.
@@ -301,7 +346,7 @@ impl HttpClient {
         *self
             .session
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(id.to_string().as_str()));
         self
     }
 
@@ -311,9 +356,9 @@ impl HttpClient {
         &self.config
     }
 
-    /// The session the peer has issued, if it has issued one.
+    /// The session id the peer issued, exactly as it wrote it.
     #[must_use]
-    pub fn session_id(&self) -> Option<McpSessionId> {
+    pub fn session_token(&self) -> Option<Arc<str>> {
         // Poisoning is not a reason to lose the session id. The value is a
         // header, no invariant a panic could have broken, and propagating
         // poisoning would turn one panicking thread into a client that can never
@@ -321,8 +366,20 @@ impl HttpClient {
         self.session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .copied()
+            .clone()
+    }
+
+    /// The session the peer has issued, if it has issued one *and* it is in
+    /// the form this crate's own server writes.
+    ///
+    /// `None` for a session any other server issued; [`session_token`] is the
+    /// accessor that works against every server.
+    ///
+    /// [`session_token`]: Self::session_token
+    #[must_use]
+    pub fn session_id(&self) -> Option<McpSessionId> {
+        self.session_token()
+            .and_then(|token| McpSessionId::from_str(&token).ok())
     }
 
     /// POSTs a body and reads one complete response.
@@ -411,6 +468,13 @@ impl HttpClient {
         // second — which is the choice the specification prefers.
         let response = self.send_with(POST, &body, false, headers).await?;
         let wants = envelope.get("id").cloned();
+        // `202 Accepted` is the specification's answer to a notification and
+        // carries no body — so no `Content-Type` either. Asking for one is how
+        // a conforming server's reply to `notifications/initialized` used to
+        // fail the handshake it closes.
+        if response.status() == reqwest::StatusCode::ACCEPTED {
+            return Ok(None);
+        }
         if Self::shape(&response)? == Shape::Stream {
             return self.read_streamed(response, wants.as_ref()).await.map(Some);
         }
@@ -513,13 +577,13 @@ impl HttpClient {
     /// [`HttpClientError::NoSessionYet`] when there is no session to end. There
     /// is nothing here to be idempotent about, so guessing is not on the menu.
     pub async fn delete(&self) -> Result<HttpResponse, HttpClientError> {
-        let Some(id) = self.session_id() else {
+        let Some(id) = self.session_token() else {
             return Err(HttpClientError::NoSessionYet);
         };
         let response = self
             .inner
             .delete(&self.config.endpoint)
-            .header(SESSION_HEADER, id.to_string())
+            .header(SESSION_HEADER, id.as_ref())
             .header(reqwest::header::ACCEPT, ACCEPT)
             .send()
             .await
@@ -627,8 +691,8 @@ impl HttpClient {
         for (name, value) in extra {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        if let Some(id) = self.session_id() {
-            builder = builder.header(SESSION_HEADER, id.to_string());
+        if let Some(id) = self.session_token() {
+            builder = builder.header(SESSION_HEADER, id.as_ref());
         } else if require_session {
             return Err(HttpClientError::NoSessionYet);
         }
@@ -654,8 +718,8 @@ impl HttpClient {
             .inner
             .get(&self.config.endpoint)
             .header(reqwest::header::ACCEPT, ACCEPT);
-        if let Some(id) = self.session_id() {
-            builder = builder.header(SESSION_HEADER, id.to_string());
+        if let Some(id) = self.session_token() {
+            builder = builder.header(SESSION_HEADER, id.as_ref());
         } else if require_session {
             return Err(HttpClientError::NoSessionYet);
         }
@@ -713,12 +777,12 @@ impl HttpClient {
         // error a well-formed-but-wrong header does. One way for this to go
         // wrong, rather than two.
         let text = String::from_utf8_lossy(raw.as_bytes());
-        let id = McpSessionId::from_str(&text)
+        let id = McpSessionIdError::validate_opaque(&text)
             .map_err(|source| HttpClientError::SessionId { source })?;
         *self
             .session
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(id));
         Ok(())
     }
 
@@ -738,35 +802,148 @@ impl HttpClient {
     /// Reads a streamed answer, holding everything that was not the reply.
     ///
     /// The stream is a sequence of messages and the request has one id, so
-    /// this reads until it sees that id and holds the rest. A frame that is
-    /// not a JSON-RPC object at all is dropped rather than held: there is no
-    /// shape downstream could forward it in.
+    /// this reads until it sees that id. A request the server sends along the
+    /// way is answered when a handler is wired, and parked when it is not; any
+    /// other frame is parked. A frame that is not a JSON-RPC object at all is
+    /// dropped rather than held: there is no shape downstream could forward it
+    /// in.
+    ///
+    /// ## When the stream closes first
+    ///
+    /// `2025-11-25` (SEP-1699) lets a server send a priming event — an `id`
+    /// and a `retry`, no data — and then close the stream before it has the
+    /// answer, expecting the client to come back. So a stream that ends with
+    /// the answer still owed is resumed: wait the `retry` the server asked for,
+    /// `GET` with the last `Last-Event-ID`, and keep reading. A stream that
+    /// ended with no id to resume from is a transport fault, as before, and
+    /// resuming is bounded so a server that never answers cannot hold the
+    /// client forever.
     async fn read_streamed(
         &self,
         response: reqwest::Response,
         wants: Option<&Value>,
     ) -> Result<Map<String, Value>, HttpClientError> {
-        let mut stream = HttpStream::new(response);
-        while let Some(event) = stream.next_event().await? {
-            let Ok(Value::Object(candidate)) = serde_json::from_str(event.data()) else {
-                continue;
-            };
-            if candidate.get("id") == wants {
-                return Ok(candidate);
+        let mut stream = WireStream::new(response);
+        let mut last_id: Option<String> = None;
+        let mut retry = DEFAULT_RETRY;
+        let mut resumes = 0_u32;
+        loop {
+            while let Some(event) = stream.next().await? {
+                if let Some(id) = event.id {
+                    last_id = Some(id);
+                }
+                if let Some(interval) = event.retry {
+                    retry = interval;
+                }
+                let Some(data) = event.data else {
+                    continue;
+                };
+                let Ok(Value::Object(candidate)) = serde_json::from_str(&data) else {
+                    continue;
+                };
+                if candidate.get("id") == wants && !is_request(&candidate) {
+                    return Ok(candidate);
+                }
+                if is_request(&candidate)
+                    && let Some(Handler(handler)) = &self.handler
+                {
+                    self.answer_request(handler.as_ref(), &candidate).await?;
+                    continue;
+                }
+                self.unsolicited.hold(candidate);
             }
-            self.unsolicited.hold(candidate);
+            // No answer owed: this was a notification, so the peer said `202`
+            // and nothing is owed back.
+            if wants.is_none() {
+                return Ok(Map::new());
+            }
+            let Some(id) = last_id.clone() else {
+                return Err(HttpClientError::Unanswered { method: POST });
+            };
+            if resumes >= MAX_RESUMES {
+                return Err(HttpClientError::Unanswered { method: POST });
+            }
+            resumes = resumes.saturating_add(1);
+            tokio::time::sleep(retry).await;
+            let reopened = self.resume(&id).await?;
+            stream = WireStream::new(reopened);
         }
-        // No answer owed: this was a notification, so the peer said `202` and
-        // nothing is owed back. Anything it volunteered on the way is held
-        // above. Reaching here means it closed the stream without a frame at
-        // all, which is not a fault in a notification the caller does not read.
-        if wants.is_none() {
-            return Ok(Map::new());
+    }
+
+    /// Answers one request the server sent, over a `POST` of its own.
+    ///
+    /// The reply is a response, not a request, so the server acknowledges it
+    /// with `202` and nothing more is read.
+    async fn answer_request(
+        &self,
+        handler: &dyn ServerRequestHandler,
+        request: &Map<String, Value>,
+    ) -> Result<(), HttpClientError> {
+        let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+        let params = JsonObject::from_value(request.get("params").cloned().unwrap_or_default())
+            .unwrap_or_default();
+        let reply = match handler.handle(method, &params).await {
+            Ok(result) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request.get("id").cloned().unwrap_or(Value::Null),
+                "result": serde_json::from_str::<Value>(result.as_str()).unwrap_or_default(),
+            }),
+            Err(refusal) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request.get("id").cloned().unwrap_or(Value::Null),
+                "error": { "code": refusal.code, "message": refusal.message },
+            }),
+        };
+        let body = serde_json::to_vec(&reply).map_err(|error| HttpClientError::Body {
+            method: "POST",
+            what: "encoded",
+            detail: error.to_string(),
+        })?;
+        self.send(POST, &body, false).await?;
+        Ok(())
+    }
+
+    /// Reopens the stream a `POST` was answered on, from `last_event_id`.
+    ///
+    /// The id is sent verbatim: the standard calls it opaque, and the server
+    /// that issued it is the only thing that can read it.
+    async fn resume(&self, last_event_id: &str) -> Result<reqwest::Response, HttpClientError> {
+        self.get_stream(Some(last_event_id)).await
+    }
+
+    /// Opens the standalone stream, or resumes it from `last_event_id`.
+    async fn get_stream(
+        &self,
+        last_event_id: Option<&str>,
+    ) -> Result<reqwest::Response, HttpClientError> {
+        let mut builder = self
+            .inner
+            .get(&self.config.endpoint)
+            .header(reqwest::header::ACCEPT, ACCEPT);
+        if let Some(id) = last_event_id {
+            builder = builder.header(LAST_EVENT_ID, id);
         }
-        // The stream closed without the answer. A peer that stops mid-answer
-        // is a transport fault, and reporting it as one keeps a bridge from
-        // forwarding a request it can never complete.
-        Err(HttpClientError::Unanswered { method: POST })
+        if let Some(id) = self.session_token() {
+            builder = builder.header(SESSION_HEADER, id.as_ref());
+        }
+        let protocol = self
+            .protocol
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(protocol) = protocol {
+            builder = builder.header(PROTOCOL_HEADER, protocol);
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|error| HttpClientError::Io { method: GET, error })?;
+        self.absorb_session(&response)?;
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            Err(refusal(GET, response).await)
+        }
     }
 
     /// Opens the session's standing stream and reads it until the peer ends it.
@@ -805,6 +982,81 @@ impl HttpClient {
             }
         });
         Ok(())
+    }
+
+    /// Opens the standalone `GET` stream in the background and keeps it open.
+    ///
+    /// Through `2025-11-25` a server may send a request of its own — sampling,
+    /// elicitation, roots — and may send it on this stream rather than on the
+    /// response to a call, since the call that needed the answer has no stream
+    /// of its own to put it on. A client that declared one of those
+    /// capabilities and never opens the stream is never asked, and a server
+    /// whose tool waits for the answer waits forever.
+    ///
+    /// Requests are answered through the wired handler; everything else is
+    /// parked for [`take_pending`](Self::take_pending). A stream the server
+    /// ends is reopened after its `retry` interval with the last event id, and
+    /// a server that answers `405` to the `GET` — the specification lets it —
+    /// ends the task quietly. The task holds only a weak reference, so
+    /// dropping the client stops it.
+    pub fn spawn_listener(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut last_id: Option<String> = None;
+            let mut retry = DEFAULT_RETRY;
+            let mut failures = 0_u32;
+            loop {
+                let Some(client) = weak.upgrade() else {
+                    return;
+                };
+                let response = client.get_stream(last_id.as_deref()).await;
+                drop(client);
+                let response = match response {
+                    Ok(response) => response,
+                    // The specification lets a server decline the standalone
+                    // stream, and `405` is how it says so. Nothing to retry.
+                    Err(HttpClientError::Refused { status, .. })
+                        if status == reqwest::StatusCode::METHOD_NOT_ALLOWED =>
+                    {
+                        return;
+                    }
+                    Err(_) => {
+                        failures = failures.saturating_add(1);
+                        if failures >= MAX_RESUMES {
+                            return;
+                        }
+                        tokio::time::sleep(retry).await;
+                        continue;
+                    }
+                };
+                failures = 0;
+                let mut stream = WireStream::new(response);
+                while let Ok(Some(event)) = stream.next().await {
+                    if let Some(id) = event.id {
+                        last_id = Some(id);
+                    }
+                    if let Some(interval) = event.retry {
+                        retry = interval;
+                    }
+                    let Some(data) = event.data else {
+                        continue;
+                    };
+                    let Ok(Value::Object(frame)) = serde_json::from_str(&data) else {
+                        continue;
+                    };
+                    let Some(client) = weak.upgrade() else {
+                        return;
+                    };
+                    match &client.handler {
+                        Some(Handler(handler)) if is_request(&frame) => {
+                            let _ = client.answer_request(handler.as_ref(), &frame).await;
+                        }
+                        _ => client.unsolicited.hold(frame),
+                    }
+                }
+                tokio::time::sleep(retry).await;
+            }
+        });
     }
 
     /// Takes every frame a server volunteered while this client was busy.

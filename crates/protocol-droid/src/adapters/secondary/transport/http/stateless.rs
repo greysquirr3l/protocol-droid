@@ -31,7 +31,9 @@ use serde_json::{Map, Value};
 use super::client::{HttpClient, HttpClientConfig};
 use super::error::HttpClientError;
 use crate::application::client::{ClientTransport, TransportError};
-use crate::application::jsonrpc::document::{notification_document, reply_result, request_document};
+use crate::application::jsonrpc::document::{
+    RequestError, notification_document, reply_result, request_document,
+};
 use crate::application::mcp::param_headers;
 use crate::application::mcp::request_meta::{
     CLIENT_CAPABILITIES_KEY, CLIENT_INFO_KEY, PROTOCOL_VERSION_KEY,
@@ -169,6 +171,30 @@ fn unavailable(error: impl core::fmt::Display) -> TransportError {
     TransportError::Unavailable(error.to_string())
 }
 
+/// Reads an HTTP refusal whose body is a JSON-RPC error as the error it is.
+///
+/// A `2026-07-28` server answers `-32022`, `-32021`, `-32020` and `-32601`
+/// with a `4xx` status and the error in the body. The HTTP client reports that
+/// as a refused `POST`; a caller wants the code and the `data`.
+fn refusal(error: HttpClientError) -> TransportError {
+    if let HttpClientError::Refused { preview, .. } = &error
+        && let Ok(Value::Object(body)) = serde_json::from_str::<Value>(preview)
+        && let Some(Value::Object(failure)) = body.get("error")
+        && let Some(code) = failure.get("code").and_then(Value::as_i64)
+    {
+        return TransportError::Refused {
+            code,
+            message: failure
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            data: failure.get("data").map(Value::to_string),
+        };
+    }
+    unavailable(error)
+}
+
 impl ClientTransport for StatelessHttpClient {
     /// POSTs one self-describing request and returns its `result`.
     ///
@@ -207,10 +233,21 @@ impl ClientTransport for StatelessHttpClient {
                 .inner
                 .post_envelope_with(&envelope, &headers)
                 .await
-                .map_err(unavailable)?
+                .map_err(refusal)?
                 .ok_or_else(|| unavailable("a request was answered with no body at all"))?;
             let text = serde_json::to_string(&Value::Object(reply)).map_err(unavailable)?;
-            let result = reply_result(&text, &id).map_err(unavailable)?;
+            let result = reply_result(&text, &id).map_err(|error| match error {
+                RequestError::PeerError {
+                    code,
+                    message,
+                    data,
+                } => TransportError::Refused {
+                    code: code.code(),
+                    message,
+                    data,
+                },
+                other => unavailable(other),
+            })?;
             Ok(if listing { self.learn_tools(result) } else { result })
         })
     }

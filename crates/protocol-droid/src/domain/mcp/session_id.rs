@@ -67,7 +67,7 @@ use crate::domain::session::SessionId;
 /// RFC 9110 §5.5 `field-vchar` plus SP. Exposed so the test that proves the
 /// encoding is in range and the parser that enforces it cite the same two
 /// numbers instead of each spelling their own.
-pub const VISIBLE_ASCII_RANGE: core::ops::RangeInclusive<u8> = 0x20..=0x7E;
+pub const VISIBLE_ASCII_RANGE: core::ops::RangeInclusive<u8> = 0x21..=0x7E;
 
 /// How many characters [`McpSessionId`] renders.
 ///
@@ -245,7 +245,14 @@ impl McpSessionIdError {
     /// [`McpSessionIdError::NotVisibleAscii`] naming the first byte that is out
     /// of range. Only the *first* offender is reported: the value is a header,
     /// and a message listing every bad byte in a 4 KiB garbage string is noise.
-    pub fn validate(value: &str) -> Result<&str, Self> {
+    ///
+    /// This checks only what the specification requires of a session id:
+    /// "The session ID **MUST** only contain visible ASCII characters", and it
+    /// is otherwise the server's to shape. A *client* holds whatever id the
+    /// server it dialled issued — a UUID, a JWT, a counter — so it must not
+    /// insist on the sixteen-digit form this crate's own server happens to
+    /// write; [`validate`](Self::validate) is for the server side, which does.
+    pub fn validate_opaque(value: &str) -> Result<&str, Self> {
         let trimmed = value.trim_matches([' ', '\t']);
         if trimmed.is_empty() {
             return Err(Self::Empty);
@@ -260,6 +267,9 @@ impl McpSessionIdError {
         // character itself. A byte walk would name the UTF-8 lead byte of
         // `é` (0xC3) rather than `é` (0xE9), and the caller would be left
         // decoding the difference.
+        // The specification's range is `0x21..=0x7E` — a space is not a
+        // visible character, and an id with one in the middle could not survive
+        // a proxy that normalises whitespace.
         for (index, character) in trimmed.char_indices() {
             let byte = u8::try_from(character).unwrap_or(u8::MAX);
             if !VISIBLE_ASCII_RANGE.contains(&byte) {
@@ -271,6 +281,17 @@ impl McpSessionIdError {
                 });
             }
         }
+        Ok(trimmed)
+    }
+
+    /// Checks that a value is the form this crate's own server issues.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`validate_opaque`](Self::validate_opaque) refuses, plus a
+    /// value that is not sixteen hexadecimal digits.
+    pub fn validate(value: &str) -> Result<&str, Self> {
+        let trimmed = Self::validate_opaque(value)?;
         // Width is measured in **bytes**, because that is what an HTTP field
         // carries and what the header is written as. Counting characters
         // instead would let a multi-byte character pad a short value up to the

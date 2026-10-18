@@ -539,7 +539,7 @@ async fn a_session_header_the_client_cannot_parse_is_refused() -> Result<(), Tes
         StatusCode::OK,
         "application/json",
         "{}",
-        Some("not-a-session"),
+        Some("has a space"),
     ))
     .await?;
 
@@ -550,8 +550,36 @@ async fn a_session_header_the_client_cannot_parse_is_refused() -> Result<(), Tes
         Ok(_) => return Err(fail("a bad session id was accepted")),
     }
     require(
-        client.session_id().is_none(),
-        "an unparseable session id was kept anyway",
+        client.session_token().is_none(),
+        "an id outside visible ASCII was kept anyway",
+    )?;
+    Ok(())
+}
+
+/// The specification asks only that a session id be visible ASCII. A server
+/// that issues a UUID, a counter, or `session-17` is conforming, and a client
+/// that insisted on this crate's own sixteen-digit form could talk to none of
+/// them.
+#[tokio::test]
+async fn any_visible_ascii_session_id_is_kept_verbatim() -> Result<(), TestError> {
+    let seen = Arc::new(Seen::default());
+    let server = TestServer::start(seen_route(
+        Arc::clone(&seen),
+        StatusCode::OK,
+        "application/json",
+        "{}",
+        Some("session-1792335438"),
+    ))
+    .await?;
+
+    let client = server.client()?;
+    client
+        .post(b"{}", false)
+        .await
+        .map_err(|error| fail(format!("a conforming session id was refused: {error}")))?;
+    require(
+        client.session_token().as_deref() == Some("session-1792335438"),
+        "the id was not kept exactly as the server wrote it",
     )?;
     Ok(())
 }

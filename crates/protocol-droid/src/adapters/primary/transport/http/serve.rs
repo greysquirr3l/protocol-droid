@@ -1338,20 +1338,6 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
     Ok((listener, bound))
 }
 
-/// The id source a builder uses when none was supplied.
-///
-/// [`RandomIds`] behind the `random-ids` feature, and an error without it. A
-/// counter would be the obvious fallback and is the wrong one: a session id is
-/// presented by the peer on every subsequent request, so a guessable sequence
-/// is a guessable session. Failing is the honest answer for a lean build, and
-/// it fails once at startup rather than per request.
-#[cfg(feature = "random-ids")]
-/// The `params._meta.progressToken` a request carried, if any.
-///
-/// `None` for a request with no `_meta`, a `_meta` without the member, or a
-/// member that is not a string or a number — the three shapes the vendored
-/// schema excludes. All three mean the same thing to a handler: nobody asked
-/// for progress, so there is nothing to report against.
 /// The numeric id a wire id carries, if it is one.
 ///
 /// `None` for a string id or an absent one. A server-initiated request's id is
@@ -1391,6 +1377,14 @@ fn answer_of(body: &[u8]) -> Answer {
     )
 }
 
+/// The id source a builder uses when none was supplied.
+///
+/// [`RandomIds`] behind the `random-ids` feature, and an error without it. A
+/// counter would be the obvious fallback and is the wrong one: a session id is
+/// presented by the peer on every subsequent request, so a guessable sequence
+/// is a guessable session. Failing is the honest answer for a lean build, and
+/// it fails once at startup rather than per request.
+#[cfg(feature = "random-ids")]
 fn default_ids() -> Result<Ids, ServeError> {
     use crate::adapters::secondary::id_source::RandomIds;
     RandomIds::new()

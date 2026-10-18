@@ -330,6 +330,15 @@ async fn call_tool(client: &Client, tool: &str, arguments: &Value) -> anyhow::Re
             ClientError::Transport(reason) => {
                 anyhow::anyhow!("the call to `{tool}` did not complete: {reason}")
             }
+            // A one-shot call that meets a question cannot answer it, and must
+            // not pretend to: the error names the callback so an agent knows
+            // what it would have had to wire.
+            ClientError::InputUnresolved { method } => anyhow::anyhow!(
+                "`{tool}` asked for `{method}` input, and a one-shot call has no one to ask"
+            ),
+            ClientError::TooManyRounds(rounds) => {
+                anyhow::anyhow!("`{tool}` asked for input more than {rounds} times")
+            }
         })?;
     let value = serde_json::from_str::<Value>(reply.as_str())
         .with_context(|| "the tool's reply was not parseable JSON")?;

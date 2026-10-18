@@ -48,8 +48,11 @@ mod bridge_peer;
 mod client;
 mod error;
 mod frames;
+mod opaque;
 mod stateless;
 
+#[cfg(test)]
+mod resume_tests;
 #[cfg(test)]
 mod tests;
 

@@ -17,10 +17,11 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    NegotiationError, SpecError, SupportedVersions, SupportedVersionsError, TransportKind,
+    CapabilitySet, NegotiationError, ProtocolVersion, SpecError, SupportedVersions, SupportedVersionsError, TransportKind,
     TransportSpec,
 };
 
+use super::handler::ConnectOptions;
 use super::{Client, ClientError, ClientTransport, HandshakeError};
 #[cfg(any(feature = "http", feature = "legacy-sse"))]
 use super::{ClientConfig, handshake};
@@ -95,52 +96,49 @@ pub async fn open(
     spec: &TransportSpec,
     versions: &SupportedVersions,
 ) -> Result<(Client, Arc<dyn ClientTransport>), ConnectError> {
+    open_with(spec, versions, ConnectOptions::new()).await
+}
+
+/// [`open`], applying `options`.
+///
+/// What a client that can answer sampling, elicitation or roots needs: a
+/// server only asks for what the client said it can do, and a client that
+/// declared nothing is never asked.
+///
+/// # Errors
+///
+/// As [`open`].
+#[cfg(any(feature = "http", feature = "legacy-sse"))]
+pub(super) async fn open_with(
+    spec: &TransportSpec,
+    versions: &SupportedVersions,
+    options: ConnectOptions,
+) -> Result<(Client, Arc<dyn ClientTransport>), ConnectError> {
+    let capabilities = options.capabilities;
     // One match, so there is exactly one place in the crate that knows which
     // transports have client adapters. A second copy of this table is a second
     // opinion on that question, and it is the copy that has to be remembered
     // when a kind is added.
+    // The concrete HTTP client, kept when a handler is wired so its standalone
+    // stream can be opened once the handshake has given it a session.
+    #[cfg(feature = "http")]
+    let listener: Option<Arc<crate::adapters::secondary::transport::http::HttpClient>>;
     let (transport, kind): (Arc<dyn ClientTransport>, TransportKind) = match spec.kind() {
         #[cfg(feature = "http")]
         TransportKind::StreamableHttp => {
             use crate::adapters::secondary::transport::http::{HttpClient, HttpClientConfig};
             let config = HttpClientConfig::new(spec.target())?;
-            (
-                Arc::new(HttpClient::new(config)?),
-                TransportKind::StreamableHttp,
-            )
+            let mut client = HttpClient::new(config)?;
+            if let Some(handler) = options.handler.clone() {
+                client = client.answering(handler);
+            }
+            let client = Arc::new(client);
+            listener = options.handler.is_some().then(|| Arc::clone(&client));
+            (client, TransportKind::StreamableHttp)
         }
         #[cfg(feature = "http")]
         TransportKind::StatelessHttp => {
-            use crate::adapters::secondary::transport::http::{
-                HttpClientConfig, StatelessHttpClient,
-            };
-            // Only the revisions with no handshake can be spoken statelessly,
-            // and the handshake below sends `initialize` for any other — so
-            // the offer is narrowed here, newest first.
-            let mut stateless: Vec<_> = versions
-                .as_slice()
-                .iter()
-                .copied()
-                .filter(|version| !crate::domain::handshake_defined_in(*version))
-                .collect();
-            stateless.sort_by(|left, right| right.cmp(left));
-            let Some(newest) = stateless.first().copied() else {
-                return Err(ConnectError::Unsupported {
-                    kind: TransportKind::StatelessHttp,
-                    reason: "none of the offered revisions has a stateless lifecycle",
-                });
-            };
-            let config = ClientConfig::speaking(stateless, TransportKind::StatelessHttp)?;
-            let capabilities =
-                serde_json::Value::Object(super::handshake::client_capabilities(&config));
-            let client =
-                StatelessHttpClient::new(HttpClientConfig::new(spec.target())?, newest, capabilities)?;
-            let transport: Arc<dyn ClientTransport> = Arc::new(client);
-            let session = handshake(transport.as_ref(), &config).await?;
-            return Ok((
-                Client::from_session(&session, Arc::clone(&transport)),
-                transport,
-            ));
+            return open_stateless(spec, versions, options.capabilities).await;
         }
         #[cfg(feature = "legacy-sse")]
         TransportKind::LegacySse => {
@@ -149,6 +147,7 @@ pub async fn open(
             };
             let config = LegacySseConfig::new(spec.target())?;
             let client = LegacySseClient::connect(config).await?;
+            listener = None;
             (Arc::new(client), TransportKind::LegacySse)
         }
         kind => {
@@ -159,8 +158,31 @@ pub async fn open(
         }
     };
 
-    let config = ClientConfig::speaking(versions.as_slice().to_vec(), kind)?;
+    // Newest first, because the first revision is the one offered: a set sorted
+    // oldest-first would open every connection by asking for 2024-11-05. Only
+    // revisions that have a handshake: a stateful transport that offered
+    // `2026-07-28` would send `server/discover` to a server expecting
+    // `initialize`. The stateless transport has its own path above.
+    let mut offered: Vec<ProtocolVersion> = versions
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|version| crate::domain::handshake_defined_in(*version))
+        .collect();
+    offered.sort_by(|left, right| right.cmp(left));
+    if offered.is_empty() {
+        return Err(ConnectError::Unsupported {
+            kind,
+            reason: "none of the offered revisions has an `initialize` handshake; \
+                     use an `http-stateless:` spec for 2026-07-28",
+        });
+    }
+    let config = ClientConfig::speaking(offered, kind)?.with_capabilities(capabilities);
     let session = handshake(transport.as_ref(), &config).await?;
+    #[cfg(feature = "http")]
+    if let Some(listener) = &listener {
+        listener.spawn_listener();
+    }
 
     // The profile is the session's, not re-resolved from the two capability
     // sets. `resolve` is pure and would land in the same place, but reading it
@@ -187,11 +209,106 @@ pub async fn open(
     spec: &TransportSpec,
     versions: &SupportedVersions,
 ) -> Result<(Client, Arc<dyn ClientTransport>), ConnectError> {
-    let _ = versions;
+    open_with(spec, versions, ConnectOptions::new()).await
+}
+
+/// [`open_with`] in a build with no client adapter: always refuses.
+///
+/// # Errors
+///
+/// Always [`ConnectError::Unsupported`].
+#[cfg(not(any(feature = "http", feature = "legacy-sse")))]
+pub(super) async fn open_with(
+    spec: &TransportSpec,
+    versions: &SupportedVersions,
+    options: ConnectOptions,
+) -> Result<(Client, Arc<dyn ClientTransport>), ConnectError> {
+    let _ = (versions, options);
     Err(ConnectError::Unsupported {
         kind: spec.kind(),
         reason: missing_reason(spec.kind()),
     })
+}
+
+/// Opens a `2026-07-28` session: no `initialize`, one revision per attempt.
+///
+/// Separate from [`open_with`] because it is a different lifecycle rather than
+/// a different transport: it negotiates by trying and being refused, where the
+/// stateful path sends a handshake and reads the answer.
+#[cfg(feature = "http")]
+async fn open_stateless(
+    spec: &TransportSpec,
+    versions: &SupportedVersions,
+    capabilities: CapabilitySet,
+) -> Result<(Client, Arc<dyn ClientTransport>), ConnectError> {
+    use crate::adapters::secondary::transport::http::{HttpClientConfig, StatelessHttpClient};
+    // Only the revisions with no handshake can be spoken statelessly,
+    // and the handshake below sends `initialize` for any other — so
+    // the offer is narrowed here, newest first.
+    let mut stateless: Vec<_> = versions
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|version| !crate::domain::handshake_defined_in(*version))
+        .collect();
+    stateless.sort_by(|left, right| right.cmp(left));
+    if stateless.is_empty() {
+        return Err(ConnectError::Unsupported {
+            kind: TransportKind::StatelessHttp,
+            reason: "none of the offered revisions has a stateless lifecycle",
+        });
+    }
+    // SEP-2575: a server that does not speak the revision a request
+    // names answers `-32022` listing the ones it does, and the client
+    // retries with the newest it shares. A server may list the very
+    // revision it just refused (a transient rejection, or a balancer
+    // in front of mixed deployments), so a revision it names is tried
+    // up to twice before it is given up on.
+    let mut attempts: Vec<(ProtocolVersion, u8)> =
+        stateless.iter().map(|version| (*version, 0)).collect();
+    let mut candidate = stateless.first().copied();
+    loop {
+        let Some(current) = candidate else {
+            return Err(ConnectError::Unsupported {
+                kind: TransportKind::StatelessHttp,
+                reason: "the server shares no stateless revision with this client",
+            });
+        };
+        if let Some((_, tried)) = attempts.iter_mut().find(|(version, _)| *version == current) {
+            *tried = tried.saturating_add(1);
+        }
+        let config =
+            ClientConfig::speaking(vec![current], TransportKind::StatelessHttp)?
+                .with_capabilities(capabilities);
+        let capabilities_json =
+            serde_json::Value::Object(super::handshake::client_capabilities(&config));
+        let client = StatelessHttpClient::new(
+            HttpClientConfig::new(spec.target())?,
+            current,
+            capabilities_json,
+        )?;
+        let transport: Arc<dyn ClientTransport> = Arc::new(client);
+        match handshake(transport.as_ref(), &config).await {
+            Ok(session) => {
+                return Ok((
+                    Client::from_session(&session, Arc::clone(&transport)),
+                    transport,
+                ));
+            }
+            Err(HandshakeError::Transport(refused))
+                if refused.supported_versions().is_some() =>
+            {
+                let supported = refused.supported_versions().unwrap_or_default();
+                candidate = attempts
+                    .iter()
+                    .find(|(version, tried)| {
+                        *tried < 2 && supported.iter().any(|name| *name == version.as_wire())
+                    })
+                    .map(|(version, _)| *version);
+            }
+            Err(other) => return Err(other.into()),
+        }
+    }
 }
 
 /// Why `kind` has no client adapter here, in the words of someone who has to

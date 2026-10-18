@@ -231,6 +231,7 @@ fn peer_error(error: &Value) -> RequestError {
     RequestError::PeerError {
         code: IrErrorCode::from_code(code),
         message: message.to_owned(),
+        data: error.get("data").map(Value::to_string),
     }
 }
 
@@ -287,6 +288,12 @@ pub enum RequestError {
         code: IrErrorCode,
         /// The message the peer sent.
         message: String,
+        /// The error's `data` member as JSON text, when it sent one.
+        ///
+        /// Text rather than a `Value` so this type stays `Eq` and cheap to
+        /// clone; `-32022` and `-32021` carry what a caller needs to retry
+        /// (`supported`, `requiredCapabilities`) and drop it at their peril.
+        data: Option<String>,
     },
 }
 
