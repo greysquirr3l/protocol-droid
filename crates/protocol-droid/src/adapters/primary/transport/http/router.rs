@@ -92,6 +92,7 @@ use super::{
 };
 use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::domain::ProtocolVersion;
+use crate::domain::jsonrpc::{Frame, WireId, decode};
 use crate::domain::mcp::McpSessionId;
 use crate::domain::registry::AuthContext;
 
@@ -730,13 +731,25 @@ where
         Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
     };
 
+    // Read once, here, so every refusal *after* this point can answer the id
+    // the client used. A body that will not decode has no id to offer and
+    // falls back to `null`, which is what JSON-RPC asks for when the id was
+    // never detected.
+    let request_id = request_id_of(&body);
+
     // The version header is parsed before anything is dispatched, so a client
     // that wrote a broken one is refused without the request running. What it
     // *disagrees* with is not decided here: that is a comparison against the
     // session's negotiated revision, and only the protocol layer knows it.
     let protocol = match read_protocol(&headers) {
         Ok(protocol) => protocol,
-        Err(refusal) => return refuse_with_challenge(state.config.challenge().as_deref(), refusal),
+        Err(refusal) => {
+            return refuse_with_id_and_challenge(
+                state.config.challenge().as_deref(),
+                refusal,
+                request_id.as_ref(),
+            );
+        }
     };
 
     // The body is read before the header is resolved, because "what does this
@@ -748,16 +761,21 @@ where
             Unsessioned::Establishing => SessionHandle::Establishing,
             Unsessioned::Stateless => SessionHandle::Stateless,
             Unsessioned::NeedsSession => {
-                return refuse_with_challenge(
+                return refuse_with_id_and_challenge(
                     state.config.challenge().as_deref(),
                     Refusal::MissingSession,
+                    request_id.as_ref(),
                 );
             }
         },
         Header::Value(_) | Header::Unreadable => match resolve_session(&state.sessions, &headers) {
             Ok(session) => session,
             Err(refusal) => {
-                return refuse_with_challenge(state.config.challenge().as_deref(), refusal);
+                return refuse_with_id_and_challenge(
+                    state.config.challenge().as_deref(),
+                    refusal,
+                    request_id.as_ref(),
+                );
             }
         },
     };
@@ -771,7 +789,11 @@ where
     };
     match state.handler.dispatch(call).await {
         Ok(response) => stamp_media_type(response),
-        Err(refusal) => refuse_with_challenge(state.config.challenge().as_deref(), refusal),
+        Err(refusal) => refuse_with_id_and_challenge(
+            state.config.challenge().as_deref(),
+            refusal,
+            request_id.as_ref(),
+        ),
     }
 }
 
@@ -1042,9 +1064,39 @@ fn read_protocol(headers: &HeaderMap) -> Result<Option<ProtocolVersion>, Refusal
 /// `403` says this credential is fine and will not do, which re-authenticating
 /// cannot change. Sending a challenge there would tell a correct client to do
 /// the one thing that will not help.
+/// The JSON-RPC id a body carries, if it carries one at all.
+///
+/// Total where the rest of the pipeline is fallible: a body that is a batch, a
+/// reply shape, or not JSON at all simply has no id, and every caller already
+/// has to handle "no id" because the earliest refusals run before any body
+/// exists. Returning `None` for those keeps one answer for both cases instead
+/// of two.
+fn request_id_of(body: &[u8]) -> Option<WireId<'static>> {
+    let decoded = decode(body).ok()?;
+    let Frame::Single(envelope) = decoded else {
+        return None;
+    };
+    envelope.id().map(WireId::to_owned)
+}
+
 fn refuse_with_challenge(challenge: Option<&str>, refusal: Refusal) -> Response {
+    refuse_with_id_and_challenge(challenge, refusal, None)
+}
+
+/// [`refuse_with_challenge`], echoing the JSON-RPC id of the refused request.
+///
+/// `id` is the id read off a body this handler has already read. Passing it is
+/// what stops a refusal that happened *after* the body arrived from answering
+/// `id: null` — see [`Refusal::body_with_id`]. Everything that runs before the
+/// body exists has nothing to pass and keeps answering `null`, which is what
+/// JSON-RPC asks for in that case.
+fn refuse_with_id_and_challenge(
+    challenge: Option<&str>,
+    refusal: Refusal,
+    id: Option<&WireId<'_>>,
+) -> Response {
     let status = refusal.status();
-    let mut response = refusal.into_response();
+    let mut response = refusal.into_response_with_id(id);
     if status == StatusCode::UNAUTHORIZED
         && let Some(challenge) = challenge
         && let Ok(value) = HeaderValue::from_str(challenge)

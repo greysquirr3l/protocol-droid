@@ -40,6 +40,7 @@ use serde_json::{Value, json};
 
 use super::JSON_MEDIA_TYPE;
 use crate::domain::EventId;
+use crate::domain::jsonrpc::WireId;
 
 /// A request the adapter refuses before or instead of answering it.
 ///
@@ -310,6 +311,22 @@ impl Refusal {
     /// against the JSON-RPC schema, which requires the member on an error.
     #[must_use]
     pub fn body(&self) -> Value {
+        self.body_with_id(None)
+    }
+
+    /// The body, echoing the JSON-RPC id of the request that earned the refusal.
+    ///
+    /// SEP-2575 requires it and JSON-RPC has always allowed it: *"the id must
+    /// be Null if there was an error in detecting the id"*. A body this
+    /// adapter has already read is not that case — the id was detected, and
+    /// the refusal happened afterwards. Answering `id: null` for a request
+    /// that named `4` makes the client's own pending request unmatchable,
+    /// which is the one thing an error reply is supposed to prevent.
+    ///
+    /// `None` still means `null`, and deliberately so: a GET or a DELETE has
+    /// no JSON-RPC envelope to take an id from, and a body that would not
+    /// decode genuinely did not detect one.
+    pub fn body_with_id(&self, id: Option<&WireId<'_>>) -> Value {
         let data = match self {
             Self::StreamGap {
                 requested,
@@ -328,9 +345,14 @@ impl Refusal {
             }),
             other => json!({ "error": slug(other) }),
         };
+        let id = match id {
+            Some(WireId::Number(value)) => Value::from(*value),
+            Some(WireId::Text(text)) => Value::from(text.as_ref()),
+            None => Value::Null,
+        };
         json!({
             "jsonrpc": "2.0",
-            "id": Value::Null,
+            "id": id,
             "error": {
                 "code": self.code(),
                 "message": self.to_string(),
@@ -367,17 +389,15 @@ const fn slug(refusal: &Refusal) -> &'static str {
     }
 }
 
-impl IntoResponse for Refusal {
-    /// Renders the refusal, with the security layer still applied on top.
+impl Refusal {
+    /// The response, echoing the JSON-RPC id of the refused request.
     ///
-    /// This impl exists so a handler can `?` a `Refusal` into a `Response`. It
-    /// sets only the status, the content type and — for the two refusals where
-    /// a header is meaningful — `Allow` and `Retry-After`; the security headers
-    /// come from the router layer, which is the only place that can guarantee
-    /// they are on *every* response including this one.
-    fn into_response(self) -> Response {
+    /// Same rule as [`body_with_id`](Self::body_with_id): an id that has been
+    /// read off a body is carried into the answer, and an id that was never
+    /// detected is `null`.
+    pub fn into_response_with_id(self, id: Option<&WireId<'_>>) -> Response {
         let status = self.status();
-        let body = serde_json::to_vec(&self.body()).unwrap_or_else(|_| Vec::new());
+        let body = serde_json::to_vec(&self.body_with_id(id)).unwrap_or_else(|_| Vec::new());
         let mut response = Response::builder()
             .status(status)
             .header(header::CONTENT_TYPE, JSON_MEDIA_TYPE)
@@ -409,8 +429,53 @@ impl IntoResponse for Refusal {
     }
 }
 
+impl IntoResponse for Refusal {
+    /// Renders the refusal, with the security layer still applied on top.
+    ///
+    /// This impl exists so a handler can `?` a `Refusal` into a `Response`. It
+    /// sets only the status, the content type and — for the two refusals where
+    /// a header is meaningful — `Allow` and `Retry-After`; the security headers
+    /// come from the router layer, which is the only place that can guarantee
+    /// they are on *every* response including this one.
+    fn into_response(self) -> Response {
+        self.into_response_with_id(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::domain::jsonrpc::WireId;
+
+    /// An id read off a body is echoed; no id stays `null`.
+    ///
+    /// Both halves, and the second is the half that is easy to lose: a GET and
+    /// a DELETE have no envelope, and a body that will not decode did not
+    /// detect one. JSON-RPC asks for `null` in exactly those cases, so the
+    /// single-argument `body()` — which every other caller uses — must keep
+    /// producing it.
+    #[test]
+    fn a_refusal_echoes_an_id_when_one_was_detected() {
+        let numeric = Refusal::MissingSession.body_with_id(Some(&WireId::Number(7)));
+        assert_eq!(
+            numeric.get("id"),
+            Some(&serde_json::json!(7)),
+            "a refusal to request 7 must answer 7, not null",
+        );
+
+        let textual = Refusal::MissingSession.body_with_id(Some(&WireId::text("r1")));
+        assert_eq!(
+            textual.get("id"),
+            Some(&serde_json::json!("r1")),
+            "a string id must stay a string",
+        );
+
+        assert_eq!(
+            Refusal::MissingSession.body().get("id"),
+            Some(&serde_json::Value::Null),
+            "with no id detected, the answer is null",
+        );
+    }
+
     use assert_matches::assert_matches;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
