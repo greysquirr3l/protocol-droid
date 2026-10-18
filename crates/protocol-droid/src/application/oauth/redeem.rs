@@ -171,6 +171,97 @@ pub trait TokenEndpoint {
         &self,
         request: TokenRequest<'_>,
     ) -> impl Future<Output = Result<IssuedToken, TokenEndpointError>> + Send;
+
+    /// Trade a refresh token for a new access token (RFC 6749 §6).
+    ///
+    /// The default refuses, so an endpoint written before this method existed
+    /// keeps compiling and a caller finds out at runtime, as an
+    /// [`TokenEndpointError::Unavailable`], that it cannot refresh.
+    ///
+    /// # Errors
+    ///
+    /// As [`redeem`](Self::redeem). `invalid_grant` here means the refresh
+    /// token is spent or revoked, and the caller falls back to a full
+    /// authorization.
+    fn refresh(
+        &self,
+        request: RefreshRequest<'_>,
+    ) -> impl Future<Output = Result<IssuedToken, TokenEndpointError>> + Send {
+        let _ = request;
+        core::future::ready(Err(TokenEndpointError::Unavailable(
+            "this token endpoint does not support refresh tokens".to_owned(),
+        )))
+    }
+}
+
+/// One `grant_type=refresh_token` request.
+///
+/// Borrowed, like [`TokenRequest`], so a refresh token is not copied around.
+#[derive(Debug)]
+pub struct RefreshRequest<'a> {
+    refresh_token: &'a str,
+    client_id: &'a ClientId,
+    client_secret: Option<&'a ClientSecret>,
+    resource: &'a ResourceParameters,
+    auth_method: TokenAuthMethod,
+    scope: Option<&'a str>,
+}
+
+impl<'a> RefreshRequest<'a> {
+    /// A refresh of `refresh_token` as `client`, for the resource the grant
+    /// was bound to.
+    #[must_use]
+    pub const fn new(
+        refresh_token: &'a str,
+        client: &'a RegisteredClient,
+        resource: &'a ResourceParameters,
+        scope: Option<&'a str>,
+    ) -> Self {
+        Self {
+            refresh_token,
+            client_id: client.client_id(),
+            client_secret: client.secret(),
+            resource,
+            auth_method: client.auth_method(),
+            scope,
+        }
+    }
+
+    /// The refresh token being redeemed.
+    #[must_use]
+    pub const fn refresh_token(&self) -> &'a str {
+        self.refresh_token
+    }
+
+    /// The client the refresh is made as.
+    #[must_use]
+    pub const fn client_id(&self) -> &'a ClientId {
+        self.client_id
+    }
+
+    /// The secret, for a confidential client only; omitted otherwise.
+    #[must_use]
+    pub const fn client_secret(&self) -> Option<&'a ClientSecret> {
+        self.client_secret
+    }
+
+    /// How the client authenticates at the token endpoint.
+    #[must_use]
+    pub const fn auth_method(&self) -> TokenAuthMethod {
+        self.auth_method
+    }
+
+    /// The RFC 8707 resource indicators the grant is bound to.
+    #[must_use]
+    pub const fn resource(&self) -> &'a ResourceParameters {
+        self.resource
+    }
+
+    /// The scope to ask for, if narrower than the original grant.
+    #[must_use]
+    pub const fn scope(&self) -> Option<&'a str> {
+        self.scope
+    }
 }
 
 /// Why a redemption did not produce a token.

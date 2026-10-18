@@ -183,3 +183,146 @@ async fn an_accepted_request_resets_the_count() -> Result<(), url::ParseError> {
     assert!(outcome.is_some_and(|text| !text.contains("authorization attempts")));
     Ok(())
 }
+
+mod refresh {
+    use core::future::Future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::application::oauth::authorizer::Refreshable;
+    use crate::domain::oauth::issued_token::IssuedToken;
+    use crate::domain::oauth::registration::{ClientId, RegisteredClient};
+    use crate::domain::oauth::resource::ResourceParameters;
+    use crate::application::oauth::redeem::RefreshRequest;
+    use crate::domain::mcp::resource_metadata::ResourceUri;
+
+    /// Answers a refresh with a fixed body and counts the asks.
+    struct Scripted {
+        body: &'static str,
+        asked: Arc<AtomicUsize>,
+    }
+
+    impl TokenEndpoint for Scripted {
+        fn redeem(
+            &self,
+            _request: TokenRequest<'_>,
+        ) -> impl Future<Output = Result<IssuedToken, TokenEndpointError>> + Send {
+            core::future::ready(Err(TokenEndpointError::Unavailable("not here".to_owned())))
+        }
+
+        fn refresh(
+            &self,
+            request: RefreshRequest<'_>,
+        ) -> impl Future<Output = Result<IssuedToken, TokenEndpointError>> + Send {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.refresh_token(), "old-refresh");
+            core::future::ready(
+                IssuedToken::parse(self.body.as_bytes()).map_err(TokenEndpointError::Refused),
+            )
+        }
+    }
+
+    struct Env {
+        body: &'static str,
+        asked: Arc<AtomicUsize>,
+    }
+
+    impl OAuthEnvironment for Env {
+        type Token = Scripted;
+
+        fn token_endpoint(&self, _url: &str) -> Scripted {
+            Scripted {
+                body: self.body,
+                asked: Arc::clone(&self.asked),
+            }
+        }
+
+        fn get(&self, _url: &str) -> impl Future<Output = Result<Fetched, EnvironmentError>> + Send {
+            core::future::ready(Ok(Fetched {
+                status: 404,
+                body: Vec::new(),
+            }))
+        }
+
+        fn post_json(
+            &self,
+            _url: &str,
+            _body: &str,
+        ) -> impl Future<Output = Result<Fetched, EnvironmentError>> + Send {
+            core::future::ready(Err(EnvironmentError::Unavailable("no".to_owned())))
+        }
+
+        fn authorize(
+            &self,
+            _url: &str,
+        ) -> impl Future<Output = Result<AuthorizationCallback, EnvironmentError>> + Send {
+            core::future::ready(Err(EnvironmentError::Declined("no one is there".to_owned())))
+        }
+    }
+
+    type Flow = std::sync::Arc<OAuthAuthorizer<Env, NoSecrets>>;
+
+    /// An authorizer holding a token and a refresh token, as after a login.
+    fn holding(body: &'static str) -> Result<(Flow, Arc<AtomicUsize>), Box<dyn std::error::Error>> {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let config = OAuthConfig::new(SERVER, ProtocolVersion::V2025_11_25)?;
+        let flow = OAuthAuthorizer::new(
+            config,
+            Env {
+                body,
+                asked: Arc::clone(&asked),
+            },
+            NoSecrets,
+        );
+        let client = RegisteredClient::dynamic(ISSUER, ClientId::opaque("id"), None)?;
+        flow.record(
+            "old-access".to_owned(),
+            Some("read".to_owned()),
+            Some(Refreshable {
+                token: "old-refresh".to_owned(),
+                token_endpoint: format!("{ISSUER}/token"),
+                client,
+                resource: ResourceParameters::single(&ResourceUri::new(SERVER)?),
+            }),
+        );
+        Ok((flow, asked))
+    }
+
+    const EXPIRED: Option<&str> = Some(r#"Bearer error="invalid_token""#);
+
+    #[tokio::test]
+    async fn an_expired_token_is_refreshed_without_asking_the_user() -> Result<(), Box<dyn std::error::Error>> {
+        let (flow, asked) = holding(
+            r#"{"access_token":"new-access","token_type":"Bearer","refresh_token":"old-refresh"}"#,
+        )?;
+        flow.challenged(401, EXPIRED).await?;
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(flow.bearer().as_deref(), Some("new-access"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_refused_refresh_token_is_forgotten_and_the_flow_runs() -> Result<(), Box<dyn std::error::Error>> {
+        let (flow, asked) = holding(r#"{"error":"invalid_grant"}"#)?;
+        // Falls through to the full flow, which cannot discover anything here.
+        assert!(flow.challenged(401, EXPIRED).await.is_err());
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(flow.state().refresh.is_none());
+        // And is not offered again.
+        let _ = flow.challenged(401, EXPIRED).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_challenge_for_more_scope_skips_the_refresh() -> Result<(), Box<dyn std::error::Error>> {
+        let (flow, asked) = holding(
+            r#"{"access_token":"new-access","token_type":"Bearer"}"#,
+        )?;
+        let wider = Some(r#"Bearer error="insufficient_scope", scope="write""#);
+        let _ = flow.challenged(403, wider).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "more scope needs the user, not a refresh");
+        Ok(())
+    }
+}

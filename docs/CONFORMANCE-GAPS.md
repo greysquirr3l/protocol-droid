@@ -105,11 +105,11 @@ Scenarios where the right behaviour is to refuse (resource mismatch, a wrong
 or unexpected `iss`, a metadata issuer mismatch) pass when the client stops
 with a typed error and sends the user nowhere.
 
-The refresh-token grant is not implemented: a client that wants one asks for
-`offline_access` and keeps the token it is given, but does not yet redeem a
-refresh token when that one expires. The only `UserAgent` shipped is the
-headless one, which asks an authorization server that approves on its own;
-there is no browser adapter.
+A `401` with a held refresh token is answered with the refresh grant
+(RFC 6749 §6), without asking the user again; a refused or absent refresh
+token falls back to the whole flow, and a challenge for more scope always does.
+The only `UserAgent` shipped is the headless one, which asks an authorization
+server that approves on its own; there is no browser adapter.
 
 ## How to reproduce a single scenario
 

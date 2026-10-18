@@ -61,6 +61,12 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   retry with the token. It stops after three refusals. It passes every
   `auth/*` scenario of the client conformance suite on `2025-11-25` and
   `2026-07-28`.
+- **Refresh tokens.** `OAuthAuthorizer` keeps the refresh token a login returns and
+  trades it for a new access token when the server says the token is no longer
+  good, so an expired token no longer sends the user back through consent. A
+  spent or revoked refresh token is forgotten and the full flow runs; a
+  challenge for more scope skips the refresh. `TokenEndpoint::refresh` is a
+  new defaulted method, so existing implementors still compile.
 - **A `Server` over the legacy HTTP+SSE transport.** `HttpBuilder::legacy_sse()`
   (or `legacy_sse_at(stream, message)`) mounts the `2024-11-05` routes beside
   Streamable HTTP on one listener. The same tools, resources and prompts answer

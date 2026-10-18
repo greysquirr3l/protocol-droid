@@ -24,8 +24,11 @@
 use std::sync::Arc;
 
 use crate::adapters::secondary::oauth::http_body::{describe, read_capped};
-use crate::domain::oauth::registration::TokenAuthMethod;
-use crate::application::oauth::redeem::{TokenEndpoint, TokenEndpointError, TokenRequest};
+use crate::domain::oauth::registration::{ClientSecret, TokenAuthMethod};
+use crate::domain::oauth::resource::ResourceParameters;
+use crate::application::oauth::redeem::{
+    RefreshRequest, TokenEndpoint, TokenEndpointError, TokenRequest,
+};
 use crate::domain::oauth::issued_token::{IssuedToken, TokenResponseError};
 
 /// Redeems authorization codes at one token endpoint.
@@ -75,6 +78,22 @@ impl HttpTokenEndpoint {
 }
 
 impl TokenEndpoint for HttpTokenEndpoint {
+    async fn refresh(&self, request: RefreshRequest<'_>) -> Result<IssuedToken, TokenEndpointError> {
+        let mut form = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", request.refresh_token()),
+        ];
+        self.post(
+            &mut form,
+            request.client_id().as_str(),
+            request.client_secret().map(ClientSecret::expose),
+            request.auth_method(),
+            request.resource(),
+            request.scope(),
+        )
+        .await
+    }
+
     async fn redeem(&self, request: TokenRequest<'_>) -> Result<IssuedToken, TokenEndpointError> {
         let mut form = vec![
             ("grant_type", "authorization_code"),
@@ -82,6 +101,30 @@ impl TokenEndpoint for HttpTokenEndpoint {
             ("redirect_uri", request.redirect_uri()),
             ("code_verifier", request.code_verifier().as_str()),
         ];
+        self.post(
+            &mut form,
+            request.client_id().as_str(),
+            request.client_secret().map(ClientSecret::expose),
+            request.auth_method(),
+            request.resource(),
+            request.scope(),
+        )
+        .await
+    }
+}
+
+impl HttpTokenEndpoint {
+    /// Adds client authentication, `resource` and `scope` to `form`, posts it,
+    /// and reads the answer.
+    async fn post<'a>(
+        &self,
+        form: &mut Vec<(&'a str, &'a str)>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+        auth_method: TokenAuthMethod,
+        resource: &'a ResourceParameters,
+        scope: Option<&'a str>,
+    ) -> Result<IssuedToken, TokenEndpointError> {
 
         // RFC 6749 §2.3.1. `client_secret_basic` puts both halves in the
         // `Authorization` header, each `application/x-www-form-urlencoded`
@@ -90,27 +133,27 @@ impl TokenEndpoint for HttpTokenEndpoint {
         // An absent secret is never sent empty: the member's presence is a
         // claim that the client is confidential.
         let mut basic = None;
-        match (request.auth_method(), request.client_secret()) {
+        match (auth_method, client_secret) {
             (TokenAuthMethod::ClientSecretBasic, Some(secret)) => {
-                basic = Some(basic_credentials(request.client_id().as_str(), secret.expose()));
+                basic = Some(basic_credentials(client_id, secret));
             }
             (TokenAuthMethod::ClientSecretPost, Some(secret)) => {
-                form.push(("client_id", request.client_id().as_str()));
-                form.push(("client_secret", secret.expose()));
+                form.push(("client_id", client_id));
+                form.push(("client_secret", secret));
             }
-            _ => form.push(("client_id", request.client_id().as_str())),
+            _ => form.push(("client_id", client_id)),
         }
 
         // RFC 8707 §2: one `resource` member per indicator, repeated rather
         // than joined.
-        for resource in request.resource().iter() {
-            form.push(("resource", resource));
+        for indicator in resource.iter() {
+            form.push(("resource", indicator));
         }
-        if let Some(scope) = request.scope() {
+        if let Some(scope) = scope {
             form.push(("scope", scope));
         }
 
-        let mut post = self.http.post(&*self.endpoint).form(&form);
+        let mut post = self.http.post(&*self.endpoint).form(&*form);
         if let Some(credentials) = basic {
             post = post.header(reqwest::header::AUTHORIZATION, credentials);
         }

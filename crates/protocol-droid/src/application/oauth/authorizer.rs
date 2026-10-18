@@ -40,7 +40,9 @@ use crate::application::oauth::flow::{
     initial_scope, may_step_up, step_up_scope, with_offline_access,
 };
 use crate::application::oauth::metadata::{AuthorizationServer, MetadataError, ProtectedResource};
-use crate::application::oauth::redeem::{RedeemError, redeem_with_scope};
+use crate::application::oauth::redeem::{
+    RedeemError, RefreshRequest, TokenEndpoint as _, redeem_with_scope,
+};
 use crate::application::oauth::registration::ClientMetadata;
 use crate::domain::ProtocolVersion;
 use crate::domain::mcp::authorization::{AuthorizationModel, authorization_model};
@@ -220,10 +222,28 @@ impl OAuthConfig {
     }
 }
 
+/// What it takes to trade a refresh token for a new access token without
+/// asking the user again.
+#[derive(Clone)]
+struct Refreshable {
+    token: String,
+    token_endpoint: String,
+    client: RegisteredClient,
+    resource: ResourceParameters,
+}
+
+impl core::fmt::Debug for Refreshable {
+    /// Never prints the token.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Refreshable").finish_non_exhaustive()
+    }
+}
+
 #[derive(Default)]
 struct State {
     token: Option<String>,
     granted: Option<String>,
+    refresh: Option<Refreshable>,
     clients: HashMap<String, RegisteredClient>,
     pre_registered: Option<PreRegistered>,
     attempts: u32,
@@ -268,10 +288,42 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
     }
 
     /// Keeps the token and the scope it was granted.
-    fn record(&self, token: String, granted: Option<String>) {
+    fn record(&self, token: String, granted: Option<String>, refresh: Option<Refreshable>) {
         let mut state = self.state();
         state.token = Some(token);
         state.granted = granted;
+        state.refresh = refresh;
+    }
+
+    /// Trades the held refresh token for a new access token.
+    ///
+    /// `false` when there is none, or the server refused it (spent, revoked,
+    /// expired): the caller then runs the whole flow. A refused token is
+    /// forgotten, so it is not offered a second time.
+    async fn try_refresh(&self) -> bool {
+        let Some(held) = self.state().refresh.clone() else {
+            return false;
+        };
+        let endpoint = self.environment.token_endpoint(&held.token_endpoint);
+        let request = RefreshRequest::new(&held.token, &held.client, &held.resource, None);
+        let outcome = endpoint.refresh(request).await;
+        let mut state = self.state();
+        if let Ok(tokens) = outcome {
+            // A server may rotate the refresh token; when it does not, the
+            // old one stays valid.
+            let rotated = tokens
+                .refresh_token()
+                .map_or_else(|| held.token.clone(), |token| token.as_str().to_owned());
+            state.token = Some(tokens.access_token().as_str().to_owned());
+            state.refresh = Some(Refreshable {
+                token: rotated,
+                ..held
+            });
+            true
+        } else {
+            state.refresh = None;
+            false
+        }
     }
 
     /// The client already held for this issuer.
@@ -372,9 +424,17 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
         let endpoint = self.environment.token_endpoint(&server.token_endpoint);
         let tokens = redeem_with_scope(code, &client, &endpoint, scope.as_deref()).await?;
 
+        let granted = tokens.scope().map(ToOwned::to_owned).or(scope);
+        let refresh = tokens.refresh_token().map(|token| Refreshable {
+            token: token.as_str().to_owned(),
+            token_endpoint: server.token_endpoint.clone(),
+            client: client.clone(),
+            resource: ResourceParameters::single(&resource_uri),
+        });
         self.record(
             tokens.access_token().as_str().to_owned(),
-            tokens.scope().map(ToOwned::to_owned).or(scope),
+            granted,
+            refresh,
         );
         Ok(())
     }
@@ -630,6 +690,11 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> Beare
             }
             let challenge = www_authenticate.and_then(parse_bearer).unwrap_or_default();
             let _ = status;
+            // An expired token needs a new one, not a new consent. A challenge
+            // for more scope does need the user, so it skips this.
+            if !challenge.is_insufficient_scope() && self.try_refresh().await {
+                return Ok(());
+            }
             self.authorize(&challenge)
                 .await
                 .map_err(|error| BearerError(error.to_string()))
