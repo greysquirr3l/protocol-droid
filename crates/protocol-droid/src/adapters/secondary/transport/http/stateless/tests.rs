@@ -210,3 +210,51 @@ async fn an_unsupported_revision_is_renegotiated() -> TestResult {
     assert!(message.contains("shares no stateless revision"), "{message}");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_bridge_peer_carries_an_envelope_to_a_stateless_server_under_the_callers_id() -> TestResult {
+    use crate::application::bridge::{BridgePeer, TransportPeer};
+
+    let server = Server::builder("stateless-peer")
+        .tool(
+            region_tool()?,
+            Arc::new(|_ctx, args| {
+                Box::pin(async move {
+                    JsonObject::from_value(json!({
+                        "content": [{ "type": "text", "text": args.as_str() }],
+                    }))
+                    .unwrap_or_default()
+                })
+            }),
+        )
+        .build();
+    let url = serve(server).await?;
+    let (_client, transport) = crate::application::client::open(
+        &TransportSpec::new(TransportKind::StatelessHttp, url)?,
+        &everything()?,
+    )
+    .await?;
+    let peer = TransportPeer::new(transport);
+
+    let Value::Object(listing) =
+        json!({"jsonrpc": "2.0", "id": "downstream-9", "method": "tools/list"})
+    else {
+        return Err("not an object".into());
+    };
+    let reply = Value::Object(peer.send(listing).await?);
+    assert_eq!(reply.get("id"), Some(&json!("downstream-9")));
+    assert_eq!(reply.pointer("/result/tools/0/name"), Some(&json!("regional")));
+
+    // The bridge does not read arguments, so the `x-mcp-header` mirror has to
+    // come from the stateless client underneath, using the listing it relayed.
+    let Value::Object(call) = json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "regional", "arguments": {"region": "Zürich"}},
+    }) else {
+        return Err("not an object".into());
+    };
+    let reply = Value::Object(peer.send(call).await?);
+    assert_eq!(reply.get("id"), Some(&json!(4)));
+    assert!(reply.get("error").is_none(), "{reply}");
+    Ok(())
+}

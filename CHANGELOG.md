@@ -68,12 +68,30 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   can ask the client a question, and a client offering a later revision is
   answered with `2024-11-05`. `LegacyDispatcher::dispatch` is now async and
   carries per-session state (`LegacySession`, `LegacyDispatcher::open`).
+- **The bridge forwards to a `2026-07-28` stateless upstream.** `protocol-droid
+  bridge --upstream http-stateless:http://host/mcp` lets a `2025-11-25` (or
+  older) client use a stateless server: the upstream's revision is discovered
+  once, and each forwarded request carries it and the bridge's capabilities in
+  its own `_meta`. `TransportPeer` is the library piece, usable over any
+  `ClientTransport`.
 - **`Host` checking and rate limiting on the legacy routes.** They had `Origin`
   and authentication but neither of these, so a rebound DNS name or a flood of
   `POST`s reached the dispatcher.
 - **`a2a` implies `http`.** Building with `--features a2a` alone did not compile.
 
 ### Fixed
+
+- **The bridge offered its upstream the oldest revision first**, so it negotiated
+  `2024-11-05` with every server that still accepted it. It now offers the
+  newest revision that has a handshake.
+- **`protocol-droid bridge --allow-downgrade` could not be used while serving.**
+  clap required `--check-result` beside it, so only the probe could receive the
+  flag.
+- **A finished tool result from a `2026-07-28` server could not reach an older
+  client at all.** `resultType: "complete"` was treated as a feature the older
+  revision lacks. Older revisions say the same thing by omitting the field, so
+  it now lowers losslessly; any other `resultType`, `input_required` included,
+  is still refused.
 
 - **The legacy HTTP+SSE client never matched a numeric reply id.** It compared
   the awaited id as the string `"1"` against the number `1` on the wire, so any

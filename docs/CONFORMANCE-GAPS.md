@@ -58,12 +58,6 @@ the first client to ask for it.
 
 None of these is measured by the suite. They're listed because they are real.
 
-- **The bridge cannot forward to a stateless upstream.** `protocol-droid
-  bridge --upstream http-stateless:…` refuses with a message saying so.
-  Translating a session's handshake into per-request `_meta` is translation
-  work the bridge does not do yet. The library's own client *does* speak the
-  stateless lifecycle (`StatelessHttpClient`, and `Client::connect_to` with an
-  `http-stateless:` spec).
 - **Legacy HTTP+SSE is served, but not conformance-tested.** The pinned suite
   has no `2024-11-05` scenarios. `HttpBuilder::legacy_sse()` mounts `/sse` and
   `/messages` beside Streamable HTTP, and the crate's own tests cover the
