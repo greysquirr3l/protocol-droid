@@ -9,4 +9,7 @@
 //! Post-MVP protocols slot in beside `initialize` in this directory.
 
 pub mod initialize;
+pub mod input_required;
+#[cfg(feature = "http")]
+pub mod param_headers;
 pub mod request_meta;

@@ -128,7 +128,15 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("could not open transport for {spec}"))?;
 
-    let report = matrix_report(transport.as_ref(), &versions, kind, spec.to_string()).await;
+    let stateless = stateless_transport(&spec, kind)?;
+    let report = matrix_report_with(
+        transport.as_ref(),
+        stateless.as_deref(),
+        &versions,
+        kind,
+        spec.to_string(),
+    )
+    .await;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -214,6 +222,35 @@ async fn open_transport(
     }
 }
 
+/// The client a `2026-07-28` row is probed with, for a Streamable HTTP target.
+///
+/// A revision with no handshake is spoken statelessly: every request carries
+/// its own `_meta` and request-metadata headers, and a conforming server
+/// refuses a `server/discover` without them. Probing that revision through the
+/// session client would report a refusal the server never made.
+fn stateless_transport(
+    spec: &TransportSpec,
+    kind: TransportKind,
+) -> anyhow::Result<Option<Arc<dyn ClientTransport>>> {
+    #[cfg(feature = "bridge")]
+    if kind == TransportKind::StreamableHttp {
+        use protocol_droid::adapters::secondary::transport::http::{
+            HttpClientConfig, StatelessHttpClient,
+        };
+        let config = HttpClientConfig::new(spec.target())
+            .with_context(|| "the Streamable HTTP URL is not usable")?;
+        let client = StatelessHttpClient::new(
+            config,
+            ProtocolVersion::V2026_07_28,
+            serde_json::Value::Object(serde_json::Map::new()),
+        )
+        .with_context(|| "the stateless HTTP client could not be built")?;
+        return Ok(Some(Arc::new(client)));
+    }
+    let _ = (spec, kind);
+    Ok(None)
+}
+
 /// Builds the matrix: one handshake per `versions` entry, on `transport`.
 pub async fn matrix_report(
     transport: &dyn ClientTransport,
@@ -221,9 +258,27 @@ pub async fn matrix_report(
     kind: TransportKind,
     server_spelling: String,
 ) -> ProbeReport {
+    matrix_report_with(transport, None, versions, kind, server_spelling).await
+}
+
+/// [`matrix_report`], probing revisions with no handshake on `stateless` when
+/// one is given.
+pub async fn matrix_report_with(
+    transport: &dyn ClientTransport,
+    stateless: Option<&dyn ClientTransport>,
+    versions: &[ProtocolVersion],
+    kind: TransportKind,
+    server_spelling: String,
+) -> ProbeReport {
     let mut rows = Vec::with_capacity(versions.len());
     for &offered in versions {
-        rows.push(one_row(transport, offered, kind).await);
+        let row = match stateless {
+            Some(stateless) if !protocol_droid::domain::handshake_defined_in(offered) => {
+                one_row(stateless, offered, TransportKind::StatelessHttp).await
+            }
+            _ => one_row(transport, offered, kind).await,
+        };
+        rows.push(row);
     }
     ProbeReport {
         server: server_spelling,

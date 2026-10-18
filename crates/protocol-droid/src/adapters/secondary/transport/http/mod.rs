@@ -48,6 +48,7 @@ mod bridge_peer;
 mod client;
 mod error;
 mod frames;
+mod stateless;
 
 #[cfg(test)]
 mod tests;
@@ -57,4 +58,5 @@ pub use client::{
     RetryBudget,
 };
 pub use error::HttpClientError;
+pub use stateless::StatelessHttpClient;
 pub use frames::{FrameError, FrameReader, split_block};

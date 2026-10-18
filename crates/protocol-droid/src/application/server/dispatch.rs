@@ -29,6 +29,7 @@
 use std::sync::Arc;
 
 use crate::application::mcp::initialize::{read_offer, server_capabilities_json};
+use crate::application::mcp::input_required::{InputRound, capability_for, is_input_required};
 use crate::application::registry::listing::Listing;
 use crate::application::server::builder::{DispatchError, Server};
 use crate::application::server::context::{PeerSession, RequestContext};
@@ -36,9 +37,10 @@ use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::idempotency::{Claim, IdempotencyKey};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
+use crate::domain::ir::LogLevel;
 use crate::domain::{
-    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, discover_defined_in,
-    handshake_defined_in, negotiate_server, resolve,
+    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, client_method_defined_in,
+    discover_defined_in, handshake_defined_in, negotiate_server, resolve,
 };
 
 /// Routes methods to a server's handlers.
@@ -167,15 +169,130 @@ impl Dispatcher {
         method: &str,
         params: &JsonObject,
     ) -> Result<JsonObject, DispatchError> {
+        let version = ctx.peer().negotiated();
         let answered = self.route(ctx, method, params).await?;
         // `resultType` belongs on every result at 2026-07-28 and on none
         // before it, so it is stamped here rather than in each method: there
         // are ten of them and a per-method call is a call someone forgets.
-        Ok(stamp_result(
-            answered,
-            Cacheable::No,
-            ctx.peer().negotiated(),
-        ))
+        let stamped = stamp_result(answered, Cacheable::No, version);
+        Ok(self.identify(stamped, version))
+    }
+
+    /// Adds `_meta["io.modelcontextprotocol/serverInfo"]` at 2026-07-28.
+    ///
+    /// SEP-2575: with no handshake there is no `InitializeResult` to carry
+    /// `serverInfo`, so a server "SHOULD identify itself in each result's
+    /// `_meta`". Older revisions carry it once, in the handshake, and their
+    /// result schemas have no such key.
+    fn identify(&self, result: JsonObject, version: ProtocolVersion) -> JsonObject {
+        if !result_envelope_defined_in(version) {
+            return result;
+        }
+        let Ok(serde_json::Value::Object(mut members)) =
+            serde_json::from_str::<serde_json::Value>(result.as_str())
+        else {
+            return result;
+        };
+        let meta = members
+            .entry("_meta")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(meta) = meta.as_object_mut() {
+            meta.insert(
+                "io.modelcontextprotocol/serverInfo".to_owned(),
+                serde_json::json!({
+                    "name": self.server.name(),
+                    "version": self.server.version(),
+                }),
+            );
+        }
+        JsonObject::from_value(serde_json::Value::Object(members)).unwrap_or(result)
+    }
+
+    /// The SEP-2322 round a retry carries, verified.
+    ///
+    /// Both members are optional and both are read only here. A `requestState`
+    /// that does not open under this server's key is refused before any
+    /// handler sees it — the handler is only ever handed a state this server
+    /// issued.
+    fn input_round(&self, params: &JsonObject) -> Result<InputRound, DispatchError> {
+        let responses = match parsed_param(params, "inputResponses")? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Object(map)) => Some(map),
+            Some(_) => return Err(DispatchError::MalformedParams),
+        };
+        let state = match parsed_param(params, "requestState")? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(sealed)) => {
+                let key = self
+                    .server
+                    .request_state_key()
+                    .ok_or(DispatchError::TamperedRequestState)?;
+                Some(
+                    key.open(&sealed)
+                        .ok_or(DispatchError::TamperedRequestState)?
+                        .to_owned(),
+                )
+            }
+            Some(_) => return Err(DispatchError::MalformedParams),
+        };
+        Ok(InputRound {
+            responses,
+            state,
+            key: self.server.request_state_key().cloned(),
+        })
+    }
+
+    /// Checks an interim result against what the request may receive.
+    ///
+    /// Two rules from SEP-2322 and one from SEP-2575. An `InputRequiredResult`
+    /// exists only at `2026-07-28` and later, and only on `tools/call`,
+    /// `prompts/get` and `resources/read` — "servers MUST NOT send
+    /// `InputRequiredResult` responses on any client requests other than the
+    /// supported ones". And every input request it carries needs the client
+    /// capability for that request, which the client must have declared on
+    /// *this* request: otherwise the answer is `-32021`.
+    fn check_interim(
+        ctx: &RequestContext,
+        method: &str,
+        result: JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        let Ok(serde_json::Value::Object(members)) =
+            serde_json::from_str::<serde_json::Value>(result.as_str())
+        else {
+            return Ok(result);
+        };
+        if !is_input_required(&members) {
+            return Ok(result);
+        }
+        if !accepts_input_round(method) || !result_envelope_defined_in(ctx.peer().negotiated()) {
+            return Err(DispatchError::HandlerFailed(
+                "an InputRequiredResult is not defined for this request".to_owned(),
+            ));
+        }
+        let mut required: Vec<&'static str> = Vec::new();
+        if let Some(requests) = members.get("inputRequests").and_then(serde_json::Value::as_object) {
+            for request in requests.values() {
+                let Some(capability) = request
+                    .get("method")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(capability_for)
+                else {
+                    continue;
+                };
+                let feature = match capability {
+                    "sampling" => Feature::Sampling,
+                    "elicitation" => Feature::Elicitation,
+                    _ => Feature::Roots,
+                };
+                if !ctx.peer().allows(feature) && !required.contains(&capability) {
+                    required.push(capability);
+                }
+            }
+        }
+        if !required.is_empty() {
+            return Err(DispatchError::MissingClientCapability { required });
+        }
+        Ok(result)
     }
 
     /// Routes one method to its handler.
@@ -184,6 +301,31 @@ impl Dispatcher {
     /// once, on the way out, instead of at each of the ten places a result is
     /// built.
     async fn route(
+        &self,
+        ctx: &RequestContext,
+        method: &str,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        let version = ctx.peer().negotiated();
+        // A method the negotiated revision does not define is `-32601`
+        // whatever this server could otherwise do with it: answering `ping` on
+        // `2026-07-28` would tell a client the method exists there.
+        if !client_method_defined_in(version, method) {
+            return Err(DispatchError::UnknownMethod);
+        }
+        let round;
+        let ctx = if accepts_input_round(method) && result_envelope_defined_in(version) {
+            round = ctx.clone().with_input_round(self.input_round(params)?);
+            &round
+        } else {
+            ctx
+        };
+        let answered = self.route_defined(ctx, method, params).await?;
+        Self::check_interim(ctx, method, answered)
+    }
+
+    /// Routes a method the negotiated revision defines.
+    async fn route_defined(
         &self,
         ctx: &RequestContext,
         method: &str,
@@ -275,26 +417,18 @@ impl Dispatcher {
 
     /// Serves `resources/subscribe` and `resources/unsubscribe`.
     ///
-    /// Both answer the empty object, and neither records anything. The fixture
-    /// emits no `notifications/resources/updated`, so a subscription here is a
-    /// promise kept by never being tested — and remembering it would only buy
-    /// the ability to answer `unsubscribe` for a resource that was never
-    /// watched.
+    /// Both answer the empty object. A subscription is recorded against the
+    /// session's own sink, so [`ServerHandle::notify_resource_updated`] reaches
+    /// exactly the sessions that asked, and it ends with the session.
     ///
-    /// That is the honest gap, and it is worth stating rather than hiding: a
-    /// server that advertised `subscribe` and then dropped every update would
-    /// fail this same scenario suite for a peer. What the scenario checks is
-    /// that the method is *accepted* for a URI the server lists, which is the
-    /// part the spec makes mandatory. The notification path has no fixture to
-    /// exercise it — see the `resources-subscribe` entry in the conformance
-    /// gap doc for what closing it would take.
+    /// [`ServerHandle::notify_resource_updated`]: crate::application::server::ServerHandle::notify_resource_updated
     fn subscribe(
         &self,
         ctx: &RequestContext,
         params: &JsonObject,
         op: SubscribeOp,
     ) -> Result<JsonObject, DispatchError> {
-        Self::require(ctx, Feature::Resources)?;
+        Self::require(ctx, Feature::ResourcesSubscribe)?;
         let uri = string_param(params, "uri")?;
         // The URI must be one this server lists. Accepting a subscription for
         // a resource that does not exist is how a client ends up waiting for
@@ -303,9 +437,12 @@ impl Dispatcher {
         if self.server.reader(&uri).is_none() {
             return Err(DispatchError::UnknownResource);
         }
+        let handle = self.server.handle();
         match op {
-            SubscribeOp::Subscribe | SubscribeOp::Unsubscribe => Ok(JsonObject::default()),
+            SubscribeOp::Subscribe => handle.watch_resource(ctx.peer().sink(), &uri, None),
+            SubscribeOp::Unsubscribe => handle.unwatch_resource(ctx.peer().sink(), &uri),
         }
+        Ok(JsonObject::default())
     }
 
     /// Serves `resources/read`.
@@ -370,11 +507,11 @@ impl Dispatcher {
     /// place and stops sending the records it would otherwise have expected,
     /// and the peer has no way to tell "set to debug" from "set to a typo".
     ///
-    /// Nothing is filtered here. This crate emits no `notifications/message`,
-    /// so honouring the level would record a preference nothing reads.
-    /// Accepting the request and dropping it is what the method asks of a
-    /// server with no log output; refusing a well-formed request over
-    /// behaviour the peer never observes would be the worse answer.
+    /// The level is stored on the session's [`LogGate`], which every later
+    /// request's context shares, so [`RequestContext::log`] filters against
+    /// it from the next record on.
+    ///
+    /// [`LogGate`]: crate::application::server::LogGate
     fn set_log_level(
         ctx: &RequestContext,
         params: &JsonObject,
@@ -384,13 +521,10 @@ impl Dispatcher {
         // A `level` outside the spec's own set is a client error, and answers
         // `InvalidParams` — the same answer as a missing member, because a
         // peer cannot act on either and the difference is not one it can use.
-        let recognised = matches!(
-            level.as_str(),
-            "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
-        );
-        if !recognised {
-            return Err(DispatchError::MalformedParams);
-        }
+        let level = level
+            .parse::<LogLevel>()
+            .map_err(|_| DispatchError::MalformedParams)?;
+        ctx.peer().log_gate().set(level);
         Ok(JsonObject::default())
     }
 
@@ -743,12 +877,41 @@ fn stamp_result(result: JsonObject, cacheable: Cacheable, version: ProtocolVersi
             Ok(serde_json::Value::Object(members)) => members,
             _ => return result,
         };
-    merged.insert("resultType".to_owned(), serde_json::Value::from("complete"));
+    // A result that already names its type keeps it: an interim
+    // `InputRequiredResult` says `"input_required"`, and overwriting that with
+    // `"complete"` would tell the client the request finished.
+    merged
+        .entry("resultType")
+        .or_insert_with(|| serde_json::Value::from("complete"));
     if cacheable == Cacheable::Yes {
         merged.insert("ttlMs".to_owned(), serde_json::Value::from(0));
         merged.insert("cacheScope".to_owned(), serde_json::Value::from("private"));
     }
     JsonObject::from_value(serde_json::Value::Object(merged)).unwrap_or(result)
+}
+
+/// Whether `method` may answer with a SEP-2322 `InputRequiredResult`.
+///
+/// `tasks/result` is the fourth the SEP names; it belongs to the tasks
+/// extension, which this crate does not serve.
+fn accepts_input_round(method: &str) -> bool {
+    matches!(method, "tools/call" | "prompts/get" | "resources/read")
+}
+
+/// Drops members whose value is `null`.
+///
+/// Every optional member of a listing entry is typed as a string, a boolean or
+/// an object in every revision's schema, and none admits `null`. Writing an
+/// absent description as `"description": null` is therefore a schema-invalid
+/// entry, and a client that validates its input — the `2026-07-28` reference
+/// client does — refuses the whole listing over it. Only the top level is
+/// touched: a tool's `inputSchema` is the tool author's document, and `null`
+/// is a legitimate value inside one.
+fn without_nulls(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(members) = value.as_object_mut() {
+        members.retain(|_, member| !member.is_null());
+    }
+    value
 }
 
 /// Whether SEP-2549's result envelope exists in this revision.
@@ -764,7 +927,7 @@ fn wrap_listing(key: &str, listing: &Listing) -> JsonObject {
     let entries: Vec<serde_json::Value> = listing
         .visible()
         .iter()
-        .map(|entry| listing_entry(entry))
+        .map(|entry| without_nulls(listing_entry(entry)))
         .collect();
     JsonObject::from_value(serde_json::json!({ key: entries })).unwrap_or_default()
 }
@@ -825,11 +988,11 @@ fn listing_entry(registered: &Registered) -> serde_json::Value {
 /// instead of the codec's. `title` is skipped for the same reason the
 /// other listings skip it — `2026-07-28` only.
 fn prompt_argument(argument: &PromptArgument) -> serde_json::Value {
-    serde_json::json!({
+    without_nulls(serde_json::json!({
         "name": argument.name,
         "description": argument.description,
         "required": argument.required,
-    })
+    }))
 }
 
 /// The revision and profile `initialize` settles on with this peer.

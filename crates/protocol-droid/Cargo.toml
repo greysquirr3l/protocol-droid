@@ -50,7 +50,7 @@ stdio = ["dep:tokio"]
 # the idempotency port, the routing headers, negotiation — is already compiled
 # without it, so a consumer that only wants the IR and the codecs pays for none
 # of this.
-http = ["dep:axum", "dep:futures-core", "dep:futures-util", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
+http = ["dep:axum", "dep:base64", "dep:futures-core", "dep:futures-util", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
 # T15. The deprecated 2024-11-05 HTTP+SSE transport, which `2025-03-26`
 # replaced and which is the only transport that revision speaks. It needs the
 # HTTP stack, so it implies it rather than listing it again — and it is a
@@ -68,7 +68,7 @@ legacy-sse = ["http"]
 # the session store and the routing headers do — they are protocol-shaped and
 # pure, and gating them would cost a consumer the authorization model to save
 # nothing.
-oauth = ["http", "dep:jsonwebtoken", "dep:sha2", "dep:base64", "dep:url"]
+oauth = ["http", "dep:jsonwebtoken", "dep:base64", "dep:url"]
 # Session ids that do not enumerate. `IdSource` is a port every server must
 # satisfy and this crate shipped no implementation of it, so the only code a
 # consumer could copy was a `fetch_add` counter.
@@ -175,7 +175,12 @@ getrandom = { workspace = true, optional = true }
 # somebody else's re-export. The `base64` line repeats the dev-dependency below
 # rather than hoisting it to `[workspace.dependencies]`: one crate uses it, and
 # a workspace table entry would invite a second one.
-sha2 = { workspace = true, optional = true }
+sha2 = { workspace = true }
+# SEP-2322. A server hands the client an opaque `requestState` and must be able
+# to tell a tampered one from its own: HMAC-SHA256 under a per-server key. Not
+# feature-gated, because the multi round-trip pattern is core protocol at
+# `2026-07-28` rather than an integration a consumer opts in to.
+hmac = { workspace = true }
 base64 = { version = "0.22.1", default-features = false, features = [
     "alloc",
 ], optional = true }

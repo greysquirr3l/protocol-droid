@@ -297,6 +297,20 @@ impl IrErrorCode {
     /// since nothing stops a peer sending this number for an unrelated reason.
     pub const UNSUPPORTED_PROTOCOL_VERSION: Self = Self::Implementation(-32022);
 
+    /// `-32020`, `HeaderMismatchError` (`2026-07-28`).
+    ///
+    /// An HTTP header disagrees with the body it describes, or a required one
+    /// is missing. Renumbered from `-32001` when the revision partitioned the
+    /// server-error range; see that revision's changelog, minor change 12.
+    pub const HEADER_MISMATCH: Self = Self::Implementation(-32020);
+
+    /// `-32021`, `MissingRequiredClientCapabilityError` (`2026-07-28`).
+    ///
+    /// Serving the request needs a capability the client did not declare in
+    /// its per-request `clientCapabilities`. Carries
+    /// `data.requiredCapabilities`, a `ClientCapabilities` object.
+    pub const MISSING_REQUIRED_CLIENT_CAPABILITY: Self = Self::Implementation(-32021);
+
     /// The numeric wire value.
     #[must_use]
     pub const fn code(self) -> i64 {

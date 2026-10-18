@@ -65,7 +65,7 @@ pub use mcp::{
     AuthorizationModel, BearerMethod, ClientRegistration, MCP_METHOD_HEADER, MCP_NAME_HEADER,
     McpSessionId, McpSessionIdError, ResourceMetadata, ResourceUri, ResourceUriError,
     RoutingHeaderError, RoutingHeaders, RoutingName, RoutingTarget, VISIBLE_ASCII_RANGE,
-    WELL_KNOWN, authorization_model,
+    WELL_KNOWN, authorization_model, client_method_defined_in,
 };
 pub use negotiation::{
     NegotiatedSession, NegotiationError, PeerInfo, ServerDecision, StatelessRequest,

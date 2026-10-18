@@ -86,7 +86,7 @@ impl MiniServer {
 }
 
 impl RequestHandler<EventTail<Value>> for MiniServer {
-    fn unsessioned(&self, body: &[u8]) -> Unsessioned {
+    fn unsessioned(&self, body: &[u8], _headers: &axum::http::HeaderMap) -> Unsessioned {
         match Self::method(body).as_deref() {
             Some("initialize") => Unsessioned::Establishing,
             // Everything else in this test is a stateful call, so a body that
@@ -464,7 +464,7 @@ struct Framing {
 }
 
 impl RequestHandler<EventTail<Value>> for Framing {
-    fn unsessioned(&self, _body: &[u8]) -> Unsessioned {
+    fn unsessioned(&self, _body: &[u8], _headers: &axum::http::HeaderMap) -> Unsessioned {
         // Establishing, so a POST reaches this handler at all. A fixture
         // answering `NeedsSession` would be refused by the router for want of
         // a session before it could choose a framing, and both tests would

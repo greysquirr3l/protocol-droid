@@ -29,7 +29,8 @@
 //!
 //! [`client_capabilities`]: crate::application::mcp::initialize::read_offer
 
-use crate::domain::ir::JsonObject;
+use crate::domain::ir::{JsonObject, LogLevel};
+use crate::domain::session::ProgressToken;
 use crate::domain::{CapabilitySet, ProtocolVersion};
 
 /// The key naming the revision this request is written against.
@@ -40,6 +41,12 @@ pub const CLIENT_CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabil
 
 /// The key naming the client software, which the SEP makes a SHOULD.
 pub const CLIENT_INFO_KEY: &str = "io.modelcontextprotocol/clientInfo";
+
+/// The key opting a request in to `notifications/message` at a level.
+///
+/// SEP-2575 replaced `logging/setLevel` with it: a request that omits the key
+/// receives no log records at all.
+pub const LOG_LEVEL_KEY: &str = "io.modelcontextprotocol/logLevel";
 
 /// What one request said about itself.
 ///
@@ -60,6 +67,8 @@ pub struct RequestMeta {
     /// this crate's answers depends on it, and a server that trusted it would
     /// be trusting a string the schema calls unverified.
     pub client_name: Option<String>,
+    /// The level this request opted in to log records at, or `None` for none.
+    pub log_level: Option<LogLevel>,
 }
 
 /// Why a `_meta` block could not be read.
@@ -99,6 +108,11 @@ pub enum RequestMetaError {
     /// `_meta` names no `io.modelcontextprotocol/clientCapabilities`.
     #[error("`_meta` is missing `{key}`", key = CLIENT_CAPABILITIES_KEY)]
     MissingCapabilities,
+
+    /// `io.modelcontextprotocol/logLevel` is present and is not a level the
+    /// specification names.
+    #[error("`{LOG_LEVEL_KEY}` is not a logging level")]
+    MalformedLogLevel,
 
     /// The capabilities value is present and is not a JSON object.
     #[error("`{CLIENT_CAPABILITIES_KEY}` is not a JSON object")]
@@ -161,8 +175,19 @@ impl RequestMeta {
             .as_object()
             .ok_or(RequestMetaError::MalformedCapabilities)?;
 
+        let log_level = match meta.get(LOG_LEVEL_KEY) {
+            None => None,
+            Some(level) => Some(
+                level
+                    .as_str()
+                    .and_then(|text| text.parse::<LogLevel>().ok())
+                    .ok_or(RequestMetaError::MalformedLogLevel)?,
+            ),
+        };
+
         Ok(Self {
             version,
+            log_level,
             capabilities: client_capabilities(capabilities),
             client_name: meta
                 .get(CLIENT_INFO_KEY)
@@ -172,6 +197,37 @@ impl RequestMeta {
                 .map(ToOwned::to_owned),
         })
     }
+}
+
+/// The revision a request's `_meta` names, exactly as the client wrote it.
+///
+/// Separate from [`RequestMeta::read`] because the two callers that need it
+/// need it *when that read fails*: a version this build cannot parse is still
+/// a version the client asked for, and SEP-2575 answers it with
+/// `UnsupportedProtocolVersionError` echoing `data.requested` — which has to be
+/// the client's own spelling. The HTTP transport also compares it byte for
+/// byte with the `MCP-Protocol-Version` header, which the schema says it MUST
+/// match.
+#[must_use]
+pub fn version_text(params: &JsonObject) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(params.as_str()).ok()?;
+    parsed
+        .get("_meta")?
+        .get(PROTOCOL_VERSION_KEY)?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+/// The progress token a request opened, if it opened one.
+///
+/// `params._meta.progressToken` on every revision that has `_meta`, and the
+/// same member on `2024-11-05` and `2025-03-26`, whose schemas spell the
+/// request-level `_meta` the same way. Optional in the strongest sense: a
+/// request without one is valid and simply gets no progress.
+#[must_use]
+pub fn progress_token(params: &JsonObject) -> Option<ProgressToken> {
+    let parsed: serde_json::Value = serde_json::from_str(params.as_str()).ok()?;
+    ProgressToken::from_json(parsed.get("_meta")?.get("progressToken")?)
 }
 
 /// Reads a `ClientCapabilities` object as a [`CapabilitySet`].

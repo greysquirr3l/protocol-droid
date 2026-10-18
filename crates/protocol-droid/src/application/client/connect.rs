@@ -109,6 +109,39 @@ pub async fn open(
                 TransportKind::StreamableHttp,
             )
         }
+        #[cfg(feature = "http")]
+        TransportKind::StatelessHttp => {
+            use crate::adapters::secondary::transport::http::{
+                HttpClientConfig, StatelessHttpClient,
+            };
+            // Only the revisions with no handshake can be spoken statelessly,
+            // and the handshake below sends `initialize` for any other — so
+            // the offer is narrowed here, newest first.
+            let mut stateless: Vec<_> = versions
+                .as_slice()
+                .iter()
+                .copied()
+                .filter(|version| !crate::domain::handshake_defined_in(*version))
+                .collect();
+            stateless.sort_by(|left, right| right.cmp(left));
+            let Some(newest) = stateless.first().copied() else {
+                return Err(ConnectError::Unsupported {
+                    kind: TransportKind::StatelessHttp,
+                    reason: "none of the offered revisions has a stateless lifecycle",
+                });
+            };
+            let config = ClientConfig::speaking(stateless, TransportKind::StatelessHttp)?;
+            let capabilities =
+                serde_json::Value::Object(super::handshake::client_capabilities(&config));
+            let client =
+                StatelessHttpClient::new(HttpClientConfig::new(spec.target())?, newest, capabilities)?;
+            let transport: Arc<dyn ClientTransport> = Arc::new(client);
+            let session = handshake(transport.as_ref(), &config).await?;
+            return Ok((
+                Client::from_session(&session, Arc::clone(&transport)),
+                transport,
+            ));
+        }
         #[cfg(feature = "legacy-sse")]
         TransportKind::LegacySse => {
             use crate::adapters::secondary::transport::legacy_sse::{
@@ -175,7 +208,9 @@ const fn missing_reason(kind: TransportKind) -> &'static str {
             "a stdio upstream needs a program to run, and a spec carries no \
              command line"
         }
-        TransportKind::StatelessHttp => "this build has no stateless-http client adapter",
+        TransportKind::StatelessHttp => {
+            "the stateless HTTP client is compiled in with the `http` feature"
+        }
         // Reached only when `legacy-sse` is off while `http` is on, which is
         // the one build where a kind exists in the table and has no adapter.
         _ => "no client adapter for this transport is compiled in",
@@ -254,6 +289,7 @@ mod tests {
     /// The refusal has to name the kind. A caller told only "could not connect"
     /// retries a wrong URL forever, and the kind is the one fact that tells them
     /// to build with a different feature instead.
+    #[cfg(not(feature = "http"))]
     #[tokio::test]
     async fn a_kind_with_no_adapter_is_refused_by_name() -> Result<(), Failure> {
         let refused = open(&spec(TransportKind::StatelessHttp)?, &default_versions()?).await;
@@ -269,6 +305,22 @@ mod tests {
             }
             Err(other) => Err(Failure::Connect(other)),
             Ok(_) => Err(Failure::Expectation("a refusal rather than an adapter")),
+        }
+    }
+
+    /// A stateless spec offered only handshake revisions is refused before
+    /// dialling: there is nothing it could speak statelessly.
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn a_stateless_spec_with_no_stateless_revision_is_refused() -> Result<(), Failure> {
+        let versions = crate::domain::SupportedVersions::from_slice(&[crate::domain::ProtocolVersion::V2025_11_25])?;
+        match open(&spec(TransportKind::StatelessHttp)?, &versions).await {
+            Err(ConnectError::Unsupported {
+                kind: TransportKind::StatelessHttp,
+                ..
+            }) => Ok(()),
+            Err(other) => Err(Failure::Connect(other)),
+            Ok(_) => Err(Failure::Expectation("a refusal")),
         }
     }
 

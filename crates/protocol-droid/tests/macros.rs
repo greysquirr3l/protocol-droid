@@ -741,12 +741,14 @@ async fn a_prompt_lands_in_the_listing_with_its_arguments() -> Result<(), TestEr
     let listed = listing(&dispatcher, "prompts/list").await?;
 
     let review = entry(&listed, "prompts", "name", "review")?;
+    // An absent description is omitted, not written as `null`: no revision's
+    // schema admits `null` for it, and a validating client refuses the
+    // listing over one.
     let expected = serde_json::json!({
         "name": "review",
-        "description": null,
         "arguments": [
             {"name": "diff", "description": "The text to review.", "required": true},
-            {"name": "focus", "description": null, "required": false},
+            {"name": "focus", "required": false},
         ],
     });
     if review != &expected {

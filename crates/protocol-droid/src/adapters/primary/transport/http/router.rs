@@ -296,6 +296,13 @@ pub struct Inbound<'a, S> {
     /// [`check_protocol_header`](crate::domain::check_protocol_header), which
     /// is the only place that knows the answer.
     pub protocol: Option<ProtocolVersion>,
+    /// Every request header, for the checks only the protocol layer can make.
+    ///
+    /// A `2026-07-28` request is validated against its own headers —
+    /// `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` must agree with the
+    /// body — and what "agree" means is a protocol question this router does
+    /// not answer.
+    pub headers: &'a HeaderMap,
     /// How this server was configured to frame a reply.
     ///
     /// Carried rather than read from config inside the handler, for the same
@@ -344,7 +351,7 @@ pub struct Inbound<'a, S> {
 /// struct Server;
 ///
 /// impl<S: EventSource> RequestHandler<S> for Server {
-///     fn unsessioned(&self, _body: &[u8]) -> Unsessioned {
+///     fn unsessioned(&self, _body: &[u8], _headers: &axum::http::HeaderMap) -> Unsessioned {
 ///         Unsessioned::Establishing
 ///     }
 ///
@@ -352,7 +359,7 @@ pub struct Inbound<'a, S> {
 ///         &self,
 ///         call: Inbound<'_, S>,
 ///     ) -> Result<Response<Body>, Refusal> {
-///         let _ = (call.context, call.session, call.body, call.protocol);
+///         let _ = (call.context, call.session, call.body, call.protocol, call.headers);
 ///         Err(Refusal::Handler("this example serves no methods".to_owned()))
 ///     }
 /// }
@@ -378,7 +385,13 @@ pub trait RequestHandler<S>: Send + Sync + 'static {
     /// against a profile resolved per request. That is not "opens a session"
     /// and it is not "needs one", and a two-valued question has to lie about
     /// one of them.
-    fn unsessioned(&self, body: &[u8]) -> Unsessioned;
+    ///
+    /// The headers are offered because a body alone cannot always say: a
+    /// `2026-07-28` request whose `_meta` is missing altogether is still a
+    /// stateless request — its `MCP-Protocol-Version` names a revision with no
+    /// sessions — and it is owed that revision's `-32602`, not a
+    /// missing-session refusal from a lifecycle it is not using.
+    fn unsessioned(&self, body: &[u8], headers: &HeaderMap) -> Unsessioned;
 
     /// Runs the request.
     ///
@@ -737,27 +750,12 @@ where
     // never detected.
     let request_id = request_id_of(&body);
 
-    // The version header is parsed before anything is dispatched, so a client
-    // that wrote a broken one is refused without the request running. What it
-    // *disagrees* with is not decided here: that is a comparison against the
-    // session's negotiated revision, and only the protocol layer knows it.
-    let protocol = match read_protocol(&headers) {
-        Ok(protocol) => protocol,
-        Err(refusal) => {
-            return refuse_with_id_and_challenge(
-                state.config.challenge().as_deref(),
-                refusal,
-                request_id.as_ref(),
-            );
-        }
-    };
-
     // The body is read before the header is resolved, because "what does this
     // body mean without a session?" is a question about the body. It is asked
     // only when the header is absent, and asking it is the same as not
     // consulting the store — an absent header never reaches a lookup.
     let session = match Header::read(&headers, &SESSION_HEADER) {
-        Header::Absent => match state.handler.unsessioned(&body) {
+        Header::Absent => match state.handler.unsessioned(&body, &headers) {
             Unsessioned::Establishing => SessionHandle::Establishing,
             Unsessioned::Stateless => SessionHandle::Stateless,
             Unsessioned::NeedsSession => {
@@ -780,11 +778,34 @@ where
         },
     };
 
+    // The version header is parsed before anything is dispatched, so a client
+    // that wrote a broken one is refused without the request running. What it
+    // *disagrees* with is not decided here: that is a comparison against the
+    // session's negotiated revision, and only the protocol layer knows it.
+    //
+    // A stateless request is the exception. Its header is compared with the
+    // version its own `_meta` names, and a version this build cannot parse is
+    // still a version the client asked for — answered with the revision's
+    // `UnsupportedProtocolVersionError` echoing it, which the protocol layer
+    // can only do if the request reaches it.
+    let protocol = match read_protocol(&headers) {
+        Ok(protocol) => protocol,
+        Err(_) if matches!(session, SessionHandle::Stateless) => None,
+        Err(refusal) => {
+            return refuse_with_id_and_challenge(
+                state.config.challenge().as_deref(),
+                refusal,
+                request_id.as_ref(),
+            );
+        }
+    };
+
     let call = Inbound {
         context: &context,
         session,
         body: &body,
         protocol,
+        headers: &headers,
         streaming: state.config.streaming(),
     };
     match state.handler.dispatch(call).await {

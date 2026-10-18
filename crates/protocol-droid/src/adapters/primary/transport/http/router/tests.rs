@@ -128,7 +128,7 @@ struct Echo {
 }
 
 impl RequestHandler<EventTail<Value>> for Echo {
-    fn unsessioned(&self, _body: &[u8]) -> Unsessioned {
+    fn unsessioned(&self, _body: &[u8], _headers: &axum::http::HeaderMap) -> Unsessioned {
         if self.establish {
             Unsessioned::Establishing
         } else if self.stateless {

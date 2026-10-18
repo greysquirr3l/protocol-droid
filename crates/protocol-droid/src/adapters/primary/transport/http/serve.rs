@@ -43,13 +43,15 @@ use crate::adapters::primary::transport::http::router::{
     EventSource, Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned,
 };
 use crate::adapters::primary::transport::http::session_store::SessionStore;
+use crate::adapters::primary::transport::http::stateless::{StatelessHeaders, StatelessRequest};
 use crate::adapters::primary::transport::http::stream::{EventTail, Finishing};
 use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
-use crate::application::mcp::request_meta::{RequestMeta, declares_version};
+use crate::application::mcp::request_meta::declares_version;
 use crate::application::server::Server;
 use crate::application::server::context::{ExchangeError, PeerSession, RequestContext};
 use crate::application::server::dispatch::Dispatcher;
+use crate::application::server::{ListKind, ListSubscription};
 use crate::application::session::IdSource;
 use crate::application::session::frame_sink::{FrameSink, SinkError};
 use crate::domain::feature::resolve;
@@ -64,7 +66,7 @@ use crate::domain::{
 };
 
 /// The tail this session's server-initiated messages are published on.
-type Tail = EventTail<Value>;
+pub(super) type Tail = EventTail<Value>;
 
 /// Where an [`IdSource`] mints session ids from.
 ///
@@ -84,9 +86,9 @@ type Ids = Arc<dyn IdSource + Send + Sync>;
 /// keep-alive only matters to a stream that is staying open. A non-zero value
 /// here would emit `:ping` frames into the middle of a response that is about
 /// to close.
-const KEEP_ALIVE: core::time::Duration = core::time::Duration::ZERO;
+pub(super) const KEEP_ALIVE: core::time::Duration = core::time::Duration::ZERO;
 
-const TAIL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(64) {
+pub(super) const TAIL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(64) {
     Some(capacity) => capacity,
     // A const context cannot call `ok_or`, and `None` here would mean a zero,
     // which is not a capacity. Unreachable for any value above zero.
@@ -179,6 +181,14 @@ pub struct HttpSession {
     /// to sample both mint id `1`, and a shared table would hand the second
     /// answer to the first session's tool.
     exchange: ExchangeTable,
+    /// This session's standing interest in list changes.
+    ///
+    /// Held here so the session and the subscription end together: the store
+    /// dropping an expired or deleted session drops this guard, and the
+    /// fan-out stops writing to a tail nobody reads. `None` on a session that
+    /// has not finished its handshake, because nothing has been negotiated yet
+    /// that could gate a notification.
+    _lists: Option<ListSubscription>,
 }
 
 impl EventSource for HttpSession {
@@ -211,11 +221,11 @@ impl HttpSession {
 pub struct HttpHandler {
     /// The protocol layer. Shared, because the router is cheap to clone and the
     /// dispatcher is not.
-    dispatcher: Arc<Dispatcher>,
+    pub(super) dispatcher: Arc<Dispatcher>,
     /// This server's sessions. The handler owns the store rather than being
     /// handed one per request because *minting* is a protocol-layer decision:
     /// the router can look a session up but cannot decide what a session is.
-    sessions: Arc<SessionStore<HttpSession>>,
+    pub(super) sessions: Arc<SessionStore<HttpSession>>,
     /// The revision to gate a session with before it has been negotiated.
     ceiling: ProtocolVersion,
 }
@@ -274,52 +284,6 @@ impl HttpHandler {
         stored.map_or_else(|| self.seed().peer, HttpSession::peer_of)
     }
 
-    /// The peer for a SEP-2575 stateless request, read from its own `_meta`.
-    ///
-    /// This is the answer to "which revision is this, and what may the client
-    /// do", and it comes from the request and nowhere else. That is the
-    /// specification's requirement and the reason it is a separate function
-    /// rather than a branch inside [`seed`](Self::seed): the SEP says a server
-    /// MUST NOT infer capabilities from prior requests, so any path that could
-    /// read them off a previous one would be a latent version of the bug the
-    /// SEP is closing.
-    ///
-    /// No negotiation happens here. `negotiate_server` picks a version from an
-    /// *offer*, and a stateless request is not an offer — the client has said
-    /// which version it is using, and the only question is whether this build
-    /// speaks it. A revision this build does not have is refused outright
-    /// rather than answered under a nearby one, because answering a
-    /// `2026-07-28` request on a `2025-11-25` profile is the exact defect that
-    /// made the transport answer a negotiated request with its own revision.
-    ///
-    /// # Errors
-    ///
-    /// [`DispatchError::UnsupportedVersion`] for a revision this build has no
-    /// wire types for, carrying the versions it does speak, and
-    /// [`DispatchError::MalformedRequestMeta`] for a `_meta` that is missing
-    /// either required key.
-    fn peer_from_meta(
-        params: &JsonObject,
-    ) -> Result<PeerSession, crate::application::server::DispatchError> {
-        let meta = RequestMeta::read(params)
-            .map_err(|_| crate::application::server::DispatchError::MalformedRequestMeta)?;
-        let supported = SupportedVersions::all()
-            .map_err(|_| crate::application::server::DispatchError::UnnegotiableVersion)?;
-        if !supported.contains(&meta.version) {
-            return Err(
-                crate::application::server::DispatchError::UnsupportedVersion {
-                    requested: meta.version.as_wire().into_owned(),
-                    supported: supported
-                        .into_iter()
-                        .rev()
-                        .map(|version| version.as_wire().into_owned())
-                        .collect(),
-                },
-            );
-        }
-        Ok(Self::session_for(meta.version, meta.capabilities).peer)
-    }
-
     /// A session at the ceiling, for a connection that has not handshaken.
     fn seed(&self) -> HttpSession {
         Self::session_for(self.ceiling, CapabilitySet::empty())
@@ -332,7 +296,7 @@ impl HttpHandler {
     /// stateless peer, which differs only in that it knows its revision and its
     /// capabilities. Building both from one function is what keeps the
     /// stateless path from quietly acquiring a difference of its own.
-    fn session_for(version: ProtocolVersion, client_caps: CapabilitySet) -> HttpSession {
+    pub(super) fn session_for(version: ProtocolVersion, client_caps: CapabilitySet) -> HttpSession {
         let profile = resolve(Negotiation {
             version,
             client_caps,
@@ -353,6 +317,7 @@ impl HttpHandler {
             ),
             tail,
             exchange,
+            _lists: None,
         }
     }
     /// Answers a request beside a stream that is already open.
@@ -500,17 +465,19 @@ impl RequestHandler<HttpSession> for HttpHandler {
     /// for a caller with a session header to throw it away.
     ///
     /// [`RequestMeta::read`]: crate::application::mcp::request_meta::RequestMeta::read
-    fn unsessioned(&self, body: &[u8]) -> Unsessioned {
-        let Some(method) = method_of(body) else {
-            return Unsessioned::NeedsSession;
-        };
-        if method == "initialize" {
-            return Unsessioned::Establishing;
-        }
-        if declares_own_version(body) {
+    fn unsessioned(&self, body: &[u8], headers: &axum::http::HeaderMap) -> Unsessioned {
+        // Stateless first. A body naming its own revision, or a request whose
+        // `MCP-Protocol-Version` is a revision with no sessions, is served by
+        // the stateless lifecycle — including an `initialize`, which that
+        // lifecycle answers with `-32601` rather than by opening a session the
+        // client's own revision says do not exist.
+        if declares_own_version(body) || StatelessHeaders::names_stateless_revision(headers) {
             return Unsessioned::Stateless;
         }
-        Unsessioned::NeedsSession
+        match method_of(body) {
+            Some(method) if method == "initialize" => Unsessioned::Establishing,
+            _ => Unsessioned::NeedsSession,
+        }
     }
 
     /// Runs one request, and answers it.
@@ -548,9 +515,12 @@ impl RequestHandler<HttpSession> for HttpHandler {
         // live in this request's `_meta`, and the body has not been decoded
         // until the future below runs. The seed peer stands in for that case
         // and is replaced before anything reads it.
-        let peer = self
-            .peer_for(stored.as_ref())
-            .with_auth(call.context.clone());
+        let auth = call.context.clone();
+        let peer = self.peer_for(stored.as_ref()).with_auth(auth.clone());
+        // Copied now for the same reason as the body: the header map is the
+        // router's, and a stateless request is checked against it after the
+        // body has been decoded.
+        let stateless_headers = stateless.then(|| StatelessHeaders::read(call.headers));
 
         async move {
             // Decoded once. A body that is a batch, or a reply shape, or
@@ -564,20 +534,6 @@ impl RequestHandler<HttpSession> for HttpHandler {
                     reason: "an HTTP request body carries one message".to_owned(),
                 });
             };
-            // The progress token lives in `params._meta.progressToken`, which
-            // is where the specification puts it and not beside the request id.
-            // It is optional in the strongest sense: a request without one is
-            // valid and gets no progress updates, so reading it is a lookup and
-            // never a gate.
-            //
-            // Not reading it is the quiet failure it is: `report_progress`
-            // then answers `NoProgressToken`, the tool reports no progress, and
-            // the client that explicitly asked to be told waits for updates
-            // from a server that believed nobody had asked.
-            // Owned: the envelope borrows the request body, and the body is
-            // dropped once this function returns — which happens while a
-            // handler is still running on this session.
-            let progress: Option<ProgressToken> = progress_token_of(&envelope);
             // Where the session's event stream stands *before* this request
             // runs. Everything the handler publishes from here on is this
             // request's answer; everything before it is a previous exchange's,
@@ -599,29 +555,29 @@ impl RequestHandler<HttpSession> for HttpHandler {
             let params = params_of(&envelope)?;
             let method = envelope.method_str().unwrap_or_default();
 
-            // SEP-2575: the request's own `_meta` settles which revision this
-            // is and what the client can do, because there is no session that
-            // remembers either. Reading it here rather than carrying anything
-            // forward is the spec's requirement and not a detail — "Servers
-            // MUST NOT infer capabilities from prior requests" is exactly the
-            // bug a session-shaped peer would introduce.
-            //
-            // The error is answered on the wire rather than raised: the client
-            // sent a well-formed request with a missing key, which is
-            // `-32602`, and the answer belongs in the body with the request's
-            // id on it.
-            let peer_for_now = if stateless {
-                match Self::peer_from_meta(&params) {
-                    Ok(peer) => peer.with_auth(call.context.clone()),
-                    Err(refusal) => {
-                        let id = envelope.id().map(WireId::to_owned);
-                        let document = refusal_document(id.as_ref(), &refusal);
-                        return Self::response(&document, None, None);
-                    }
-                }
-            } else {
-                peer
-            };
+            // SEP-2575: a stateless request is served from its own `_meta`, by
+            // a path that shares nothing with a session — see `stateless`.
+            if let Some(headers) = stateless_headers {
+                return self
+                    .serve_stateless(StatelessRequest {
+                        id,
+                        method: method.to_owned(),
+                        params,
+                        headers,
+                        auth,
+                        streaming,
+                    })
+                    .await;
+            }
+
+            // The progress token lives in `params._meta.progressToken`, which
+            // is where the specification puts it and not beside the request id.
+            // Not reading it is a quiet failure: `report_progress` answers
+            // `NoProgressToken` and the client that asked to be told waits for
+            // updates from a server that believed nobody had asked.
+            let progress: Option<ProgressToken> =
+                crate::application::mcp::request_meta::progress_token(&params);
+            let peer_for_now = peer;
             // Held only as long as this body. The task below builds its own
             // from the stored session, because it outlives both of them.
             let context = RequestContext::for_request_with_state(
@@ -766,8 +722,19 @@ impl HttpHandler {
         // The store allocates the id below, so it is read back from the minted
         // handle rather than allocated twice — and the peer is bound to it
         // before anything can key on it.
+        let sink: Arc<dyn crate::application::session::DynFrameSink> =
+            Arc::new(TailSink { tail: tail.clone() });
+        // Every list notification the negotiated profile allows. A session
+        // that did not negotiate `listChanged` for a kind is filtered by the
+        // fan-out's own gate, so subscribing to all three is not a promise.
+        let lists = self.dispatcher.server().handle().subscribe(
+            &sink,
+            peer.profile(),
+            &ListKind::ALL,
+            None,
+        );
         let peer = peer
-            .with_sink(Arc::new(TailSink { tail: tail.clone() }))
+            .with_sink(sink)
             // Bound to *this* session's table, for the same reason the sink is
             // bound to this session's tail: the peer outlives the seed it was
             // built from, and an exchange on the wrong table publishes a
@@ -782,6 +749,7 @@ impl HttpHandler {
                     peer,
                     tail,
                     exchange,
+                    _lists: Some(lists),
                 }),
                 id_source,
             )
@@ -1002,8 +970,23 @@ fn params_of(envelope: &Envelope<'_>) -> Result<JsonObject, Refusal> {
 /// waiting for three log records sees zero and reports the server as broken
 /// rather than as unwired.
 #[derive(Debug, Clone)]
-struct TailSink {
-    tail: Tail,
+pub(super) struct TailSink {
+    pub(super) tail: Tail,
+}
+
+impl TailSink {
+    /// Publishes one encoded frame, synchronously.
+    ///
+    /// # Errors
+    ///
+    /// [`SinkError`] when the frame is not JSON.
+    pub(super) fn push(&self, frame: &str) -> Result<(), SinkError> {
+        serde_json::from_str::<Value>(frame)
+            .map(|value| {
+                self.tail.push(value);
+            })
+            .map_err(|_| SinkError)
+    }
 }
 
 impl FrameSink for TailSink {
@@ -1020,10 +1003,7 @@ impl FrameSink for TailSink {
         &self,
         frame: &str,
     ) -> impl core::future::Future<Output = Result<(), SinkError>> + Send {
-        let pushed = serde_json::from_str::<Value>(frame)
-            .map(|value| self.tail.push(value))
-            .map_err(|_| SinkError);
-        core::future::ready(pushed.map(|_| ()))
+        core::future::ready(self.push(frame))
     }
 }
 
@@ -1298,6 +1278,12 @@ fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
         Some(ids) => ids,
         None => default_ids()?,
     };
+    #[cfg(feature = "random-ids")]
+    let server = {
+        let mut server = server;
+        server.ensure_request_state_key(crate::adapters::secondary::id_source::random_state_key);
+        server
+    };
     let config = match config {
         Some(config) => config,
         None => ServerConfig::new()?,
@@ -1427,12 +1413,6 @@ fn answer_of(body: &[u8]) -> Answer {
                 .map_err(|error| ExchangeError::new(error.to_string()))
         },
     )
-}
-
-fn progress_token_of(envelope: &Envelope<'_>) -> Option<ProgressToken> {
-    let params: serde_json::Value = serde_json::from_str(envelope.params()?.get()).ok()?;
-    let token = params.get("_meta")?.get("progressToken")?;
-    ProgressToken::from_json(token)
 }
 
 fn default_ids() -> Result<Ids, ServeError> {

@@ -246,7 +246,7 @@ where
     U: Upstream + 'static,
     C: ToolResultCodec + Clone + Send + Sync + 'static,
 {
-    fn unsessioned(&self, body: &[u8]) -> Unsessioned {
+    fn unsessioned(&self, body: &[u8], _headers: &axum::http::HeaderMap) -> Unsessioned {
         match method_of(body).as_deref() {
             Some("initialize") => Unsessioned::Establishing,
             _ => Unsessioned::NeedsSession,

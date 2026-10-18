@@ -89,8 +89,10 @@ pub async fn connect(
         // this arm means the two disagreed — and the arm that says so is the one
         // that should be reached, not a silent `todo!()`.
         TransportKind::StatelessHttp => anyhow::bail!(
-            "this build has no stateless-http client adapter, so it cannot open \
-             an upstream session to forward to"
+            "the bridge cannot forward to a stateless (2026-07-28) upstream yet: \
+             translating a session's handshake into per-request _meta is not \
+             implemented. Point --upstream at the server's http endpoint, which \
+             also serves 2025-11-25 and earlier"
         ),
     }
 }

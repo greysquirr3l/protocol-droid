@@ -32,6 +32,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::application::server::error::GatedError;
+use crate::application::mcp::input_required::InputRound;
+use crate::application::server::log_gate::LogGate;
 use crate::application::session::DynFrameSink;
 use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::ir::{JsonObject, LogLevel};
@@ -209,6 +211,7 @@ pub struct PeerSession {
     auth: AuthContext,
     exchange: Arc<dyn DynExchange>,
     sink: Arc<dyn DynFrameSink>,
+    log: LogGate,
 }
 
 impl core::fmt::Debug for PeerSession {
@@ -254,7 +257,25 @@ impl PeerSession {
             auth: AuthContext::anonymous(),
             exchange,
             sink,
+            log: LogGate::open(),
         }
+    }
+
+    /// This peer, filtering its log records through `gate`.
+    ///
+    /// A stateful session keeps the open gate it was built with and moves it
+    /// with `logging/setLevel`. A `2026-07-28` request replaces it with one
+    /// built from its own `_meta` — see [`LogGate::for_request`].
+    #[must_use]
+    pub fn with_log_gate(mut self, gate: LogGate) -> Self {
+        self.log = gate;
+        self
+    }
+
+    /// The threshold this peer's log records are filtered against.
+    #[must_use]
+    pub const fn log_gate(&self) -> &LogGate {
+        &self.log
     }
 
     /// The transport this session runs over.
@@ -447,6 +468,9 @@ pub struct RequestContext {
     /// requests cost a thousand pointer bumps rather than a thousand
     /// empty hashmaps.
     state: Arc<StateMap>,
+    /// What a SEP-2322 retry carried back, already verified. Empty on a first
+    /// round and on every revision before `2026-07-28`.
+    input: InputRound,
 }
 
 impl core::fmt::Debug for RequestContext {
@@ -490,6 +514,7 @@ impl RequestContext {
             cancel,
             progress,
             state: Arc::new(HashMap::new()),
+            input: InputRound::default(),
         }
     }
 
@@ -516,7 +541,52 @@ impl RequestContext {
             cancel,
             progress,
             state,
+            input: InputRound::default(),
         }
+    }
+
+    /// This context, carrying a retry's verified answers and state.
+    #[must_use]
+    pub(crate) fn with_input_round(mut self, input: InputRound) -> Self {
+        self.input = input;
+        self
+    }
+
+    /// The client's answer to the input request filed under `key`.
+    ///
+    /// `None` on a first round, and on a retry that did not answer that key —
+    /// which a handler should treat as "ask again" rather than as an error,
+    /// because SEP-2322 has the server re-request what is missing.
+    #[must_use]
+    pub fn input_response(&self, key: &str) -> Option<JsonObject> {
+        self.input.response(key)
+    }
+
+    /// Whether this request is a retry carrying `inputResponses` at all.
+    #[must_use]
+    pub const fn has_input_responses(&self) -> bool {
+        self.input.has_responses()
+    }
+
+    /// The `requestState` this server sealed on the previous round.
+    ///
+    /// Already verified: a state that did not open was refused before the
+    /// handler ran, so anything returned here is the server's own.
+    #[must_use]
+    pub fn request_state(&self) -> Option<&str> {
+        self.input.state()
+    }
+
+    /// Seals `state` for an [`InputRequired`] result's `requestState`.
+    ///
+    /// [`InputRequired`]: crate::application::mcp::input_required::InputRequired
+    ///
+    /// # Errors
+    ///
+    /// [`GatedError::NoStateKey`] when the server was built without a key and
+    /// no transport supplied one, so there is nothing to seal under.
+    pub fn seal_state(&self, state: &str) -> Result<String, GatedError> {
+        self.input.seal(state).ok_or(GatedError::NoStateKey)
     }
 
     /// Looks up a state value by its concrete type.
@@ -663,6 +733,11 @@ impl RequestContext {
     /// notification did not reach the peer.
     pub async fn log(&self, level: LogLevel, message: &str) -> Result<(), GatedError> {
         self.peer.require(Feature::Logging)?;
+        // Below the threshold is not a failure: the peer asked not to hear it,
+        // and a record nobody wants is one nobody should be made to read.
+        if !self.peer.log.admits(level) {
+            return Ok(());
+        }
         let escaped = serde_json::to_string(message).unwrap_or_else(|reason| {
             format!("\"the log message could not be serialised: {reason}\"")
         });
@@ -709,10 +784,14 @@ impl RequestContext {
     /// leaks into the frame when neither does.
     fn progress_frame(token: &ProgressToken, params: &JsonObject) -> String {
         let mut members = serde_json::Map::new();
-        members.insert(
-            "progressToken".to_string(),
-            serde_json::Value::String(token.to_string()),
-        );
+        // The token goes back in the JSON type it arrived in. A number written
+        // back as a string is a different token, and a client correlating by
+        // value never matches the update to the request that asked for it.
+        let echoed = match token {
+            ProgressToken::Number(value) => serde_json::Value::from(*value),
+            ProgressToken::Text(value) => serde_json::Value::String(value.to_string()),
+        };
+        members.insert("progressToken".to_string(), echoed);
         // The caller's params are already validated JSON, so they are spliced
         // in as a value rather than re-escaped. A caller who supplied a
         // `progressToken` of their own loses to the real one: the token is not

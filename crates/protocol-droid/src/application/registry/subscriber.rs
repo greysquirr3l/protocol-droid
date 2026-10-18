@@ -56,6 +56,12 @@ use crate::domain::{Feature, FeatureProfile};
 #[derive(Clone)]
 pub struct Subscriber {
     kind: PrimitiveKind,
+    /// A second kind announced under the same notification.
+    ///
+    /// `resources/list_changed` covers both resources and resource templates,
+    /// and two subscribers on one sink would tell a session twice about a batch
+    /// that touched both — the promise this module makes is once per publish.
+    also: Option<PrimitiveKind>,
     feature: Feature,
     method: &'static str,
     frame: Arc<str>,
@@ -82,6 +88,7 @@ impl Subscriber {
     ) -> Self {
         Self {
             kind,
+            also: None,
             feature,
             method,
             frame: Arc::from(frame),
@@ -90,10 +97,28 @@ impl Subscriber {
         }
     }
 
+    /// The same subscriber, also told when `kind` changes.
+    ///
+    /// For a notification that names more than one kind — see the field's own
+    /// comment for the one MCP has.
+    #[must_use]
+    pub const fn also_for(mut self, kind: PrimitiveKind) -> Self {
+        self.also = Some(kind);
+        self
+    }
+
     /// The kind of primitive this subscriber wants to hear about.
     #[must_use]
     pub const fn kind(&self) -> PrimitiveKind {
         self.kind
+    }
+
+    /// Whether a publish that touched `kinds` concerns this subscriber.
+    #[must_use]
+    pub fn covers(&self, kinds: &[PrimitiveKind]) -> bool {
+        kinds
+            .iter()
+            .any(|kind| *kind == self.kind || Some(*kind) == self.also)
     }
 
     /// The method this subscriber is notified with.
@@ -233,7 +258,7 @@ impl SubscriberSet {
         }
         let generation = snapshot.generation();
         for entry in self.all() {
-            if !kinds.contains(&entry.kind()) {
+            if !entry.covers(kinds) {
                 continue;
             }
             if !entry.is_eligible() {

@@ -150,10 +150,20 @@ impl StdioBuilder {
     pub fn build(
         self,
     ) -> ServeLoop<tokio::io::Stdin, tokio::io::Stdout, tokio::io::Stderr, ProfileBatching> {
+        #[cfg(feature = "random-ids")]
+        let builder = {
+            let mut builder = self;
+            builder
+                .server
+                .ensure_request_state_key(crate::adapters::secondary::id_source::random_state_key);
+            builder
+        };
+        #[cfg(not(feature = "random-ids"))]
+        let builder = self;
         let profile = resolve(Negotiation {
-            version: self.version,
+            version: builder.version,
             client_caps: CapabilitySet::empty(),
-            server_caps: CapabilitySet::all_for(self.version),
+            server_caps: CapabilitySet::all_for(builder.version),
             transport: TransportKind::Stdio,
         });
         // `without_auth` is deliberately *not* called here, unlike the HTTP
@@ -163,20 +173,20 @@ impl StdioBuilder {
         // peer — `with_profile` keeps `auth` — so the declared principal
         // survives the profile swap that replaces the session.
         let peer = PeerSession::new(
-            self.version,
+            builder.version,
             profile,
             SessionId::new(1),
             TransportKind::Stdio,
             Arc::new(NoCallbacks),
             Arc::new(NullSink),
         )
-        .with_auth(self.auth);
+        .with_auth(builder.auth);
         ServeLoop::new(
             tokio::io::stdin(),
             tokio::io::stdout(),
             Diagnostics::stderr(),
-            self.config,
-            Arc::new(Dispatcher::new(Arc::new(self.server))),
+            builder.config,
+            Arc::new(Dispatcher::new(Arc::new(builder.server))),
             peer,
             ProfileBatching,
         )
@@ -194,12 +204,12 @@ fn default_ceiling() -> ProtocolVersion {
     )
 }
 
-/// Where a server-initiated request would be written, if one were ever made.
+/// The placeholder sink a peer is built with before the loop owns it.
 ///
-/// A `PeerSession` needs somewhere to put them and the stdio loop wires no
-/// callback exchange, so this refuses every send rather than pretending to
-/// deliver. `Inert` rather than a real stream so nothing a test asserts about
-/// ordering is really an assertion about two writers racing.
+/// [`ServeLoop::new`] replaces it with the loop's own stdout sink, so nothing
+/// a handler publishes ever reaches this. It refuses rather than discards, so a
+/// peer that somehow escaped that replacement fails loudly instead of silently
+/// dropping a progress update.
 #[derive(Debug, Clone, Copy)]
 struct NullSink;
 

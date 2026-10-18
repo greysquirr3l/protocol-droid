@@ -38,6 +38,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+pub mod stateless;
+
 // `#[tool]` is called once per request rather than once per server, and
 // the function is `async fn` because the call site `.await`s it. A body
 // that did no real work would still hand back a future, and the
@@ -259,9 +261,14 @@ impl ConformanceFixture {
     /// `progress-test-1`, so this returns the increments it asks for.
     #[protocol_droid::tool]
     async fn test_tool_with_progress(ctx: RequestContext) -> ToolResult {
-        yield_to_runtime().await;
-        for (progress, total) in [(0, 3), (1, 3), (2, 3)] {
-            progress_message(&ctx, progress, total).await;
+        // The scenario's own sequence: 0, 50 and 100 out of 100, about 50 ms
+        // apart, so the notifications are visibly separate on the stream
+        // rather than one burst that a client could not tell from a batch.
+        for (index, progress) in [0, 50, 100].into_iter().enumerate() {
+            if index > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            progress_message(&ctx, progress, 100).await;
         }
         ToolResult::text("Reported progress.")
     }
@@ -1079,6 +1086,10 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     // address, and the only piece of the suite of choices the fixture
     // actually needs to make.
     let mut server: Server = ConformanceFixture.into_server()?;
+    // The `2026-07-28` surface: SEP-2322 round trips, the SEP-2575
+    // diagnostics, and the list-change triggers. In its own module because
+    // none of it is expressible through `#[tool]`.
+    stateless::register(&mut server).await?;
     // One tool is not a `#[tool]`, because the crate cannot derive its schema.
     // `json_schema_2020_12_tool` advertises JSON Schema 2020-12 — `$schema`,
     // `$defs` with an `$anchor`, `allOf`/`anyOf`, `if`/`then`/`else` — and

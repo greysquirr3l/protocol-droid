@@ -56,6 +56,9 @@ impl From<FrameError> for HttpClientError {
 
 /// The session header, as the peer spells it.
 const SESSION_HEADER: &str = "mcp-session-id";
+
+/// The revision header every request after the handshake carries.
+const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 /// The resume header, as the peer spells it.
 const LAST_EVENT_ID: &str = "last-event-id";
 /// The `POST` verb, named once so an error can say what was in flight.
@@ -219,6 +222,13 @@ pub struct HttpClient {
     /// reproducible as its configuration, and two requests in flight on one
     /// client can never collide.
     next_id: AtomicI64,
+    /// The revision the handshake settled on, once it has, as the
+    /// `MCP-Protocol-Version` header carries it.
+    ///
+    /// `2025-06-18` made the header mandatory on every request after
+    /// `initialize`; a client that never sent it was relying on servers that
+    /// tolerate its absence, which a conforming one is not obliged to do.
+    protocol: Mutex<Option<String>>,
     /// Frames a server volunteered on a response body this client was reading
     /// for something else.
     ///
@@ -269,6 +279,7 @@ impl HttpClient {
             config,
             session: Mutex::new(None),
             next_id: AtomicI64::new(1),
+            protocol: Mutex::new(None),
             unsolicited: Arc::new(Unsolicited::new()),
         }
     }
@@ -372,6 +383,22 @@ impl HttpClient {
         &self,
         envelope: &Map<String, Value>,
     ) -> Result<Option<Map<String, Value>>, HttpClientError> {
+        self.post_envelope_with(envelope, &[]).await
+    }
+
+    /// [`Self::post_envelope`], with headers added to this request alone.
+    ///
+    /// For the `2026-07-28` request-metadata headers, which describe one body
+    /// and so cannot be set once per client.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_envelope`].
+    pub async fn post_envelope_with(
+        &self,
+        envelope: &Map<String, Value>,
+        headers: &[(String, String)],
+    ) -> Result<Option<Map<String, Value>>, HttpClientError> {
         let body = serde_json::to_vec(envelope).map_err(|error| HttpClientError::Body {
             method: "POST",
             what: "encoded",
@@ -382,7 +409,7 @@ impl HttpClient {
         // either a JSON document or an event stream, and insisting on the
         // first here failed every request against a server that chose the
         // second — which is the choice the specification prefers.
-        let response = self.send(POST, &body, false).await?;
+        let response = self.send_with(POST, &body, false, headers).await?;
         let wants = envelope.get("id").cloned();
         if Self::shape(&response)? == Shape::Stream {
             return self.read_streamed(response, wants.as_ref()).await.map(Some);
@@ -568,11 +595,38 @@ impl HttpClient {
         body: &[u8],
         require_session: bool,
     ) -> Result<reqwest::Response, HttpClientError> {
+        self.send_with(verb, body, require_session, &[]).await
+    }
+
+    /// [`Self::send`], with headers the caller adds to this request alone.
+    async fn send_with(
+        &self,
+        verb: &'static str,
+        body: &[u8],
+        require_session: bool,
+        extra: &[(String, String)],
+    ) -> Result<reqwest::Response, HttpClientError> {
         let mut builder = self
             .inner
             .request(method_of(verb), &self.config.endpoint)
             .header(reqwest::header::ACCEPT, ACCEPT)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_vec());
+        let protocol = self
+            .protocol
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(protocol) = protocol
+            && !extra
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(PROTOCOL_HEADER))
+        {
+            builder = builder.header(PROTOCOL_HEADER, protocol);
+        }
+        for (name, value) in extra {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
         if let Some(id) = self.session_id() {
             builder = builder.header(SESSION_HEADER, id.to_string());
         } else if require_session {
@@ -617,6 +671,30 @@ impl HttpClient {
             Ok(response)
         } else {
             Err(refusal(GET, response).await)
+        }
+    }
+
+    /// Records the negotiated revision from an `initialize` result, so later
+    /// requests carry it in `MCP-Protocol-Version`.
+    ///
+    /// Only from `2025-06-18`, the revision that defined the header; an older
+    /// session has no such header to send.
+    fn remember_protocol(&self, result: &JsonObject) {
+        let Ok(parsed) = serde_json::from_str::<Value>(result.as_str()) else {
+            return;
+        };
+        let Some(version) = parsed
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .and_then(|text| text.parse::<crate::domain::ProtocolVersion>().ok())
+        else {
+            return;
+        };
+        if version >= crate::domain::ProtocolVersion::V2025_06_18 {
+            *self
+                .protocol
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(version.as_wire().into_owned());
         }
     }
 
@@ -1204,6 +1282,16 @@ impl ClientTransport for HttpClient {
             Ok::<_, TransportError>((id, envelope))
         })();
 
+        let initializing = method == "initialize";
+        if initializing {
+            // A new handshake negotiates afresh: the revision a previous one
+            // settled on does not describe this request, and sending it would
+            // have the server compare it with a session it is about to replace.
+            *self
+                .protocol
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
         Box::pin(async move {
             let (id, envelope) = prepared?;
             // `post_envelope` rather than `post`, and that choice is the whole
@@ -1224,7 +1312,11 @@ impl ClientTransport for HttpClient {
             // lifting `result` here: a second implementation of that rule is a
             // second answer to when a reply counts as this request's.
             let text = serde_json::to_string(&Value::Object(reply)).map_err(unavailable)?;
-            reply_result(&text, &id).map_err(unavailable)
+            let result = reply_result(&text, &id).map_err(unavailable)?;
+            if initializing {
+                self.remember_protocol(&result);
+            }
+            Ok(result)
         })
     }
 

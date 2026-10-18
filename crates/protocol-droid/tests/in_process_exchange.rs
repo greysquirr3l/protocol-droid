@@ -385,7 +385,7 @@ async fn exchange(
     Ok(())
 }
 
-/// Removes the members SEP-2549 adds to a result at `2026-07-28`.
+/// Removes the members SEP-2549 and SEP-2575 add to a result at `2026-07-28`.
 ///
 /// A list of names rather than a pattern, because a blanket filter would also
 /// drop a `resultType` the *tool* had returned on an older revision, and the
@@ -396,6 +396,15 @@ fn strip_result_envelope(result: serde_json::Value) -> serde_json::Value {
     };
     for envelope_member in ["resultType", "ttlMs", "cacheScope"] {
         members.remove(envelope_member);
+    }
+    // SEP-2575: a server identifies itself in each result's `_meta`. Only that
+    // key is the server's; anything else in `_meta` came from the tool and is
+    // still compared.
+    if let Some(serde_json::Value::Object(meta)) = members.get_mut("_meta") {
+        meta.remove("io.modelcontextprotocol/serverInfo");
+        if meta.is_empty() {
+            members.remove("_meta");
+        }
     }
     serde_json::Value::Object(members)
 }
