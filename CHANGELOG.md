@@ -9,7 +9,62 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
-Nothing yet.
+Conformance is now green on every revision the pinned suite covers:
+`2026-07-28` went from 81/119 to 151/151, with `2025-03-26`, `2025-06-18` and
+`2025-11-25` unchanged at 3/3, 55/55 and 81/81. Most of the gap was library
+behaviour, not fixture work, and several of the fixes apply to every revision.
+
+### Added
+
+- **Runtime registration that announces itself.** (`927f9d0`) `Server::handle()` returns a
+  clone-able `ServerHandle` that adds and removes tools, resources, templates
+  and prompts while serving. Each change is published and then sent as
+  `notifications/{tools,resources,prompts}/list_changed` to every session whose
+  negotiated profile includes the matching `listChanged` — on stdio, on a
+  Streamable HTTP session, and on a `2026-07-28` listen stream. Before this the
+  server emitted no `list_changed` on any revision, and a tool added while
+  serving was listed but could not be called.
+- **`ServerHandle::notify_resource_updated`.** (`927f9d0`) `resources/subscribe` (and
+  `resourceSubscriptions` on a listen stream) now record a real subscription,
+  so the `resources.subscribe` capability the server advertises is honoured.
+- **The `2026-07-28` stateless lifecycle over HTTP, in full** (`927f9d0`): per-request
+  `_meta` validation, `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` and
+  `Mcp-Param-*` checked against the body (`-32020`), `-32022` echoing the
+  requested version, `-32021` with `requiredCapabilities`, `404` for removed and
+  unknown methods, `subscriptions/listen`, and `serverInfo` in every result's
+  `_meta`.
+- **SEP-2322 multi round-trip requests.** (`927f9d0`) `InputRequired` builds an interim
+  result; `RequestContext::input_response`, `request_state` and `seal_state`
+  read and write the retry. `requestState` is HMAC-SHA256-sealed under a
+  per-server key, so a tampered state is refused before any handler runs.
+- **A stateless HTTP client.** (`927f9d0`) `StatelessHttpClient`, reached through
+  `Client::connect_to` with an `http-stateless:` spec, sends the per-request
+  `_meta` and headers and mirrors `x-mcp-header` arguments.
+- **Sampling and elicitation over stdio.** (`927f9d0`) The serve loop keeps reading while
+  a handler waits on the client, delivers the answer, and queues any request
+  that arrives meanwhile so replies keep their order.
+
+### Fixed
+
+- **A numeric `progressToken` was echoed back as a string** (`927f9d0`) on every revision,
+  so a client correlating by value never matched its progress.
+- **stdio delivered no progress or log notifications.** (`927f9d0`) The peer's sink was a
+  placeholder that refused every frame, and the progress token was never read.
+- **`logging/setLevel` was accepted and ignored.** (`927f9d0`) It now filters; at
+  `2026-07-28` a request without `logLevel` receives no log records.
+- **Stateless requests shared one session id** (`927f9d0`), so two clients reusing a
+  request id for the same tool were answered with each other's recorded result.
+- **Listings wrote `"description": null`** (`927f9d0`) for an absent description, which no
+  revision's schema admits.
+- **Methods a revision removed were still answered** (`927f9d0`) (`ping`,
+  `logging/setLevel` and `resources/(un)subscribe` at `2026-07-28`).
+- **The HTTP client never sent `MCP-Protocol-Version`** (`927f9d0`) after negotiating
+  `2025-06-18` or later.
+- **`protocol-droid probe` reported `2026-07-28` as refused** (`927f9d0`) by servers that
+  support it: its `server/discover` carried no `_meta`. A Streamable HTTP
+  target's stateless revisions are now probed with the stateless client.
+- **The Release workflow failed on every green push** that did not create a
+  tag. It now reports "nothing to release" and skips (`d7fe867`).
 
 ## [0.2.0] — 2026-10-17
 
