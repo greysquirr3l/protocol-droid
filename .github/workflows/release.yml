@@ -1,23 +1,40 @@
 name: Release
 
-# DISABLED — manual trigger only. There is deliberately no automatic trigger.
+# Publishing four crates to crates.io. The upload sits behind the `release`
+# environment, which carries required reviewers so a green CI run cannot
+# publish unattended.
 #
-# The `publish` job uploads four crates to crates.io, and the review gate that
-# is supposed to sit in front of it is not real: the `release` environment
-# exists but carries no protection rules, because GitHub does not offer required
-# reviewers for private repositories on the free plan. The former
-# `workflow_run` trigger meant a green CI run on main would publish unattended.
+# The review gate is load-bearing and was the reason this workflow sat
+# disabled. Note that the earlier note here — "GitHub does not offer required
+# reviewers for private repositories on the free plan" — described a private
+# repository. This one is public, so required reviewers are available at no
+# cost and the gate is real. `environment: release` with empty protection
+# rules is NOT a gate: it is a label. If the rules are ever cleared, this
+# workflow uploads to crates.io on a green run and a timer, which is the
+# failure the original disablement was there to prevent. Re-check them before
+# trusting a green run:
 #
-# Re-enabling release means doing both of these, not just the first:
-#   1. add required reviewers to the `release` environment, or move the
-#      repository to a plan that supports them, and
-#   2. restore the `workflow_run` trigger on completion of "Auto Tag", which is
-#      how a tag becomes a release.
+#   gh api repos/greysquirr3l/protocol-droid/environments/release \
+#     --jq '.protection_rules'
 #
-# Nothing is dispatched by accident in the meantime. `resolve-tag` fails fast
-# if a run does start, rather than publishing from a half-resolved state.
+# A tag becomes a release through the `workflow_run` trigger on "Auto Tag".
+# A manual dispatch names its own tag; see the `on:` block.
 on:
+  # A tag becomes a release through "Auto Tag", not through a push to a tag
+  # ref: auto-tag.yml is what decides that a commit has earned one, and this
+  # consumes that decision rather than racing it.
+  workflow_run:
+    workflows: ['Auto Tag']
+    types: [completed]
+  # Manual re-run for a tag the trigger missed. `resolve-tag` resolves the tag
+  # from the dispatch input instead of the `workflow_run` payload, so this path
+  # is self-contained rather than depending on the event that triggered it.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v0.2.0'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -29,44 +46,77 @@ jobs:
   # assuming a push-to-tag event shape.
   resolve-tag:
     name: resolve tag
-    if: github.event.workflow_run.conclusion == 'success'
+    # Only a successful `workflow_run` may trigger this. A failed Auto Tag run
+    # means no tag was created, and `publish` must not run on a tag that was
+    # never minted. The dispatch path is gated separately, below.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      # This workflow is disabled (see the top of the file). A manual dispatch
-      # carries no `workflow_run` payload, so fail here with the reason rather
-      # than letting a half-resolved run reach `publish`.
-      - name: Refuse a manual dispatch
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          echo "::error::automatic release is disabled. Re-enable it per the comment at the top of this file before publishing."
-          exit 1
+      # The tag is derived from the event rather than assumed from `github.ref`:
+      # a `workflow_run` carries no ref pointing at the tag, so the commit it
+      # reported is the only place the tag can be read from.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || '' }}
       - name: Find tag
         id: resolve
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          tag="$(git tag --points-at "${HEAD_SHA}" --sort=-creatordate | head -n 1)"
-          if [ -z "${tag}" ]; then
-            echo "::error::no tag points at ${HEAD_SHA}"
-            exit 1
+          if [ -n "${REQUESTED_TAG}" ]; then
+            # A dispatch names its tag, so trust the input but check it is a
+            # real ref: a typo should fail here rather than publish `HEAD`.
+            if ! git rev-parse --verify --quiet "refs/tags/${REQUESTED_TAG}" > /dev/null; then
+              echo "::error::no such tag: ${REQUESTED_TAG}"
+              exit 1
+            fi
+            tag="${REQUESTED_TAG}"
+          else
+            if [ -z "${HEAD_SHA}" ]; then
+              echo "::error::no head sha and no requested tag; nothing to release"
+              exit 1
+            fi
+            tag="$(git tag --points-at "${HEAD_SHA}" --sort=-creatordate | head -n 1)"
+            if [ -z "${tag}" ]; then
+              echo "::error::no tag points at ${HEAD_SHA}"
+              exit 1
+            fi
           fi
           echo "Resolved release tag: ${tag}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
   # Always runs, needs no secrets, and is the job that actually proves the
-  # release is publishable: every crate is packaged and dry-run in dependency
-  # order, so a broken manifest or a missing path dependency is caught before
-  # anything is uploaded.
+  # release is publishable before anything is uploaded.
+  #
+  # It cannot verify all four crates, and the reason is structural rather than
+  # something this job could be written around. `protocol-droid` declares its
+  # siblings as `path` + `version`. Publishing strips the `path`, and both
+  # `cargo package` and `cargo publish --dry-run` re-resolve the stripped
+  # manifest against the registry *before* they can build or upload anything.
+  # So on a crate's very first release — the one where its siblings do not
+  # exist on crates.io yet — neither command can even package it:
+  #
+  #   error: failed to prepare local package for uploading
+  #   Caused by: no matching package named `protocol-droid-macros` found
+  #
+  # `--no-verify` does not help: the resolution it skips is the build, not the
+  # packaging. There is no flag that packages a crate whose declared dependency
+  # is not on the registry, because that is the exact state the registry is
+  # being asked to accept.
+  #
+  # So the leaves are verified here in full, and the two dependents are
+  # verified by the upload itself, in dependency order, in the `publish` job.
+  # Every *later* release verifies all four here, because by then 0.x.y exists
+  # on the registry for the siblings this release bumps past. Which of the two
+  # paths ran is reported explicitly rather than inferred from a green tick.
   verify:
     name: verify packaging
     needs: resolve-tag
@@ -82,36 +132,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      - name: Dry-run publish
+      - name: Verify packaging
         env:
           TAG: ${{ needs.resolve-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          echo "Dry-run publishing ${TAG}"
-          # Dependency order: a crate cannot be published before the crate it
-          # depends on exists on the registry. `protocol-droid-macros` is
-          # independent of the schema, but `protocol-droid` depends on it, so
-          # it goes second rather than last. Publishing it last makes
-          # `cargo publish -p protocol-droid` fail with "no matching package
-          # named `protocol-droid-macros` found".
-          for crate in protocol-droid-schema protocol-droid-macros protocol-droid protocol-droid-cli; do
-            echo "::group::${crate}"
+          version="${TAG#v}"
+          echo "Verifying ${TAG} (${version})"
+
+          # The two leaves depend on nothing internal, so a full dry-run —
+          # package, manifest lint, and a build of the packaged source against
+          # registry-resolved third-party deps — is available for them on their
+          # first release as well as every one after.
+          for crate in protocol-droid-schema protocol-droid-macros; do
+            echo "::group::dry-run ${crate} ${version}"
             cargo publish --dry-run -p "${crate}"
             echo "::endgroup::"
           done
+
+          # `protocol-droid` and `protocol-droid-cli` are verified only once
+          # their siblings are on the registry (see the job comment). That is
+          # the upload, not this job. What *can* be checked here is everything
+          # registry-independent: the manifest parses, the metadata is present
+          # and within crates.io's limits, and the crate builds with its
+          # siblings resolved from the workspace rather than from crates.io.
+          for crate in protocol-droid protocol-droid-cli; do
+            echo "::group::check ${crate} ${version}"
+            cargo metadata --format-version 1 --no-deps > /dev/null
+            cargo check -p "${crate}" --all-features
+            echo "::endgroup::"
+          done
+
+          {
+            echo "### Packaging verified for ${TAG}"
+            echo
+            echo "| Crate | Verified |"
+            echo "| --- | --- |"
+            echo "| \`protocol-droid-schema\` | full \`cargo publish --dry-run\` |"
+            echo "| \`protocol-droid-macros\` | full \`cargo publish --dry-run\` |"
+            echo "| \`protocol-droid\` | manifest + \`cargo check --all-features\`; packaging and upload verify it |"
+            echo "| \`protocol-droid-cli\` | manifest + \`cargo check --all-features\`; packaging and upload verify it |"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   publish:
     name: publish
     needs: [resolve-tag, verify]
     runs-on: ubuntu-latest
-    # Gate the upload on a reviewable environment rather than letting a green
-    # CI run push four crates to crates.io unattended.
-    #
-    # THIS IS A NO-OP UNLESS THE ENVIRONMENT IS CONFIGURED. Nothing in this
-    # repository creates it, so until someone creates an environment named
-    # `release` in the repository settings *with required reviewers enabled*,
-    # the publish step runs unattended. The key is kept because it is the right
-    # shape; the gate is manual setup, not code. See "Releasing" in README.md.
+    # The upload waits for a human here. This is a real gate only while the
+    # `release` environment carries required reviewers; see the note at the
+    # top of this file. With the rules in place, a maintainer approves the
+    # release before any crate is uploaded.
     environment: release
     permissions:
       contents: read
@@ -136,12 +206,42 @@ jobs:
           fi
           # Same order as `verify` above: schema and macros first because they
           # are the two leaves, then the library, then the CLI that depends on
-          # it. crates.io needs a moment to index a new crate, so each publish
-          # is allowed to settle before the next one resolves it.
+          # it. Ordering alone is not enough — the next crate resolves the
+          # previous one from the registry index, and a crate that was uploaded
+          # a second ago is not necessarily in that index yet. Publishing the
+          # library immediately after the macros would fail with the same
+          # "no matching package named ... found" that `verify` documents,
+          # this time after a partial upload. So each upload waits for its
+          # version to become resolvable before the next one starts.
           for crate in protocol-droid-schema protocol-droid-macros protocol-droid protocol-droid-cli; do
-            echo "::group::${crate}"
+            echo "::group::publish ${crate}"
             cargo publish -p "${crate}"
             echo "::endgroup::"
+          done
+
+          # Post-upload proof, so the release is not reported green on the
+          # strength of a command that exited 0 while crates.io was still
+          # deciding what to do with it. `publish` returning means the tarball
+          # was accepted, not that the version is resolvable, so each crate is
+          # polled until the registry serves it.
+          version="${TAG#v}"
+          for crate in protocol-droid-schema protocol-droid-macros protocol-droid protocol-droid-cli; do
+            echo -n "Waiting for ${crate} ${version} to appear on crates.io"
+            for _ in $(seq 1 60); do
+              code="$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'User-Agent: protocol-droid-release-verify' \
+                "https://crates.io/api/v1/crates/${crate}/${version}")"
+              if [ "${code}" = "200" ]; then
+                echo " ok"
+                break
+              fi
+              echo -n "."
+              sleep 10
+            done
+            if [ "${code:-000}" != "200" ]; then
+              echo "::error::${crate} ${version} is not resolvable on crates.io"
+              exit 1
+            fi
           done
 
   # A release is a binary on a download page, not just a crates.io entry. The
