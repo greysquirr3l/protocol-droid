@@ -359,6 +359,41 @@ impl Server {
         );
     }
 
+    /// Adds a tool to a server that was already built.
+    ///
+    /// [`ServerBuilder::tool`] is the builder API and takes precedence. This
+    /// exists for the same reason [`with_state`](Self::with_state) does: a
+    /// caller who went through `#[server]`'s `into_server` never saw a
+    /// builder, and until this there was nothing they could do about it.
+    ///
+    /// It is not a convenience for schemas a Rust type can derive. `#[tool]`
+    /// builds `inputSchema` through `schemars` from the handler's parameters,
+    /// and `schemars` cannot express what MCP asks a tool to be able to say:
+    /// `$schema`, `$defs` with an `$anchor`, `allOf`/`anyOf`, or `if`/`then`/
+    /// `else`. Those are SEP-1613 and SEP-2106 — a tool whose schema another
+    /// toolchain generated and shipped as JSON has exactly one way to reach a
+    /// peer through this crate, and before this method it had none through
+    /// the front door.
+    ///
+    /// Registering and publishing together, as on the builder: a tool in
+    /// `tools/list` with no handler is one a client can see and not call, and
+    /// a handler with no entry is one that never runs. There is no state in
+    /// between for a caller to be wrong in.
+    ///
+    /// Call it before serving. A tool added while the server is answering
+    /// requests lands in the registry's next snapshot but not in the handler
+    /// table `tools/call` reads, which is a tool that lists and does not run.
+    ///
+    /// Infallible, unlike [`Tool::new`]: a [`Tool`] has already had its
+    /// `inputSchema` parsed and validated, so there is no second parse here to
+    /// fail.
+    pub fn add_tool(&mut self, tool: Tool, handler: ToolHandler) {
+        let name = tool.name.clone();
+        self.registry
+            .register(Registered::from(Primitive::from(tool)));
+        self.tools.push(ToolEntry { name, handler });
+    }
+
     /// The state map handlers read through
     /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
     ///
@@ -1047,6 +1082,53 @@ mod tests {
 
         assert_eq!(server.tool_count(), 1);
         assert_eq!(server.registry().snapshot().len(PrimitiveKind::Tool), 1);
+        Ok(())
+    }
+
+    /// A tool added after `into_server` lists *and* runs.
+    ///
+    /// Both halves, because the registry and the handler table are two places
+    /// a method like this could write to only one of. A tool in `tools/list`
+    /// with no handler is one a client can see and not call — the failure mode
+    /// the builder's own doc calls out — and it would pass a listing-only test.
+    #[test]
+    fn a_tool_added_after_the_build_lists_and_runs() -> Result<(), TestError> {
+        use crate::domain::registry::{Primitive, Tool};
+
+        let mut server = Server::builder("demo")
+            .simple_tool("echo", r#"{"type":"object"}"#, answering("{}")?)?
+            .build();
+
+        // The schema is the one thing `add_tool` exists for: `$defs`, an
+        // `$anchor` and `if`/`then`/`else` are JSON Schema 2020-12 keywords no
+        // Rust type derives, so this is the whole reason the method is here.
+        let raw = Tool::new(
+            "json_schema_2020_12",
+            r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","$defs":{"address":{"$anchor":"addressDef","type":"string"}},"if":{"properties":{"a":{"const":1}}},"then":{"required":["b"]}}"#,
+        )?;
+        server.add_tool(raw, answering(r#"{"ok":true}"#)?);
+
+        assert_eq!(server.tool_count(), 2);
+        assert_eq!(server.registry().snapshot().len(PrimitiveKind::Tool), 2);
+        assert!(server.handler("json_schema_2020_12").is_some());
+
+        // The listing, not just the count: the schema has to reach `tools/list`
+        // with the keywords intact, since that is the wire the suite reads.
+        let snapshot = server.registry().snapshot();
+        let advertised = snapshot
+            .list(PrimitiveKind::Tool)
+            .iter()
+            .find(|tool| tool.id().as_str() == "json_schema_2020_12")
+            .ok_or("the added tool is not in the registry")?;
+        let Primitive::Tool(advertised) = advertised.primitive() else {
+            return Err("a tool listing held something that is not a tool".into());
+        };
+        let text = advertised.input_schema.as_str();
+        for keyword in ["$schema", "$defs", "$anchor", "if", "then"] {
+            if !text.contains(keyword) {
+                return Err(format!("{keyword} did not reach the listing").into());
+            }
+        }
         Ok(())
     }
 
