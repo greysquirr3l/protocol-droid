@@ -848,8 +848,20 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     // address, and the only piece of the suite of choices the fixture
     // actually needs to make.
     let server: Server = ConformanceFixture.into_server()?;
-    let builder =
-        protocol_droid::adapters::primary::transport::http::HttpBuilder::new(server).addr(addr);
+    // The suite exercises elicitation and sampling, which a tool can only
+    // reach by putting a question on a stream and waiting for the answer. A
+    // server answering with one JSON document has no stream to put it on, so
+    // this is the one configuration choice the fixture has to make — and it
+    // is made here, out loud, rather than left to a default it has to break.
+    //
+    // Without it those scenarios fail with the tool reporting that it cannot
+    // ask the peer, which is the correct behaviour for the default and the
+    // wrong one for this fixture.
+    let config = protocol_droid::adapters::primary::transport::http::ServerConfig::new()?
+        .with_streaming(protocol_droid::adapters::primary::transport::http::Streaming::EventStream);
+    let builder = protocol_droid::adapters::primary::transport::http::HttpBuilder::new(server)
+        .addr(addr)
+        .config(config);
     let bound = builder.serve().await?;
     eprintln!("{}: listening on {}", SERVER_NAME, bound.addr);
     Ok(())

@@ -48,6 +48,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
@@ -75,6 +76,18 @@ pub struct ExchangeTable {
     /// atomic: minting an id and registering under it is one step, and two
     /// steps would leave a window where the id is reserved but unclaimed.
     inner: Arc<Mutex<Table>>,
+    /// Whether anything is draining the session's tail.
+    ///
+    /// A server answering a `POST` with one JSON document is not draining the
+    /// tail, because there is no body left to drain it into. A tool that
+    /// elicits on such a server pushes its request into the ring and then
+    /// waits for an answer that has nowhere to be read, which is a hang with
+    /// no error and no timeout — the worst shape a protocol defect can take.
+    ///
+    /// So this is checked before the wait rather than left to be discovered by
+    /// the peer, and the check answers with a refusal naming the reason.
+    /// Outside the mutex because it never changes after construction.
+    readable: Arc<AtomicBool>,
 }
 
 /// The first id a session's server-initiated requests are minted from.
@@ -107,10 +120,34 @@ impl Default for Table {
 }
 
 impl ExchangeTable {
-    /// A table with nothing in flight.
+    /// A table with nothing in flight and nothing reading the tail.
+    ///
+    /// The unreadable default is the safe one. A session that has not said it
+    /// is served as a stream has not established that anything is reading, so
+    /// the honest answer to "may I ask the peer a question?" is no.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A table whose session's tail this server drains.
+    ///
+    /// Called once, when a session is opened against a server configured to
+    /// answer with an event stream. Every later [`Self::new`] on the same
+    /// handle — and there are none, this is the only constructor that sets it
+    /// — inherits the answer.
+    #[must_use]
+    pub fn readable() -> Self {
+        Self {
+            readable: Arc::new(AtomicBool::new(true)),
+            ..Self::default()
+        }
+    }
+
+    /// Whether a server-initiated request can be asked and answered here.
+    #[must_use]
+    pub fn is_readable(&self) -> bool {
+        self.readable.load(Ordering::Relaxed)
     }
 
     /// Records a waiter under a fresh id, returning it.
@@ -205,6 +242,20 @@ impl CallbackExchange for HttpExchange {
         method: &str,
         params: &crate::domain::ir::JsonObject,
     ) -> Result<crate::domain::ir::JsonObject, ExchangeError> {
+        // Asked before anything is pushed or waited on. Pushing first would
+        // leave a request in the ring that the peer never sees and a wait on a
+        // channel that can only be closed by the session ending, which reads
+        // from the outside as a server that stopped responding. Refusing here
+        // gives the tool an error it can put in its result, so the peer is
+        // told "this cannot be asked here" instead of waiting for an answer
+        // that was never on its way.
+        if !self.table.is_readable() {
+            return Err(ExchangeError::new(
+                "this server answers with a single JSON document, so a tool \
+                 cannot ask the peer a question and wait: set \
+                 Streaming::EventStream to offer elicitation or sampling",
+            ));
+        }
         let (sender, receiver) = oneshot::channel();
         let id = self.table.register(sender);
 
@@ -232,5 +283,106 @@ impl CallbackExchange for HttpExchange {
         receiver
             .await
             .map_err(|_| ExchangeError::new("the session ended before the peer answered"))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExchangeTable, HttpExchange};
+    use crate::adapters::primary::transport::http::stream::EventTail;
+    use crate::application::server::context::CallbackExchange;
+    use crate::domain::ir::JsonObject;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A ring big enough for the handful of events these tests push.
+    fn capacity() -> Result<std::num::NonZeroUsize, TestError> {
+        Ok(4.try_into()?)
+    }
+
+    /// An unreadable exchange refuses, and the refusal names the setting that
+    /// would make it possible.
+    ///
+    /// The wording is the point as much as the refusal. A tool that cannot ask
+    /// its question reports the reason back to whoever called it, and
+    /// "something went wrong" sends that caller looking in the wrong place —
+    /// the tool, the client, the peer — when the answer is one setting on one
+    /// server.
+    #[tokio::test]
+    async fn an_unreadable_exchange_names_the_setting() -> Result<(), TestError> {
+        let exchange = HttpExchange::new(ExchangeTable::new(), EventTail::new(capacity()?));
+        let params = JsonObject::new("{}")?;
+
+        let Err(error) = exchange.exchange("elicitation/create", &params).await else {
+            return Err("an exchange with no reader was answered".into());
+        };
+        let message = error.to_string();
+        if !message.contains("EventStream") {
+            return Err(format!("the refusal does not name the setting: {message}").into());
+        }
+        Ok(())
+    }
+
+    /// Nothing is pushed and nothing is left waiting when the exchange is
+    /// refused.
+    ///
+    /// The refusal has to happen *before* the register-and-push, or the
+    /// request sits in the ring the peer will never read and the table holds a
+    /// waiter nothing can complete — the same leak, one step later.
+    #[tokio::test]
+    async fn a_refused_exchange_leaves_nothing_in_flight() -> Result<(), TestError> {
+        let table = ExchangeTable::new();
+        let exchange = HttpExchange::new(table.clone(), EventTail::new(capacity()?));
+        let params = JsonObject::new("{}")?;
+
+        let _ = exchange.exchange("elicitation/create", &params).await;
+
+        if table.outstanding() != 0 {
+            return Err("a refused exchange left a waiter behind".into());
+        }
+        Ok(())
+    }
+
+    /// A readable exchange still registers a waiter, so the refusal above is
+    /// about the mode and not about the plumbing being broken.
+    #[tokio::test]
+    async fn a_readable_exchange_registers_a_waiter() -> Result<(), TestError> {
+        let table = ExchangeTable::readable();
+        let exchange = HttpExchange::new(table.clone(), EventTail::new(capacity()?));
+        let params = JsonObject::new("{}")?;
+
+        // The exchange is left pending rather than awaited: resolving it needs
+        // the peer's answer, which is the point of the table.
+        let pending = exchange.exchange("elicitation/create", &params);
+        tokio::pin!(pending);
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(50), &mut pending).await;
+
+        if table.outstanding() != 1 {
+            return Err("a readable exchange registered no waiter".into());
+        }
+
+        // A second question is asked only to prove the first one is still
+        // outstanding: two waiters means the table did not answer the first
+        // from its own ring. It is polled rather than awaited — an exchange
+        // resolves when the *peer* answers, and nothing here plays the peer,
+        // so awaiting it is a hang rather than an assertion.
+        let second = exchange.exchange("elicitation/create", &params);
+        tokio::pin!(second);
+        let answered =
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut second).await;
+        if answered.is_ok() {
+            return Err("an exchange answered without the peer".into());
+        }
+        if table.outstanding() != 2 {
+            return Err("the second exchange registered no waiter of its own".into());
+        }
+        Ok(())
+    }
+
+    /// The default is unreadable, which is the direction that fails safe.
+    #[test]
+    fn the_default_table_is_unreadable() {
+        assert!(!ExchangeTable::new().is_readable());
+        assert!(ExchangeTable::readable().is_readable());
     }
 }

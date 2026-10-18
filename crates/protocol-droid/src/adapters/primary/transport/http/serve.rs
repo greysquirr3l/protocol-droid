@@ -35,6 +35,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::adapters::primary::transport::http::config::ServerConfig;
+use crate::adapters::primary::transport::http::config::Streaming;
 use crate::adapters::primary::transport::http::exchange::{Answer, ExchangeTable, HttpExchange};
 use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::refusal::Refusal;
@@ -446,6 +447,10 @@ impl RequestHandler<HttpSession> for HttpHandler {
         // neither of which outlives this function.
         let body = call.body.to_vec();
         let protocol = call.protocol;
+        // Captured here because the framing decision below happens after the
+        // body is owned, and this is the only record of how the server was
+        // configured to answer. See [`Streaming`].
+        let streaming = call.streaming;
         let opening = matches!(call.session, SessionHandle::Establishing);
         let stored = match &call.session {
             SessionHandle::Establishing | SessionHandle::Stateless => None,
@@ -529,14 +534,27 @@ impl RequestHandler<HttpSession> for HttpHandler {
                 // A sessioned request is answered beside an already-open
                 // stream, which is the only shape that survives a handler that
                 // publishes *and waits* — see [`Self::respond_beside_stream`].
-                return self.respond_beside_stream(
-                    &peer_for_now,
-                    session,
-                    id.as_ref(),
-                    progress,
-                    method,
-                    &params,
-                );
+                //
+                // Only when this server was configured to frame a stream at
+                // all. Under `Streaming::Json` the documented default, the
+                // reply is one JSON document: the stream is built and drained
+                // into it before the response exists, which is why a tool that
+                // elicits cannot work here and says so rather than hanging —
+                // see [`ExchangeTable::is_readable`].
+                if streaming == Streaming::EventStream {
+                    return self.respond_beside_stream(
+                        &peer_for_now,
+                        session,
+                        id.as_ref(),
+                        progress,
+                        method,
+                        &params,
+                    );
+                }
+                match self.dispatcher.dispatch(&context, method, &params).await {
+                    Ok(result) => (result_document(id.as_ref(), &result)?, None),
+                    Err(error) => (refusal_document(id.as_ref(), &error), None),
+                }
             } else {
                 match self.dispatcher.dispatch(&context, method, &params).await {
                     Ok(result) => (result_document(id.as_ref(), &result)?, None),
@@ -557,66 +575,107 @@ impl RequestHandler<HttpSession> for HttpHandler {
             }
 
             if opening {
-                // `handshake` narrows the context it was handed, so the peer it
-                // returns carries the *establishing request's* principal. Every
-                // request resolves its own principal above, so nothing
-                // downstream reads this one — which is exactly why it is worth
-                // dropping rather than storing: session state outlives the
-                // credential that produced it, and a principal recorded there
-                // has the wrong lifetime for a token that can be refreshed,
-                // replaced, or withdrawn mid-session.
-                let peer = negotiated
-                    .ok_or_else(|| {
-                        Refusal::Handler("a session was opened without a handshake".to_owned())
-                    })?
-                    .without_auth();
-                // The tail the router streams to the client, and the sink the
-                // handler writes through, are the same ring. Binding the peer
-                // to a *different* one is the quiet failure this shape invites:
-                // the session's own tail stays empty forever while the peer
-                // dutifully publishes into a ring no reader ever drains, so a
-                // tool that logs looks like a tool that logs nothing.
-                let (tail, exchange) = stored.map_or_else(
-                    || (Tail::new(TAIL_CAPACITY), ExchangeTable::new()),
-                    |session| (session.tail.clone(), session.exchange.clone()),
-                );
-                // The store allocates the id below, so it is read back from the
-                // minted handle rather than allocated twice — and the peer is
-                // bound to it before anything can key on it.
-                let peer = peer
-                    .with_sink(Arc::new(TailSink { tail: tail.clone() }))
-                    // Bound to *this* session's table, for the same reason the
-                    // sink is bound to this session's tail: the peer outlives
-                    // the seed it was built from, and an exchange on the wrong
-                    // table publishes a request nobody on this session is
-                    // waiting to answer.
-                    .with_exchange(Arc::new(HttpExchange::new(exchange.clone(), tail.clone())));
-                let id_source = self.sessions.next_id();
-                let peer = peer.with_session(id_source);
-                let minted = self
-                    .sessions
-                    .open_with_id(
-                        Arc::new(HttpSession {
-                            peer,
-                            tail,
-                            exchange,
-                        }),
-                        id_source,
-                    )
-                    .map_err(|error| Refusal::Handler(format!("no session: {error}")))?;
-                return Self::response(&document, Some(&minted), None);
+                return self.open_session(negotiated, stored.as_deref(), streaming, &document);
             }
 
+            // The tail is handed over only when this server was configured to
+            // frame a stream. Under `Streaming::Json` the reply is one
+            // document with nothing to drain into, and passing the tail would
+            // answer with an event stream regardless — which is exactly how the
+            // default came to mean a bare document on `initialize` and a stream
+            // on everything after it.
             Self::response(
                 &document,
                 None,
-                stored.map(|session| (session.tail.clone(), cursor)),
+                if streaming == Streaming::EventStream {
+                    stored.map(|session| (session.tail.clone(), cursor))
+                } else {
+                    None
+                },
             )
         }
     }
 }
 
 impl HttpHandler {
+    /// Mints the session an `initialize` establishes, and answers with its id.
+    ///
+    /// Split out of [`RequestHandler::dispatch`] because opening a session is
+    /// one concern with one rule in it — what this session may be asked, and
+    /// what may be published to it — and inlining that into the request loop
+    /// left the rule sitting behind forty lines of session bookkeeping.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Handler`] if `initialize` succeeded without producing a peer
+    /// to store, if the store refuses the session, or if the answer will not
+    /// serialise.
+    fn open_session(
+        &self,
+        negotiated: Option<PeerSession>,
+        stored: Option<&HttpSession>,
+        streaming: Streaming,
+        document: &Value,
+    ) -> Result<axum::response::Response, Refusal> {
+        // `handshake` narrows the context it was handed, so the peer it
+        // returns carries the *establishing request's* principal. Every
+        // request resolves its own principal above, so nothing downstream
+        // reads this one — which is exactly why it is worth dropping rather
+        // than storing: session state outlives the credential that produced
+        // it, and a principal recorded there has the wrong lifetime for a
+        // token that can be refreshed, replaced, or withdrawn mid-session.
+        let peer = negotiated
+            .ok_or_else(|| Refusal::Handler("a session was opened without a handshake".to_owned()))?
+            .without_auth();
+        // The tail the router streams to the client, and the sink the handler
+        // writes through, are the same ring. Binding the peer to a *different*
+        // one is the quiet failure this shape invites: the session's own tail
+        // stays empty forever while the peer dutifully publishes into a ring
+        // no reader ever drains, so a tool that logs looks like a tool that
+        // logs nothing.
+        //
+        // Whether anything drains that ring is the framing decision, so it is
+        // recorded on the table here rather than left for a tool to discover by
+        // hanging. A session opened under `Streaming::Json` is never drained,
+        // because every reply it gives is one document.
+        let readable = streaming == Streaming::EventStream;
+        let (tail, exchange) = stored.map_or_else(
+            || {
+                let exchange = if readable {
+                    ExchangeTable::readable()
+                } else {
+                    ExchangeTable::new()
+                };
+                (Tail::new(TAIL_CAPACITY), exchange)
+            },
+            |session| (session.tail.clone(), session.exchange.clone()),
+        );
+        // The store allocates the id below, so it is read back from the minted
+        // handle rather than allocated twice — and the peer is bound to it
+        // before anything can key on it.
+        let peer = peer
+            .with_sink(Arc::new(TailSink { tail: tail.clone() }))
+            // Bound to *this* session's table, for the same reason the sink is
+            // bound to this session's tail: the peer outlives the seed it was
+            // built from, and an exchange on the wrong table publishes a
+            // request nobody on this session is waiting to answer.
+            .with_exchange(Arc::new(HttpExchange::new(exchange.clone(), tail.clone())));
+        let id_source = self.sessions.next_id();
+        let peer = peer.with_session(id_source);
+        let minted = self
+            .sessions
+            .open_with_id(
+                Arc::new(HttpSession {
+                    peer,
+                    tail,
+                    exchange,
+                }),
+                id_source,
+            )
+            .map_err(|error| Refusal::Handler(format!("no session: {error}")))?;
+        Self::response(document, Some(&minted), None)
+    }
+
     /// The answer document, with the session header when one was minted.
     ///
     /// # Errors
@@ -1256,9 +1315,10 @@ mod tests {
     use super::{HttpBuilder, ServeError, default_ceiling, routes};
     use crate::adapters::primary::transport::http::router::RouterError;
     use crate::adapters::primary::transport::http::{
-        Anonymous, AuthPolicy, Authenticator, Credentials,
+        Anonymous, AuthPolicy, Authenticator, Credentials, ServerConfig, Streaming,
     };
     use crate::application::server::{Server, ToolHandler};
+    use crate::domain::ir::JsonObject;
     use crate::domain::registry::auth::ScopeSet;
     use crate::domain::registry::{AuthContext, Primitive, Registered, Scope, Tool};
 
@@ -1268,6 +1328,14 @@ mod tests {
     enum Failure {
         /// A test assumption about the crate's own defaults did not hold.
         Expectation(&'static str),
+        /// Two values that should have matched and did not.
+        ///
+        /// Separate from [`Self::Expectation`] because "the media type was
+        /// this, the media type should have been that" is the assertion this
+        /// module could not previously make at all — the two values are the
+        /// whole point of the test, and folding them into one message would
+        /// mean printing only half of it.
+        Mismatch(String, String),
         /// The transport refused something a test did not expect it to.
         Serve(ServeError),
         /// A request never produced a response.
@@ -1278,6 +1346,9 @@ mod tests {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             match self {
                 Self::Expectation(what) => write!(formatter, "expected {what}"),
+                Self::Mismatch(found, wanted) => {
+                    write!(formatter, "expected {wanted}, got {found}")
+                }
                 Self::Serve(error) => write!(formatter, "the transport refused: {error}"),
                 Self::NoResponse => formatter.write_str("the request produced no response"),
             }
@@ -1457,6 +1528,130 @@ mod tests {
         }
     }
 
+    /// `Streaming::Json` — the default — has to mean `application/json` on a
+    /// *sessioned* POST, and it did not.
+    ///
+    /// Issue #20: `initialize` answered a bare document while every request
+    /// after it answered an event stream, because the framing was decided by
+    /// whether a session existed rather than by how the server was configured.
+    /// `streaming()` was read in exactly one place, a log field. A consumer
+    /// that never touched `Streaming` got `text/event-stream` and an
+    /// `id: N\ndata: {...}` body where it expected a document.
+    ///
+    /// Both modes are asserted here rather than only the default, because the
+    /// previous test (`the_streaming_mode_never_changes_the_get_route`) covers
+    /// the GET route and would not have caught this: `Streaming` has never
+    /// changed what the GET route does.
+    #[tokio::test]
+    async fn the_streaming_mode_decides_how_a_sessioned_post_is_framed() -> Result<(), Failure> {
+        for (streaming, expected) in [
+            (Streaming::Json, "application/json"),
+            (Streaming::EventStream, "text/event-stream"),
+        ] {
+            let config = ServerConfig::new()
+                .map_err(|_| Failure::Expectation("the config did not parse"))?
+                .with_streaming(streaming);
+            let router = crate::adapters::primary::transport::http::serve::test_routes(
+                server(),
+                default_ceiling(),
+                Some(config),
+                Some(test_ids()),
+            )?;
+
+            let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+            let (status, minted, _) = post(&router, initialize, None, None).await?;
+            if status != StatusCode::OK {
+                return Err(Failure::Expectation("initialize was refused"));
+            }
+            let Some(session) = minted else {
+                return Err(Failure::Expectation("no session was minted"));
+            };
+
+            let (status, _, _) = post(
+                &router,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+                None,
+                Some(&session),
+            )
+            .await?;
+            if status != StatusCode::OK {
+                return Err(Failure::Expectation("a sessioned tools/list was refused"));
+            }
+
+            let response = raw_post(
+                &router,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+                Some(&session),
+            )
+            .await?;
+            let media = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            if !media.starts_with(expected) {
+                return Err(Failure::Mismatch(media, expected.to_owned()));
+            }
+        }
+        Ok(())
+    }
+
+    /// A tool that asks the peer a question cannot do it on a server that
+    /// answers with one document, and it has to find out rather than hang.
+    ///
+    /// The property under test is that the call *returns*. Before this change
+    /// a `Streaming::Json` server pushed the tool's question into a ring no one
+    /// drains and waited on a channel that only the end of the session could
+    /// close: a hang with no error and no timeout. Whatever the refusal turns
+    /// out to be, the assertion is that there is one.
+    ///
+    /// The refusal's wording is pinned by `an_unreadable_exchange_names_the_setting`
+    /// in the `exchange` module, which can reach the exchange directly. Here
+    /// the capability gate answers first — this server declares no elicitation
+    /// capability — so what arrives here is that gate's refusal, not the
+    /// exchange's.
+    #[tokio::test]
+    async fn a_tool_that_asks_the_peer_is_answered_rather_than_left_waiting() -> Result<(), Failure>
+    {
+        let config = ServerConfig::new()
+            .map_err(|_| Failure::Expectation("the config did not parse"))?
+            .with_streaming(Streaming::Json);
+        let router = crate::adapters::primary::transport::http::serve::test_routes(
+            eliciting_server()?,
+            default_ceiling(),
+            Some(config),
+            Some(test_ids()),
+        )?;
+
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+        let (status, minted, _) = post(&router, initialize, None, None).await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("initialize was refused"));
+        }
+        let Some(session) = minted else {
+            return Err(Failure::Expectation("no session was minted"));
+        };
+
+        let (status, _, document) = post(
+            &router,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"elicit","arguments":{}}}"#,
+            None,
+            Some(&session),
+        )
+        .await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("the call was refused outright"));
+        }
+        if document.to_string().contains("reason") {
+            return Ok(());
+        }
+        Err(Failure::Mismatch(
+            document.to_string(),
+            "an answer naming why the question could not be asked".to_owned(),
+        ))
+    }
+
     /// `initialize` is answered, and mints a session the client can name.
     ///
     /// The assertion that matters most is the header. Without it a client that
@@ -1480,7 +1675,7 @@ mod tests {
                     .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .body(Body::from(body.as_slice().to_vec()))
+                    .body(Body::from(body.to_vec()))
                     .map_err(|_| Failure::Expectation("the request built"))?,
             )
             .await
@@ -1518,7 +1713,7 @@ mod tests {
             None,
             Some(test_ids()),
         )?;
-        let body = br#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let body = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
         let response = router
             .oneshot(
                 Request::builder()
@@ -1527,7 +1722,7 @@ mod tests {
                     .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .body(Body::from(body.as_slice().to_vec()))
+                    .body(Body::from(body.as_bytes().to_vec()))
                     .map_err(|_| Failure::Expectation("the request built"))?,
             )
             .await
@@ -1635,6 +1830,45 @@ mod tests {
     /// The one tool the servers in this section publish.
     const GATED: &str = "gated";
 
+    /// A server whose only tool tries to elicit from the peer.
+    ///
+    /// The tool is the point: without a handler that asks a question and
+    /// waits, there is nothing for the unreadable-exchange refusal to refuse,
+    /// and the test could not tell "the exchange was refused" from "no tool
+    /// was called".
+    fn eliciting_server() -> Result<Server, Failure> {
+        const ELICIT: &str = "elicit";
+        let tool = Tool::new(ELICIT, r#"{"type":"object"}"#)
+            .map_err(|_| Failure::Expectation("a tool schema the crate accepts"))?;
+        // The refusal is carried back as the tool's text rather than raised as
+        // a JSON-RPC error, because a tool that could not ask its question is
+        // still a tool that ran and answered — and the point of the test is
+        // that the caller finds out, with a reason, rather than hanging.
+        // `"{}"` is the one string `JsonObject::new` cannot refuse, so the empty
+        // object is built once here and cloned per call rather than being an
+        // `unwrap` on a fact about the type.
+        let empty =
+            JsonObject::new("{}").map_err(|_| Failure::Expectation("an empty object parses"))?;
+        let handler: ToolHandler = Arc::new(move |context, _arguments| {
+            let empty = empty.clone();
+            Box::pin(async move {
+                match context.elicit(&empty).await {
+                    Ok(answer) => answer,
+                    // Carried back as the tool's own result rather than raised
+                    // as a JSON-RPC error: a tool that could not ask its
+                    // question still ran and still answered, and what is under
+                    // test is that the caller finds out with a reason instead
+                    // of hanging.
+                    Err(error) => JsonObject::new(format!("{{\"reason\":\"{error:?}\"}}"))
+                        .unwrap_or_else(|_| empty.clone()),
+                }
+            })
+        });
+        Ok(Server::builder("elicitation-on-json")
+            .restricted_tool(Registered::from(Primitive::from(tool)), handler)
+            .build())
+    }
+
     /// A server whose only tool is invisible without the `Read` scope.
     ///
     /// The scope is the assertion's teeth. An ungated tool is visible to
@@ -1705,6 +1939,37 @@ mod tests {
     /// Reports the status, the minted session id if one was minted, and the
     /// decoded reply — all read off the response rather than off a value both
     /// sides already agreed on.
+    /// One POST, returned undecoded.
+    ///
+    /// [`post`] reads the body into a document, which is the right shape for
+    /// every assertion except the one this file could not make: a
+    /// `text/event-stream` body is not a document, so a helper that decoded
+    /// it would fail before the media type was ever read, and the test that
+    /// needs to see the header needs the response untouched.
+    async fn raw_post(
+        router: &axum::Router,
+        body: &str,
+        session: Option<&str>,
+    ) -> Result<axum::response::Response, Failure> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream");
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        let built = request
+            .body(Body::from(body.as_bytes().to_vec()))
+            .map_err(|_| Failure::Expectation("the request built"))?;
+        router
+            .clone()
+            .oneshot(built)
+            .await
+            .map_err(|_| Failure::NoResponse)
+    }
+
     async fn post(
         router: &axum::Router,
         body: &str,
@@ -1724,7 +1989,7 @@ mod tests {
             request = request.header("mcp-session-id", session);
         }
         let built = request
-            .body(Body::from(body.to_owned()))
+            .body(Body::from(body.as_bytes().to_vec()))
             .map_err(|_| Failure::Expectation("the request built"))?;
         let response = router
             .clone()

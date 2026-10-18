@@ -82,6 +82,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
 use serde_json::Value;
 
+use super::config::Streaming;
 use super::hardening::{self, enforce_deadline, enforce_host, enforce_origin, enforce_rate_limit};
 use super::limits::RateLimiter;
 use super::precondition::{authenticate, read_body};
@@ -294,6 +295,15 @@ pub struct Inbound<'a, S> {
     /// [`check_protocol_header`](crate::domain::check_protocol_header), which
     /// is the only place that knows the answer.
     pub protocol: Option<ProtocolVersion>,
+    /// How this server was configured to frame a reply.
+    ///
+    /// Carried rather than read from config inside the handler, for the same
+    /// reason `protocol` is: the value is decided here, where the config
+    /// lives, and the handler applies it. It was previously not carried at
+    /// all, which is how `Streaming::Json` came to mean a bare document for
+    /// `initialize` and an event stream for everything after it — the default
+    /// was honoured on one path and ignored on the other.
+    pub streaming: Streaming,
 }
 
 /// The `POST` route's port: everything this module deliberately does not know.
@@ -757,6 +767,7 @@ where
         session,
         body: &body,
         protocol,
+        streaming: state.config.streaming(),
     };
     match state.handler.dispatch(call).await {
         Ok(response) => stamp_media_type(response),
