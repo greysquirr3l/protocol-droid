@@ -6,13 +6,13 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
-use crate::adapters::primary::stdio::{Diagnostics, StdioConfig};
 use crate::adapters::primary::stdio::serve::ServeLoop;
+use crate::adapters::primary::stdio::{Diagnostics, StdioConfig};
 use crate::application::jsonrpc::AllowBatching;
+use crate::application::server::Dispatcher;
 use crate::application::server::{
     DynExchange, ExchangeError, PeerSession, Server, ServerHandle, ToolHandler,
 };
-use crate::application::server::Dispatcher;
 use crate::application::session::{FrameSink, SinkError};
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::Tool;
@@ -70,7 +70,9 @@ struct Pipes {
 
 impl Pipes {
     async fn send(&mut self, value: Value) -> TestResult {
-        self.writer.write_all(format!("{value}\n").as_bytes()).await?;
+        self.writer
+            .write_all(format!("{value}\n").as_bytes())
+            .await?;
         Ok(())
     }
 
@@ -85,7 +87,10 @@ fn start() -> Result<Pipes, Box<dyn std::error::Error>> {
     let (client_out, server_in) = tokio::io::duplex(64 * 1024);
     let (server_out, client_in) = tokio::io::duplex(64 * 1024);
     let server = Server::builder("stdio-stateless")
-        .tool(Tool::new("slow", r#"{"type":"object"}"#)?, waits_for_cancel())
+        .tool(
+            Tool::new("slow", r#"{"type":"object"}"#)?,
+            waits_for_cancel(),
+        )
         .build();
     let handle = server.handle();
     let version = ProtocolVersion::V2025_11_25;
@@ -133,8 +138,15 @@ async fn discover_needs_no_handshake() -> TestResult {
         .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": { "_meta": meta() } }))
         .await?;
     let answer = pipes.read().await?;
-    assert!(answer.pointer("/result/supportedVersions").is_some(), "{answer}");
-    assert!(answer.pointer("/result/_meta/io.modelcontextprotocol~1serverInfo").is_some());
+    assert!(
+        answer.pointer("/result/supportedVersions").is_some(),
+        "{answer}"
+    );
+    assert!(
+        answer
+            .pointer("/result/_meta/io.modelcontextprotocol~1serverInfo")
+            .is_some()
+    );
     Ok(())
 }
 
@@ -142,24 +154,37 @@ async fn discover_needs_no_handshake() -> TestResult {
 async fn refusals_carry_the_revision_codes() -> TestResult {
     let mut pipes = start()?;
     pipes
-        .send(json!({ "jsonrpc": "2.0", "id": 2, "method": "server/discover",
-            "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } }))
+        .send(
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "server/discover",
+            "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } }),
+        )
         .await?;
-    assert_eq!(pipes.read().await?.pointer("/error/code"), Some(&json!(-32602)));
+    assert_eq!(
+        pipes.read().await?.pointer("/error/code"),
+        Some(&json!(-32602))
+    );
 
     pipes
-        .send(json!({ "jsonrpc": "2.0", "id": 3, "method": "server/discover",
+        .send(
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "server/discover",
             "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "v999.0.0",
-                "io.modelcontextprotocol/clientCapabilities": {} } } }))
+                "io.modelcontextprotocol/clientCapabilities": {} } } }),
+        )
         .await?;
     let unsupported = pipes.read().await?;
     assert_eq!(unsupported.pointer("/error/code"), Some(&json!(-32022)));
-    assert_eq!(unsupported.pointer("/error/data/requested"), Some(&json!("v999.0.0")));
+    assert_eq!(
+        unsupported.pointer("/error/data/requested"),
+        Some(&json!("v999.0.0"))
+    );
 
     pipes
         .send(json!({ "jsonrpc": "2.0", "id": 4, "method": "ping", "params": { "_meta": meta() } }))
         .await?;
-    assert_eq!(pipes.read().await?.pointer("/error/code"), Some(&json!(-32601)));
+    assert_eq!(
+        pipes.read().await?.pointer("/error/code"),
+        Some(&json!(-32601))
+    );
     Ok(())
 }
 
@@ -167,11 +192,16 @@ async fn refusals_carry_the_revision_codes() -> TestResult {
 async fn a_listen_stream_is_acknowledged_tagged_and_cancelled() -> TestResult {
     let mut pipes = start()?;
     pipes
-        .send(json!({ "jsonrpc": "2.0", "id": "watch", "method": "subscriptions/listen",
-            "params": { "_meta": meta(), "notifications": { "toolsListChanged": true } } }))
+        .send(
+            json!({ "jsonrpc": "2.0", "id": "watch", "method": "subscriptions/listen",
+            "params": { "_meta": meta(), "notifications": { "toolsListChanged": true } } }),
+        )
         .await?;
     let ack = pipes.read().await?;
-    assert_eq!(ack.get("method"), Some(&json!("notifications/subscriptions/acknowledged")));
+    assert_eq!(
+        ack.get("method"),
+        Some(&json!("notifications/subscriptions/acknowledged"))
+    );
     assert_eq!(
         ack.pointer("/params/_meta/io.modelcontextprotocol~1subscriptionId"),
         Some(&json!("watch"))
@@ -179,10 +209,16 @@ async fn a_listen_stream_is_acknowledged_tagged_and_cancelled() -> TestResult {
 
     let handle = pipes.handle.clone();
     let _ = handle
-        .add_tool(Tool::new("late", r#"{"type":"object"}"#)?, waits_for_cancel())
+        .add_tool(
+            Tool::new("late", r#"{"type":"object"}"#)?,
+            waits_for_cancel(),
+        )
         .await;
     let change = pipes.read().await?;
-    assert_eq!(change.get("method"), Some(&json!("notifications/tools/list_changed")));
+    assert_eq!(
+        change.get("method"),
+        Some(&json!("notifications/tools/list_changed"))
+    );
     assert_eq!(
         change.pointer("/params/_meta/io.modelcontextprotocol~1subscriptionId"),
         Some(&json!("watch"))
@@ -216,6 +252,10 @@ async fn a_cancelled_request_is_not_answered() -> TestResult {
         .send(json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": { "_meta": meta() } }))
         .await?;
     let next = pipes.read().await?;
-    assert_eq!(next.get("id"), Some(&json!(7)), "the cancelled call was answered: {next}");
+    assert_eq!(
+        next.get("id"),
+        Some(&json!(7)),
+        "the cancelled call was answered: {next}"
+    );
     Ok(())
 }

@@ -47,8 +47,20 @@ fn is_token(name: &str) -> bool {
             byte.is_ascii_alphanumeric()
                 || matches!(
                     byte,
-                    b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^'
-                        | b'_' | b'`' | b'|' | b'~'
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
                 )
         })
 }
@@ -144,7 +156,10 @@ fn annotations(schema: &Value) -> Vec<Annotated> {
     // Case-insensitive uniqueness is a validity rule: a schema that names the
     // same header twice has no well-defined header to compare, so neither is
     // enforced.
-    let mut names: Vec<String> = found.iter().map(|a| a.header.to_ascii_lowercase()).collect();
+    let mut names: Vec<String> = found
+        .iter()
+        .map(|a| a.header.to_ascii_lowercase())
+        .collect();
     names.sort();
     let duplicated: Vec<String> = names
         .windows(2)
@@ -191,7 +206,9 @@ pub fn decode(value: &str) -> Option<String> {
     else {
         return Some(value.to_owned());
     };
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
     String::from_utf8(bytes).ok()
 }
 
@@ -199,7 +216,11 @@ pub fn decode(value: &str) -> Option<String> {
 fn agrees(kind: Kind, header: &str, body: &Value) -> bool {
     match kind {
         Kind::String => body.as_str() == Some(header),
-        Kind::Boolean => body.as_bool().map(|flag| if flag { "true" } else { "false" }) == Some(header),
+        Kind::Boolean => {
+            body.as_bool()
+                .map(|flag| if flag { "true" } else { "false" })
+                == Some(header)
+        }
         Kind::Integer => {
             let parsed = header.trim().parse::<f64>().ok();
             let body = body.as_f64();
@@ -212,7 +233,11 @@ fn agrees(kind: Kind, header: &str, body: &Value) -> bool {
 ///
 /// `headers` holds every `mcp-param-*` header, names lowercased. Returns the
 /// offending header name on the first disagreement.
-pub fn check(schema: &Value, arguments: &Value, headers: &[(String, String)]) -> Result<(), String> {
+pub fn check(
+    schema: &Value,
+    arguments: &Value,
+    headers: &[(String, String)],
+) -> Result<(), String> {
     for annotated in annotations(schema) {
         let mut value = Some(arguments);
         for key in &annotated.path {
@@ -293,18 +318,40 @@ mod tests {
     fn base64_is_decoded_and_must_be_valid() {
         let arguments = json!({ "region": "Hello" });
         assert_eq!(
-            check(&schema(), &arguments, &headers(&[("Mcp-Param-Region", "=?base64?SGVsbG8=?=")])),
+            check(
+                &schema(),
+                &arguments,
+                &headers(&[("Mcp-Param-Region", "=?base64?SGVsbG8=?=")])
+            ),
             Ok(())
         );
-        assert!(check(&schema(), &arguments, &headers(&[("Mcp-Param-Region", "=?base64?SGVsbG8?=")])).is_err());
-        assert!(check(&schema(), &arguments, &headers(&[("Mcp-Param-Region", "=?base64?SGVs!!!bG8=?=")])).is_err());
+        assert!(
+            check(
+                &schema(),
+                &arguments,
+                &headers(&[("Mcp-Param-Region", "=?base64?SGVsbG8?=")])
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                &schema(),
+                &arguments,
+                &headers(&[("Mcp-Param-Region", "=?base64?SGVs!!!bG8=?=")])
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn a_value_without_the_exact_wrapper_is_literal() {
         let arguments = json!({ "region": "=?base64?SGVsbG8=" });
         assert_eq!(
-            check(&schema(), &arguments, &headers(&[("Mcp-Param-Region", "=?base64?SGVsbG8=")])),
+            check(
+                &schema(),
+                &arguments,
+                &headers(&[("Mcp-Param-Region", "=?base64?SGVsbG8=")])
+            ),
             Ok(())
         );
     }
@@ -317,7 +364,10 @@ mod tests {
 
     #[test]
     fn invalid_annotations_are_detected() {
-        assert!(super::has_invalid_annotation(&schema()), "items and number annotations are invalid");
+        assert!(
+            super::has_invalid_annotation(&schema()),
+            "items and number annotations are invalid"
+        );
         let clean = json!({ "type": "object", "properties": {
             "region": { "type": "string", "x-mcp-header": "Region" }
         }});
@@ -332,10 +382,16 @@ mod tests {
     #[test]
     fn the_encoding_examples_from_the_specification() {
         assert_eq!(super::encode("us-west1"), "us-west1");
-        assert_eq!(super::encode("Hello, 世界"), "=?base64?SGVsbG8sIOS4lueVjA==?=");
+        assert_eq!(
+            super::encode("Hello, 世界"),
+            "=?base64?SGVsbG8sIOS4lueVjA==?="
+        );
         assert_eq!(super::encode(" padded "), "=?base64?IHBhZGRlZCA=?=");
         assert_eq!(super::encode("line1\nline2"), "=?base64?bGluZTEKbGluZTI=?=");
-        assert_eq!(super::encode("=?base64?literal?="), "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?=");
+        assert_eq!(
+            super::encode("=?base64?literal?="),
+            "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?="
+        );
     }
 
     #[test]
@@ -352,6 +408,13 @@ mod tests {
     #[test]
     fn a_mismatch_is_refused() {
         let arguments = json!({ "region": "us-west1" });
-        assert!(check(&schema(), &arguments, &headers(&[("Mcp-Param-Region", "eu-west1")])).is_err());
+        assert!(
+            check(
+                &schema(),
+                &arguments,
+                &headers(&[("Mcp-Param-Region", "eu-west1")])
+            )
+            .is_err()
+        );
     }
 }

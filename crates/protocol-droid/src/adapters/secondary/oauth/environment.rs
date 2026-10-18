@@ -61,7 +61,8 @@ impl UserAgent for FollowsRedirect {
     fn authorize<'a>(
         &'a self,
         authorization_url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<AuthorizationCallback, EnvironmentError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<AuthorizationCallback, EnvironmentError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let response = self
                 .http
@@ -91,7 +92,8 @@ impl UserAgent for FollowsRedirect {
 /// [`EnvironmentError::Declined`] when `location` is not a URL or carries
 /// neither a code nor an error.
 pub fn callback_from(location: &str) -> Result<AuthorizationCallback, EnvironmentError> {
-    let url = Url::parse(location).map_err(|error| EnvironmentError::Declined(error.to_string()))?;
+    let url =
+        Url::parse(location).map_err(|error| EnvironmentError::Declined(error.to_string()))?;
     let mut code = None;
     let mut error = None;
     let mut state = String::new();
@@ -126,7 +128,8 @@ pub struct HttpOAuthEnvironment {
 
 impl core::fmt::Debug for HttpOAuthEnvironment {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HttpOAuthEnvironment").finish_non_exhaustive()
+        f.debug_struct("HttpOAuthEnvironment")
+            .finish_non_exhaustive()
     }
 }
 
@@ -202,7 +205,9 @@ mod tests {
 
     #[test]
     fn a_grant_carries_its_code_state_and_issuer() -> Result<(), Box<dyn std::error::Error>> {
-        let callback = callback_from("http://localhost:3000/callback?code=abc&state=xyz&iss=https%3A%2F%2Fauth.example.com")?;
+        let callback = callback_from(
+            "http://localhost:3000/callback?code=abc&state=xyz&iss=https%3A%2F%2Fauth.example.com",
+        )?;
         assert_eq!(callback.code(), Some("abc"));
         assert_eq!(callback.state(), Some("xyz"));
         assert_eq!(callback.issuer(), Some("https://auth.example.com"));

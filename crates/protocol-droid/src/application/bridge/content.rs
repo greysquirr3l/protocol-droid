@@ -40,9 +40,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+use crate::domain::feature::Feature;
 use crate::domain::ir::ToolResult;
 use crate::domain::ir::lower::{LowerError, TranslationReport, check_expressible};
-use crate::domain::feature::Feature;
 use crate::domain::{DegradePolicy, Leg, ProtocolVersion};
 
 /// The JSON-RPC member a reply's payload travels under.

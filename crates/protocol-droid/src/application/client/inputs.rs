@@ -145,7 +145,10 @@ pub async fn answer_input_required(
         let Some(answer) = resolve.resolve(&key, &asked, &asked_params).await else {
             return Err(ClientError::InputUnresolved { method: asked });
         };
-        responses.insert(key, serde_json::from_str(answer.as_str()).unwrap_or_default());
+        responses.insert(
+            key,
+            serde_json::from_str(answer.as_str()).unwrap_or_default(),
+        );
     }
     Ok(Some(InputAnswers { responses, state }))
 }

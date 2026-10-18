@@ -45,11 +45,10 @@ use axum::http::{HeaderMap, StatusCode};
 use serde_json::Value;
 
 use crate::adapters::primary::transport::http::config::Streaming;
-use crate::application::mcp::param_headers;
-use crate::domain::registry::{Primitive, PrimitiveId, PrimitiveKind};
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::serve::{HttpHandler, KEEP_ALIVE, Tail, TailSink};
 use crate::adapters::primary::transport::http::stream::Finishing;
+use crate::application::mcp::param_headers;
 use crate::application::mcp::request_meta::{RequestMeta, RequestMetaError, version_text};
 use crate::application::server::context::{PeerSession, RequestContext};
 use crate::application::server::dispatch::Dispatcher;
@@ -59,6 +58,7 @@ use crate::domain::ir::{IrErrorCode, JsonObject};
 use crate::domain::jsonrpc::WireId;
 use crate::domain::jsonrpc::reply;
 use crate::domain::registry::AuthContext;
+use crate::domain::registry::{Primitive, PrimitiveId, PrimitiveKind};
 use crate::domain::session::{CancellationToken, ProgressToken};
 use crate::domain::{
     ProtocolVersion, RequestId, SupportedVersions, client_method_defined_in, handshake_defined_in,
@@ -228,7 +228,10 @@ struct Watched {
 }
 
 impl FrameSink for Watched {
-    fn send(&self, frame: &str) -> impl core::future::Future<Output = Result<(), SinkError>> + Send {
+    fn send(
+        &self,
+        frame: &str,
+    ) -> impl core::future::Future<Output = Result<(), SinkError>> + Send {
         let sent = self.inner.push(frame);
         if sent.is_ok() {
             self.published.store(true, Ordering::SeqCst);
@@ -274,10 +277,12 @@ impl HttpHandler {
 
         if streaming == Streaming::Json {
             let context = self.context_for(&peer, &id, progress);
-            let (document, status) = answer(&self.dispatcher, &context, &id, &method, &params).await;
+            let (document, status) =
+                answer(&self.dispatcher, &context, &id, &method, &params).await;
             return json_response(&document, status);
         }
-        self.answer_streamed(peer, id, progress, method, params).await
+        self.answer_streamed(peer, id, progress, method, params)
+            .await
     }
 
     /// Validates the request and builds the peer it is served as.
@@ -320,7 +325,12 @@ impl HttpHandler {
             return Err(Rejection::HeaderMismatch("Mcp-Method"));
         }
         if let Some(expected) = routed_name(method, params)
-            && headers.name.as_deref().and_then(param_headers::decode).as_deref() != Some(expected.as_str())
+            && headers
+                .name
+                .as_deref()
+                .and_then(param_headers::decode)
+                .as_deref()
+                != Some(expected.as_str())
         {
             return Err(Rejection::HeaderMismatch("Mcp-Name"));
         }
@@ -349,7 +359,11 @@ impl HttpHandler {
     ///
     /// A tool this server does not list has no annotations to enforce; the
     /// dispatcher answers that call as an unknown tool.
-    fn check_param_headers(&self, params: &JsonObject, headers: &StatelessHeaders) -> Result<(), Rejection> {
+    fn check_param_headers(
+        &self,
+        params: &JsonObject,
+        headers: &StatelessHeaders,
+    ) -> Result<(), Rejection> {
         let parsed: Value = serde_json::from_str(params.as_str()).unwrap_or(Value::Null);
         let Some(name) = parsed.get("name").and_then(Value::as_str) else {
             return Ok(());

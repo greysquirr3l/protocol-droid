@@ -1000,7 +1000,8 @@ async fn a_stream_reports_the_last_id_it_delivered() -> Result<(), TestError> {
 /// second `initialize`, or the server compares it with the session it is
 /// replacing and refuses.
 #[tokio::test]
-async fn a_client_can_handshake_again_at_another_revision() -> Result<(), Box<dyn std::error::Error>> {
+async fn a_client_can_handshake_again_at_another_revision() -> Result<(), Box<dyn std::error::Error>>
+{
     use crate::adapters::primary::transport::http::{HttpBuilder, ServerConfig};
     use crate::adapters::secondary::transport::http::{HttpClient, HttpClientConfig};
     use crate::application::client::{ClientConfig, handshake};
@@ -1009,7 +1010,8 @@ async fn a_client_can_handshake_again_at_another_revision() -> Result<(), Box<dy
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    let builder = HttpBuilder::new(Server::builder("rehandshake").build()).config(ServerConfig::new()?);
+    let builder =
+        HttpBuilder::new(Server::builder("rehandshake").build()).config(ServerConfig::new()?);
     tokio::spawn(async move {
         let _ = builder.serve_on(listener).await;
     });

@@ -49,12 +49,12 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
+use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::precondition::{authenticate, read_body};
 use crate::adapters::primary::transport::http::{
     Anonymous, AuthPolicy, Authenticator, EventTail, InvalidHeaderValue, Refusal, ServerConfig,
     SessionStore, with_security,
 };
-use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::legacy_sse::{
     LegacyDispatcher, LegacyFrame, LegacySession, LegacyTail, OriginPolicy,
 };
@@ -404,7 +404,13 @@ async fn receive_message<D: LegacyDispatcher>(
 ) -> Response {
     // Kept rather than discarded: this is the request's principal, and
     // `dispatch` is the only thing downstream that can act on it.
-    let auth = match check_common(&state, &headers, query.get(SESSION_PARAMETER).map(String::as_str)).await {
+    let auth = match check_common(
+        &state,
+        &headers,
+        query.get(SESSION_PARAMETER).map(String::as_str),
+    )
+    .await
+    {
         Ok(auth) => auth,
         Err(response) => return *response,
     };

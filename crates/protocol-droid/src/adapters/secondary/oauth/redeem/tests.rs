@@ -82,7 +82,13 @@ fn an_error_body_is_a_refusal_regardless_of_status() {
 // --- the refresh request on the wire ---------------------------------------
 
 /// A token endpoint that records the one form it is sent and answers a token.
-async fn capturing() -> Result<(String, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>), Box<dyn std::error::Error>> {
+async fn capturing() -> Result<
+    (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     use std::sync::{Arc, Mutex};
 
     let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -115,7 +121,8 @@ async fn capturing() -> Result<(String, std::sync::Arc<std::sync::Mutex<Vec<(Str
 }
 
 #[tokio::test]
-async fn a_refresh_posts_the_refresh_grant_with_the_resource() -> Result<(), Box<dyn std::error::Error>> {
+async fn a_refresh_posts_the_refresh_grant_with_the_resource()
+-> Result<(), Box<dyn std::error::Error>> {
     use crate::application::oauth::redeem::RefreshRequest;
     use crate::domain::mcp::resource_metadata::ResourceUri;
     use crate::domain::oauth::registration::{ClientId, ClientSecret, RegisteredClient};
@@ -132,14 +139,25 @@ async fn a_refresh_posts_the_refresh_grant_with_the_resource() -> Result<(), Box
 
     let issued = HttpTokenEndpoint::new(url).refresh(request).await?;
     assert_eq!(issued.access_token().as_str(), "new");
-    assert_eq!(issued.refresh_token().map(crate::domain::oauth::issued_token::RefreshToken::as_str), Some("rotated"));
+    assert_eq!(
+        issued
+            .refresh_token()
+            .map(crate::domain::oauth::issued_token::RefreshToken::as_str),
+        Some("rotated")
+    );
 
     let posted = seen.lock().map_err(|_| "poisoned")?.clone();
     let (auth, body) = posted.first().ok_or("nothing was posted")?;
     assert!(body.contains("grant_type=refresh_token"), "{body}");
     assert!(body.contains("refresh_token=the-refresh"), "{body}");
-    assert!(body.contains("resource=https%3A%2F%2Fmcp.example.com%2Fmcp"), "{body}");
-    assert!(!body.contains("the-secret"), "a basic-auth client keeps its secret in the header: {body}");
+    assert!(
+        body.contains("resource=https%3A%2F%2Fmcp.example.com%2Fmcp"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("the-secret"),
+        "a basic-auth client keeps its secret in the header: {body}"
+    );
     assert!(auth.starts_with("Basic "), "{auth}");
     Ok(())
 }

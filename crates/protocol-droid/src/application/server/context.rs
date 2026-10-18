@@ -31,8 +31,8 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::application::server::error::GatedError;
 use crate::application::mcp::input_required::InputRound;
+use crate::application::server::error::GatedError;
 use crate::application::server::log_gate::LogGate;
 use crate::application::session::DynFrameSink;
 use crate::domain::feature::{Feature, FeatureProfile};

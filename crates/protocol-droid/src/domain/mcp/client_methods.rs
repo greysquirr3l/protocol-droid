@@ -128,9 +128,18 @@ mod tests {
 
     #[test]
     fn tasks_are_core_only_in_2025_11_25() {
-        assert!(client_method_defined_in(ProtocolVersion::V2025_11_25, "tasks/get"));
-        assert!(!client_method_defined_in(ProtocolVersion::V2025_06_18, "tasks/get"));
-        assert!(!client_method_defined_in(ProtocolVersion::V2026_07_28, "tasks/get"));
+        assert!(client_method_defined_in(
+            ProtocolVersion::V2025_11_25,
+            "tasks/get"
+        ));
+        assert!(!client_method_defined_in(
+            ProtocolVersion::V2025_06_18,
+            "tasks/get"
+        ));
+        assert!(!client_method_defined_in(
+            ProtocolVersion::V2026_07_28,
+            "tasks/get"
+        ));
     }
 
     #[test]
@@ -141,7 +150,10 @@ mod tests {
             "resources/subscribe",
             "resources/unsubscribe",
         ] {
-            assert!(client_method_defined_in(ProtocolVersion::V2025_11_25, method));
+            assert!(client_method_defined_in(
+                ProtocolVersion::V2025_11_25,
+                method
+            ));
             assert!(
                 !client_method_defined_in(ProtocolVersion::V2026_07_28, method),
                 "{method}"
@@ -151,7 +163,13 @@ mod tests {
 
     #[test]
     fn an_unknown_method_is_defined_nowhere() {
-        assert!(!client_method_defined_in(ProtocolVersion::V2025_11_25, "unknown/method"));
-        assert!(!client_method_defined_in(ProtocolVersion::V2026_07_28, "unknown/method"));
+        assert!(!client_method_defined_in(
+            ProtocolVersion::V2025_11_25,
+            "unknown/method"
+        ));
+        assert!(!client_method_defined_in(
+            ProtocolVersion::V2026_07_28,
+            "unknown/method"
+        ));
     }
 }

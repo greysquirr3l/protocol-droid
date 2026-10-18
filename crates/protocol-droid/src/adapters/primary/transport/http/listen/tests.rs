@@ -85,7 +85,9 @@ fn noop() -> crate::application::server::ToolHandler {
 #[tokio::test]
 async fn the_acknowledgement_comes_first_and_carries_the_request_id() -> TestResult {
     let (router, handle) = served()?;
-    let response = router.oneshot(listen(77, &json!({ "toolsListChanged": true }))).await?;
+    let response = router
+        .oneshot(listen(77, &json!({ "toolsListChanged": true })))
+        .await?;
     let mut stream = response.into_body().into_data_stream();
     let first = frames(&mut stream, 1).await;
     let ack = first.first().ok_or("no acknowledgement")?;
@@ -108,7 +110,10 @@ async fn the_acknowledgement_comes_first_and_carries_the_request_id() -> TestRes
         .await;
     let next = frames(&mut stream, 1).await;
     let change = next.first().ok_or("no change notification")?;
-    assert_eq!(change.get("method"), Some(&json!("notifications/tools/list_changed")));
+    assert_eq!(
+        change.get("method"),
+        Some(&json!("notifications/tools/list_changed"))
+    );
     assert_eq!(
         change.pointer("/params/_meta/io.modelcontextprotocol~1subscriptionId"),
         Some(&json!(77))
@@ -159,14 +164,19 @@ async fn an_unsupported_filter_member_is_not_acknowledged() -> TestResult {
         .first()
         .and_then(|ack| ack.pointer("/params/notifications"))
         .ok_or("no acknowledgement")?;
-    assert!(honoured.get("resourceSubscriptions").is_none(), "{honoured}");
+    assert!(
+        honoured.get("resourceSubscriptions").is_none(),
+        "{honoured}"
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn dropping_the_stream_ends_the_subscription() -> TestResult {
     let (router, handle) = served()?;
-    let response = router.oneshot(listen(8, &json!({ "toolsListChanged": true }))).await?;
+    let response = router
+        .oneshot(listen(8, &json!({ "toolsListChanged": true })))
+        .await?;
     assert_eq!(handle.subscriber_count(), 1);
     drop(response);
     assert_eq!(handle.subscriber_count(), 0);

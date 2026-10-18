@@ -559,13 +559,7 @@ mod tests {
     /// the operator has already started reading the run's output.
     #[test]
     fn an_unsupported_upstream_is_not_servable() -> Result<(), TestError> {
-        assert!(
-            !plan(
-                &spec("stdio:./bridge")?,
-                &spec("stdio:./other-server")?
-            )
-            .serve
-        );
+        assert!(!plan(&spec("stdio:./bridge")?, &spec("stdio:./other-server")?).serve);
         Ok(())
     }
 

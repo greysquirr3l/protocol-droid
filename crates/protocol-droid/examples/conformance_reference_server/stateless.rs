@@ -61,7 +61,11 @@ fn accepted(answer: &JsonObject, property: &str) -> Option<String> {
         return None;
     }
     let value = parsed.get("content")?.get(property)?;
-    Some(value.as_str().map_or_else(|| value.to_string(), ToOwned::to_owned))
+    Some(
+        value
+            .as_str()
+            .map_or_else(|| value.to_string(), ToOwned::to_owned),
+    )
 }
 
 /// The text a `CreateMessageResult` answer carries.
@@ -82,7 +86,11 @@ fn roots(answer: &JsonObject) -> Option<Vec<String>> {
             .get("roots")?
             .as_array()?
             .iter()
-            .filter_map(|root| root.get("uri").and_then(Value::as_str).map(ToOwned::to_owned))
+            .filter_map(|root| {
+                root.get("uri")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
             .collect(),
     )
 }
@@ -133,7 +141,10 @@ async fn sampling(ctx: RequestContext) -> JsonObject {
         return text(&format!("The model said: {answer}"));
     }
     InputRequired::new()
-        .sample("capital_question", &sample("What is the capital of France?", 100))
+        .sample(
+            "capital_question",
+            &sample("What is the capital of France?", 100),
+        )
         .into_result()
 }
 
@@ -144,7 +155,9 @@ async fn list_roots(ctx: RequestContext) -> JsonObject {
     {
         return text(&format!("Roots: {}", found.join(", ")));
     }
-    InputRequired::new().list_roots("client_roots").into_result()
+    InputRequired::new()
+        .list_roots("client_roots")
+        .into_result()
 }
 
 async fn request_state(ctx: RequestContext) -> JsonObject {
@@ -177,9 +190,7 @@ async fn multiple_inputs(ctx: RequestContext) -> JsonObject {
 
 async fn multi_round(ctx: RequestContext) -> JsonObject {
     match ctx.request_state() {
-        Some("round-2") if ctx.input_response("step2").is_some() => {
-            text("Both rounds complete.")
-        }
+        Some("round-2") if ctx.input_response("step2").is_some() => text("Both rounds complete."),
         Some("round-1") if ctx.input_response("step1").is_some() => interim(
             &ctx,
             InputRequired::new().elicit(
@@ -244,13 +255,20 @@ async fn missing_capability(_ctx: RequestContext) -> JsonObject {
 /// Elicits through an interim result — never as a request on the stream.
 async fn streaming_elicitation(_ctx: RequestContext) -> JsonObject {
     InputRequired::new()
-        .elicit("answer", &ask("What should the tool do?", "answer", "string"))
+        .elicit(
+            "answer",
+            &ask("What should the tool do?", "answer", "string"),
+        )
         .into_result()
 }
 
 /// Emits three log records, each subject to the request's `logLevel`.
 async fn logging(ctx: RequestContext) -> JsonObject {
-    for message in ["Tool execution started", "Tool processing data", "Tool execution completed"] {
+    for message in [
+        "Tool execution started",
+        "Tool processing data",
+        "Tool execution completed",
+    ] {
         let _ = ctx.log(LogLevel::Info, message).await;
     }
     text("Logged three messages.")
@@ -265,7 +283,10 @@ async fn trigger_tool_change(ctx: RequestContext) -> JsonObject {
     } else if let Ok(tool) = Tool::new(DYNAMIC_TOOL, r#"{"type":"object"}"#) {
         let dynamic = handler(|_ctx| async { text("dynamic") });
         let _ = handle
-            .add_tool(tool.described("Toggled by test_trigger_tool_change"), dynamic)
+            .add_tool(
+                tool.described("Toggled by test_trigger_tool_change"),
+                dynamic,
+            )
             .await;
     }
     text("The tool list changed.")
@@ -297,6 +318,85 @@ async fn trigger_prompt_change(ctx: RequestContext) -> JsonObject {
     text("The prompt list changed.")
 }
 
+/// Registers the tools that need nothing but a handler.
+fn register_tools(server: &mut Server) -> Result<(), JsonObjectError> {
+    let tools: [(&str, &str, ToolHandler); 14] = [
+        (
+            "test_input_required_result_elicitation",
+            "Elicits a name across two rounds",
+            handler(elicitation),
+        ),
+        (
+            "test_input_required_result_sampling",
+            "Samples across two rounds",
+            handler(sampling),
+        ),
+        (
+            "test_input_required_result_list_roots",
+            "Lists roots across two rounds",
+            handler(list_roots),
+        ),
+        (
+            "test_input_required_result_request_state",
+            "Round-trips a request state",
+            handler(request_state),
+        ),
+        (
+            "test_input_required_result_multiple_inputs",
+            "Asks for three inputs at once",
+            handler(multiple_inputs),
+        ),
+        (
+            "test_input_required_result_multi_round",
+            "Asks across three rounds",
+            handler(multi_round),
+        ),
+        (
+            "test_input_required_result_tampered_state",
+            "Refuses a tampered state",
+            handler(tampered_state),
+        ),
+        (
+            "test_input_required_result_capabilities",
+            "Asks only for declared capabilities",
+            handler(capabilities),
+        ),
+        (
+            "test_missing_capability",
+            "Needs the sampling capability",
+            handler(missing_capability),
+        ),
+        (
+            "test_streaming_elicitation",
+            "Elicits without a server request",
+            handler(streaming_elicitation),
+        ),
+        ("test_logging_tool", "Logs three records", handler(logging)),
+        (
+            "test_trigger_tool_change",
+            "Changes the tool list",
+            handler(trigger_tool_change),
+        ),
+        (
+            "test_trigger_prompt_change",
+            "Changes the prompt list",
+            handler(trigger_prompt_change),
+        ),
+        (
+            DYNAMIC_TOOL,
+            "Toggled by test_trigger_tool_change",
+            handler(|_ctx| async { text("dynamic") }),
+        ),
+    ];
+    for (name, description, run) in tools {
+        server.add_tool(
+            Tool::new(name, r#"{"type":"object"}"#)?.described(description),
+            run,
+        );
+    }
+    Ok(())
+}
+
 /// Registers everything above on `server`.
 ///
 /// # Errors
@@ -310,25 +410,7 @@ pub async fn register(server: &mut Server) -> Result<(), JsonObjectError> {
     // session — including the listen stream the scenario holds open.
     server.with_state(server.handle());
 
-    let tools: [(&str, &str, ToolHandler); 14] = [
-        ("test_input_required_result_elicitation", "Elicits a name across two rounds", handler(elicitation)),
-        ("test_input_required_result_sampling", "Samples across two rounds", handler(sampling)),
-        ("test_input_required_result_list_roots", "Lists roots across two rounds", handler(list_roots)),
-        ("test_input_required_result_request_state", "Round-trips a request state", handler(request_state)),
-        ("test_input_required_result_multiple_inputs", "Asks for three inputs at once", handler(multiple_inputs)),
-        ("test_input_required_result_multi_round", "Asks across three rounds", handler(multi_round)),
-        ("test_input_required_result_tampered_state", "Refuses a tampered state", handler(tampered_state)),
-        ("test_input_required_result_capabilities", "Asks only for declared capabilities", handler(capabilities)),
-        ("test_missing_capability", "Needs the sampling capability", handler(missing_capability)),
-        ("test_streaming_elicitation", "Elicits without a server request", handler(streaming_elicitation)),
-        ("test_logging_tool", "Logs three records", handler(logging)),
-        ("test_trigger_tool_change", "Changes the tool list", handler(trigger_tool_change)),
-        ("test_trigger_prompt_change", "Changes the prompt list", handler(trigger_prompt_change)),
-        (DYNAMIC_TOOL, "Toggled by test_trigger_tool_change", handler(|_ctx| async { text("dynamic") })),
-    ];
-    for (name, description, run) in tools {
-        server.add_tool(Tool::new(name, r#"{"type":"object"}"#)?.described(description), run);
-    }
+    register_tools(server)?;
 
     // SEP-2243's `x-mcp-header`: the region argument is mirrored into
     // `Mcp-Param-Region`, and the transport refuses a call whose header and

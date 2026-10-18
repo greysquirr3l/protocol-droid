@@ -32,8 +32,8 @@ mod session_id;
 pub mod authorization;
 pub mod resource_metadata;
 
-pub use client_methods::client_method_defined_in;
 pub use authorization::{AuthorizationModel, ClientRegistration, authorization_model};
+pub use client_methods::client_method_defined_in;
 pub use resource_metadata::{
     BearerMethod, ResourceMetadata, ResourceUri, ResourceUriError, WELL_KNOWN,
 };

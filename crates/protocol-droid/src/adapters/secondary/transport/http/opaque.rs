@@ -187,8 +187,14 @@ mod tests {
 
     #[test]
     fn a_retry_that_is_not_digits_is_ignored() {
-        assert_eq!(parse("retry: 5s\ndata: x").and_then(|event| event.retry), None);
-        assert_eq!(parse("retry: -1\ndata: x").and_then(|event| event.retry), None);
+        assert_eq!(
+            parse("retry: 5s\ndata: x").and_then(|event| event.retry),
+            None
+        );
+        assert_eq!(
+            parse("retry: -1\ndata: x").and_then(|event| event.retry),
+            None
+        );
     }
 
     #[test]

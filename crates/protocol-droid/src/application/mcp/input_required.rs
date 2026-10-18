@@ -103,10 +103,12 @@ impl core::fmt::Debug for StateKey {
 
 fn hex(bytes: &[u8]) -> String {
     use core::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {

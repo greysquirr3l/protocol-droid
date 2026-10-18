@@ -17,8 +17,8 @@ use crate::application::oauth::environment::{EnvironmentError, Fetched, OAuthEnv
 use crate::application::oauth::redeem::{TokenEndpoint, TokenEndpointError, TokenRequest};
 use crate::domain::ProtocolVersion;
 use crate::domain::oauth::challenge::BearerChallenge;
-use crate::domain::oauth::pkce::CodeVerifier;
 use crate::domain::oauth::issued_token::IssuedToken;
+use crate::domain::oauth::pkce::CodeVerifier;
 
 const SERVER: &str = "https://mcp.example/mcp";
 const PRM_URL: &str = "https://mcp.example/.well-known/oauth-protected-resource/mcp";
@@ -42,7 +42,9 @@ impl TokenEndpoint for NoTokens {
         &self,
         _request: TokenRequest<'_>,
     ) -> impl Future<Output = Result<IssuedToken, TokenEndpointError>> + Send {
-        core::future::ready(Err(TokenEndpointError::Unavailable("not in this test".to_owned())))
+        core::future::ready(Err(TokenEndpointError::Unavailable(
+            "not in this test".to_owned(),
+        )))
     }
 }
 
@@ -75,14 +77,18 @@ impl OAuthEnvironment for Documents {
         _url: &str,
         _body: &str,
     ) -> impl Future<Output = Result<Fetched, EnvironmentError>> + Send {
-        core::future::ready(Err(EnvironmentError::Unavailable("no registration here".to_owned())))
+        core::future::ready(Err(EnvironmentError::Unavailable(
+            "no registration here".to_owned(),
+        )))
     }
 
     fn authorize(
         &self,
         _url: &str,
     ) -> impl Future<Output = Result<AuthorizationCallback, EnvironmentError>> + Send {
-        core::future::ready(Err(EnvironmentError::Declined("no one is there".to_owned())))
+        core::future::ready(Err(EnvironmentError::Declined(
+            "no one is there".to_owned(),
+        )))
     }
 }
 
@@ -100,12 +106,17 @@ fn documents(resource: &str, pkce: &str) -> Documents {
     let mut table = HashMap::new();
     table.insert(PRM_URL.to_owned(), resource_document(resource));
     let server = server_document(pkce);
-    table.insert(format!("{ISSUER}/.well-known/oauth-authorization-server"), server.clone());
+    table.insert(
+        format!("{ISSUER}/.well-known/oauth-authorization-server"),
+        server.clone(),
+    );
     table.insert(format!("{ISSUER}/.well-known/openid-configuration"), server);
     Documents(table)
 }
 
-fn authorizer(environment: Documents) -> Result<std::sync::Arc<OAuthAuthorizer<Documents, NoSecrets>>, url::ParseError> {
+fn authorizer(
+    environment: Documents,
+) -> Result<std::sync::Arc<OAuthAuthorizer<Documents, NoSecrets>>, url::ParseError> {
     let config = OAuthConfig::new(SERVER, ProtocolVersion::V2025_11_25)?;
     Ok(OAuthAuthorizer::new(config, environment, NoSecrets))
 }
@@ -130,21 +141,31 @@ async fn metadata_for_another_resource_is_refused() -> Result<(), url::ParseErro
 #[tokio::test]
 async fn a_server_without_pkce_is_refused() -> Result<(), url::ParseError> {
     let flow = authorizer(documents(SERVER, ""))?;
-    assert_matches!(flow.authorize(&challenge()).await, Err(AuthorizeError::NoPkce));
+    assert_matches!(
+        flow.authorize(&challenge()).await,
+        Err(AuthorizeError::NoPkce)
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn a_server_offering_only_plain_is_refused() -> Result<(), url::ParseError> {
-    let flow = authorizer(documents(SERVER, r#","code_challenge_methods_supported":["plain"]"#))?;
-    assert_matches!(flow.authorize(&challenge()).await, Err(AuthorizeError::NoPkce));
+    let flow = authorizer(documents(
+        SERVER,
+        r#","code_challenge_methods_supported":["plain"]"#,
+    ))?;
+    assert_matches!(
+        flow.authorize(&challenge()).await,
+        Err(AuthorizeError::NoPkce)
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn credentials_for_another_issuer_are_not_presented() -> Result<(), url::ParseError> {
-    let config = OAuthConfig::new(SERVER, ProtocolVersion::V2025_11_25)?
-        .with_pre_registered(PreRegistered::new("id", Some("secret")).issued_by("https://old.example"));
+    let config = OAuthConfig::new(SERVER, ProtocolVersion::V2025_11_25)?.with_pre_registered(
+        PreRegistered::new("id", Some("secret")).issued_by("https://old.example"),
+    );
     let flow = OAuthAuthorizer::new(
         config,
         documents(SERVER, r#","code_challenge_methods_supported":["S256"]"#),
@@ -191,11 +212,11 @@ mod refresh {
 
     use super::*;
     use crate::application::oauth::authorizer::Refreshable;
+    use crate::application::oauth::redeem::RefreshRequest;
+    use crate::domain::mcp::resource_metadata::ResourceUri;
     use crate::domain::oauth::issued_token::IssuedToken;
     use crate::domain::oauth::registration::{ClientId, RegisteredClient};
     use crate::domain::oauth::resource::ResourceParameters;
-    use crate::application::oauth::redeem::RefreshRequest;
-    use crate::domain::mcp::resource_metadata::ResourceUri;
 
     /// Answers a refresh with a fixed body and counts the asks.
     struct Scripted {
@@ -238,7 +259,10 @@ mod refresh {
             }
         }
 
-        fn get(&self, _url: &str) -> impl Future<Output = Result<Fetched, EnvironmentError>> + Send {
+        fn get(
+            &self,
+            _url: &str,
+        ) -> impl Future<Output = Result<Fetched, EnvironmentError>> + Send {
             core::future::ready(Ok(Fetched {
                 status: 404,
                 body: Vec::new(),
@@ -257,7 +281,9 @@ mod refresh {
             &self,
             _url: &str,
         ) -> impl Future<Output = Result<AuthorizationCallback, EnvironmentError>> + Send {
-            core::future::ready(Err(EnvironmentError::Declined("no one is there".to_owned())))
+            core::future::ready(Err(EnvironmentError::Declined(
+                "no one is there".to_owned(),
+            )))
         }
     }
 
@@ -292,7 +318,8 @@ mod refresh {
     const EXPIRED: Option<&str> = Some(r#"Bearer error="invalid_token""#);
 
     #[tokio::test]
-    async fn an_expired_token_is_refreshed_without_asking_the_user() -> Result<(), Box<dyn std::error::Error>> {
+    async fn an_expired_token_is_refreshed_without_asking_the_user()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (flow, asked) = holding(
             r#"{"access_token":"new-access","token_type":"Bearer","refresh_token":"old-refresh"}"#,
         )?;
@@ -303,7 +330,8 @@ mod refresh {
     }
 
     #[tokio::test]
-    async fn a_refused_refresh_token_is_forgotten_and_the_flow_runs() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_refused_refresh_token_is_forgotten_and_the_flow_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (flow, asked) = holding(r#"{"error":"invalid_grant"}"#)?;
         // Falls through to the full flow, which cannot discover anything here.
         assert!(flow.challenged(401, EXPIRED).await.is_err());
@@ -316,13 +344,16 @@ mod refresh {
     }
 
     #[tokio::test]
-    async fn a_challenge_for_more_scope_skips_the_refresh() -> Result<(), Box<dyn std::error::Error>> {
-        let (flow, asked) = holding(
-            r#"{"access_token":"new-access","token_type":"Bearer"}"#,
-        )?;
+    async fn a_challenge_for_more_scope_skips_the_refresh() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (flow, asked) = holding(r#"{"access_token":"new-access","token_type":"Bearer"}"#)?;
         let wider = Some(r#"Bearer error="insufficient_scope", scope="write""#);
         let _ = flow.challenged(403, wider).await;
-        assert_eq!(asked.load(Ordering::SeqCst), 0, "more scope needs the user, not a refresh");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "more scope needs the user, not a refresh"
+        );
         Ok(())
     }
 }

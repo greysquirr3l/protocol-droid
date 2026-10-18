@@ -112,13 +112,13 @@ impl LegacyDispatcher for Echo {
         frame: &Value,
     ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send {
         core::future::ready({
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(vec![json!({
-            "jsonrpc": "2.0",
-            "id": frame.get("id").cloned().unwrap_or(Value::Null),
-            "result": { "echoed": frame }
-        })])
-            })
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![json!({
+                "jsonrpc": "2.0",
+                "id": frame.get("id").cloned().unwrap_or(Value::Null),
+                "result": { "echoed": frame }
+            })])
+        })
     }
 }
 

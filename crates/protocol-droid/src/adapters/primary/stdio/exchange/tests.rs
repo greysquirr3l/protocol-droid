@@ -13,9 +13,7 @@ use crate::application::session::FrameSink;
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::Tool;
 use crate::domain::session::SessionId;
-use crate::domain::{
-    CapabilitySet, Negotiation, ProtocolVersion, TransportKind, resolve,
-};
+use crate::domain::{CapabilitySet, Negotiation, ProtocolVersion, TransportKind, resolve};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -39,7 +37,11 @@ impl crate::application::server::DynExchange for NoCallbacks {
         _method: &'a str,
         _params: &'a JsonObject,
     ) -> core::pin::Pin<
-        Box<dyn Future<Output = Result<JsonObject, crate::application::server::ExchangeError>> + Send + 'a>,
+        Box<
+            dyn Future<Output = Result<JsonObject, crate::application::server::ExchangeError>>
+                + Send
+                + 'a,
+        >,
     > {
         Box::pin(async { Err(crate::application::server::ExchangeError::new("unused")) })
     }
@@ -60,7 +62,9 @@ fn asking_tool() -> ToolHandler {
     })
 }
 
-async fn line(reader: &mut (impl AsyncBufReadExt + Unpin)) -> Result<Value, Box<dyn std::error::Error>> {
+async fn line(
+    reader: &mut (impl AsyncBufReadExt + Unpin),
+) -> Result<Value, Box<dyn std::error::Error>> {
     let mut text = String::new();
     tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut text)).await??;
     Ok(serde_json::from_str(text.trim())?)
@@ -103,37 +107,49 @@ async fn a_tool_can_elicit_over_stdio_and_replies_keep_their_order() -> TestResu
     let send = |value: Value| format!("{value}\n");
 
     writer
-        .write_all(send(json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": { "elicitation": {} },
-                "clientInfo": { "name": "test", "version": "1" },
-            },
-        })).as_bytes())
+        .write_all(
+            send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": { "elicitation": {} },
+                    "clientInfo": { "name": "test", "version": "1" },
+                },
+            }))
+            .as_bytes(),
+        )
         .await?;
     let initialized = line(&mut reader).await?;
     assert_eq!(initialized.get("id"), Some(&json!(1)));
 
     writer
-        .write_all(send(json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "ask", "arguments": {} },
-        })).as_bytes())
+        .write_all(
+            send(json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "ask", "arguments": {} },
+            }))
+            .as_bytes(),
+        )
         .await?;
     let question = line(&mut reader).await?;
     assert_eq!(question.get("method"), Some(&json!("elicitation/create")));
-    let asked = question.get("id").cloned().ok_or("the question has no id")?;
+    let asked = question
+        .get("id")
+        .cloned()
+        .ok_or("the question has no id")?;
 
     // A request sent while the tool waits is queued behind it, not answered first.
     writer
         .write_all(send(json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" })).as_bytes())
         .await?;
     writer
-        .write_all(send(json!({
-            "jsonrpc": "2.0", "id": asked,
-            "result": { "action": "accept", "content": { "name": "Ada" } },
-        })).as_bytes())
+        .write_all(
+            send(json!({
+                "jsonrpc": "2.0", "id": asked,
+                "result": { "action": "accept", "content": { "name": "Ada" } },
+            }))
+            .as_bytes(),
+        )
         .await?;
 
     let answered = line(&mut reader).await?;

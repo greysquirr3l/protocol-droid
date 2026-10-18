@@ -92,7 +92,12 @@ fn names(listing: &JsonObject, key: &str, member: &str) -> Vec<String> {
         .and_then(|value| value.get(key).and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .iter()
-        .filter_map(|entry| entry.get(member).and_then(Value::as_str).map(ToOwned::to_owned))
+        .filter_map(|entry| {
+            entry
+                .get(member)
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .collect()
 }
 
@@ -106,7 +111,9 @@ async fn basic(url: &str) -> Result<(), Failure> {
     let client = connect(url, ConnectOptions::new()).await?;
     // Unchecked: these scenarios' mocks advertise nothing, and what is judged
     // is what this client sends, not whether the server promised to answer.
-    let tools = client.send_unchecked("tools/list", &JsonObject::default()).await?;
+    let tools = client
+        .send_unchecked("tools/list", &JsonObject::default())
+        .await?;
     if let Some(first) = names(&tools, "tools", "name").first() {
         let call = object(&json!({ "name": first, "arguments": { "a": 2, "b": 3 } }));
         client.send_unchecked("tools/call", &call).await?;
@@ -117,7 +124,9 @@ async fn basic(url: &str) -> Result<(), Failure> {
 /// A client may list tools and must not fetch a network `$ref` it finds there.
 async fn list_only(url: &str) -> Result<(), Failure> {
     let client = connect(url, ConnectOptions::new()).await?;
-    client.send_unchecked("tools/list", &JsonObject::default()).await?;
+    client
+        .send_unchecked("tools/list", &JsonObject::default())
+        .await?;
     Ok(())
 }
 
@@ -166,7 +175,10 @@ async fn custom_headers(url: &str) -> Result<(), Failure> {
         .into_iter()
         .flatten()
     {
-        let name = call.get("name").and_then(Value::as_str).ok_or("a tool call has no name")?;
+        let name = call
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("a tool call has no name")?;
         let arguments = object(call.get("arguments").unwrap_or(&Value::Null));
         client.call_tool(name, &arguments).await?;
     }
@@ -180,7 +192,9 @@ async fn invalid_tool_headers(url: &str) -> Result<(), Failure> {
     for tool in names(&tools, "tools", "name") {
         // A failure of one call is the scenario's own mock rejecting the
         // arguments; what is judged is *which* tools were called at all.
-        let _ = client.call_tool(&tool, &object(&json!({ "region": "us-west1" }))).await;
+        let _ = client
+            .call_tool(&tool, &object(&json!({ "region": "us-west1" })))
+            .await;
     }
     Ok(())
 }
@@ -189,7 +203,9 @@ async fn invalid_tool_headers(url: &str) -> Result<(), Failure> {
 
 /// The scenario's mock does no handshake, so this drives the transport itself.
 async fn request_state(url: &str) -> Result<(), Failure> {
-    use protocol_droid::adapters::secondary::transport::http::{HttpClientConfig, StatelessHttpClient};
+    use protocol_droid::adapters::secondary::transport::http::{
+        HttpClientConfig, StatelessHttpClient,
+    };
     let version = runner_version().unwrap_or(ProtocolVersion::V2026_07_28);
     let transport = StatelessHttpClient::new(
         HttpClientConfig::new(url)?,
@@ -211,17 +227,27 @@ async fn request_state(url: &str) -> Result<(), Failure> {
     let first = transport.send("tools/call", &echo).await?;
     if let Some(answers) = answer_input_required(&first, &confirm).await? {
         transport
-            .send("tools/call", &object(&json!({ "name": "test_mrtr_unrelated", "arguments": {} })))
+            .send(
+                "tools/call",
+                &object(&json!({ "name": "test_mrtr_unrelated", "arguments": {} })),
+            )
             .await?;
-        transport.send("tools/call", &answers.applied_to(&echo)).await?;
+        transport
+            .send("tools/call", &answers.applied_to(&echo))
+            .await?;
     }
 
     // A tool that sends no state: the retry sends none either.
     let plain = object(&json!({ "name": "test_mrtr_no_state", "arguments": {} }));
     let second = transport.send("tools/call", &plain).await?;
     if let Some(answers) = answer_input_required(&second, &confirm).await? {
-        let answers = InputAnswers { state: None, ..answers };
-        transport.send("tools/call", &answers.applied_to(&plain)).await?;
+        let answers = InputAnswers {
+            state: None,
+            ..answers
+        };
+        transport
+            .send("tools/call", &answers.applied_to(&plain))
+            .await?;
     }
 
     // A result with no `resultType` is complete: not retried.
@@ -245,7 +271,8 @@ impl ServerRequestHandler for EmptyAnswers {
         &'a self,
         method: &'a str,
         params: &'a JsonObject,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<JsonObject, HandlerRefusal>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<JsonObject, HandlerRefusal>> + Send + 'a>>
+    {
         Box::pin(async move {
             if method != "elicitation/create" {
                 return Err(HandlerRefusal::unsupported(method));

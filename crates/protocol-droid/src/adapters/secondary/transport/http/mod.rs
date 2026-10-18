@@ -61,5 +61,5 @@ pub use client::{
     RetryBudget,
 };
 pub use error::HttpClientError;
-pub use stateless::StatelessHttpClient;
 pub use frames::{FrameError, FrameReader, split_block};
+pub use stateless::StatelessHttpClient;

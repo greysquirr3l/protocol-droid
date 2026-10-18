@@ -42,9 +42,11 @@ use serde_json::Value;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::serve::{HttpHandler, Tail, TailSink};
 use crate::adapters::primary::transport::http::stateless::{error_document, json_response};
-use crate::adapters::primary::transport::http::stream::{EventStream, StreamError, stream_response};
-use crate::application::server::context::PeerSession;
+use crate::adapters::primary::transport::http::stream::{
+    EventStream, StreamError, stream_response,
+};
 use crate::application::mcp::subscription;
+use crate::application::server::context::PeerSession;
 use crate::application::server::{DispatchError, ListSubscription};
 use crate::application::session::DynFrameSink;
 use crate::domain::ir::JsonObject;

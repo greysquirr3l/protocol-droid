@@ -35,7 +35,9 @@ use std::fmt;
 use crate::application::oauth::callback::AuthorizedCode;
 use crate::domain::oauth::issued_token::{IssuedToken, TokenResponseError};
 use crate::domain::oauth::pkce::CodeVerifier;
-use crate::domain::oauth::registration::{TokenAuthMethod, ClientId, ClientSecret, RegisteredClient};
+use crate::domain::oauth::registration::{
+    ClientId, ClientSecret, RegisteredClient, TokenAuthMethod,
+};
 use crate::domain::oauth::resource::ResourceParameters;
 
 /// One token request, assembled from an [`AuthorizedCode`] and a registration.

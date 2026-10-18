@@ -185,11 +185,19 @@ mod tests {
         let request = object(
             r#"{"message":"m","requestedSchema":{"type":"object","properties":{"name":{"type":"string","default":"John"},"age":{"type":"integer","default":30},"plain":{"type":"string"}}}}"#,
         );
-        let filled = apply_elicitation_defaults(&request, &object(r#"{"action":"accept","content":{}}"#));
+        let filled =
+            apply_elicitation_defaults(&request, &object(r#"{"action":"accept","content":{}}"#));
         let parsed: serde_json::Value = serde_json::from_str(filled.as_str()).unwrap_or_default();
-        assert_eq!(parsed.pointer("/content/name"), Some(&serde_json::json!("John")));
+        assert_eq!(
+            parsed.pointer("/content/name"),
+            Some(&serde_json::json!("John"))
+        );
         assert_eq!(parsed.pointer("/content/age"), Some(&serde_json::json!(30)));
-        assert_eq!(parsed.pointer("/content/plain"), None, "no default, nothing invented");
+        assert_eq!(
+            parsed.pointer("/content/plain"),
+            None,
+            "no default, nothing invented"
+        );
     }
 
     #[test]

@@ -48,7 +48,8 @@ async fn a_client_negotiates_statelessly_and_mirrors_param_headers() -> TestResu
         )
         .build();
     let url = serve(server).await?;
-    let client = Client::connect_to(&TransportSpec::new(TransportKind::StatelessHttp, url)?).await?;
+    let client =
+        Client::connect_to(&TransportSpec::new(TransportKind::StatelessHttp, url)?).await?;
     assert_eq!(client.negotiated(), ProtocolVersion::V2026_07_28);
 
     let listed: Value = serde_json::from_str(client.list_tools().await?.as_str())?;
@@ -71,11 +72,18 @@ async fn a_tool_with_an_invalid_annotation_is_dropped_from_the_listing() -> Test
         r#"{"type":"object","properties":{"ratio":{"type":"number","x-mcp-header":"Ratio"}}}"#,
     )?;
     let server = Server::builder("stateless-peer")
-        .tool(region_tool()?, Arc::new(|_ctx, _args| Box::pin(async { JsonObject::default() })))
-        .tool(invalid, Arc::new(|_ctx, _args| Box::pin(async { JsonObject::default() })))
+        .tool(
+            region_tool()?,
+            Arc::new(|_ctx, _args| Box::pin(async { JsonObject::default() })),
+        )
+        .tool(
+            invalid,
+            Arc::new(|_ctx, _args| Box::pin(async { JsonObject::default() })),
+        )
         .build();
     let url = serve(server).await?;
-    let client = Client::connect_to(&TransportSpec::new(TransportKind::StatelessHttp, url)?).await?;
+    let client =
+        Client::connect_to(&TransportSpec::new(TransportKind::StatelessHttp, url)?).await?;
     let listed: Value = serde_json::from_str(client.list_tools().await?.as_str())?;
     let names: Vec<&str> = listed
         .get("tools")
@@ -136,13 +144,24 @@ async fn a_call_is_resolved_across_rounds_with_state_echoed() -> TestResult {
     )
     .await?;
     let answered = client
-        .call_tool_resolving("ask", &JsonObject::default(), &|key: String, method: String, _params: JsonObject| async move {
-            assert_eq!((key.as_str(), method.as_str()), ("name", "elicitation/create"));
-            JsonObject::new(r#"{"action":"accept","content":{"name":"Ada"}}"#).ok()
-        })
+        .call_tool_resolving(
+            "ask",
+            &JsonObject::default(),
+            &|key: String, method: String, _params: JsonObject| async move {
+                assert_eq!(
+                    (key.as_str(), method.as_str()),
+                    ("name", "elicitation/create")
+                );
+                JsonObject::new(r#"{"action":"accept","content":{"name":"Ada"}}"#).ok()
+            },
+        )
         .await?;
     assert!(answered.as_str().contains("Ada"), "{}", answered.as_str());
-    assert!(answered.as_str().contains("round-1"), "the state was echoed: {}", answered.as_str());
+    assert!(
+        answered.as_str().contains("round-1"),
+        "the state was echoed: {}",
+        answered.as_str()
+    );
     Ok(())
 }
 
@@ -158,7 +177,11 @@ async fn an_unanswerable_request_fails_naming_the_callback() -> TestResult {
     )
     .await?;
     let refused = client
-        .call_tool_resolving("ask", &JsonObject::default(), &|_: String, _: String, _: JsonObject| async { None })
+        .call_tool_resolving(
+            "ask",
+            &JsonObject::default(),
+            &|_: String, _: String, _: JsonObject| async { None },
+        )
         .await;
     match refused {
         Err(ClientError::InputUnresolved { method }) => assert_eq!(method, "elicitation/create"),
@@ -194,7 +217,10 @@ async fn an_unsupported_revision_is_renegotiated() -> TestResult {
                 })),
             );
         }
-        (StatusCode::OK, axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": {} })))
+        (
+            StatusCode::OK,
+            axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": {} })),
+        )
     }
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -207,12 +233,16 @@ async fn an_unsupported_revision_is_renegotiated() -> TestResult {
     // `-32022`.
     assert!(outcome.is_err());
     let message = outcome.err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(message.contains("shares no stateless revision"), "{message}");
+    assert!(
+        message.contains("shares no stateless revision"),
+        "{message}"
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn a_bridge_peer_carries_an_envelope_to_a_stateless_server_under_the_callers_id() -> TestResult {
+async fn a_bridge_peer_carries_an_envelope_to_a_stateless_server_under_the_callers_id() -> TestResult
+{
     use crate::application::bridge::{BridgePeer, TransportPeer};
 
     let server = Server::builder("stateless-peer")
@@ -243,7 +273,10 @@ async fn a_bridge_peer_carries_an_envelope_to_a_stateless_server_under_the_calle
     };
     let reply = Value::Object(peer.send(listing).await?);
     assert_eq!(reply.get("id"), Some(&json!("downstream-9")));
-    assert_eq!(reply.pointer("/result/tools/0/name"), Some(&json!("regional")));
+    assert_eq!(
+        reply.pointer("/result/tools/0/name"),
+        Some(&json!("regional"))
+    );
 
     // The bridge does not read arguments, so the `x-mcp-header` mirror has to
     // come from the stateless client underneath, using the listing it relayed.

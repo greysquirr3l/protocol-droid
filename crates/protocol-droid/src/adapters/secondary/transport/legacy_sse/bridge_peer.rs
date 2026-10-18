@@ -242,19 +242,19 @@ mod tests {
             _state: &(),
             frame: &Value,
         ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send {
-        core::future::ready({
-            let id = frame.get("id").cloned().unwrap_or(Value::Null);
-            let answer = if self.decline {
-                json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no"}})
-            } else {
-                json!({"jsonrpc": "2.0", "id": id, "result": {"ok": true}})
-            };
-            match self.unsolicited.clone() {
-                Some(extra) => Ok(vec![extra, answer]),
-                None => Ok(vec![answer]),
-            }
-                })
-    }
+            core::future::ready({
+                let id = frame.get("id").cloned().unwrap_or(Value::Null);
+                let answer = if self.decline {
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no"}})
+                } else {
+                    json!({"jsonrpc": "2.0", "id": id, "result": {"ok": true}})
+                };
+                match self.unsolicited.clone() {
+                    Some(extra) => Ok(vec![extra, answer]),
+                    None => Ok(vec![answer]),
+                }
+            })
+        }
     }
 
     async fn peer(dispatcher: Pushes) -> Result<LegacySsePeer, TestError> {

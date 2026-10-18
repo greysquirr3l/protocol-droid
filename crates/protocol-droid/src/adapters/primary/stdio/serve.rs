@@ -76,10 +76,10 @@ use super::exchange::{StdioExchange, answer_of};
 use super::{Diagnostics, StdioConfig, StdioError, StdioSink, StdioSource};
 use crate::application::jsonrpc::{BatchPolicy, SourceError};
 use crate::application::mcp::request_meta::progress_token;
+use crate::application::server::{DispatchError, DynExchange};
 use crate::application::server::{
     Dispatcher, ListKind, ListSubscription, PeerSession, RequestContext,
 };
-use crate::application::server::{DispatchError, DynExchange};
 use crate::application::session::DynFrameSink;
 use crate::domain::RequestId;
 use crate::domain::ir::{IrErrorCode, JsonObject};
@@ -598,9 +598,7 @@ where
                         continue;
                     }
                     if cancels(&frame, context) {
-                        context
-                            .cancellation()
-                            .cancel(AbortReason::Cancelled(None));
+                        context.cancellation().cancel(AbortReason::Cancelled(None));
                         cancelled = true;
                         continue;
                     }
@@ -745,10 +743,9 @@ fn cancels(frame: &str, context: &RequestContext) -> bool {
         return false;
     };
     parsed.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
-        && parsed
-            .pointer("/params/requestId")
-            .is_some_and(|target| {
-            serde_json::from_str::<Value>(&context.request_id().to_json()).is_ok_and(|id| id == *target)
+        && parsed.pointer("/params/requestId").is_some_and(|target| {
+            serde_json::from_str::<Value>(&context.request_id().to_json())
+                .is_ok_and(|id| id == *target)
         })
 }
 

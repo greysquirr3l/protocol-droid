@@ -38,10 +38,10 @@ use crate::domain::ir::{JsonObject, MethodName};
 use crate::domain::{EventId, McpSessionId, McpSessionIdError, RequestId};
 
 use super::error::{HttpClientError, preview};
+use super::frames::{FrameError, FrameReader};
 use super::opaque::WireStream;
 use crate::application::client::bearer::BearerAuth;
 use crate::application::client::handler::ServerRequestHandler;
-use super::frames::{FrameError, FrameReader};
 
 /// Maps a frame failure onto the one enum a caller above this layer matches.
 ///
@@ -370,7 +370,8 @@ impl HttpClient {
         *self
             .session
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(id.to_string().as_str()));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::from(id.to_string().as_str()));
         self
     }
 
@@ -614,13 +615,10 @@ impl HttpClient {
         {
             request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| HttpClientError::Io {
-                method: DELETE,
-                error,
-            })?;
+        let response = request.send().await.map_err(|error| HttpClientError::Io {
+            method: DELETE,
+            error,
+        })?;
         self.read_document(response, DELETE).await
     }
 
@@ -829,7 +827,8 @@ impl HttpClient {
             *self
                 .protocol
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(version.as_wire().into_owned());
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(version.as_wire().into_owned());
         }
     }
 
@@ -950,7 +949,10 @@ impl HttpClient {
         handler: &dyn ServerRequestHandler,
         request: &Map<String, Value>,
     ) -> Result<(), HttpClientError> {
-        let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let params = JsonObject::from_value(request.get("params").cloned().unwrap_or_default())
             .unwrap_or_default();
         let reply = match handler.handle(method, &params).await {

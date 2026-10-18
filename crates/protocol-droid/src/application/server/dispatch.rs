@@ -36,8 +36,8 @@ use crate::application::server::context::{PeerSession, RequestContext};
 use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::idempotency::{Claim, IdempotencyKey};
 use crate::domain::ir::JsonObject;
-use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::ir::LogLevel;
+use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::{
     CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, TransportKind,
     client_method_defined_in, discover_defined_in, handshake_defined_in, negotiate_server, resolve,
@@ -271,7 +271,10 @@ impl Dispatcher {
             ));
         }
         let mut required: Vec<&'static str> = Vec::new();
-        if let Some(requests) = members.get("inputRequests").and_then(serde_json::Value::as_object) {
+        if let Some(requests) = members
+            .get("inputRequests")
+            .and_then(serde_json::Value::as_object)
+        {
             for request in requests.values() {
                 let Some(capability) = request
                     .get("method")

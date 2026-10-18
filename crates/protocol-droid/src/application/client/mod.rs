@@ -30,8 +30,8 @@ use crate::domain::{
 
 pub mod bearer;
 mod connect;
-mod handshake;
 pub mod handler;
+mod handshake;
 pub mod inputs;
 
 pub use connect::{ConnectError, default_versions, open};

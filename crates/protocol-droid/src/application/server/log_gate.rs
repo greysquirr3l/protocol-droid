@@ -136,8 +136,7 @@ mod tests {
 
     #[test]
     fn the_stored_order_agrees_with_the_level_order() {
-        for (lower, higher) in LogLevel::ALL.iter().zip(LogLevel::ALL.iter().skip(1))
-        {
+        for (lower, higher) in LogLevel::ALL.iter().zip(LogLevel::ALL.iter().skip(1)) {
             assert!(lower < higher, "{lower} sorts below {higher}");
             assert!(super::encode(*lower) < super::encode(*higher));
         }

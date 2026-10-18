@@ -24,12 +24,12 @@
 use std::sync::Arc;
 
 use crate::adapters::secondary::oauth::http_body::{describe, read_capped};
-use crate::domain::oauth::registration::{ClientSecret, TokenAuthMethod};
-use crate::domain::oauth::resource::ResourceParameters;
 use crate::application::oauth::redeem::{
     RefreshRequest, TokenEndpoint, TokenEndpointError, TokenRequest,
 };
 use crate::domain::oauth::issued_token::{IssuedToken, TokenResponseError};
+use crate::domain::oauth::registration::{ClientSecret, TokenAuthMethod};
+use crate::domain::oauth::resource::ResourceParameters;
 
 /// Redeems authorization codes at one token endpoint.
 ///
@@ -78,7 +78,10 @@ impl HttpTokenEndpoint {
 }
 
 impl TokenEndpoint for HttpTokenEndpoint {
-    async fn refresh(&self, request: RefreshRequest<'_>) -> Result<IssuedToken, TokenEndpointError> {
+    async fn refresh(
+        &self,
+        request: RefreshRequest<'_>,
+    ) -> Result<IssuedToken, TokenEndpointError> {
         let mut form = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", request.refresh_token()),
@@ -125,7 +128,6 @@ impl HttpTokenEndpoint {
         resource: &'a ResourceParameters,
         scope: Option<&'a str>,
     ) -> Result<IssuedToken, TokenEndpointError> {
-
         // RFC 6749 §2.3.1. `client_secret_basic` puts both halves in the
         // `Authorization` header, each `application/x-www-form-urlencoded`
         // first, and leaves `client_id` out of the body; `client_secret_post`
@@ -195,7 +197,8 @@ impl HttpTokenEndpoint {
 /// `Basic base64(urlencode(id) ":" urlencode(secret))`, per RFC 6749 §2.3.1.
 fn basic_credentials(id: &str, secret: &str) -> String {
     use base64::Engine as _;
-    let encode = |text: &str| url::form_urlencoded::byte_serialize(text.as_bytes()).collect::<String>();
+    let encode =
+        |text: &str| url::form_urlencoded::byte_serialize(text.as_bytes()).collect::<String>();
     let pair = format!("{}:{}", encode(id), encode(secret));
     format!(
         "Basic {}",

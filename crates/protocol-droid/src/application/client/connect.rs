@@ -17,7 +17,8 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    NegotiationError, SpecError, SupportedVersions, SupportedVersionsError, TransportKind, TransportSpec,
+    NegotiationError, SpecError, SupportedVersions, SupportedVersionsError, TransportKind,
+    TransportSpec,
 };
 
 use super::handler::ConnectOptions;
@@ -280,9 +281,8 @@ async fn open_stateless(
         if let Some((_, tried)) = attempts.iter_mut().find(|(version, _)| *version == current) {
             *tried = tried.saturating_add(1);
         }
-        let config =
-            ClientConfig::speaking(vec![current], TransportKind::StatelessHttp)?
-                .with_capabilities(capabilities);
+        let config = ClientConfig::speaking(vec![current], TransportKind::StatelessHttp)?
+            .with_capabilities(capabilities);
         let capabilities_json =
             serde_json::Value::Object(super::handshake::client_capabilities(&config));
         let mut client = StatelessHttpClient::new(
@@ -301,9 +301,7 @@ async fn open_stateless(
                     transport,
                 ));
             }
-            Err(HandshakeError::Transport(refused))
-                if refused.supported_versions().is_some() =>
-            {
+            Err(HandshakeError::Transport(refused)) if refused.supported_versions().is_some() => {
                 let supported = refused.supported_versions().unwrap_or_default();
                 candidate = attempts
                     .iter()
@@ -436,7 +434,9 @@ mod tests {
     #[cfg(feature = "http")]
     #[tokio::test]
     async fn a_stateless_spec_with_no_stateless_revision_is_refused() -> Result<(), Failure> {
-        let versions = crate::domain::SupportedVersions::from_slice(&[crate::domain::ProtocolVersion::V2025_11_25])?;
+        let versions = crate::domain::SupportedVersions::from_slice(&[
+            crate::domain::ProtocolVersion::V2025_11_25,
+        ])?;
         match open(&spec(TransportKind::StatelessHttp)?, &versions).await {
             Err(ConnectError::Unsupported {
                 kind: TransportKind::StatelessHttp,

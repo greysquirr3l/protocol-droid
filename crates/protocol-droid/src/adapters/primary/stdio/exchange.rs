@@ -94,7 +94,8 @@ pub(super) fn answer_of(reply: &serde_json::Value) -> Answer {
             ))
         },
         |result| {
-            JsonObject::from_value(result.clone()).map_err(|error| ExchangeError::new(error.to_string()))
+            JsonObject::from_value(result.clone())
+                .map_err(|error| ExchangeError::new(error.to_string()))
         },
     )
 }

@@ -26,14 +26,22 @@ fn an_altered_mac_does_not_open() {
     let flipped = sealed
         .chars()
         .enumerate()
-        .map(|(index, c)| if index == 0 { if c == '0' { '1' } else { '0' } } else { c })
+        .map(|(index, c)| {
+            if index == 0 {
+                if c == '0' { '1' } else { '0' }
+            } else {
+                c
+            }
+        })
         .collect::<String>();
     assert_eq!(key().open(&flipped), None);
 }
 
 #[test]
 fn a_state_sealed_under_another_key_does_not_open() {
-    let sealed = StateKey::from_bytes([1; 32]).seal("round-1").unwrap_or_default();
+    let sealed = StateKey::from_bytes([1; 32])
+        .seal("round-1")
+        .unwrap_or_default();
     assert_eq!(key().open(&sealed), None);
 }
 
@@ -73,7 +81,9 @@ fn an_interim_result_names_its_type_and_its_requests() -> TestResult {
     let parsed: serde_json::Map<String, serde_json::Value> = serde_json::from_str(result.as_str())?;
     assert!(is_input_required(&parsed));
     assert_eq!(
-        parsed.get("requestState").and_then(serde_json::Value::as_str),
+        parsed
+            .get("requestState")
+            .and_then(serde_json::Value::as_str),
         Some("sealed")
     );
     let requests = parsed

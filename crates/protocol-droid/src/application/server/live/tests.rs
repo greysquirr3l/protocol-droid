@@ -5,7 +5,7 @@ use crate::application::server::Server;
 use crate::application::server::builder::{PromptHandler, ResourceHandler, ToolHandler};
 use crate::application::session::{DynFrameSink, FrameSink, SinkError};
 use crate::domain::ir::JsonObject;
-use crate::domain::registry::{Prompt, PrimitiveKind, Resource, ResourceTemplate, Tool};
+use crate::domain::registry::{PrimitiveKind, Prompt, Resource, ResourceTemplate, Tool};
 use crate::domain::{Feature, FeatureProfile};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -16,7 +16,10 @@ struct Recorder(Mutex<Vec<String>>);
 
 impl Recorder {
     fn frames(&self) -> Vec<String> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 

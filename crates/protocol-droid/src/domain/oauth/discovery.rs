@@ -29,7 +29,10 @@ pub fn protected_resource_metadata_urls(server: &Url) -> Vec<String> {
             origin(server)
         ));
     }
-    urls.push(format!("{}/.well-known/oauth-protected-resource", origin(server)));
+    urls.push(format!(
+        "{}/.well-known/oauth-protected-resource",
+        origin(server)
+    ));
     urls
 }
 
@@ -58,7 +61,11 @@ pub fn authorization_server_metadata_urls(issuer: &Url) -> Vec<String> {
 #[must_use]
 pub fn canonical_resource(server: &Url) -> String {
     let path = server.path();
-    let path = if path == "/" { "" } else { path.trim_end_matches('/') };
+    let path = if path == "/" {
+        ""
+    } else {
+        path.trim_end_matches('/')
+    };
     format!("{}{path}", origin(server))
 }
 

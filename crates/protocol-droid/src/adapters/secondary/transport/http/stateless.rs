@@ -256,7 +256,11 @@ impl ClientTransport for StatelessHttpClient {
                 },
                 other => unavailable(other),
             })?;
-            Ok(if listing { self.learn_tools(result) } else { result })
+            Ok(if listing {
+                self.learn_tools(result)
+            } else {
+                result
+            })
         })
     }
 

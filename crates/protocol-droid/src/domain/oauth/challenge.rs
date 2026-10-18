@@ -82,9 +82,7 @@ pub fn parse_bearer(header: &str) -> Option<BearerChallenge> {
 /// Splits a leading token off `text`.
 fn split_token(text: &str) -> Option<(&str, &str)> {
     let text = text.trim_start_matches([' ', '\t', ',']);
-    let end = text
-        .find([' ', '\t', ','])
-        .unwrap_or(text.len());
+    let end = text.find([' ', '\t', ',']).unwrap_or(text.len());
     let (token, rest) = text.split_at(end);
     (!token.is_empty()).then_some((token, rest))
 }
@@ -101,9 +99,7 @@ fn read_params(text: &str) -> (Vec<(String, String)>, Option<&str>) {
         if trimmed.is_empty() {
             return (params, None);
         }
-        let name_end = trimmed
-            .find(['=', ' ', '\t', ','])
-            .unwrap_or(trimmed.len());
+        let name_end = trimmed.find(['=', ' ', '\t', ',']).unwrap_or(trimmed.len());
         let (name, after_name) = trimmed.split_at(name_end);
         let after_name_trimmed = after_name.trim_start();
         let Some(after_equals) = after_name_trimmed.strip_prefix('=') else {
@@ -113,7 +109,9 @@ fn read_params(text: &str) -> (Vec<(String, String)>, Option<&str>) {
         let after_equals = after_equals.trim_start();
         let (value, remaining) = after_equals.strip_prefix('"').map_or_else(
             || {
-                let end = after_equals.find([',', ' ', '\t']).unwrap_or(after_equals.len());
+                let end = after_equals
+                    .find([',', ' ', '\t'])
+                    .unwrap_or(after_equals.len());
                 let (value, remaining) = after_equals.split_at(end);
                 (value.to_owned(), remaining)
             },
@@ -176,7 +174,10 @@ mod tests {
 
     #[test]
     fn a_bare_bearer_is_a_challenge_with_nothing_in_it() {
-        assert_eq!(parse_bearer("Bearer"), Some(super::BearerChallenge::default()));
+        assert_eq!(
+            parse_bearer("Bearer"),
+            Some(super::BearerChallenge::default())
+        );
     }
 
     #[test]

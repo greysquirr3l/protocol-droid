@@ -265,12 +265,19 @@ async fn open_session(spec: &str, oauth: bool) -> anyhow::Result<Client> {
         use protocol_droid::application::client::handler::ConnectOptions;
         let authorizer = crate::auth::browser_authorizer(parsed.target()).await?;
         let versions = protocol_droid::domain::SupportedVersions::all()?;
-        return Client::connect_with(&parsed, &versions, ConnectOptions::new().authorizing(authorizer))
-            .await
-            .with_context(|| format!("could not open a session to {spec}"));
+        return Client::connect_with(
+            &parsed,
+            &versions,
+            ConnectOptions::new().authorizing(authorizer),
+        )
+        .await
+        .with_context(|| format!("could not open a session to {spec}"));
     }
     #[cfg(not(feature = "bridge"))]
-    anyhow::ensure!(!oauth, "this build has no OAuth client; rebuild with --features bridge");
+    anyhow::ensure!(
+        !oauth,
+        "this build has no OAuth client; rebuild with --features bridge"
+    );
     Client::connect_to(&parsed)
         .await
         .with_context(|| format!("could not open a session to {spec}"))

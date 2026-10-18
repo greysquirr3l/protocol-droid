@@ -30,6 +30,7 @@ use tower::ServiceExt;
 use super::{
     DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyRouter, RouteError, SESSION_PARAMETER,
 };
+use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::{
     AuthPolicy, Authenticator, Credentials, Refusal, ServerConfig, SessionStore,
 };
@@ -37,10 +38,9 @@ use crate::adapters::primary::transport::legacy_sse::{
     LegacyDispatcher, LegacySession, LegacyTail, Origin, OriginPolicy,
 };
 use crate::application::session::IdSource;
-use crate::adapters::primary::transport::http::limits::RateLimiter;
-use crate::domain::{McpSessionId, RateLimit};
 use crate::domain::registry::auth::{AuthContext, ScopeSet};
 use crate::domain::session::SessionId;
+use crate::domain::{McpSessionId, RateLimit};
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -143,21 +143,21 @@ impl LegacyDispatcher for Echo {
         frame: &Value,
     ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send {
         core::future::ready({
-        self.0.calls.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut seen) = self.0.seen.lock() {
-            // All three recorded, so a test can assert *which* session, *what*
-            // body, and *who* the dispatcher was reached with. Recording the
-            // body too is what makes "the session came from the query string,
-            // not from the body" a claim a test can make rather than assert.
-            seen.push(format!("{session} {frame} {}", auth.principal()));
-        }
-        let scripted = self.0.reply.lock().ok().and_then(|r| r.clone());
-        match scripted {
-            Some(Ok(replies)) => Ok(replies),
-            Some(Err(message)) => Err(Refusal::Handler(message)),
-            None => Ok(vec![json!({"jsonrpc": "2.0", "id": 7, "result": {}})]),
-        }
-            })
+            self.0.calls.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut seen) = self.0.seen.lock() {
+                // All three recorded, so a test can assert *which* session, *what*
+                // body, and *who* the dispatcher was reached with. Recording the
+                // body too is what makes "the session came from the query string,
+                // not from the body" a claim a test can make rather than assert.
+                seen.push(format!("{session} {frame} {}", auth.principal()));
+            }
+            let scripted = self.0.reply.lock().ok().and_then(|r| r.clone());
+            match scripted {
+                Some(Ok(replies)) => Ok(replies),
+                Some(Err(message)) => Err(Refusal::Handler(message)),
+                None => Ok(vec![json!({"jsonrpc": "2.0", "id": 7, "result": {}})]),
+            }
+        })
     }
 }
 
@@ -810,9 +810,7 @@ async fn a_foreign_host_is_refused_on_both_routes() -> Result<(), TestError> {
     let id = harness.open()?;
     for request in [get("/sse")?, post(&message_uri(id), "{}")?] {
         let (mut parts, body) = request.into_parts();
-        parts
-            .headers
-            .insert(header::HOST, "evil.example".parse()?);
+        parts.headers.insert(header::HOST, "evil.example".parse()?);
         let response = harness.send(Request::from_parts(parts, body)).await?;
         require(
             &response.status(),
@@ -860,7 +858,11 @@ async fn requests_beyond_the_allowance_are_answered_429() -> Result<(), TestErro
     }
     require(
         &statuses,
-        &vec![StatusCode::OK, StatusCode::OK, StatusCode::TOO_MANY_REQUESTS],
+        &vec![
+            StatusCode::OK,
+            StatusCode::OK,
+            StatusCode::TOO_MANY_REQUESTS,
+        ],
         "the third request inside the window is limited",
     )?;
     Ok(())

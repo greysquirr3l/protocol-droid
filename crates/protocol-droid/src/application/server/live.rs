@@ -136,7 +136,11 @@ impl Live {
     }
 
     /// Installs a handler, then lists what it serves.
-    pub(crate) fn add(&self, registered: Registered, edit: impl FnOnce(&mut Handlers)) -> Published {
+    pub(crate) fn add(
+        &self,
+        registered: Registered,
+        edit: impl FnOnce(&mut Handlers),
+    ) -> Published {
         let _writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
         self.swap_handlers(edit);
         self.registry.register(registered)
@@ -213,14 +217,8 @@ impl ListKind {
             Self::Resources => PrimitiveKind::Resource,
             Self::Prompts => PrimitiveKind::Prompt,
         };
-        let subscriber = Subscriber::new(
-            primary,
-            self.feature(),
-            self.method(),
-            frame,
-            profile,
-            sink,
-        );
+        let subscriber =
+            Subscriber::new(primary, self.feature(), self.method(), frame, profile, sink);
         if self == Self::Resources {
             subscriber.also_for(PrimitiveKind::ResourceTemplate)
         } else {
@@ -338,7 +336,11 @@ impl ServerHandle {
     ///
     /// A `Registered` that is not a tool is listed and given no handler, which
     /// is the builder's rule for the same input.
-    pub async fn add_restricted_tool(&self, registered: Registered, handler: ToolHandler) -> Fanout {
+    pub async fn add_restricted_tool(
+        &self,
+        registered: Registered,
+        handler: ToolHandler,
+    ) -> Fanout {
         let name = match registered.primitive() {
             Primitive::Tool(tool) => Some(tool.name.clone()),
             _ => None,

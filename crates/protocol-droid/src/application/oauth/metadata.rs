@@ -63,8 +63,8 @@ impl ProtectedResource {
     /// `resource` or a non-empty `authorization_servers`.
     pub fn parse(body: &[u8]) -> Result<Self, MetadataError> {
         const DOCUMENT: &str = "protected resource metadata";
-        let value: Value =
-            serde_json::from_slice(body).map_err(|_| MetadataError::NotAnObject { document: DOCUMENT })?;
+        let value: Value = serde_json::from_slice(body)
+            .map_err(|_| MetadataError::NotAnObject { document: DOCUMENT })?;
         let object = value
             .as_object()
             .ok_or(MetadataError::NotAnObject { document: DOCUMENT })?;
@@ -128,8 +128,8 @@ impl AuthorizationServer {
     /// and [`MetadataError::Missing`] when an endpoint the flow needs is absent.
     pub fn parse(body: &[u8], expected_issuer: &str) -> Result<Self, MetadataError> {
         const DOCUMENT: &str = "authorization server metadata";
-        let value: Value =
-            serde_json::from_slice(body).map_err(|_| MetadataError::NotAnObject { document: DOCUMENT })?;
+        let value: Value = serde_json::from_slice(body)
+            .map_err(|_| MetadataError::NotAnObject { document: DOCUMENT })?;
         let object = value
             .as_object()
             .ok_or(MetadataError::NotAnObject { document: DOCUMENT })?;
@@ -195,7 +195,10 @@ mod tests {
             br#"{"resource":"https://mcp.example.com/mcp","authorization_servers":["https://auth.example.com"],"scopes_supported":["a","b"]}"#,
         )?;
         assert_eq!(document.authorization_servers, ["https://auth.example.com"]);
-        assert_eq!(document.scopes_supported, Some(vec!["a".to_owned(), "b".to_owned()]));
+        assert_eq!(
+            document.scopes_supported,
+            Some(vec!["a".to_owned(), "b".to_owned()])
+        );
         Ok(())
     }
 

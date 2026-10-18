@@ -308,15 +308,13 @@ async fn run_client(args: &ClientArgs) -> anyhow::Result<()> {
 /// what `self` should exercise.
 async fn run_self(args: &SelfArgs) -> anyhow::Result<()> {
     let pinned = read_pinned_version()?;
-    let side = args
-        .side
-        .unwrap_or_else(|| {
-            if args.scenario.is_some() {
-                Side::Server
-            } else {
-                Side::Both
-            }
-        });
+    let side = args.side.unwrap_or_else(|| {
+        if args.scenario.is_some() {
+            Side::Server
+        } else {
+            Side::Both
+        }
+    });
     let mut failures: Vec<String> = Vec::new();
     if side != Side::Client
         && let Err(error) = run_self_server(&pinned, args).await
@@ -352,15 +350,18 @@ async fn run_self_client(pinned: &str, args: &SelfArgs) -> anyhow::Result<()> {
     let client = crate::conformance_client::build_reference_client().await?;
     let mut failed: Vec<&str> = Vec::new();
     for scenario in scenarios {
-        let command = crate::conformance_client::client_argv(
+        let command =
+            crate::conformance_client::client_argv(pinned, &client, &args.spec_version, scenario);
+        if invoke_suite(
+            command,
+            &args.timeout,
             pinned,
-            &client,
+            "self-client",
             &args.spec_version,
-            scenario,
-        );
-        if invoke_suite(command, &args.timeout, pinned, "self-client", &args.spec_version, args.json)
-            .await
-            .is_err()
+            args.json,
+        )
+        .await
+        .is_err()
         {
             failed.push(scenario);
         }

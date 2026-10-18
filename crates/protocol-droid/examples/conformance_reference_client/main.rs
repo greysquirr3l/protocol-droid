@@ -34,7 +34,9 @@ fn main() -> ExitCode {
     };
     let scenario = std::env::var("MCP_CONFORMANCE_SCENARIO").unwrap_or_default();
     let Some(url) = std::env::args().nth(1) else {
-        eprintln!("usage: MCP_CONFORMANCE_SCENARIO=<name> conformance_reference_client <server-url>");
+        eprintln!(
+            "usage: MCP_CONFORMANCE_SCENARIO=<name> conformance_reference_client <server-url>"
+        );
         return ExitCode::FAILURE;
     };
     match runtime.block_on(scenarios::run(&scenario, &url)) {

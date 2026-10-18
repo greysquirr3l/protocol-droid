@@ -155,7 +155,10 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
 }
 
 /// Opens `spec` and runs the matrix against it.
-async fn probe_spec(spec: &TransportSpec, versions: &[ProtocolVersion]) -> anyhow::Result<ProbeReport> {
+async fn probe_spec(
+    spec: &TransportSpec,
+    versions: &[ProtocolVersion],
+) -> anyhow::Result<ProbeReport> {
     let (transport, kind) = open_transport(spec)
         .await
         .with_context(|| format!("could not open transport for {spec}"))?;

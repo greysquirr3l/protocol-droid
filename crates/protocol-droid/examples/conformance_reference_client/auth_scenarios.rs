@@ -15,8 +15,8 @@ use protocol_droid::adapters::secondary::oauth::environment::{
 use protocol_droid::adapters::secondary::oauth::secrets::OsSecrets;
 use protocol_droid::application::client::handler::ConnectOptions;
 use protocol_droid::application::oauth::authorizer::{OAuthAuthorizer, OAuthConfig, PreRegistered};
-use protocol_droid::domain::ir::JsonObject;
 use protocol_droid::domain::ProtocolVersion;
+use protocol_droid::domain::ir::JsonObject;
 use protocol_droid::serde_json::{self, Value, json};
 
 type Failure = Box<dyn std::error::Error>;
@@ -103,11 +103,14 @@ async fn flow(scenario: &str, url: &str) -> Result<(), Failure> {
 
     // The revision decides the lifecycle: the suite's mocks at `2026-07-28`
     // are stateless and refuse an `initialize`.
-    let client = super::scenarios::connect(url, ConnectOptions::new().authorizing(authorizer)).await?;
+    let client =
+        super::scenarios::connect(url, ConnectOptions::new().authorizing(authorizer)).await?;
 
     // Unchecked: the mocks advertise nothing, and what is judged is whether the
     // client got a token — which only a request the server answers can show.
-    client.send_unchecked("tools/list", &JsonObject::default()).await?;
+    client
+        .send_unchecked("tools/list", &JsonObject::default())
+        .await?;
     if scenario != "auth/pre-registration" {
         let call = JsonObject::from_value(json!({ "name": "test-tool", "arguments": {} }))?;
         // The scope scenarios expect a second operation, which may need more

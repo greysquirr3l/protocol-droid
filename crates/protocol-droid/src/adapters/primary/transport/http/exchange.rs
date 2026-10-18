@@ -239,7 +239,10 @@ impl HttpExchange {
     /// An exchange that hands each request to `publish` and records into
     /// `table`.
     #[must_use]
-    pub fn publishing(table: ExchangeTable, publish: impl Fn(Value) + Send + Sync + 'static) -> Self {
+    pub fn publishing(
+        table: ExchangeTable,
+        publish: impl Fn(Value) + Send + Sync + 'static,
+    ) -> Self {
         Self {
             table,
             publish: std::sync::Arc::new(publish),

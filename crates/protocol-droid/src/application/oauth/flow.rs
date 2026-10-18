@@ -65,12 +65,19 @@ pub fn step_up_scope(previous: Option<&str>, challenge: &BearerChallenge) -> Opt
 /// server's metadata contains it in `scopes_supported`; asking for it
 /// otherwise requests something the server never offered.
 #[must_use]
-pub fn with_offline_access(scope: Option<String>, server_scopes_supported: &[String]) -> Option<String> {
+pub fn with_offline_access(
+    scope: Option<String>,
+    server_scopes_supported: &[String],
+) -> Option<String> {
     if !server_scopes_supported.iter().any(|s| s == OFFLINE_ACCESS) {
         return scope;
     }
     match scope {
-        Some(existing) if existing.split_ascii_whitespace().any(|s| s == OFFLINE_ACCESS) => {
+        Some(existing)
+            if existing
+                .split_ascii_whitespace()
+                .any(|s| s == OFFLINE_ACCESS) =>
+        {
             Some(existing)
         }
         Some(existing) => Some(format!("{existing} {OFFLINE_ACCESS}")),
@@ -127,8 +134,14 @@ mod tests {
             with_offline_access(Some("a".to_owned()), &listed),
             Some("a offline_access".to_owned())
         );
-        assert_eq!(with_offline_access(Some("a".to_owned()), &[]), Some("a".to_owned()));
-        assert_eq!(with_offline_access(None, &listed), Some("offline_access".to_owned()));
+        assert_eq!(
+            with_offline_access(Some("a".to_owned()), &[]),
+            Some("a".to_owned())
+        );
+        assert_eq!(
+            with_offline_access(None, &listed),
+            Some("offline_access".to_owned())
+        );
     }
 
     #[test]

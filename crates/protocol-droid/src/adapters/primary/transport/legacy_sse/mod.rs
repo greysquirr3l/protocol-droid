@@ -70,9 +70,9 @@ mod serve;
 
 pub use crate::adapters::primary::transport::origin::{Origin, OriginError, OriginPolicy};
 pub use frame::{LegacyDispatcher, LegacyFrame, LegacySession, LegacyTail};
-pub use serve::{ServerDispatcher, ServerSession};
 pub use router::{
     DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyRouter, RouteError, SESSION_PARAMETER,
 };
+pub use serve::{ServerDispatcher, ServerSession};
 
 pub use crate::domain::{MessageEndpoint, MessageEndpointError};

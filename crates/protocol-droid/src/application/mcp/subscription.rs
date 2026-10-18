@@ -31,8 +31,16 @@ pub const SUBSCRIPTION_ID_KEY: &str = "io.modelcontextprotocol/subscriptionId";
 
 /// The filter members, with the feature each needs and the kind it maps to.
 const FILTER: [(&str, Feature, ListKind); 3] = [
-    ("toolsListChanged", Feature::ToolsListChanged, ListKind::Tools),
-    ("promptsListChanged", Feature::PromptsListChanged, ListKind::Prompts),
+    (
+        "toolsListChanged",
+        Feature::ToolsListChanged,
+        ListKind::Tools,
+    ),
+    (
+        "promptsListChanged",
+        Feature::PromptsListChanged,
+        ListKind::Prompts,
+    ),
     (
         "resourcesListChanged",
         Feature::ResourcesListChanged,

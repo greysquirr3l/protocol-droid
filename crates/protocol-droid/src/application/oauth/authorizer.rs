@@ -93,7 +93,9 @@ pub enum AuthorizeError {
     #[error("dynamic client registration failed: {0}")]
     Registration(String),
     /// Pre-registered credentials exist for a different authorization server.
-    #[error("the pre-registered credentials belong to `{registered}`, but the server now names `{named}`")]
+    #[error(
+        "the pre-registered credentials belong to `{registered}`, but the server now names `{named}`"
+    )]
     CredentialsForAnotherIssuer {
         /// The issuer the credentials were registered with.
         registered: String,
@@ -366,7 +368,9 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
 
     /// Files `client` under the issuer that issued it.
     fn keep_client(&self, issuer: &str, client: &RegisteredClient) {
-        self.state().clients.insert(issuer.to_owned(), client.clone());
+        self.state()
+            .clients
+            .insert(issuer.to_owned(), client.clone());
     }
 
     /// Obtains a token for `challenge`, replacing any held.
@@ -417,7 +421,8 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
         if let Some(scope) = &scope {
             pending = pending.with_scope(scope);
         }
-        let url = pending.authorization_url(&server.authorization_endpoint, ChallengeMethod::S256)?;
+        let url =
+            pending.authorization_url(&server.authorization_endpoint, ChallengeMethod::S256)?;
 
         let callback = self.environment.authorize(url.as_str()).await?;
         let code = authorize_callback(&self.config.model, &pending, &callback)?;
@@ -431,11 +436,7 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
             client: client.clone(),
             resource: ResourceParameters::single(&resource_uri),
         });
-        self.record(
-            tokens.access_token().as_str().to_owned(),
-            granted,
-            refresh,
-        );
+        self.record(tokens.access_token().as_str().to_owned(), granted, refresh);
         Ok(())
     }
 
@@ -500,7 +501,10 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
     /// A document served from the root describes the origin, and a server at a
     /// path under it is within that — so a prefix, on a path boundary, is the
     /// same resource. Anything else is a different resource.
-    fn check_resource(&self, document: ProtectedResource) -> Result<ProtectedResource, AuthorizeError> {
+    fn check_resource(
+        &self,
+        document: ProtectedResource,
+    ) -> Result<ProtectedResource, AuthorizeError> {
         let expected = canonical_resource(&self.config.server);
         let found = Url::parse(&document.resource).map_or_else(
             |_| document.resource.clone(),
@@ -520,7 +524,10 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
     /// Reads the authorization server's metadata, trying the locations in the
     /// order the specification gives and skipping any whose `issuer` is not the
     /// one the URL was built for.
-    async fn authorization_server(&self, issuer: &str) -> Result<AuthorizationServer, AuthorizeError> {
+    async fn authorization_server(
+        &self,
+        issuer: &str,
+    ) -> Result<AuthorizationServer, AuthorizeError> {
         let parsed = Url::parse(issuer).map_err(|error| AuthorizeError::Discovery {
             what: "the authorization server's issuer",
             reason: error.to_string(),
@@ -554,7 +561,10 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
     /// supports, then dynamic registration. Credentials are kept per issuer, so
     /// a server that moves to a new authorization server is registered with
     /// afresh rather than shown an id it never issued.
-    async fn client_for(&self, server: &AuthorizationServer) -> Result<RegisteredClient, AuthorizeError> {
+    async fn client_for(
+        &self,
+        server: &AuthorizationServer,
+    ) -> Result<RegisteredClient, AuthorizeError> {
         if let Some(held) = self.held_client(server) {
             return Ok(held);
         }
@@ -619,7 +629,9 @@ impl<E: OAuthEnvironment, S: AuthorizationSecrets + Send + Sync + 'static> OAuth
         let id = response
             .get("client_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| AuthorizeError::Registration("the response has no client_id".to_owned()))?;
+            .ok_or_else(|| {
+                AuthorizeError::Registration("the response has no client_id".to_owned())
+            })?;
         let secret = response
             .get("client_secret")
             .and_then(Value::as_str)

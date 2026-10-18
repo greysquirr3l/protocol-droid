@@ -92,10 +92,19 @@ pub fn client_scenarios(spec_version: &str) -> &'static [&'static str] {
 pub async fn build_reference_client() -> anyhow::Result<std::path::PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let output = tokio::process::Command::new(cargo)
-        .args(["build", "--quiet", "--message-format=json-render-diagnostics"])
+        .args([
+            "build",
+            "--quiet",
+            "--message-format=json-render-diagnostics",
+        ])
         .arg("--manifest-path")
         .arg(super::conformance::workspace_manifest_path())
-        .args(["-p", "protocol-droid", "--example", "conformance_reference_client"])
+        .args([
+            "-p",
+            "protocol-droid",
+            "--example",
+            "conformance_reference_client",
+        ])
         .args(["--features", "http,oauth,random-ids"])
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -109,7 +118,9 @@ pub async fn build_reference_client() -> anyhow::Result<std::path::PathBuf> {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|message| {
-            message.pointer("/target/name").and_then(serde_json::Value::as_str)
+            message
+                .pointer("/target/name")
+                .and_then(serde_json::Value::as_str)
                 == Some("conformance_reference_client")
         })
         .filter_map(|message| {
@@ -124,7 +135,12 @@ pub async fn build_reference_client() -> anyhow::Result<std::path::PathBuf> {
 
 /// The suite's argv for one client scenario.
 #[must_use]
-pub fn client_argv(pinned: &str, client: &std::path::Path, spec_version: &str, scenario: &str) -> Vec<OsString> {
+pub fn client_argv(
+    pinned: &str,
+    client: &std::path::Path,
+    spec_version: &str,
+    scenario: &str,
+) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
         "--yes".into(),
         format!("@modelcontextprotocol/conformance@{pinned}").into(),
@@ -147,7 +163,10 @@ mod tests {
     #[test]
     fn every_stateful_revision_with_scenarios_runs_the_basics() {
         for version in ["2025-06-18", "2025-11-25"] {
-            assert!(client_scenarios(version).contains(&"initialize"), "{version}");
+            assert!(
+                client_scenarios(version).contains(&"initialize"),
+                "{version}"
+            );
         }
         assert!(client_scenarios("2024-11-05").is_empty());
     }
@@ -159,10 +178,24 @@ mod tests {
 
     #[test]
     fn argv_names_the_scenario_and_the_revision() {
-        let argv = client_argv("1.2.3", std::path::Path::new("/bin/client"), "2025-11-25", "initialize");
-        let text: Vec<String> = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        let argv = client_argv(
+            "1.2.3",
+            std::path::Path::new("/bin/client"),
+            "2025-11-25",
+            "initialize",
+        );
+        let text: Vec<String> = argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert!(text.windows(2).any(|w| w == ["--scenario", "initialize"]));
-        assert!(text.windows(2).any(|w| w == ["--spec-version", "2025-11-25"]));
-        assert!(text.iter().any(|a| a == "@modelcontextprotocol/conformance@1.2.3"));
+        assert!(
+            text.windows(2)
+                .any(|w| w == ["--spec-version", "2025-11-25"])
+        );
+        assert!(
+            text.iter()
+                .any(|a| a == "@modelcontextprotocol/conformance@1.2.3")
+        );
     }
 }

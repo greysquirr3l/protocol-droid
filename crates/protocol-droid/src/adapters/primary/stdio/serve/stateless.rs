@@ -121,7 +121,11 @@ where
     }
 
     /// Validates a request's `_meta` and builds the peer it is served as.
-    fn stateless_peer(&mut self, method: &str, params: &JsonObject) -> Result<PeerSession, DispatchError> {
+    fn stateless_peer(
+        &mut self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Result<PeerSession, DispatchError> {
         let meta = match RequestMeta::read(params) {
             Ok(meta) => Some(meta),
             Err(RequestMetaError::MalformedVersion) => None,
