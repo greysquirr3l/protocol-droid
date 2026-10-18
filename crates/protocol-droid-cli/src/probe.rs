@@ -124,19 +124,23 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("--server is not a usable spec: {}", args.server))?;
     let versions = resolve_versions(&args.versions)?;
 
-    let (transport, kind) = open_transport(&spec)
-        .await
-        .with_context(|| format!("could not open transport for {spec}"))?;
+    let mut report = probe_spec(&spec, &versions).await?;
 
-    let stateless = stateless_transport(&spec, kind)?;
-    let report = matrix_report_with(
-        transport.as_ref(),
-        stateless.as_deref(),
-        &versions,
-        kind,
-        spec.to_string(),
-    )
-    .await;
+    // The backward-compatibility rule from the 2025-03-26 transport page: a
+    // server that refuses a `POST` with a 4xx may still be the old HTTP+SSE
+    // transport, which is recognised by opening a stream and finding an
+    // `endpoint` event on it. Only tried when the endpoint was refused
+    // outright, and only reported if it works.
+    #[cfg(feature = "bridge")]
+    if spec.kind() == TransportKind::StreamableHttp
+        && refused_by_every_post(&report)
+        && let Ok(legacy) = TransportSpec::new(TransportKind::LegacySse, spec.target())
+        && let Ok(found) = probe_spec(&legacy, &versions).await
+        && found.rows.iter().any(|row| row.accepted)
+    {
+        eprintln!("{spec} refuses POST but serves an HTTP+SSE stream; probed it as {legacy}");
+        report = found;
+    }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -148,6 +152,32 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
         anyhow::bail!("no revision was accepted by {spec}");
     }
     Ok(())
+}
+
+/// Opens `spec` and runs the matrix against it.
+async fn probe_spec(spec: &TransportSpec, versions: &[ProtocolVersion]) -> anyhow::Result<ProbeReport> {
+    let (transport, kind) = open_transport(spec)
+        .await
+        .with_context(|| format!("could not open transport for {spec}"))?;
+    let stateless = stateless_transport(spec, kind)?;
+    Ok(matrix_report_with(
+        transport.as_ref(),
+        stateless.as_deref(),
+        versions,
+        kind,
+        spec.to_string(),
+    )
+    .await)
+}
+
+/// Whether every row was refused with a client-error status on the `POST`.
+#[cfg(feature = "bridge")]
+fn refused_by_every_post(report: &ProbeReport) -> bool {
+    !report.rows.is_empty()
+        && report
+            .rows
+            .iter()
+            .all(|row| !row.accepted && row.note.contains("refused the POST with 4"))
 }
 
 /// Fingerprints an A2A agent and reports the result.

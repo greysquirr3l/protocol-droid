@@ -66,6 +66,9 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   with a timeout. `protocol-droid inspect --oauth <server> …` uses it; a client
   registered ahead of time is named by `PROTOCOL_DROID_OAUTH_CLIENT_ID` and
   `PROTOCOL_DROID_OAUTH_CLIENT_SECRET`, never by a flag.
+- **`probe` recognises a legacy HTTP+SSE endpoint.** A URL that refuses every `POST`
+  with a 4xx is retried as `sse:` (the 2025-03-26 backward-compatibility rule),
+  and the result is reported only if that works.
 - **Refresh tokens.** `OAuthAuthorizer` keeps the refresh token a login returns and
   trades it for a new access token when the server says the token is no longer
   good, so an expired token no longer sends the user back through consent. A
