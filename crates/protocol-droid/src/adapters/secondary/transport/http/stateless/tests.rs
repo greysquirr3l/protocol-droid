@@ -97,9 +97,9 @@ async fn a_tool_with_an_invalid_annotation_is_dropped_from_the_listing() -> Test
 }
 
 fn asking_server() -> Result<Server, Box<dyn std::error::Error>> {
-    use crate::application::mcp::input_required::{InputRequired, StateKey};
+    use crate::application::mcp::input_required::InputRequired;
     Ok(Server::builder("asks")
-        .request_state_key(StateKey::from_bytes([3; 32]))
+        .request_state_key(crate::application::mcp::input_required::test_keys::random_key())
         .tool(
             Tool::new("ask", r#"{"type":"object"}"#)?,
             Arc::new(|ctx, _args| {

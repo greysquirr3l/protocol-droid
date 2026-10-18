@@ -11,7 +11,7 @@ use tower::ServiceExt as _;
 
 use crate::adapters::primary::transport::http::config::{ServerConfig, Streaming};
 use crate::adapters::primary::transport::http::serve::test_routes;
-use crate::application::mcp::input_required::{InputRequired, StateKey};
+use crate::application::mcp::input_required::InputRequired;
 use crate::application::server::{Server, ToolHandler};
 use crate::application::session::IdSource;
 use crate::domain::ProtocolVersion;
@@ -49,7 +49,8 @@ fn router(
 ) -> Result<(axum::Router, Arc<AtomicUsize>), Box<dyn std::error::Error>> {
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
-    let mut builder = Server::builder("stateless").request_state_key(StateKey::from_bytes([9; 32]));
+    let mut builder = Server::builder("stateless")
+        .request_state_key(crate::application::mcp::input_required::test_keys::random_key());
     for (definition, handler) in [
         tool(
             "count",

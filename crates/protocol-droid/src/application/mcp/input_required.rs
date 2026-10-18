@@ -272,4 +272,6 @@ pub fn capability_for(method: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+pub mod test_keys;
+#[cfg(test)]
 mod tests;

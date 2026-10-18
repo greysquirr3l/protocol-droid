@@ -1,10 +1,16 @@
+use std::sync::LazyLock;
+
+use super::test_keys::random_bytes;
 use super::{InputRequired, StateKey, capability_for, is_input_required};
 use crate::domain::ir::JsonObject;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// The key the tests share. Drawn once, so `seal` and `open` agree within a run.
+static KEY: LazyLock<[u8; 32]> = LazyLock::new(random_bytes);
+
 fn key() -> StateKey {
-    StateKey::from_bytes([7; 32])
+    StateKey::from_bytes(*KEY)
 }
 
 #[test]
@@ -39,7 +45,7 @@ fn an_altered_mac_does_not_open() {
 
 #[test]
 fn a_state_sealed_under_another_key_does_not_open() {
-    let sealed = StateKey::from_bytes([1; 32])
+    let sealed = super::test_keys::random_key()
         .seal("round-1")
         .unwrap_or_default();
     assert_eq!(key().open(&sealed), None);
