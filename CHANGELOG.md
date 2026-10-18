@@ -9,9 +9,11 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
-Conformance is now green on every revision the pinned suite covers:
-`2026-07-28` went from 81/119 to 151/151, with `2025-03-26`, `2025-06-18` and
-`2025-11-25` unchanged at 3/3, 55/55 and 81/81. Most of the gap was library
+Conformance is now green on every revision the pinned suite covers, on both
+sides. The server matrix is 3/3, 55/55, 81/81 and 151/151 on `2025-03-26`,
+`2025-06-18`, `2025-11-25` and `2026-07-28` (`2026-07-28` was 81/119). The
+client matrix, newly run, is 2/2, 18/18 and 32/32 on `2025-06-18`,
+`2025-11-25` and `2026-07-28`, OAuth included. Most of the gap was library
 behaviour, not fixture work, and several of the fixes apply to every revision.
 
 ### Added
@@ -43,16 +45,15 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
 - **Sampling and elicitation over stdio.** (`927f9d0`) The serve loop keeps reading while
   a handler waits on the client, delivers the answer, and queues any request
   that arrives meanwhile so replies keep their order.
-
-- **The `2026-07-28` lifecycle over stdio**: stateless requests,
+- **The `2026-07-28` lifecycle over stdio** (`a2cadea`): stateless requests,
   `subscriptions/listen` on the shared channel, cancellation of an in-flight
   request or a listen stream, and the same `-32022` / `-32021` data as HTTP.
-- **OAuth client building blocks**: `WWW-Authenticate` parsing, discovery URL
+- **OAuth client building blocks** (`a2cadea`): `WWW-Authenticate` parsing, discovery URL
   ordering, canonical resource URI, scope selection and step-up, metadata
   parsing with issuer validation, `client_secret_basic` / `_post` / public
   token authentication, and the `authorization_response_iss_parameter_supported`
   rule (an advertising server that omits `iss` is refused).
-- **An OAuth 2.1 client that runs the whole flow.** `OAuthAuthorizer` handles a
+- **An OAuth 2.1 client that runs the whole flow.** (`687d90e`) `OAuthAuthorizer` handles a
   `401` or `403`: protected-resource metadata, authorization-server discovery,
   PKCE `S256` verification, client selection (held, pre-registered, metadata
   document, dynamic registration), scope selection and step-up, `resource`
@@ -61,71 +62,82 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   retry with the token. It stops after three refusals. It passes every
   `auth/*` scenario of the client conformance suite on `2025-11-25` and
   `2026-07-28`.
-- **Sign in from a browser.** `LoopbackBrowser` is a `UserAgent` that opens the
+- **Sign in from a browser.** (`dbde884`) `LoopbackBrowser` is a `UserAgent` that opens the
   authorization URL (web URLs only) and receives the redirect on a loopback port,
   with a timeout. `protocol-droid inspect <server> --oauth list` uses it; a client
   registered ahead of time is named by `PROTOCOL_DROID_OAUTH_CLIENT_ID` and
   `PROTOCOL_DROID_OAUTH_CLIENT_SECRET`, never by a flag.
-- **`probe` recognises a legacy HTTP+SSE endpoint.** A URL that refuses every `POST`
+- **`probe` recognises a legacy HTTP+SSE endpoint.** (`288ff83`) A URL that refuses every `POST`
   with a 4xx is retried as `sse:` (the 2025-03-26 backward-compatibility rule),
   and the result is reported only if that works.
-- **Refresh tokens.** `OAuthAuthorizer` keeps the refresh token a login returns and
+- **Refresh tokens.** (`a89bb63`) `OAuthAuthorizer` keeps the refresh token a login returns and
   trades it for a new access token when the server says the token is no longer
   good, so an expired token no longer sends the user back through consent. A
   spent or revoked refresh token is forgotten and the full flow runs; a
   challenge for more scope skips the refresh. `TokenEndpoint::refresh` is a
   new defaulted method, so existing implementors still compile.
-- **A `Server` over the legacy HTTP+SSE transport.** `HttpBuilder::legacy_sse()`
+- **A `Server` over the legacy HTTP+SSE transport.** (`4f904b6`) `HttpBuilder::legacy_sse()`
   (or `legacy_sse_at(stream, message)`) mounts the `2024-11-05` routes beside
   Streamable HTTP on one listener. The same tools, resources and prompts answer
   on both, `list_changed` and progress go out on the session's stream, a tool
   can ask the client a question, and a client offering a later revision is
   answered with `2024-11-05`. `LegacyDispatcher::dispatch` is now async and
   carries per-session state (`LegacySession`, `LegacyDispatcher::open`).
-- **The bridge forwards to a `2026-07-28` stateless upstream.** `protocol-droid
+- **The bridge forwards to a `2026-07-28` stateless upstream.** (`8598ad5`) `protocol-droid
   bridge --upstream http-stateless:http://host/mcp` lets a `2025-11-25` (or
   older) client use a stateless server: the upstream's revision is discovered
   once, and each forwarded request carries it and the bridge's capabilities in
   its own `_meta`. `TransportPeer` is the library piece, usable over any
   `ClientTransport`.
-- **`conformance_reference_server --legacy-sse`** mounts the `2024-11-05` routes
+- **`conformance_reference_server --legacy-sse`** (`6332dce`) mounts the `2024-11-05` routes
   beside `/mcp`, as a runnable example of `HttpBuilder::legacy_sse()`; probe it
   with `protocol-droid probe sse:http://127.0.0.1:8080/sse`.
-- **`Host` checking and rate limiting on the legacy routes.** They had `Origin`
+- **`Host` checking and rate limiting on the legacy routes.** (`4f904b6`) They had `Origin`
   and authentication but neither of these, so a rebound DNS name or a flood of
   `POST`s reached the dispatcher.
-- **`a2a` implies `http`.** Building with `--features a2a` alone did not compile.
+- **`a2a` implies `http`.** (`687d90e`) Building with `--features a2a` alone did not compile.
+- **A comparative benchmark against `rmcp`.** (`dbf2cd6`) `interop_rmcp`'s `compare` binary
+  drives both stdio servers with the same client; the two are within about 5 %
+  of each other (`docs/benchmarks.md`).
+
+### Changed
+
+- **`LegacyDispatcher::dispatch` is async and carries per-session state.**
+  (`4f904b6`) It gains an associated `Session` type and an `open` method, and the
+  router's session store now holds a `LegacySession`. Anyone who implemented the
+  trait must update; the crate's own implementors did.
+- **A legacy HTTP+SSE session negotiates only `2024-11-05`.** (`4f904b6`) A client
+  offering a later revision is answered with it, because it is the only revision
+  that defines the transport.
+- **The idempotency store keeps the last 4 096 finished results rather than
+  refusing new work once full.** (`dbf2cd6`) A retry is replayed while it is within
+  that window; an older one runs again. A store full of running calls still
+  refuses. See *Fixed*.
+- **Documentation.** (`67e076a`) The CLI reference is rewritten against the binary's real
+  flags, and the guides cover OAuth sign-in, the legacy server, the stateless
+  bridge and the security checks.
 
 ### Fixed
 
-- **A server stopped answering `tools/call` after its 4 096th call.** The
+- **A server stopped answering `tools/call` after its 4 096th call.** (`dbf2cd6`) The
   idempotency store filled with finished results and refused every new request
   id from then on, so any long-lived session or server failed permanently. It
-  now drops the oldest *finished* result to make room, never one still running;
-  a retry is replayed for as long as it is among the last 4 096 completed calls.
-
-- **The bridge offered its upstream the oldest revision first**, so it negotiated
-  `2024-11-05` with every server that still accepted it. It now offers the
-  newest revision that has a handshake.
-- **`protocol-droid bridge --allow-downgrade` could not be used while serving.**
-  clap required `--check-result` beside it, so only the probe could receive the
-  flag.
+  now drops the oldest *finished* result to make room, never one still running.
+- **The legacy HTTP+SSE client never matched a numeric reply id.** (`4f904b6`) It
+  compared the awaited id as the string `"1"` against the number `1` on the
+  wire, so any server that answered with a numeric id left every request waiting.
+- **The bridge offered its upstream the oldest revision first** (`8598ad5`), so it
+  negotiated `2024-11-05` with every server that still accepted it. It now offers
+  the newest revision that has a handshake.
 - **A finished tool result from a `2026-07-28` server could not reach an older
-  client at all.** `resultType: "complete"` was treated as a feature the older
+  client.** (`8598ad5`) `resultType: "complete"` was treated as a feature the older
   revision lacks. Older revisions say the same thing by omitting the field, so
-  it now lowers losslessly; any other `resultType`, `input_required` included,
-  is still refused.
-
-- **The legacy HTTP+SSE client never matched a numeric reply id.** It compared
-  the awaited id as the string `"1"` against the number `1` on the wire, so any
-  server that answered with a numeric id left every request waiting.
-
-### Fixed (build)
-
-- A `default-features = false` build no longer warns about an unused import in
-  the client connector.
-
-### Fixed
+  the bridge now forwards it; `input_required` is still refused.
+- **`protocol-droid bridge --allow-downgrade` could not be used while serving.**
+  (`8598ad5`) clap required `--check-result` beside it, so only the probe could
+  receive the flag.
+- **A `default-features = false` build warned about an unused import** in the
+  client connector. (`687d90e`)
 
 - **A numeric `progressToken` was echoed back as a string** (`927f9d0`) on every revision,
   so a client correlating by value never matched its progress.
