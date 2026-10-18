@@ -17,6 +17,8 @@
 //! `main.rs` to dodge the lint — would trade a real lint conflict for a
 //! 500-line file the project's own file-structure rules disallow.
 
+#[cfg(feature = "bridge")]
+pub mod auth;
 pub mod bridge;
 // The A2A leg of `bridge` lives behind the same feature the
 // `A2aJsonRpcPeer` is behind. The MCP-only build does not

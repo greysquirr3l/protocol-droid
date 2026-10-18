@@ -108,8 +108,10 @@ with a typed error and sends the user nowhere.
 A `401` with a held refresh token is answered with the refresh grant
 (RFC 6749 §6), without asking the user again; a refused or absent refresh
 token falls back to the whole flow, and a challenge for more scope always does.
-The only `UserAgent` shipped is the headless one, which asks an authorization
-server that approves on its own; there is no browser adapter.
+Two `UserAgent`s ship: `FollowsRedirect`, for an authorization server that
+approves on its own (tests, CI), and `LoopbackBrowser`, which opens the system
+browser and receives the redirect on `127.0.0.1`. Setting
+`PD_CONFORMANCE_BROWSER=1` runs the client scenarios through the second.
 
 ## How to reproduce a single scenario
 

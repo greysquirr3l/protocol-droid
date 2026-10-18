@@ -8,7 +8,10 @@
 
 use std::sync::Arc;
 
-use protocol_droid::adapters::secondary::oauth::environment::{FollowsRedirect, HttpOAuthEnvironment};
+use protocol_droid::adapters::secondary::oauth::LoopbackBrowser;
+use protocol_droid::adapters::secondary::oauth::environment::{
+    FollowsRedirect, HttpOAuthEnvironment, UserAgent,
+};
 use protocol_droid::adapters::secondary::oauth::secrets::OsSecrets;
 use protocol_droid::application::client::handler::ConnectOptions;
 use protocol_droid::application::oauth::authorizer::{OAuthAuthorizer, OAuthConfig, PreRegistered};
@@ -55,10 +58,22 @@ pub async fn run(scenario: &str, url: &str) -> Result<(), Failure> {
 }
 
 async fn flow(scenario: &str, url: &str) -> Result<(), Failure> {
+    // `PD_CONFORMANCE_BROWSER=1` receives the redirect the way a person's
+    // browser would, on a loopback port, instead of reading it off the
+    // authorization response. The mock approves on its own, so the "browser" is
+    // an HTTP client that follows the redirect to that port.
+    let browser = if std::env::var_os("PD_CONFORMANCE_BROWSER").is_some() {
+        Some(LoopbackBrowser::bind().await?)
+    } else {
+        None
+    };
     let mut config = OAuthConfig::new(url, revision())?
         .named("protocol-droid conformance client")
         .with_metadata_document(CLIENT_METADATA_URL)
         .wanting_refresh_tokens();
+    if let Some(browser) = &browser {
+        config = config.redirect_to(browser.redirect_uri());
+    }
     if scenario == "auth/pre-registration" {
         let context: Value = serde_json::from_str(&std::env::var("MCP_CONFORMANCE_CONTEXT")?)?;
         let field = |name: &str| {
@@ -73,7 +88,17 @@ async fn flow(scenario: &str, url: &str) -> Result<(), Failure> {
                 .issued_by(field("issuer")?),
         );
     }
-    let environment = HttpOAuthEnvironment::new(Arc::new(FollowsRedirect::new()?))?;
+    let agent: Arc<dyn UserAgent> = match browser {
+        Some(browser) => Arc::new(browser.opening_with(|authorization_url| {
+            let target = authorization_url.to_owned();
+            tokio::spawn(async move {
+                let _ = reqwest::get(target).await;
+            });
+            Ok(())
+        })),
+        None => Arc::new(FollowsRedirect::new()?),
+    };
+    let environment = HttpOAuthEnvironment::new(agent)?;
     let authorizer = OAuthAuthorizer::new(config, environment, OsSecrets);
 
     // The revision decides the lifecycle: the suite's mocks at `2026-07-28`

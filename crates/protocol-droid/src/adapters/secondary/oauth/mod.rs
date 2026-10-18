@@ -19,6 +19,7 @@ pub mod jwt;
 // the two adapters that call an authorization server. Public because a
 // downstream adapter writing its own token or userinfo call wants the same
 // bounded read rather than its own copy of the cap.
+pub mod browser;
 pub mod environment;
 pub mod http_body;
 pub mod redeem;
@@ -33,3 +34,5 @@ pub mod secrets;
 // T16. RFC 7591 dynamic registration and Client ID Metadata Document fetch.
 // `oauth` already gates this module, so no second gate here.
 pub mod registration;
+
+pub use browser::LoopbackBrowser;

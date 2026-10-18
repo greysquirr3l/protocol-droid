@@ -61,6 +61,11 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   retry with the token. It stops after three refusals. It passes every
   `auth/*` scenario of the client conformance suite on `2025-11-25` and
   `2026-07-28`.
+- **Sign in from a browser.** `LoopbackBrowser` is a `UserAgent` that opens the
+  authorization URL (web URLs only) and receives the redirect on a loopback port,
+  with a timeout. `protocol-droid inspect --oauth <server> …` uses it; a client
+  registered ahead of time is named by `PROTOCOL_DROID_OAUTH_CLIENT_ID` and
+  `PROTOCOL_DROID_OAUTH_CLIENT_SECRET`, never by a flag.
 - **Refresh tokens.** `OAuthAuthorizer` keeps the refresh token a login returns and
   trades it for a new access token when the server says the token is no longer
   good, so an expired token no longer sends the user back through consent. A
