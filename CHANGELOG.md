@@ -52,6 +52,21 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   parsing with issuer validation, `client_secret_basic` / `_post` / public
   token authentication, and the `authorization_response_iss_parameter_supported`
   rule (an advertising server that omits `iss` is refused).
+- **An OAuth 2.1 client that runs the whole flow.** `OAuthAuthorizer` handles a
+  `401` or `403`: protected-resource metadata, authorization-server discovery,
+  PKCE `S256` verification, client selection (held, pre-registered, metadata
+  document, dynamic registration), scope selection and step-up, `resource`
+  taken verbatim from the metadata, `iss` checks, and redemption. Pass it to
+  `ConnectOptions::authorizing` and the Streamable HTTP and stateless clients
+  retry with the token. It stops after three refusals. It passes every
+  `auth/*` scenario of the client conformance suite on `2025-11-25` and
+  `2026-07-28`.
+- **`a2a` implies `http`.** Building with `--features a2a` alone did not compile.
+
+### Fixed (build)
+
+- A `default-features = false` build no longer warns about an unused import in
+  the client connector.
 
 ### Fixed
 

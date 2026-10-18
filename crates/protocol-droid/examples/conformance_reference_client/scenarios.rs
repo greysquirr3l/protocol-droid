@@ -13,10 +13,14 @@ use protocol_droid::domain::{
 };
 use protocol_droid::serde_json::{self, Value, json};
 
-type Failure = Box<dyn std::error::Error>;
+/// What a scenario can fail with.
+pub type Failure = Box<dyn std::error::Error>;
 
 /// Runs the scenario the suite named.
 pub async fn run(scenario: &str, url: &str) -> Result<(), Failure> {
+    if super::auth_scenarios::handles(scenario) {
+        return super::auth_scenarios::run(scenario, url).await;
+    }
     match scenario {
         "initialize" | "tools_call" | "tools-call" => basic(url).await,
         "json-schema-ref-no-deref" => list_only(url).await,
@@ -53,7 +57,7 @@ fn everything_declared() -> CapabilitySet {
 }
 
 /// Connects the way the revision under test is spoken.
-async fn connect(url: &str, options: ConnectOptions) -> Result<Client, Failure> {
+pub async fn connect(url: &str, options: ConnectOptions) -> Result<Client, Failure> {
     let (kind, versions) = if stateless() {
         let version = runner_version().ok_or("a stateless run names its revision")?;
         (

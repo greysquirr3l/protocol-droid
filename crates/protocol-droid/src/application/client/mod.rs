@@ -28,6 +28,7 @@ use crate::domain::{
     CapabilitySet, NegotiatedSession, ProtocolVersion, SupportedVersions, TransportKind,
 };
 
+pub mod bearer;
 mod connect;
 mod handshake;
 pub mod handler;

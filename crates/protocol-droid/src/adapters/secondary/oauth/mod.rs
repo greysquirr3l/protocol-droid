@@ -19,6 +19,7 @@ pub mod jwt;
 // the two adapters that call an authorization server. Public because a
 // downstream adapter writing its own token or userinfo call wants the same
 // bounded read rather than its own copy of the cap.
+pub mod environment;
 pub mod http_body;
 pub mod redeem;
 

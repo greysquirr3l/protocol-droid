@@ -69,8 +69,7 @@ None of these is measured by the suite. They're listed because they are real.
   to it, so a legacy-SSE endpoint needs a hand-written dispatcher. The
   transport has been deprecated since `2025-03-26`; the Streamable HTTP server
   answers 2024-11-05 clients that speak Streamable HTTP.
-- **The client-side scenarios are not run.** The matrix is server scenarios
-  only. A reference client fixture is the open half of T21.
+- **The client scenarios are a separate matrix**, below.
 
 ## stdio and the OAuth client
 
@@ -79,13 +78,42 @@ stdio now serves the `2026-07-28` lifecycle: a request naming its revision in
 the channel (tagged with its request id, ended by `notifications/cancelled`),
 and a cancelled in-flight request is not answered.
 
-The client half of the authorization flow has its pure decisions in place —
-challenge parsing, discovery URL order, canonical resource, scope selection,
-step-up, `offline_access`, issuer validation (including the advertised-`iss`
-row), and the three token-endpoint authentication methods — but no network
-orchestrator ties them together, and the client conformance scenarios (OAuth,
-`request-metadata`, `http-*-headers`, `sep-2322-client-request-state`) are not
-run: there is no reference client fixture yet.
+## The client matrix
+
+The suite's client mode launches
+[`conformance_reference_client`](../crates/protocol-droid/examples/conformance_reference_client/main.rs)
+with the fixture server's URL. Run it with `--side client`:
+
+```text
+cargo run -p protocol-droid-cli --all-features -- \
+    conformance self --spec-version <rev> --side client
+```
+
+| Revision     | Scenarios | Passed | Failed |
+| ------------ | --------: | -----: | -----: |
+| `2025-06-18` |         2 |      2 |      0 |
+| `2025-11-25` |        18 |     18 |      0 |
+| `2026-07-28` |        32 |     32 |      0 |
+
+That is the non-authorization scenarios (`initialize`, `tools_call`,
+`elicitation-sep1034-client-defaults`, `sse-retry`, `request-metadata`, the
+`http-*-headers` set, `sep-2322-client-request-state`,
+`json-schema-ref-no-deref`) plus every `auth/*` scenario the suite defines for
+the revision: metadata discovery variants, CIMD and dynamic registration,
+scope selection and step-up, the retry limit, the three token-endpoint
+authentication methods, pre-registration, and on `2026-07-28` the RFC 9207
+`iss` rows, `offline_access`, resource mismatch and authorization-server
+migration.
+
+Scenarios where the right behaviour is to refuse (resource mismatch, a wrong
+or unexpected `iss`, a metadata issuer mismatch) pass when the client stops
+with a typed error and sends the user nowhere.
+
+The refresh-token grant is not implemented: a client that wants one asks for
+`offline_access` and keeps the token it is given, but does not yet redeem a
+refresh token when that one expires. The only `UserAgent` shipped is the
+headless one, which asks an authorization server that approves on its own;
+there is no browser adapter.
 
 ## How to reproduce a single scenario
 

@@ -39,6 +39,7 @@ use crate::domain::{EventId, McpSessionId, McpSessionIdError, RequestId};
 
 use super::error::{HttpClientError, preview};
 use super::opaque::WireStream;
+use crate::application::client::bearer::BearerAuth;
 use crate::application::client::handler::ServerRequestHandler;
 use super::frames::{FrameError, FrameReader};
 
@@ -58,6 +59,15 @@ impl From<FrameError> for HttpClientError {
 
 /// The session header, as the peer spells it.
 const SESSION_HEADER: &str = "mcp-session-id";
+
+/// The authorizer, with a `Debug` that cannot print a token.
+struct Auth(Arc<dyn BearerAuth>);
+
+impl fmt::Debug for Auth {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Auth(..)")
+    }
+}
 
 /// The handler, with a `Debug` that does not need the handler to have one.
 struct Handler(Arc<dyn ServerRequestHandler>);
@@ -262,6 +272,8 @@ pub struct HttpClient {
     /// — which is what a bridge wants, since it forwards them to its own
     /// client instead of answering them itself.
     handler: Option<Handler>,
+    /// Supplies the `Authorization` header, and answers a `401` or `403`.
+    auth: Option<Auth>,
     /// Frames a server volunteered on a response body this client was reading
     /// for something else.
     ///
@@ -314,6 +326,7 @@ impl HttpClient {
             next_id: AtomicI64::new(1),
             protocol: Mutex::new(None),
             handler: None,
+            auth: None,
             unsolicited: Arc::new(Unsolicited::new()),
         }
     }
@@ -321,6 +334,17 @@ impl HttpClient {
     /// The id for the next request on this client.
     pub fn next_request_id(&self) -> RequestId {
         RequestId::Number(self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// This client, authenticating through `auth`.
+    ///
+    /// Every request carries the bearer token it supplies, and a `401` or
+    /// `403` is handed back to it to recover from before the request is tried
+    /// again.
+    #[must_use]
+    pub fn authorizing(mut self, auth: Arc<dyn BearerAuth>) -> Self {
+        self.auth = Some(Auth(auth));
+        self
     }
 
     /// This client, answering the server's requests through `handler`.
@@ -580,11 +604,17 @@ impl HttpClient {
         let Some(id) = self.session_token() else {
             return Err(HttpClientError::NoSessionYet);
         };
-        let response = self
+        let mut request = self
             .inner
             .delete(&self.config.endpoint)
             .header(SESSION_HEADER, id.as_ref())
-            .header(reqwest::header::ACCEPT, ACCEPT)
+            .header(reqwest::header::ACCEPT, ACCEPT);
+        if let Some(Auth(auth)) = &self.auth
+            && let Some(token) = auth.bearer()
+        {
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| HttpClientError::Io {
@@ -670,6 +700,46 @@ impl HttpClient {
         require_session: bool,
         extra: &[(String, String)],
     ) -> Result<reqwest::Response, HttpClientError> {
+        let mut response = self.send_once(verb, body, require_session, extra).await?;
+        loop {
+            if response.status().is_success() {
+                if let Some(Auth(auth)) = &self.auth {
+                    auth.accepted();
+                }
+                return Ok(response);
+            }
+            let status = response.status().as_u16();
+            // 401 and 403 are the two statuses authorization answers with, and
+            // only a client that was given a way to authorize reacts to them.
+            // `challenged` decides how many times: it errors once it has
+            // stopped believing another attempt will work.
+            if matches!(status, 401 | 403)
+                && let Some(Auth(auth)) = &self.auth
+            {
+                let challenge = response
+                    .headers()
+                    .get(reqwest::header::WWW_AUTHENTICATE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned);
+                auth.challenged(status, challenge.as_deref())
+                    .await
+                    .map_err(|error| HttpClientError::Authorization(error.to_string()))?;
+                response = self.send_once(verb, body, require_session, extra).await?;
+                continue;
+            }
+            return Err(refusal(verb, response).await);
+        }
+    }
+
+    /// One attempt at [`send_with`](Self::send_with), returning whatever came
+    /// back — success or not — for the caller to judge.
+    async fn send_once(
+        &self,
+        verb: &'static str,
+        body: &[u8],
+        require_session: bool,
+        extra: &[(String, String)],
+    ) -> Result<reqwest::Response, HttpClientError> {
         let mut builder = self
             .inner
             .request(method_of(verb), &self.config.endpoint)
@@ -696,16 +766,17 @@ impl HttpClient {
         } else if require_session {
             return Err(HttpClientError::NoSessionYet);
         }
+        if let Some(Auth(auth)) = &self.auth
+            && let Some(token) = auth.bearer()
+        {
+            builder = builder.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
         let response = builder.send().await.map_err(|error| HttpClientError::Io {
             method: verb,
             error,
         })?;
         self.absorb_session(&response)?;
-        if response.status().is_success() {
-            Ok(response)
-        } else {
-            Err(refusal(verb, response).await)
-        }
+        Ok(response)
     }
 
     /// The `GET` half of [`HttpClient::send`], which also carries the cursor.
@@ -922,6 +993,11 @@ impl HttpClient {
             .header(reqwest::header::ACCEPT, ACCEPT);
         if let Some(id) = last_event_id {
             builder = builder.header(LAST_EVENT_ID, id);
+        }
+        if let Some(Auth(auth)) = &self.auth
+            && let Some(token) = auth.bearer()
+        {
+            builder = builder.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
         }
         if let Some(id) = self.session_token() {
             builder = builder.header(SESSION_HEADER, id.as_ref());

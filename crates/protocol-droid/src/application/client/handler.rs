@@ -83,6 +83,7 @@ pub trait ServerRequestHandler: Send + Sync {
 pub struct ConnectOptions {
     pub(crate) capabilities: CapabilitySet,
     pub(crate) handler: Option<Arc<dyn ServerRequestHandler>>,
+    pub(crate) auth: Option<Arc<dyn super::bearer::BearerAuth>>,
 }
 
 impl core::fmt::Debug for ConnectOptions {
@@ -90,6 +91,7 @@ impl core::fmt::Debug for ConnectOptions {
         f.debug_struct("ConnectOptions")
             .field("capabilities", &self.capabilities)
             .field("handler", &self.handler.is_some())
+            .field("auth", &self.auth.is_some())
             .finish()
     }
 }
@@ -108,6 +110,16 @@ impl ConnectOptions {
     #[must_use]
     pub const fn declaring(mut self, capabilities: CapabilitySet) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Authenticates to the server through `auth`.
+    ///
+    /// For an OAuth-protected server, pass an
+    /// [`OAuthAuthorizer`](crate::application::oauth::authorizer::OAuthAuthorizer).
+    #[must_use]
+    pub fn authorizing(mut self, auth: Arc<dyn super::bearer::BearerAuth>) -> Self {
+        self.auth = Some(auth);
         self
     }
 

@@ -83,7 +83,7 @@ random-ids = ["dep:getrandom"]
 # they are pure value objects, so gating them would cost the version model to
 # save nothing. The `url` dep is here (not in the unconditional list) because
 # only the SSRF filter needs it, and the SSRF filter is A2A-specific.
-a2a = ["dep:url", "url/serde"]
+a2a = ["http", "dep:url", "url/serde"]
 # T29. The ACP (Agent Client Protocol) module — Zed's editor↔agent
 # JSON-RPC binding. The feature is `acp-experimental` (not `acp`)
 # because the spec is pre-1.0 (`schema-v1.25.0` is the pin) and the
@@ -283,7 +283,7 @@ required-features = ["http", "random-ids"]
 
 [[example]]
 name = "conformance_reference_client"
-required-features = ["http"]
+required-features = ["http", "oauth", "random-ids"]
 
 [[example]]
 name = "a2a_client"

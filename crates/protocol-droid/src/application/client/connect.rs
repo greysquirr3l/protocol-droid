@@ -17,8 +17,7 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    CapabilitySet, NegotiationError, ProtocolVersion, SpecError, SupportedVersions, SupportedVersionsError, TransportKind,
-    TransportSpec,
+    NegotiationError, SpecError, SupportedVersions, SupportedVersionsError, TransportKind, TransportSpec,
 };
 
 use super::handler::ConnectOptions;
@@ -132,13 +131,16 @@ pub(super) async fn open_with(
             if let Some(handler) = options.handler.clone() {
                 client = client.answering(handler);
             }
+            if let Some(auth) = options.auth.clone() {
+                client = client.authorizing(auth);
+            }
             let client = Arc::new(client);
             listener = options.handler.is_some().then(|| Arc::clone(&client));
             (client, TransportKind::StreamableHttp)
         }
         #[cfg(feature = "http")]
         TransportKind::StatelessHttp => {
-            return open_stateless(spec, versions, options.capabilities).await;
+            return open_stateless(spec, versions, options).await;
         }
         #[cfg(feature = "legacy-sse")]
         TransportKind::LegacySse => {
@@ -163,7 +165,7 @@ pub(super) async fn open_with(
     // revisions that have a handshake: a stateful transport that offered
     // `2026-07-28` would send `server/discover` to a server expecting
     // `initialize`. The stateless transport has its own path above.
-    let mut offered: Vec<ProtocolVersion> = versions
+    let mut offered: Vec<crate::domain::ProtocolVersion> = versions
         .as_slice()
         .iter()
         .copied()
@@ -239,9 +241,10 @@ pub(super) async fn open_with(
 async fn open_stateless(
     spec: &TransportSpec,
     versions: &SupportedVersions,
-    capabilities: CapabilitySet,
+    options: ConnectOptions,
 ) -> Result<(Client, Arc<dyn ClientTransport>), ConnectError> {
     use crate::adapters::secondary::transport::http::{HttpClientConfig, StatelessHttpClient};
+    let capabilities = options.capabilities;
     // Only the revisions with no handshake can be spoken statelessly,
     // and the handshake below sends `initialize` for any other — so
     // the offer is narrowed here, newest first.
@@ -264,7 +267,7 @@ async fn open_stateless(
     // revision it just refused (a transient rejection, or a balancer
     // in front of mixed deployments), so a revision it names is tried
     // up to twice before it is given up on.
-    let mut attempts: Vec<(ProtocolVersion, u8)> =
+    let mut attempts: Vec<(crate::domain::ProtocolVersion, u8)> =
         stateless.iter().map(|version| (*version, 0)).collect();
     let mut candidate = stateless.first().copied();
     loop {
@@ -282,11 +285,14 @@ async fn open_stateless(
                 .with_capabilities(capabilities);
         let capabilities_json =
             serde_json::Value::Object(super::handshake::client_capabilities(&config));
-        let client = StatelessHttpClient::new(
+        let mut client = StatelessHttpClient::new(
             HttpClientConfig::new(spec.target())?,
             current,
             capabilities_json,
         )?;
+        if let Some(auth) = options.auth.clone() {
+            client = client.authorizing(auth);
+        }
         let transport: Arc<dyn ClientTransport> = Arc::new(client);
         match handshake(transport.as_ref(), &config).await {
             Ok(session) => {

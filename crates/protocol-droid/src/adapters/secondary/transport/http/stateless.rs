@@ -24,12 +24,13 @@
 use core::future::Future;
 use core::pin::Pin;
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Map, Value};
 
 use super::client::{HttpClient, HttpClientConfig};
 use super::error::HttpClientError;
+use crate::application::client::bearer::BearerAuth;
 use crate::application::client::{ClientTransport, TransportError};
 use crate::application::jsonrpc::document::{
     RequestError, notification_document, reply_result, request_document,
@@ -77,6 +78,13 @@ impl StatelessHttpClient {
             }),
             schemas: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// This client, authenticating through `auth`.
+    #[must_use]
+    pub fn authorizing(mut self, auth: Arc<dyn BearerAuth>) -> Self {
+        self.inner = self.inner.authorizing(auth);
+        self
     }
 
     /// The revision every request is sent at.

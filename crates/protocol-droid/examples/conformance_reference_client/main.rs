@@ -16,6 +16,7 @@
 //! cargo run --example conformance_reference_client -- <server-url>
 //! ```
 
+pub mod auth_scenarios;
 pub mod scenarios;
 
 use std::process::ExitCode;

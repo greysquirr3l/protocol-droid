@@ -28,6 +28,20 @@ pub fn client_scenarios(spec_version: &str) -> &'static [&'static str] {
             "tools_call",
             "elicitation-sep1034-client-defaults",
             "sse-retry",
+            "auth/metadata-default",
+            "auth/metadata-var1",
+            "auth/metadata-var2",
+            "auth/metadata-var3",
+            "auth/basic-cimd",
+            "auth/scope-from-www-authenticate",
+            "auth/scope-from-scopes-supported",
+            "auth/scope-omitted-when-undefined",
+            "auth/scope-step-up",
+            "auth/scope-retry-limit",
+            "auth/token-endpoint-auth-basic",
+            "auth/token-endpoint-auth-post",
+            "auth/token-endpoint-auth-none",
+            "auth/pre-registration",
         ],
         "2025-06-18" => &["initialize", "tools_call"],
         "2026-07-28" => &[
@@ -38,6 +52,31 @@ pub fn client_scenarios(spec_version: &str) -> &'static [&'static str] {
             "http-invalid-tool-headers",
             "sep-2322-client-request-state",
             "json-schema-ref-no-deref",
+            "auth/metadata-default",
+            "auth/metadata-var1",
+            "auth/metadata-var2",
+            "auth/metadata-var3",
+            "auth/basic-cimd",
+            "auth/scope-from-www-authenticate",
+            "auth/scope-from-scopes-supported",
+            "auth/scope-omitted-when-undefined",
+            "auth/scope-step-up",
+            "auth/scope-retry-limit",
+            "auth/token-endpoint-auth-basic",
+            "auth/token-endpoint-auth-post",
+            "auth/token-endpoint-auth-none",
+            "auth/pre-registration",
+            "auth/resource-mismatch",
+            "auth/offline-access-scope",
+            "auth/offline-access-not-supported",
+            "auth/authorization-server-migration",
+            "auth/iss-supported",
+            "auth/iss-not-advertised",
+            "auth/iss-supported-missing",
+            "auth/iss-wrong-issuer",
+            "auth/iss-unexpected",
+            "auth/iss-normalized",
+            "auth/metadata-issuer-mismatch",
         ],
         // `2024-11-05` and `2025-03-26` have no client scenarios at the pinned
         // suite version, which `ALLOWLIST.md` records.
@@ -57,7 +96,7 @@ pub async fn build_reference_client() -> anyhow::Result<std::path::PathBuf> {
         .arg("--manifest-path")
         .arg(super::conformance::workspace_manifest_path())
         .args(["-p", "protocol-droid", "--example", "conformance_reference_client"])
-        .args(["--features", "http"])
+        .args(["--features", "http,oauth,random-ids"])
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()

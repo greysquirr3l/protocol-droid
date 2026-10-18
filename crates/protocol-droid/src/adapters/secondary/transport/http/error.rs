@@ -109,6 +109,11 @@ pub enum HttpClientError {
         /// The request that was left unanswered.
         method: &'static str,
     },
+    /// The server demanded authorization and the client could not provide it.
+    ///
+    /// Carries the authorizer's own account, which never contains the token.
+    #[error("authorization failed: {0}")]
+    Authorization(String),
     /// A body could not be encoded for sending, or a reply body could not be
     /// read back as JSON.
     ///
