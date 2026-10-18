@@ -82,7 +82,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
 use serde_json::Value;
 
-use super::hardening::{self, enforce_deadline, enforce_origin, enforce_rate_limit};
+use super::hardening::{self, enforce_deadline, enforce_host, enforce_origin, enforce_rate_limit};
 use super::limits::RateLimiter;
 use super::precondition::{authenticate, read_body};
 use super::{
@@ -616,6 +616,10 @@ where
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 enforce_origin,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                enforce_host,
             ))
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),

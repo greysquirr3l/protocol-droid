@@ -88,6 +88,61 @@ impl Origin {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The host this origin names, without the scheme and without the port.
+    ///
+    /// Brackets are stripped, so an IPv6 host reads as `::1` rather than as
+    /// `[::1]`, which is the form every comparison in this module wants.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        let authority = self
+            .0
+            .split_once("://")
+            .map_or(self.0.as_str(), |(_, rest)| rest);
+        host_of(authority)
+    }
+
+    /// Whether this origin names the loopback interface.
+    ///
+    /// Exactly `localhost`, `127.0.0.1` or `::1`, and nothing else. This is
+    /// the check that keeps a rebinding defence from rebinding: `localhost`
+    /// is compared whole, so `localhost.evil.example` and `127.0.0.1.evil.example`
+    /// are not loopback and are not excused by this.
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        is_loopback_host(self.host())
+    }
+}
+
+/// The host from an authority, which is `host[:port]` or `[host]:port`.
+///
+/// The bracketed form is handled before the port is split off, because the
+/// port separator inside `[::1]` is the `:` in the address itself: splitting
+/// `[::1]:18099` on the first colon yields `[` and `1]:18099`, which names
+/// nothing.
+fn host_of(authority: &str) -> &str {
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        return bracketed.split(']').next().unwrap_or(authority);
+    }
+    match authority.split_once(':') {
+        // Only a numeric suffix is a port. `localhost:8080.evil.example`
+        // carries a colon and still names a single host, so splitting there
+        // would read the host as `localhost` and excuse it as loopback —
+        // which is the one shape that turns this function into the hole it
+        // exists to close.
+        Some((host, port))
+            if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            host
+        }
+        _ => authority,
+    }
+}
+
+/// Whether `host` is one of the three names the specification's own suite
+/// treats as localhost.
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 /// Why a string is not a usable `Origin`.
@@ -203,6 +258,14 @@ impl OriginPolicy {
     /// is allowed — see the module docs for why that asymmetry is the design
     /// and not an oversight.
     ///
+    /// A loopback origin is answered whatever the allow-list says, and that is
+    /// not a hole in it. `Origin` is set by the browser and names the page the
+    /// request came *from*, so a page served from `http://localhost:8080`
+    /// genuinely sends `http://localhost:8080` — and a rebound page at
+    /// `evil.example` sends `http://evil.example`, which is not loopback and is
+    /// refused here exactly as before. What a loopback allowlist would get
+    /// wrong is a suffix match, so the host is compared whole.
+    ///
     /// The comparison is exact and case-insensitive-in-scheme-and-host, done
     /// once at parse. A *substring* or *suffix* match is the tempting
     /// alternative and is the bug this type is shaped to prevent: an allowlist
@@ -213,7 +276,38 @@ impl OriginPolicy {
             return Ok(());
         };
         let origin = Origin::from_str(raw).map_err(|_| Refusal::ForeignOrigin)?;
-        if self.permitted().any(|permitted| permitted == &origin) {
+        if origin.is_loopback() || self.permitted().any(|permitted| permitted == &origin) {
+            Ok(())
+        } else {
+            Err(Refusal::ForeignOrigin)
+        }
+    }
+
+    /// Decides whether a request whose `Host` is `header` is answered.
+    ///
+    /// `Host` is the header a rebinding attack actually controls, and checking
+    /// only `Origin` leaves the attack open to a client that omits it: a
+    /// browser rebound onto `127.0.0.1` sends `Host: evil.example`, and a
+    /// non-browser client can send whatever it likes. A browser cannot forge
+    /// `Host` — it is set from the URL it dialled — so a `Host` that is not
+    /// loopback and not one this server was told to serve names a request for
+    /// somewhere else.
+    ///
+    /// Compared on the *host* rather than the whole authority, because the
+    /// port is not part of the question: a client reaching this server on the
+    /// port it was bound to names a host, and a loopback host on a different
+    /// port is a different server that this policy has no opinion about.
+    ///
+    /// `None` means the header was absent. HTTP/1.1 requires it and HTTP/2
+    /// carries it as `:authority`, so this is a proxy that stripped it rather
+    /// than a client that had none; it is refused, because a check that
+    /// answers "no evidence either way" cannot be the defence.
+    pub fn check_host(&self, header: Option<&str>) -> Result<(), Refusal> {
+        let Some(raw) = header else {
+            return Err(Refusal::ForeignOrigin);
+        };
+        let host = host_of(raw.trim());
+        if is_loopback_host(host) || self.permitted().any(|permitted| permitted.host() == host) {
             Ok(())
         } else {
             Err(Refusal::ForeignOrigin)
@@ -310,14 +404,21 @@ mod tests {
     /// that lists `localhost`, and answers `localhost.evil.example` for one
     /// that lists `localhost.evil.example`'s parent. The comparison is exact
     /// so neither can happen.
+    ///
+    /// Stated on `app.internal` rather than on `localhost`, because loopback
+    /// hosts are now answered whatever the allow-list says (see
+    /// [`OriginPolicy::check`]) and a loopback case would pass for the wrong
+    /// reason. What this is about is the allow-list, so the allow-list's host
+    /// is the one under test.
     #[test]
     fn a_neighbouring_host_is_not_answered() -> Result<(), TestError> {
-        let policy = policy()?.allowing(Origin::from_str("http://localhost:3000")?);
+        let policy = policy()?.allowing(Origin::from_str("http://app.internal:3000")?);
         for neighbour in [
-            "http://notlocalhost:3000",
-            "http://localhost.evil.example:3000",
-            "http://localhost:3001",
-            "http://localhost:3000.evil.example",
+            "http://notapp.internal:3000",
+            "http://app.internal.evil.example:3000",
+            "http://app.internal:3001",
+            "http://app.internal:3000.evil.example",
+            "http://app.internalx:3000",
         ] {
             if policy.check(Some(neighbour)).is_ok() {
                 return Err(format!("{neighbour} was answered").into());
@@ -358,10 +459,40 @@ mod tests {
 
     /// The port is part of the origin, so a different port is a different
     /// origin and is refused.
+    ///
+    /// On `app.internal`, because loopback is answered on any port — the one
+    /// place this module deliberately answers something the allow-list did
+    /// not name, and it is not a rebinding hole because `Origin` names the
+    /// page rather than the address, so a rebound page cannot present a
+    /// loopback one. The allow-list stays exact.
     #[test]
     fn a_different_port_is_a_different_origin() -> Result<(), TestError> {
-        if policy()?.check(Some("http://127.0.0.1:9999")).is_ok() {
+        if policy()?.check(Some("http://app.internal:9999")).is_ok() {
             return Err("a different port was answered".into());
+        }
+        Ok(())
+    }
+
+    /// Loopback is answered on any port, which is the loosening this module
+    /// made on purpose.
+    ///
+    /// Pinned rather than left to the tests above, so that a reader who finds
+    /// it surprising has the reason here rather than in a diff: a browser
+    /// reaching a server on `localhost:18099` sends `Origin:
+    /// http://localhost:18099`, and refusing that refuses every browser client
+    /// and the conformance suite with it.
+    #[test]
+    fn a_loopback_origin_is_answered_on_any_port() -> Result<(), TestError> {
+        let policy = policy()?;
+        for origin in [
+            "http://localhost:1",
+            "http://localhost:9999",
+            "http://127.0.0.1:65535",
+            "http://[::1]:18099",
+        ] {
+            if policy.check(Some(origin)).is_err() {
+                return Err(format!("{origin} was refused").into());
+            }
         }
         Ok(())
     }
@@ -424,6 +555,115 @@ mod tests {
     fn the_refusal_is_a_plain_403() -> Result<(), TestError> {
         if Refusal::ForeignOrigin.status() != axum::http::StatusCode::FORBIDDEN {
             return Err("the refusal is not a 403".into());
+        }
+        Ok(())
+    }
+
+    /// The three loopback spellings, each with and without a port.
+    ///
+    /// These are the values the specification's own conformance suite calls
+    /// valid localhost, and a server that refuses them refuses every browser
+    /// client and the suite with it.
+    #[test]
+    fn a_loopback_origin_is_answered() -> Result<(), TestError> {
+        let policy = policy()?;
+        for host in [
+            "localhost:8080",
+            "127.0.0.1:8080",
+            "[::1]:8080",
+            "localhost",
+        ] {
+            let origin = format!("http://{host}");
+            if let Err(refusal) = policy.check(Some(&origin)) {
+                return Err(format!("{origin} was refused as {refusal:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Excusing loopback must not become excusing anything that looks like it.
+    ///
+    /// The whole defence rests on this comparison being whole rather than a
+    /// suffix: `localhost.evil.example` and `127.0.0.1.evil.example` are
+    /// attacker-controlled names that resolve to loopback, and an allowlist
+    /// that answers them is a rebinding defence that rebinds.
+    #[test]
+    fn a_name_that_only_looks_like_loopback_is_refused() -> Result<(), TestError> {
+        let policy = policy()?;
+        for origin in [
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example",
+            "http://notlocalhost",
+            "http://127.0.0.2",
+            "http://localhost:8080.evil.example",
+        ] {
+            let refused = policy.check(Some(origin)).err();
+            if refused.is_none() {
+                return Err(format!("{origin} was answered").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// `Host` is the header the attack controls, so it is checked too.
+    ///
+    /// `Host` is absent from no non-browser client that reaches a real
+    /// server, and a rebinding request names the attacker's domain in it.
+    #[test]
+    fn a_loopback_host_is_answered_and_a_foreign_one_is_not() -> Result<(), TestError> {
+        let policy = policy()?;
+        for host in [
+            "localhost:8080",
+            "127.0.0.1:8080",
+            "[::1]:8080",
+            "localhost",
+        ] {
+            if let Err(refusal) = policy.check_host(Some(host)) {
+                return Err(format!("Host {host} was refused as {refusal:?}").into());
+            }
+        }
+        for host in [
+            "evil.example",
+            "evil.example:8080",
+            "localhost.evil.example",
+        ] {
+            let refused = policy.check_host(Some(host)).err();
+            if refused.is_none() {
+                return Err(format!("Host {host} was answered").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// A stripped `Host` is refused rather than waved through.
+    ///
+    /// Absent is not "allowed" here even though it is for `Origin`: `Origin`
+    /// is legitimately absent from a CLI, but `Host` is required on every
+    /// HTTP/1.1 request, so its absence is evidence of a proxy rewriting the
+    /// request and not of a client that had no name to give.
+    #[test]
+    fn an_absent_host_is_refused() -> Result<(), TestError> {
+        if policy()?.check_host(None).is_ok() {
+            return Err("a request with no Host was answered".into());
+        }
+        Ok(())
+    }
+
+    /// A configured origin answers its own host, whatever the port.
+    ///
+    /// An operator who names an origin they serve has answered the host
+    /// question; requiring the port to match as well would refuse a request
+    /// that arrived on a port the deployment redirects here.
+    #[test]
+    fn a_configured_origin_answers_its_own_host() -> Result<(), TestError> {
+        let policy = OriginPolicy::strict(None).allowing(Origin::from_str("https://mcp.example")?);
+        for host in ["mcp.example", "mcp.example:8443"] {
+            if let Err(refusal) = policy.check_host(Some(host)) {
+                return Err(format!("Host {host} was refused as {refusal:?}").into());
+            }
+        }
+        if policy.check_host(Some("other.example")).is_ok() {
+            return Err("an unconfigured host was answered".into());
         }
         Ok(())
     }

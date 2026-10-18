@@ -1477,6 +1477,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
                     .body(Body::from(body.as_slice().to_vec()))
@@ -1523,6 +1524,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
                     .body(Body::from(body.as_slice().to_vec()))
@@ -1557,6 +1559,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
                     .body(Body::from("{not json"))
@@ -1711,6 +1714,7 @@ mod tests {
         let mut request = Request::builder()
             .method("POST")
             .uri("/mcp")
+            .header("host", "localhost")
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream");
         if let Some(credential) = credential {

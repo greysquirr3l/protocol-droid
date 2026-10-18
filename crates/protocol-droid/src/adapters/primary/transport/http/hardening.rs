@@ -85,6 +85,33 @@ where
     next.run(request).await
 }
 
+/// Refuses a request whose `Host` is not one this server serves.
+///
+/// The pair with [`enforce_origin`], and the one that catches what the other
+/// cannot: `Origin` is absent from every non-browser client, so a defence
+/// built only on it answers "allowed" to exactly the requests a rebinding
+/// attack is shaped to look like. `Host` is present on every HTTP/1.1 request
+/// and is what a browser sets from the URL it dialled, so a rebound request
+/// naming `evil.example` is refused here.
+pub(crate) async fn enforce_host<S, H>(
+    State(state): State<Arc<RouterState<S, H>>>,
+    request: Request,
+    next: Next,
+) -> Response
+where
+    S: Send + Sync + 'static,
+    H: Send + Sync + 'static,
+{
+    let header = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok());
+    if let Err(refusal) = state.origin().check_host(header) {
+        return refusal.into_response();
+    }
+    next.run(request).await
+}
+
 /// Counts the request against its subject's allowance, refusing with `429`.
 ///
 /// The refusal carries `Retry-After` because a client told only "429" is a
