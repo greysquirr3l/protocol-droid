@@ -79,8 +79,9 @@ passes on one of the six cells is a CI failure waiting to happen.
 The conformance suite is a separate binary:
 
 ```bash
-cargo run -p protocol-droid-cli -- conformance self
-cargo run -p protocol-droid-cli -- conformance server --url http://127.0.0.1:8080/mcp
+cargo run -p protocol-droid-cli -- conformance self --spec-version 2026-07-28
+cargo run -p protocol-droid-cli -- conformance self --spec-version 2026-07-28 --side client
+cargo run -p protocol-droid-cli -- conformance server --url http://127.0.0.1:8080/mcp --spec-version 2025-11-25
 ```
 
 The first mode runs the suite against fixtures in the repo. The

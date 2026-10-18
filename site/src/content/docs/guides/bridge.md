@@ -47,6 +47,47 @@ cross-protocol bridge between MCP and the A* protocols. The
 internal model is one; the wire is just different.
 :::
 
+## Bridging to a stateless `2026-07-28` server
+
+A `2026-07-28` server has no handshake and no session: every request
+names its revision and the client's capabilities in `params._meta`.
+The bridge hides that from an older client. It discovers the
+server's revision once, then carries every forwarded request with
+that revision and the bridge's own capabilities in its `_meta`.
+
+```bash
+protocol-droid bridge \
+  --listen stdio:. \
+  --upstream http-stateless:http://backend:3000/mcp
+```
+
+The target after `http-stateless:` is the server's URL. In code,
+`TransportPeer` adapts any `ClientTransport` to the bridge's peer
+port, and writes each answer back under the id the downstream
+client chose.
+
+## What the bridge offers, and what it refuses
+
+The bridge offers its upstream the newest revision it speaks that
+has an `initialize` handshake, and the upstream picks the highest it
+supports. A tool result from a newer server reaches an older client
+when nothing is lost: a finished result (`resultType: "complete"`)
+means the same as a result with no `resultType`, so it is forwarded.
+A result that asks the client to do something the older revision
+cannot express (`input_required`) is refused with `-32601`, and no
+policy changes that.
+
+Other losses are refused by default and allowed on request:
+
+```bash
+protocol-droid bridge --listen stdio:. --upstream http://backend:3000/mcp --allow-downgrade
+```
+
+`--allow-downgrade` authorises only the downgrades the specification
+defines a fallback for. The same flag works with
+`--check-result <FILE>`, which reports what the bridge would do with
+one reply without opening a socket.
+
 ## What the bridge is not
 
 The bridge is not a proxy that improves the wire. A `2024-11-05`

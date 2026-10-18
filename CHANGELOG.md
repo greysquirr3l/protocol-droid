@@ -63,7 +63,7 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   `2026-07-28`.
 - **Sign in from a browser.** `LoopbackBrowser` is a `UserAgent` that opens the
   authorization URL (web URLs only) and receives the redirect on a loopback port,
-  with a timeout. `protocol-droid inspect --oauth <server> …` uses it; a client
+  with a timeout. `protocol-droid inspect <server> --oauth list` uses it; a client
   registered ahead of time is named by `PROTOCOL_DROID_OAUTH_CLIENT_ID` and
   `PROTOCOL_DROID_OAUTH_CLIENT_SECRET`, never by a flag.
 - **`probe` recognises a legacy HTTP+SSE endpoint.** A URL that refuses every `POST`

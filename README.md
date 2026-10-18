@@ -136,6 +136,20 @@ protocol-droid bridge \
   --upstream http://backend:3000/mcp
 ```
 
+The upstream can also be a legacy HTTP+SSE server (`sse:http://host/sse`) or a
+stateless `2026-07-28` one (`http-stateless:http://host/mcp`), so a
+`2025-11-25` client can use a server that has no handshake at all.
+
+A server that needs a login is reached with `--oauth`, which signs in through
+the system browser and refreshes the token when it expires:
+
+```bash
+protocol-droid inspect https://mcp.example.com/mcp --oauth list
+```
+
+To serve the `2024-11-05` transport beside Streamable HTTP, add `.legacy_sse()`
+to the `HttpBuilder`; the same tools answer on both.
+
 Changing a server while it serves goes through a `ServerHandle`. Every change
 is published and then announced as `notifications/*/list_changed` to the
 sessions that negotiated it — on stdio, on a Streamable HTTP session, or on a

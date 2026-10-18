@@ -533,12 +533,13 @@ Each transport is a feature, and the feature set is genuinely optional:
 | `stdio`      | `dep:tokio`, stdio source/sink/client       | the executor and `AsyncRead`/`AsyncWrite` plumbing |
 | `http`       | `reqwest`, axum, the Streamable HTTP router | `McpRouter` and the whole HTTP surface             |
 | `legacy-sse` | the legacy router and client                | the 2024-11-05 transport                           |
+| `oauth`      | the OAuth 2.1 resource server and client    | authorization, refresh tokens, browser sign-in     |
 
 `default-features = false` leaves the domain, the IR and every codec — the shape
 a tool that only speaks the IR wants. Schema revisions are **always** compiled;
 they are data, not an integration.
 
-The CLI adds one more, `bridge`, which pulls `http` + `stdio` + `legacy-sse`.
+The CLI adds one more, `bridge`, which pulls `http` + `stdio` + `legacy-sse` + `random-ids` + `oauth`.
 `--check-result` stays outside it on purpose: that probe opens no socket, so a
 build that cannot open one should still be able to answer what the bridge _would_
 do with a given reply.

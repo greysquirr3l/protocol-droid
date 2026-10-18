@@ -69,6 +69,17 @@ claim with a concrete `tools/call` example. [FeatureProfile and
 gating](/protocol-droid/guides/feature-profile/) walks through the
 runtime feature model that sits on top of it.
 
+## Transports
+
+Every transport the specification has defined is an adapter on the same
+session engine: stdio, the `2024-11-05` HTTP+SSE pair, Streamable HTTP, and
+the `2026-07-28` stateless lifecycle. A server mounts Streamable HTTP and the
+legacy routes on one listener (`HttpBuilder::legacy_sse()`), and both answer
+from the same registry, so a tool registered at runtime is announced on
+whichever sessions negotiated `list_changed`. Authorization is a client-side
+use case too: an `OAuthAuthorizer` in `application/oauth/` owns the decisions
+and asks an `OAuthEnvironment` port for the HTTP and the user.
+
 ## The bridge
 
 The bridge is the only piece of the library that knows the wire
