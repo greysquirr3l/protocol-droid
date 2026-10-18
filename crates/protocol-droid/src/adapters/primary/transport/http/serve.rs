@@ -36,7 +36,11 @@ use serde_json::Value;
 
 use crate::adapters::primary::transport::http::config::ServerConfig;
 use crate::adapters::primary::transport::http::config::Streaming;
-use crate::adapters::primary::transport::http::exchange::{Answer, ExchangeTable, HttpExchange};
+use crate::adapters::primary::transport::http::documents::{
+    answer_of, id_as_i64, method_of, params_of, refusal_document, refusal_document_from_refusal,
+    result_document,
+};
+use crate::adapters::primary::transport::http::exchange::{ExchangeTable, HttpExchange};
 use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::router::{
@@ -49,15 +53,14 @@ use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::application::mcp::request_meta::declares_version;
 use crate::application::server::Server;
-use crate::application::server::context::{ExchangeError, PeerSession, RequestContext};
+use crate::application::server::context::{PeerSession, RequestContext};
 use crate::application::server::dispatch::Dispatcher;
 use crate::application::server::{ListKind, ListSubscription};
 use crate::application::session::IdSource;
 use crate::application::session::frame_sink::{FrameSink, SinkError};
 use crate::domain::feature::resolve;
-use crate::domain::ir::{IrErrorCode, JsonObject};
-use crate::domain::jsonrpc::reply::{self, ReplyError};
-use crate::domain::jsonrpc::{Envelope, Frame, WireId, decode};
+use crate::domain::ir::JsonObject;
+use crate::domain::jsonrpc::{Frame, WireId, decode};
 use crate::domain::mcp::McpSessionId;
 use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
 use crate::domain::{
@@ -141,6 +144,14 @@ pub enum ServeError {
     /// permission boundary that does not exist.
     #[error("the route table could not be built: {0}")]
     Routes(#[from] crate::adapters::primary::transport::http::router::RouterError),
+
+    /// The legacy HTTP+SSE routes could not be mounted.
+    ///
+    /// A path that is not an absolute path on this origin, or a configured
+    /// security header that is not a legal value.
+    #[cfg(feature = "legacy-sse")]
+    #[error("the legacy HTTP+SSE routes could not be mounted: {0}")]
+    LegacyRoutes(#[from] crate::adapters::primary::transport::legacy_sse::RouteError),
 
     /// No session-id source is available in this build.
     #[error(
@@ -814,57 +825,6 @@ impl HttpHandler {
     }
 }
 
-/// The `id` a reply must be written under, borrowed from the body it answers.
-type Id<'a> = WireId<'a>;
-
-/// The JSON-RPC success document for `result`.
-///
-/// A result with no wire form is this server's own bug rather than anything a
-/// peer did, so it becomes a refusal rather than a frame that decodes to
-/// something else.
-fn result_document(id: Option<&Id<'_>>, result: &JsonObject) -> Result<Value, Refusal> {
-    let id = id.ok_or_else(|| {
-        Refusal::Handler("a result was produced for a request that asked no question".to_owned())
-    })?;
-    reply::result_reply(id, result).map_err(|error| match error {
-        ReplyError::UnreadableResult => {
-            Refusal::Handler("the dispatcher's result has no JSON form".to_owned())
-        }
-    })
-}
-
-/// The JSON-RPC error document for a refused request.
-///
-/// Every refusal gets an answer. The alternative is to drop it, which leaves
-/// the peer waiting on a response that is never coming — and a server that
-/// hangs is worse than one that says no. The code is the one the error carries,
-/// not one this module picked: the message is never the method name the peer
-/// chose, because a method name is a JSON string a peer controls and JSON
-/// permits a newline inside one.
-/// A refusal rendered as the JSON-RPC error a peer will read.
-fn refusal_document_from_refusal(id: Option<&WireId<'_>>, refusal: &Refusal) -> Value {
-    id.map_or_else(
-        || reply::unidentified_error_reply(IrErrorCode::InternalError, &refusal.to_string()),
-        |id| reply::error_reply(id, IrErrorCode::InternalError, &refusal.to_string()),
-    )
-}
-
-fn refusal_document(
-    id: Option<&WireId<'_>>,
-    error: &crate::application::server::DispatchError,
-) -> Value {
-    let (code, message) = error.as_wire();
-    // A code whose specification gives it a `data` member — `-32022`'s
-    // supported revisions, `-32021`'s required capabilities — is written with
-    // it: a code without its data tells the client the problem and withholds
-    // the fix.
-    match (id, error.wire_data()) {
-        (Some(id), Some(data)) => reply::error_reply_with_data(id, code, &message, &data),
-        (Some(id), None) => reply::error_reply(id, code, &message),
-        (None, _) => reply::unidentified_error_reply(code, &message),
-    }
-}
-
 /// Checks the `MCP-Protocol-Version` header against what the session agreed.
 ///
 /// Only after a handshake, because before one the session has agreed to nothing
@@ -879,20 +839,6 @@ fn check_header(
             reason: error.to_string(),
         }
     })
-}
-
-/// The method name in a body, if it is a single routable request.
-///
-/// Owned rather than borrowed: the envelope borrows from the buffer `decode`
-/// parsed, and that buffer is dropped when this returns. A body that is a
-/// batch or a reply shape reads as `None` here and takes the same arm, because
-/// neither is something this handler should open a session from.
-fn method_of(body: &[u8]) -> Option<String> {
-    let decoded = decode(body).ok()?;
-    let Frame::Single(envelope) = decoded else {
-        return None;
-    };
-    envelope.method_str().map(str::to_owned)
 }
 
 /// Whether a body is a SEP-2575 stateless request.
@@ -915,23 +861,6 @@ fn declares_own_version(body: &[u8]) -> bool {
         return false;
     };
     declares_version(&parsed)
-}
-
-/// The params object a request carries, or an empty one.
-///
-/// A request with no `params` is a request for a method that takes none, so
-/// the empty object is right rather than a guess. Valid JSON that is not an
-/// object is a well-formed request with a bad argument, which is `-32602`
-/// rather than a parse failure.
-fn params_of(envelope: &Envelope<'_>) -> Result<JsonObject, Refusal> {
-    envelope.params().map_or_else(
-        || Ok(JsonObject::default()),
-        |raw| {
-            JsonObject::new(raw.get()).map_err(|_| Refusal::MalformedBody {
-                reason: "params is not a JSON object".to_owned(),
-            })
-        },
-    )
 }
 
 /// The sink a session's handler-initiated messages go out on.
@@ -1018,6 +947,17 @@ pub struct HttpBuilder {
     origin_policy: Option<OriginPolicy>,
     /// The per-subject request allowance.
     rate_limiter: Option<RateLimiter>,
+    /// Where the `2024-11-05` HTTP+SSE routes are mounted, when they are.
+    #[cfg(feature = "legacy-sse")]
+    legacy_sse: Option<LegacySsePaths>,
+}
+
+/// The two paths the legacy transport is mounted on.
+#[cfg(feature = "legacy-sse")]
+#[derive(Debug, Clone)]
+struct LegacySsePaths {
+    stream: String,
+    message: String,
 }
 
 impl core::fmt::Debug for HttpBuilder {
@@ -1057,7 +997,40 @@ impl HttpBuilder {
             policy: None,
             origin_policy: None,
             rate_limiter: None,
+            #[cfg(feature = "legacy-sse")]
+            legacy_sse: None,
         }
+    }
+
+    /// Also serves the `2024-11-05` HTTP+SSE transport, beside Streamable HTTP.
+    ///
+    /// A client opens a stream with `GET /sse`, is told where to `POST` by the
+    /// `endpoint` event, and speaks `2024-11-05` over the pair. The same
+    /// tools, resources and prompts answer on both transports, and the
+    /// authenticator, `Origin` policy and rate limit set on this builder apply
+    /// to both. Use [`legacy_sse_at`](Self::legacy_sse_at) to move the paths.
+    #[cfg(feature = "legacy-sse")]
+    #[must_use]
+    pub fn legacy_sse(self) -> Self {
+        self.legacy_sse_at(
+            crate::adapters::primary::transport::legacy_sse::DEFAULT_STREAM_PATH,
+            crate::adapters::primary::transport::legacy_sse::DEFAULT_MESSAGE_PATH,
+        )
+    }
+
+    /// [`legacy_sse`](Self::legacy_sse), on `stream` and `message` rather than
+    /// `/sse` and `/messages`.
+    ///
+    /// Both must be absolute paths with no query; [`serve`](Self::serve)
+    /// refuses to start otherwise.
+    #[cfg(feature = "legacy-sse")]
+    #[must_use]
+    pub fn legacy_sse_at(mut self, stream: impl Into<String>, message: impl Into<String>) -> Self {
+        self.legacy_sse = Some(LegacySsePaths {
+            stream: stream.into(),
+            message: message.into(),
+        });
+        self
     }
 
     /// The address to bind. Defaults to `127.0.0.1:3000`.
@@ -1249,6 +1222,8 @@ fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
         policy,
         origin_policy,
         rate_limiter,
+        #[cfg(feature = "legacy-sse")]
+        legacy_sse,
     } = builder;
     let ids = match ids {
         Some(ids) => ids,
@@ -1264,12 +1239,37 @@ fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
         Some(config) => config,
         None => ServerConfig::new()?,
     };
-    let sessions = Arc::new(SessionStore::<HttpSession>::new(ids));
-    let handler = HttpHandler::new(
-        Arc::new(Dispatcher::new(Arc::new(server))),
-        Arc::clone(&sessions),
-        ceiling,
-    );
+    let dispatcher = Arc::new(Dispatcher::new(Arc::new(server)));
+    let sessions = Arc::new(SessionStore::<HttpSession>::new(Arc::clone(&ids)));
+    let handler = HttpHandler::new(Arc::clone(&dispatcher), Arc::clone(&sessions), ceiling);
+    #[cfg(feature = "legacy-sse")]
+    let legacy = legacy_sse
+        .map(|paths| {
+            let mut router = crate::adapters::primary::transport::legacy_sse::LegacyRouter::new(
+                config.clone(),
+                Arc::new(SessionStore::new(ids)),
+                // The transport belongs to `2024-11-05`; a client offering a
+                // later revision is answered with this one and decides for
+                // itself whether to continue.
+                crate::adapters::primary::transport::legacy_sse::ServerDispatcher::new(
+                    Arc::clone(&dispatcher),
+                    ProtocolVersion::V2024_11_05,
+                ),
+            )
+            .with_stream_path(paths.stream)
+            .with_message_path(paths.message);
+            if let Some(origin) = origin_policy.clone() {
+                router = router.with_origins(origin);
+            }
+            if let Some(limiter) = rate_limiter.clone() {
+                router = router.with_rate_limiter(limiter);
+            }
+            if let (Some(policy), Some(authenticator)) = (policy, authenticator.clone()) {
+                router = router.with_auth(policy, authenticator);
+            }
+            router.into_router()
+        })
+        .transpose()?;
     let mut router = McpRouter::new(config, sessions, handler);
     if let Some(authenticator) = authenticator {
         router = router.with_authenticator(authenticator);
@@ -1283,8 +1283,14 @@ fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
     if let Some(limiter) = rate_limiter {
         router = router.with_rate_limiter(limiter);
     }
+    let router = router.into_router().map_err(ServeError::from)?;
+    #[cfg(feature = "legacy-sse")]
+    let router = match legacy {
+        Some(legacy) => router.merge(legacy),
+        None => router,
+    };
     Ok(BuilderOutput {
-        router: router.into_router().map_err(ServeError::from)?,
+        router,
         addr,
         ceiling,
     })
@@ -1319,6 +1325,8 @@ pub(crate) fn test_routes(
         policy: None,
         origin_policy: None,
         rate_limiter: None,
+        #[cfg(feature = "legacy-sse")]
+        legacy_sse: None,
     })
     .map(|parts| parts.router)
 }
@@ -1336,45 +1344,6 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
         .local_addr()
         .map_err(|source| ServeError::Bind { addr, source })?;
     Ok((listener, bound))
-}
-
-/// The numeric id a wire id carries, if it is one.
-///
-/// `None` for a string id or an absent one. A server-initiated request's id is
-/// minted as a number, so a string id on an inbound frame is the peer answering
-/// something this server did not ask — which is a message to discard, not one
-/// to guess a correlation for.
-const fn id_as_i64(id: &WireId<'_>) -> Option<i64> {
-    match id {
-        WireId::Number(value) => Some(*value),
-        WireId::Text(_) => None,
-    }
-}
-
-/// What a peer said in answer to a server-initiated request.
-///
-/// A JSON-RPC `error` member becomes the refusal it is — the peer's own words,
-/// not a re-phrasing — because a tool asked a question and the answer "the
-/// client declined" is different from the answer "the server broke", and
-/// collapsing them costs the caller the one distinction it could act on.
-fn answer_of(body: &[u8]) -> Answer {
-    let Ok(document) = serde_json::from_slice::<Value>(body) else {
-        return Err(ExchangeError::new("the answer was not JSON"));
-    };
-    if let Some(failure) = document.get("error") {
-        return Err(ExchangeError::new(failure.to_string()));
-    }
-    document.get("result").map_or_else(
-        || {
-            Err(ExchangeError::new(
-                "the answer carried neither a result nor an error",
-            ))
-        },
-        |result| {
-            JsonObject::from_value(result.clone())
-                .map_err(|error| ExchangeError::new(error.to_string()))
-        },
-    )
 }
 
 /// The id source a builder uses when none was supplied.

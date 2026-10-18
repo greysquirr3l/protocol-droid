@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::adapters::primary::transport::http::{Refusal, ServerConfig, SessionStore};
 use crate::adapters::primary::transport::legacy_sse::{
-    DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyDispatcher, LegacyRouter,
+    DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyDispatcher, LegacyRouter, LegacyTail,
 };
 use crate::application::session::IdSource;
 use crate::domain::McpSessionId;
@@ -100,18 +100,25 @@ struct Echo {
 }
 
 impl LegacyDispatcher for Echo {
+    type Session = ();
+
+    fn open(&self, _id: SessionId, _tail: &LegacyTail) {}
+
     fn dispatch(
         &self,
         _auth: &AuthContext,
         _session: &McpSessionId,
+        _state: &(),
         frame: &Value,
-    ) -> Result<Vec<Value>, Refusal> {
+    ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send {
+        core::future::ready({
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![json!({
             "jsonrpc": "2.0",
             "id": frame.get("id").cloned().unwrap_or(Value::Null),
             "result": { "echoed": frame }
         })])
+            })
     }
 }
 

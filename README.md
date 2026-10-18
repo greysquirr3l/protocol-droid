@@ -62,7 +62,7 @@ starts:
 | --------------- | ---------------------------------------------------------------------- |
 | `stdio`         | The stdio transport, server and client. **On by default**               |
 | `http`          | Streamable HTTP plus the `2026-07-28` stateless lifecycle              |
-| `legacy-sse`    | The deprecated `2024-11-05` HTTP+SSE transport. Implies `http`         |
+| `legacy-sse`    | The deprecated `2024-11-05` HTTP+SSE transport, client and server (`HttpBuilder::legacy_sse()`). Implies `http` |
 | `oauth`         | The OAuth 2.1 resource server and PKCE client. Implies `http`          |
 | `a2a`           | The A2A v1.0 server, client, and cross-protocol bridge                  |
 | `acp-experimental` | Zed's ACP v1.25.0. Pre-1.0, so it carries no semver guarantee         |

@@ -61,7 +61,23 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   retry with the token. It stops after three refusals. It passes every
   `auth/*` scenario of the client conformance suite on `2025-11-25` and
   `2026-07-28`.
+- **A `Server` over the legacy HTTP+SSE transport.** `HttpBuilder::legacy_sse()`
+  (or `legacy_sse_at(stream, message)`) mounts the `2024-11-05` routes beside
+  Streamable HTTP on one listener. The same tools, resources and prompts answer
+  on both, `list_changed` and progress go out on the session's stream, a tool
+  can ask the client a question, and a client offering a later revision is
+  answered with `2024-11-05`. `LegacyDispatcher::dispatch` is now async and
+  carries per-session state (`LegacySession`, `LegacyDispatcher::open`).
+- **`Host` checking and rate limiting on the legacy routes.** They had `Origin`
+  and authentication but neither of these, so a rebound DNS name or a flood of
+  `POST`s reached the dispatcher.
 - **`a2a` implies `http`.** Building with `--features a2a` alone did not compile.
+
+### Fixed
+
+- **The legacy HTTP+SSE client never matched a numeric reply id.** It compared
+  the awaited id as the string `"1"` against the number `1` on the wire, so any
+  server that answered with a numeric id left every request waiting.
 
 ### Fixed (build)
 

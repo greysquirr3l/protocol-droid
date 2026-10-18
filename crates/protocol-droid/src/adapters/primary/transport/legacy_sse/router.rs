@@ -54,11 +54,12 @@ use crate::adapters::primary::transport::http::{
     Anonymous, AuthPolicy, Authenticator, EventTail, InvalidHeaderValue, Refusal, ServerConfig,
     SessionStore, with_security,
 };
+use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::legacy_sse::{
-    LegacyDispatcher, LegacyFrame, LegacyTail, OriginPolicy,
+    LegacyDispatcher, LegacyFrame, LegacySession, LegacyTail, OriginPolicy,
 };
 use crate::domain::registry::AuthContext;
-use crate::domain::{McpSessionId, MessageEndpoint, MessageEndpointError};
+use crate::domain::{McpSessionId, MessageEndpoint, MessageEndpointError, Verdict};
 
 /// The query parameter carrying the session id on the message endpoint.
 ///
@@ -107,7 +108,7 @@ pub enum RouteError {
 }
 
 /// State every legacy handler needs.
-struct LegacyState<D> {
+struct LegacyState<D: LegacyDispatcher> {
     /// The message path, kept separate from [`ServerConfig::endpoint`] because
     /// this transport's configuration has two paths where `McpRouter` has one.
     ///
@@ -116,11 +117,12 @@ struct LegacyState<D> {
     /// parameter, and a path that cannot take one has no business being here.
     message_path: MessageEndpoint,
     config: ServerConfig,
-    sessions: Arc<SessionStore<LegacyTail>>,
+    sessions: Arc<SessionStore<LegacySession<D::Session>>>,
     dispatcher: Arc<D>,
     origins: Arc<OriginPolicy>,
     policy: AuthPolicy,
     authenticator: Arc<dyn Authenticator + Send + Sync>,
+    rate_limiter: RateLimiter,
 }
 
 impl<D: LegacyDispatcher> LegacyState<D> {
@@ -150,20 +152,22 @@ impl<D: LegacyDispatcher> Clone for LegacyState<D> {
             origins: Arc::clone(&self.origins),
             policy: self.policy,
             authenticator: Arc::clone(&self.authenticator),
+            rate_limiter: self.rate_limiter.clone(),
         }
     }
 }
 
 /// The `2024-11-05` HTTP+SSE transport's two routes.
-pub struct LegacyRouter<D> {
+pub struct LegacyRouter<D: LegacyDispatcher> {
     message_path: String,
     stream_path: String,
     config: ServerConfig,
-    sessions: Arc<SessionStore<LegacyTail>>,
+    sessions: Arc<SessionStore<LegacySession<D::Session>>>,
     dispatcher: Arc<D>,
     origins: Arc<OriginPolicy>,
     policy: AuthPolicy,
     authenticator: Arc<dyn Authenticator + Send + Sync>,
+    rate_limiter: RateLimiter,
 }
 
 /// Written out rather than derived because `D` is not required to be `Debug`,
@@ -190,12 +194,13 @@ impl<D: LegacyDispatcher> LegacyRouter<D> {
     #[must_use]
     pub fn new(
         config: ServerConfig,
-        sessions: Arc<SessionStore<LegacyTail>>,
+        sessions: Arc<SessionStore<LegacySession<D::Session>>>,
         dispatcher: D,
     ) -> Self {
         Self {
             message_path: DEFAULT_MESSAGE_PATH.to_owned(),
             stream_path: DEFAULT_STREAM_PATH.to_owned(),
+            rate_limiter: RateLimiter::new(*config.rate_limit()),
             config,
             sessions,
             dispatcher: Arc::new(dispatcher),
@@ -222,6 +227,17 @@ impl<D: LegacyDispatcher> LegacyRouter<D> {
     ) -> Self {
         self.policy = policy;
         self.authenticator = authenticator;
+        self
+    }
+
+    /// Replaces the per-subject request allowance.
+    ///
+    /// Defaults to [`ServerConfig::rate_limit`]. Requests are counted against
+    /// the session they name, and requests that name none (opening a stream)
+    /// share one allowance.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
+        self.rate_limiter = limiter;
         self
     }
 
@@ -270,6 +286,7 @@ impl<D: LegacyDispatcher> LegacyRouter<D> {
             origins,
             policy,
             authenticator,
+            rate_limiter,
         } = self;
 
         // Checked here rather than left to the two places that would otherwise
@@ -307,6 +324,7 @@ impl<D: LegacyDispatcher> LegacyRouter<D> {
             origins,
             policy,
             authenticator,
+            rate_limiter,
         });
         // Two `MethodRouter`s on two paths, and deliberately not one
         // `MethodRouter` taking both methods on both. A `POST` to the stream
@@ -341,12 +359,19 @@ async fn open_stream<D: LegacyDispatcher>(
     // resolved has nowhere to go. It is still resolved, because the endpoint's
     // policy applies to opening a stream exactly as it does to posting a
     // message — an unauthenticated caller must not be able to open one.
-    if let Err(response) = check_common(&state, &headers).await {
+    if let Err(response) = check_common(&state, &headers, None).await {
         return *response;
     }
 
-    let tail = EventTail::new(state.config.replay_capacity());
-    let id = match state.sessions.open(Arc::new(tail.clone())) {
+    let tail: LegacyTail = EventTail::new(state.config.replay_capacity());
+    // Taken before the session exists, because the dispatcher's state is part
+    // of the value being stored and may need the id it will be stored under.
+    let taken = state.sessions.next_id();
+    let kept = state.dispatcher.open(taken, &tail);
+    let id = match state
+        .sessions
+        .open_with_id(Arc::new(LegacySession::new(tail.clone(), kept)), taken)
+    {
         Ok(id) => id,
         Err(error) => return refuse(Refusal::Handler(error.to_string())),
     };
@@ -379,7 +404,7 @@ async fn receive_message<D: LegacyDispatcher>(
 ) -> Response {
     // Kept rather than discarded: this is the request's principal, and
     // `dispatch` is the only thing downstream that can act on it.
-    let auth = match check_common(&state, &headers).await {
+    let auth = match check_common(&state, &headers, query.get(SESSION_PARAMETER).map(String::as_str)).await {
         Ok(auth) => auth,
         Err(response) => return *response,
     };
@@ -395,8 +420,8 @@ async fn receive_message<D: LegacyDispatcher>(
     let Ok(id) = McpSessionId::from_str(raw) else {
         return refuse(Refusal::MalformedSessionId);
     };
-    let tail = match state.sessions.lookup(&id) {
-        Ok(Some(tail)) => tail,
+    let session = match state.sessions.lookup(&id) {
+        Ok(Some(session)) => session,
         Ok(None) => return refuse(Refusal::UnknownSession),
         Err(error) => return refuse(Refusal::Handler(error.to_string())),
     };
@@ -429,10 +454,14 @@ async fn receive_message<D: LegacyDispatcher>(
         }
     };
 
-    match state.dispatcher.dispatch(&auth, &id, &frame) {
+    match state
+        .dispatcher
+        .dispatch(&auth, &id, session.state(), &frame)
+        .await
+    {
         Ok(replies) => {
             for reply in replies {
-                tail.push(LegacyFrame::Message(reply));
+                session.tail().push(LegacyFrame::Message(reply));
             }
             (ACCEPTED, ()).into_response()
         }
@@ -447,10 +476,28 @@ async fn receive_message<D: LegacyDispatcher>(
 /// acceptable. Authenticating first would let a hostile page drive the
 /// authenticator, which on a deployment with a token check is a credential
 /// oracle reachable from any page the operator's users visit.
-async fn check_common<D: LegacyDispatcher>(state: &LegacyState<D>, headers: &HeaderMap) -> Checked {
+async fn check_common<D: LegacyDispatcher>(
+    state: &LegacyState<D>,
+    headers: &HeaderMap,
+    subject: Option<&str>,
+) -> Checked {
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     if let Err(refusal) = state.origins.check(origin) {
         return Err(Box::new(refuse(refusal)));
+    }
+    // `Origin` is absent from every non-browser client, so on its own it
+    // cannot catch a rebound DNS name. `Host` is set from the URL the client
+    // dialled and cannot be forged by a page.
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    if let Err(refusal) = state.origins.check_host(host) {
+        return Err(Box::new(refuse(refusal)));
+    }
+    // Before authentication, so a flood of bad credentials is counted too.
+    if let Verdict::Limited { retry_after } = state
+        .rate_limiter
+        .check(subject.filter(|s| !s.is_empty()).unwrap_or("anonymous"))
+    {
+        return Err(Box::new(refuse(Refusal::RateLimited { retry_after })));
     }
     // The resolved context is the *return value*, not a discarded result.
     // This router authenticates on every route and there is no other path for

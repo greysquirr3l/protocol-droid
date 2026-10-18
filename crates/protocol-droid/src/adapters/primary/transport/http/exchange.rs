@@ -206,19 +206,44 @@ impl ExchangeTable {
 /// Holds the table it records into and the stream it writes to. Two handles to
 /// one session, kept together so a request and the answer that completes it
 /// cannot end up on different sessions.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpExchange {
     /// Where in-flight requests are recorded.
     table: ExchangeTable,
-    /// The session's event stream, where the request is written.
-    tail: Tail,
+    /// Writes a request onto the session's event stream.
+    publish: Publisher,
+}
+
+/// How a request reaches the session's stream. A closure rather than a tail
+/// because the legacy transport's stream carries a different frame type, and
+/// the rendezvous with the answer is the same for both.
+type Publisher = std::sync::Arc<dyn Fn(Value) + Send + Sync>;
+
+impl core::fmt::Debug for HttpExchange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HttpExchange")
+            .field("table", &self.table)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HttpExchange {
     /// An exchange publishing into `tail` and recording into `table`.
     #[must_use]
-    pub const fn new(table: ExchangeTable, tail: Tail) -> Self {
-        Self { table, tail }
+    pub fn new(table: ExchangeTable, tail: Tail) -> Self {
+        Self::publishing(table, move |request| {
+            tail.push(request);
+        })
+    }
+
+    /// An exchange that hands each request to `publish` and records into
+    /// `table`.
+    #[must_use]
+    pub fn publishing(table: ExchangeTable, publish: impl Fn(Value) + Send + Sync + 'static) -> Self {
+        Self {
+            table,
+            publish: std::sync::Arc::new(publish),
+        }
     }
 
     /// The table this session's answers are routed back through.
@@ -275,7 +300,7 @@ impl CallbackExchange for HttpExchange {
         // A `push` cannot fail — it evicts the oldest event if the ring is
         // full — so there is no refusal to write here and inventing one would
         // be a failure this transport cannot actually have.
-        self.tail.push(Value::Object(request));
+        (self.publish)(Value::Object(request));
 
         // A dropped waiter means the session ended under the tool, which the
         // tool sees as a refusal it can handle — so it is named rather than

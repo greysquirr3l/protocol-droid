@@ -64,11 +64,13 @@ None of these is measured by the suite. They're listed because they are real.
   work the bridge does not do yet. The library's own client *does* speak the
   stateless lifecycle (`StatelessHttpClient`, and `Client::connect_to` with an
   `http-stateless:` spec).
-- **A `Server` cannot be served over the legacy 2024-11-05 HTTP+SSE
-  transport.** `LegacyDispatcher` is synchronous and nothing adapts a `Server`
-  to it, so a legacy-SSE endpoint needs a hand-written dispatcher. The
-  transport has been deprecated since `2025-03-26`; the Streamable HTTP server
-  answers 2024-11-05 clients that speak Streamable HTTP.
+- **Legacy HTTP+SSE is served, but not conformance-tested.** The pinned suite
+  has no `2024-11-05` scenarios. `HttpBuilder::legacy_sse()` mounts `/sse` and
+  `/messages` beside Streamable HTTP, and the crate's own tests cover the
+  handshake, `tools/list`, `tools/call`, `list_changed` on the stream, the
+  refusal of a request before `initialize`, and the `Host`, `Origin` and
+  rate-limit checks. A client offering a later revision over it is answered
+  with `2024-11-05`, the only revision that defines the transport.
 - **The client scenarios are a separate matrix**, below.
 
 ## stdio and the OAuth client

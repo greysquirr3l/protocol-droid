@@ -79,6 +79,7 @@
 mod auth;
 mod bridge;
 mod config;
+pub(in crate::adapters::primary::transport) mod documents;
 mod exchange;
 mod frame_payload;
 pub mod hardening;

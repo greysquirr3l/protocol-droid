@@ -200,7 +200,7 @@ mod tests {
 
     use crate::adapters::primary::transport::http::{Refusal, ServerConfig, SessionStore};
     use crate::adapters::primary::transport::legacy_sse::{
-        DEFAULT_STREAM_PATH, LegacyDispatcher, LegacyRouter,
+        DEFAULT_STREAM_PATH, LegacyDispatcher, LegacyRouter, LegacyTail,
     };
     use crate::application::bridge::{BridgeError, BridgePeer};
     use crate::application::session::IdSource;
@@ -231,12 +231,18 @@ mod tests {
     }
 
     impl LegacyDispatcher for Pushes {
+        type Session = ();
+
+        fn open(&self, _id: SessionId, _tail: &LegacyTail) {}
+
         fn dispatch(
             &self,
             _auth: &AuthContext,
             _session: &McpSessionId,
+            _state: &(),
             frame: &Value,
-        ) -> Result<Vec<Value>, Refusal> {
+        ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send {
+        core::future::ready({
             let id = frame.get("id").cloned().unwrap_or(Value::Null);
             let answer = if self.decline {
                 json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no"}})
@@ -247,7 +253,8 @@ mod tests {
                 Some(extra) => Ok(vec![extra, answer]),
                 None => Ok(vec![answer]),
             }
-        }
+                })
+    }
     }
 
     async fn peer(dispatcher: Pushes) -> Result<LegacySsePeer, TestError> {

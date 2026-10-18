@@ -37,6 +37,7 @@ use crate::adapters::primary::transport::http::{
     EventTail, FramePayload, Refusal, SseError, SseEvent,
 };
 use crate::domain::registry::AuthContext;
+use crate::domain::session::SessionId;
 use crate::domain::{EventId, McpSessionId, MessageEndpoint, names};
 
 /// One frame on a legacy stream.
@@ -92,6 +93,38 @@ impl FramePayload for LegacyFrame {
 /// A legacy session's server→client tail.
 pub type LegacyTail = EventTail<LegacyFrame>;
 
+/// One legacy session: the stream the server writes to, and whatever the
+/// dispatcher keeps for it.
+///
+/// The store holds these, so a session that expires or is deleted takes its
+/// dispatcher state with it. A dispatcher that kept its own table keyed by
+/// session id would have no way to learn the session had gone.
+#[derive(Debug)]
+pub struct LegacySession<S> {
+    tail: LegacyTail,
+    state: S,
+}
+
+impl<S> LegacySession<S> {
+    /// A session writing to `tail`, with `state` kept for the dispatcher.
+    #[must_use]
+    pub const fn new(tail: LegacyTail, state: S) -> Self {
+        Self { tail, state }
+    }
+
+    /// The stream the server writes this session's frames to.
+    #[must_use]
+    pub const fn tail(&self) -> &LegacyTail {
+        &self.tail
+    }
+
+    /// What the dispatcher kept when the session was opened.
+    #[must_use]
+    pub const fn state(&self) -> &S {
+        &self.state
+    }
+}
+
 /// What the protocol layer has to be able to do for the legacy `POST`.
 ///
 /// A port, and it belongs here because the router is its consumer. One method,
@@ -115,22 +148,44 @@ pub type LegacyTail = EventTail<LegacyFrame>;
 ///
 /// ```
 /// use protocol_droid::adapters::primary::transport::http::Refusal;
-/// use protocol_droid::adapters::primary::transport::legacy_sse::LegacyDispatcher;
+/// use protocol_droid::adapters::primary::transport::legacy_sse::{LegacyDispatcher, LegacyTail};
 /// use protocol_droid::domain::McpSessionId;
+/// use protocol_droid::domain::session::SessionId;
 /// use protocol_droid::domain::registry::AuthContext;
 ///
-/// /// Answers every request with a fixed result, which is all this test needs.
+/// /// Answers every request with the frame it was sent, which is all this test needs.
 /// struct Echo;
 ///
 /// impl LegacyDispatcher for Echo {
-///     fn dispatch(&self, auth: &AuthContext, _session: &McpSessionId, frame: &serde_json::Value) -> Result<Vec<serde_json::Value>, Refusal> {
-///         let _ = auth;
+///     type Session = ();
+///
+///     fn open(&self, _id: SessionId, _tail: &LegacyTail) {}
+///
+///     async fn dispatch(
+///         &self,
+///         _auth: &AuthContext,
+///         _id: &McpSessionId,
+///         _session: &(),
+///         frame: &serde_json::Value,
+///     ) -> Result<Vec<serde_json::Value>, Refusal> {
 ///         Ok(vec![frame.clone()])
 ///     }
 /// }
 /// # let _ = Echo;
 /// ```
 pub trait LegacyDispatcher: Send + Sync + 'static {
+    /// What the dispatcher keeps for one session.
+    ///
+    /// Dropped with the session, so a subscription or a negotiated state held
+    /// here ends when the session does.
+    type Session: Send + Sync + 'static;
+
+    /// Called once when a stream opens, before the `endpoint` event is sent.
+    ///
+    /// `tail` is the stream the server's own frames go to: notifications, and
+    /// requests the server makes of the client. Keep it if you will write to it.
+    fn open(&self, id: SessionId, tail: &LegacyTail) -> Self::Session;
+
     /// Handles one client frame, returning every frame to send back.
     ///
     /// `auth` is the principal the router resolved for **this** request, after
@@ -141,9 +196,13 @@ pub trait LegacyDispatcher: Send + Sync + 'static {
     ///
     /// Per request rather than per session, for the reason it is on
     /// Streamable HTTP too — a bearer token can be refreshed or withdrawn
-    /// between two `POST`s to one session id — and a session here is nothing
-    /// but an event tail, so there is no session state for a principal to be
-    /// pinned to anyway.
+    /// between two `POST`s to one session id.
+    ///
+    /// A dispatcher may also write its answer to the session's tail itself and
+    /// return nothing. The `POST` is answered `202` when this returns, so a
+    /// handler that has to wait on the client (an elicitation, a sampling
+    /// request) can answer on the stream once it has the client's reply instead
+    /// of holding the `POST` open.
     ///
     /// # Errors
     ///
@@ -153,12 +212,15 @@ pub trait LegacyDispatcher: Send + Sync + 'static {
     /// rather than a half-written batch, because a partial batch is
     /// indistinguishable from a complete one on a stream that carries no
     /// transaction.
+    ///
+    /// [`AuthPolicy`]: crate::adapters::primary::transport::http::AuthPolicy
     fn dispatch(
         &self,
         auth: &AuthContext,
-        session: &McpSessionId,
+        id: &McpSessionId,
+        session: &Self::Session,
         frame: &Value,
-    ) -> Result<Vec<Value>, Refusal>;
+    ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send;
 }
 
 #[cfg(test)]

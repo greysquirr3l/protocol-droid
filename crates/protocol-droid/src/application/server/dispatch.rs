@@ -39,8 +39,9 @@ use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::ir::LogLevel;
 use crate::domain::{
-    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, client_method_defined_in,
-    discover_defined_in, handshake_defined_in, negotiate_server, resolve,
+    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, TransportKind,
+    client_method_defined_in, discover_defined_in, handshake_defined_in, negotiate_server, resolve,
+    transport_allowed,
 };
 
 /// Routes methods to a server's handlers.
@@ -1011,16 +1012,38 @@ fn negotiate(
     ctx: &RequestContext,
     params: &JsonObject,
 ) -> Result<(ProtocolVersion, FeatureProfile), DispatchError> {
-    let supported = SupportedVersions::all().map_err(|_| DispatchError::UnnegotiableVersion)?;
+    let transport = ctx.peer().transport();
+    let supported = supported_on(transport)?;
     let offer = read_offer(params).map_err(|_| DispatchError::MalformedInitialize)?;
     let version = negotiate_server(offer.version, &supported).version();
     let profile = resolve(Negotiation {
         version,
         client_caps: offer.capabilities,
         server_caps: CapabilitySet::all_for(version),
-        transport: ctx.peer().transport(),
+        transport,
     });
     Ok((version, profile))
+}
+
+/// The revisions this server will agree to over `transport`.
+///
+/// HTTP+SSE belongs to `2024-11-05` alone, so a legacy session is never
+/// answered with a revision that does not define it: a client that offers
+/// `2025-11-25` over it is counter-offered `2024-11-05` and decides for itself
+/// whether it can continue. Other transports answer with whatever the client
+/// offered when this build speaks it.
+fn supported_on(transport: TransportKind) -> Result<SupportedVersions, DispatchError> {
+    let all = SupportedVersions::all().map_err(|_| DispatchError::UnnegotiableVersion)?;
+    if transport != TransportKind::LegacySse {
+        return Ok(all);
+    }
+    let defining: Vec<ProtocolVersion> = all
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|version| transport_allowed(*version, transport))
+        .collect();
+    SupportedVersions::from_slice(&defining).map_err(|_| DispatchError::UnnegotiableVersion)
 }
 
 #[cfg(test)]
