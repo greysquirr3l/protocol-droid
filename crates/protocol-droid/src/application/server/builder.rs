@@ -590,6 +590,37 @@ pub enum DispatchError {
     #[error("the session is on a revision this build cannot serve")]
     UnnegotiableVersion,
 
+    /// A SEP-2575 request arrived without the `_meta` the schema requires.
+    ///
+    /// `2026-07-28` makes `RequestParams._meta` required on every request and
+    /// requires two keys in it — the revision and the client's capabilities —
+    /// because there is no handshake to carry them and no session to remember
+    /// them on. A request missing either is a well-formed message with a
+    /// missing argument, which is `-32602` and not a transport refusal.
+    ///
+    /// Its own variant rather than a reuse of
+    /// [`MalformedInitialize`](Self::MalformedInitialize) because the two are
+    /// different failures with different fixes: one says the handshake arrived
+    /// in a shape that would have to be guessed at, this says the shape is
+    /// right and a required key is not there.
+    #[error("the request `_meta` is missing a required key")]
+    MalformedRequestMeta,
+
+    /// A SEP-2575 request named a revision this build does not implement.
+    ///
+    /// Not [`MalformedParams`](Self::MalformedParams), and the difference is
+    /// the whole point of the code the specification assigns: `-32022` with
+    /// `data.supported` is what lets a client retry against a version this
+    /// server does speak, where `-32602` would send it looking for a bug in
+    /// its own request.
+    #[error("this server does not implement the requested protocol version")]
+    UnsupportedVersion {
+        /// The revision the client asked for, as it wrote it.
+        requested: String,
+        /// Every revision this build speaks, for the client to choose from.
+        supported: Vec<String>,
+    },
+
     /// A second request arrived with an id this session is still working on.
     ///
     /// The JSON-RPC reading, and the reason it is an error rather than a
@@ -652,15 +683,17 @@ impl DispatchError {
     pub const fn jsonrpc_code(&self) -> IrErrorCode {
         match self {
             Self::UnknownMethod => IrErrorCode::MethodNotFound,
-            Self::MalformedParams | Self::MalformedInitialize | Self::UnknownTool => {
-                IrErrorCode::InvalidParams
-            }
             // A URI or a prompt name that is not registered is the same
             // failure as a tool name that is not, and answers the same way. The
             // specification is explicit that an unknown tool is reported as an
             // error rather than an empty result, and a client cannot act on a
             // distinction between "no such thing" and "this thing is empty".
-            Self::UnknownResource | Self::UnknownPrompt => IrErrorCode::InvalidParams,
+            Self::MalformedParams
+            | Self::MalformedInitialize
+            | Self::UnknownTool
+            | Self::UnknownResource
+            | Self::UnknownPrompt
+            | Self::MalformedRequestMeta => IrErrorCode::InvalidParams,
             // A request that names an id this session is already working on is
             // a frame that violates JSON-RPC, so it takes the code for a frame
             // the specification does not permit — not the code for a tool it
@@ -673,6 +706,10 @@ impl DispatchError {
             Self::NotCallable | Self::UnnegotiableVersion | Self::IdempotencyUnavailable(_) => {
                 IrErrorCode::InternalError
             }
+            // SEP-2575 assigns this its own code precisely so a client can
+            // distinguish "you asked for something real that I do not speak"
+            // from "your request was wrong", and act on the first by retrying.
+            Self::UnsupportedVersion { .. } => IrErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
             // A handler that refused is this server's problem whatever the peer
             // sent. The peer asked for a resource or a prompt, named it
             // correctly, and the answer is that the backing store is

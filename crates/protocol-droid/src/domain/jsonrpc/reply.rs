@@ -92,9 +92,21 @@ fn id_value(id: &WireId<'_>) -> Value {
 
 /// The `error` member.
 fn error_member(code: IrErrorCode, message: &str) -> Value {
+    error_member_with_data(code, message, None)
+}
+
+/// The `error` member, with the `data` a code may require.
+///
+/// `None` adds nothing at all rather than adding `"data": null`: the JSON-RPC
+/// specification marks `data` optional, and a peer that branches on its
+/// presence would see a member that says nothing.
+fn error_member_with_data(code: IrErrorCode, message: &str, data: Option<&Value>) -> Value {
     let mut error = Map::new();
     error.insert("code".to_owned(), Value::from(code.code()));
     error.insert("message".to_owned(), Value::from(message));
+    if let Some(data) = data {
+        error.insert("data".to_owned(), data.clone());
+    }
     Value::Object(error)
 }
 
@@ -161,6 +173,53 @@ pub fn result_reply(id: &WireId<'_>, result: &JsonObject) -> Result<Value, Reply
 pub fn error_reply(id: &WireId<'_>, code: IrErrorCode, message: &str) -> Value {
     let mut members = reply_members(id);
     members.insert("error".to_owned(), error_member(code, message));
+    Value::Object(members)
+}
+
+/// A failed reply carrying the structured `data` some codes require.
+///
+/// SEP-2575's `-32022` is the case this exists for: its `data` names the
+/// revision the client asked for and every revision this server speaks, and a
+/// client cannot retry correctly without both. `error_reply` cannot express
+/// that, so this is a second function rather than an optional argument on the
+/// first — every other error in the crate has no data, and a parameter they
+/// would all pass `None` to is a parameter nobody reads.
+///
+/// # Examples
+///
+/// ```
+/// use protocol_droid::domain::jsonrpc::reply::error_reply_with_data;
+/// use protocol_droid::domain::ir::{IrErrorCode, JsonObject};
+/// use protocol_droid::domain::jsonrpc::WireId;
+///
+/// let data = JsonObject::new(r#"{"requested":"2027-01-01","supported":["2026-07-28"]}"#)?;
+/// let document =
+///     error_reply_with_data(&WireId::text("r1"), IrErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
+///         "unsupported version", &data).to_string();
+///
+/// assert!(document.contains(r#""code":-32022"#));
+/// assert!(document.contains(r#""supported":["2026-07-28"]"#));
+/// # Ok::<(), protocol_droid::domain::ir::JsonObjectError>(())
+/// ```
+#[must_use]
+pub fn error_reply_with_data(
+    id: &WireId<'_>,
+    code: IrErrorCode,
+    message: &str,
+    data: &JsonObject,
+) -> Value {
+    let Ok(data) = read_back(data) else {
+        // A `JsonObject` was validated when it was built, so this branch is
+        // unreachable in practice. Answering with the data-less error is worse
+        // than answering with something a client can act on, so the fallback
+        // is the one that still carries the code.
+        return error_reply(id, code, message);
+    };
+    let mut members = reply_members(id);
+    members.insert(
+        "error".to_owned(),
+        error_member_with_data(code, message, Some(&data)),
+    );
     Value::Object(members)
 }
 

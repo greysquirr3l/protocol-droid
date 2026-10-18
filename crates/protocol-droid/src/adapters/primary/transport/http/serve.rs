@@ -46,6 +46,7 @@ use crate::adapters::primary::transport::http::session_store::SessionStore;
 use crate::adapters::primary::transport::http::stream::{EventTail, Finishing};
 use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
+use crate::application::mcp::request_meta::{RequestMeta, declares_version};
 use crate::application::server::Server;
 use crate::application::server::context::{ExchangeError, PeerSession, RequestContext};
 use crate::application::server::dispatch::Dispatcher;
@@ -273,12 +274,69 @@ impl HttpHandler {
         stored.map_or_else(|| self.seed().peer, HttpSession::peer_of)
     }
 
+    /// The peer for a SEP-2575 stateless request, read from its own `_meta`.
+    ///
+    /// This is the answer to "which revision is this, and what may the client
+    /// do", and it comes from the request and nowhere else. That is the
+    /// specification's requirement and the reason it is a separate function
+    /// rather than a branch inside [`seed`](Self::seed): the SEP says a server
+    /// MUST NOT infer capabilities from prior requests, so any path that could
+    /// read them off a previous one would be a latent version of the bug the
+    /// SEP is closing.
+    ///
+    /// No negotiation happens here. `negotiate_server` picks a version from an
+    /// *offer*, and a stateless request is not an offer — the client has said
+    /// which version it is using, and the only question is whether this build
+    /// speaks it. A revision this build does not have is refused outright
+    /// rather than answered under a nearby one, because answering a
+    /// `2026-07-28` request on a `2025-11-25` profile is the exact defect that
+    /// made the transport answer a negotiated request with its own revision.
+    ///
+    /// # Errors
+    ///
+    /// [`DispatchError::UnsupportedVersion`] for a revision this build has no
+    /// wire types for, carrying the versions it does speak, and
+    /// [`DispatchError::MalformedRequestMeta`] for a `_meta` that is missing
+    /// either required key.
+    fn peer_from_meta(
+        params: &JsonObject,
+    ) -> Result<PeerSession, crate::application::server::DispatchError> {
+        let meta = RequestMeta::read(params)
+            .map_err(|_| crate::application::server::DispatchError::MalformedRequestMeta)?;
+        let supported = SupportedVersions::all()
+            .map_err(|_| crate::application::server::DispatchError::UnnegotiableVersion)?;
+        if !supported.contains(&meta.version) {
+            return Err(
+                crate::application::server::DispatchError::UnsupportedVersion {
+                    requested: meta.version.as_wire().into_owned(),
+                    supported: supported
+                        .into_iter()
+                        .rev()
+                        .map(|version| version.as_wire().into_owned())
+                        .collect(),
+                },
+            );
+        }
+        Ok(Self::session_for(meta.version, meta.capabilities).peer)
+    }
+
     /// A session at the ceiling, for a connection that has not handshaken.
     fn seed(&self) -> HttpSession {
+        Self::session_for(self.ceiling, CapabilitySet::empty())
+    }
+
+    /// A peer resolved for `version` and what the client said it supports.
+    ///
+    /// Shared by the two callers that need a session with no handshake behind
+    /// it: the ceiling seed for a request that has not negotiated, and the
+    /// stateless peer, which differs only in that it knows its revision and its
+    /// capabilities. Building both from one function is what keeps the
+    /// stateless path from quietly acquiring a difference of its own.
+    fn session_for(version: ProtocolVersion, client_caps: CapabilitySet) -> HttpSession {
         let profile = resolve(Negotiation {
-            version: self.ceiling,
-            client_caps: CapabilitySet::empty(),
-            server_caps: CapabilitySet::all_for(self.ceiling),
+            version,
+            client_caps,
+            server_caps: CapabilitySet::all_for(version),
             transport: TransportKind::StreamableHttp,
         });
         let tail = Tail::new(TAIL_CAPACITY);
@@ -286,7 +344,7 @@ impl HttpHandler {
         let sink = Arc::new(TailSink { tail: tail.clone() });
         HttpSession {
             peer: PeerSession::new(
-                self.ceiling,
+                version,
                 profile,
                 SessionId::new(1),
                 TransportKind::StreamableHttp,
@@ -417,17 +475,42 @@ impl HttpHandler {
 }
 
 impl RequestHandler<HttpSession> for HttpHandler {
-    /// Whether a body with no session header opens one.
+    /// What a body means when the request named no session.
     ///
-    /// Only `initialize` does. Anything else arriving without a session id is a
-    /// stateful call missing its header, which the router answers with a `400`
-    /// and never hands here — so returning [`Unsessioned::NeedsSession`] for it
-    /// is not a guess, it is the arm that produces that `400`.
+    /// Three arms, and which one a body falls in is a wire-format question
+    /// this method can answer on its own:
+    ///
+    /// - `initialize` opens a session. It is the only method that does.
+    /// - A body whose `params._meta` names
+    ///   [`PROTOCOL_VERSION_KEY`](crate::application::mcp::request_meta::PROTOCOL_VERSION_KEY)
+    ///   is a SEP-2575 stateless request. It carries its own revision and its
+    ///   own capabilities, so it needs no session and is served against its
+    ///   own profile.
+    /// - Anything else is a stateful call missing its header, which the router
+    ///   answers with a `400` and never hands here — so returning
+    ///   [`Unsessioned::NeedsSession`] for it is not a guess, it is the arm
+    ///   that produces that `400`.
+    ///
+    /// The version key is what makes a body self-describing, and it is the
+    /// only member that can: capabilities without a revision would not say
+    /// which gates the answer is read against.
+    ///
+    /// This runs on every sessionless POST, so the check is a lookup and not a
+    /// parse — a full [`RequestMeta::read`] would decode the whole body only
+    /// for a caller with a session header to throw it away.
+    ///
+    /// [`RequestMeta::read`]: crate::application::mcp::request_meta::RequestMeta::read
     fn unsessioned(&self, body: &[u8]) -> Unsessioned {
-        match method_of(body).as_deref() {
-            Some("initialize") => Unsessioned::Establishing,
-            _ => Unsessioned::NeedsSession,
+        let Some(method) = method_of(body) else {
+            return Unsessioned::NeedsSession;
+        };
+        if method == "initialize" {
+            return Unsessioned::Establishing;
         }
+        if declares_own_version(body) {
+            return Unsessioned::Stateless;
+        }
+        Unsessioned::NeedsSession
     }
 
     /// Runs one request, and answers it.
@@ -452,12 +535,19 @@ impl RequestHandler<HttpSession> for HttpHandler {
         // configured to answer. See [`Streaming`].
         let streaming = call.streaming;
         let opening = matches!(call.session, SessionHandle::Establishing);
+        let stateless = matches!(call.session, SessionHandle::Stateless);
         let stored = match &call.session {
             SessionHandle::Establishing | SessionHandle::Stateless => None,
             SessionHandle::Live { session, .. } => Some(Arc::clone(session)),
         };
         // The principal is this request's, not the session's — see
         // `peer_for`, where the reasoning lives.
+        //
+        // A stateless request's peer is *not* built here, because there is
+        // nothing yet to build it from: the revision and the capabilities both
+        // live in this request's `_meta`, and the body has not been decoded
+        // until the future below runs. The seed peer stands in for that case
+        // and is replaced before anything reads it.
         let peer = self
             .peer_for(stored.as_ref())
             .with_auth(call.context.clone());
@@ -508,9 +598,32 @@ impl RequestHandler<HttpSession> for HttpHandler {
 
             let params = params_of(&envelope)?;
             let method = envelope.method_str().unwrap_or_default();
+
+            // SEP-2575: the request's own `_meta` settles which revision this
+            // is and what the client can do, because there is no session that
+            // remembers either. Reading it here rather than carrying anything
+            // forward is the spec's requirement and not a detail — "Servers
+            // MUST NOT infer capabilities from prior requests" is exactly the
+            // bug a session-shaped peer would introduce.
+            //
+            // The error is answered on the wire rather than raised: the client
+            // sent a well-formed request with a missing key, which is
+            // `-32602`, and the answer belongs in the body with the request's
+            // id on it.
+            let peer_for_now = if stateless {
+                match Self::peer_from_meta(&params) {
+                    Ok(peer) => peer.with_auth(call.context.clone()),
+                    Err(refusal) => {
+                        let id = envelope.id().map(WireId::to_owned);
+                        let document = refusal_document(id.as_ref(), &refusal);
+                        return Self::response(&document, None, None);
+                    }
+                }
+            } else {
+                peer
+            };
             // Held only as long as this body. The task below builds its own
             // from the stored session, because it outlives both of them.
-            let peer_for_now = peer;
             let context = RequestContext::for_request_with_state(
                 &peer_for_now,
                 RequestId::from_wire(id.as_ref()),
@@ -773,10 +886,39 @@ fn refusal_document(
     error: &crate::application::server::DispatchError,
 ) -> Value {
     let (code, message) = error.as_wire();
+    // SEP-2575 gives `-32022` a `data` member the client acts on: the revision
+    // it asked for and every revision this server speaks, so it can retry
+    // rather than guess. A code without its data is a code that tells the
+    // client the problem and withholds the fix.
+    if let crate::application::server::DispatchError::UnsupportedVersion {
+        requested,
+        supported,
+    } = error
+        && let Some(id) = id
+        && let Ok(data) = unsupported_version_data(requested, supported)
+    {
+        return reply::error_reply_with_data(id, code, &message, &data);
+    }
     id.map_or_else(
         || reply::unidentified_error_reply(code, &message),
         |id| reply::error_reply(id, code, &message),
     )
+}
+
+/// The `data` SEP-2575 requires on `-32022`.
+///
+/// Both members are required by the schema, and the list is this build's
+/// revisions in the order the specification states them as supported — which
+/// is newest first, because a client retrying a too-new version wants the
+/// closest thing it can reach rather than the oldest.
+fn unsupported_version_data(
+    requested: &str,
+    supported: &[String],
+) -> Result<JsonObject, crate::domain::ir::JsonObjectError> {
+    JsonObject::from_value(serde_json::json!({
+        "requested": requested,
+        "supported": supported,
+    }))
 }
 
 /// Checks the `MCP-Protocol-Version` header against what the session agreed.
@@ -807,6 +949,28 @@ fn method_of(body: &[u8]) -> Option<String> {
         return None;
     };
     envelope.method_str().map(str::to_owned)
+}
+
+/// Whether a body is a SEP-2575 stateless request.
+///
+/// The test is the presence of the version key in `params._meta`, which is
+/// what makes a request carry its own revision rather than borrow a session's.
+/// A batch, a reply, or a body that will not decode has no params to look in
+/// and is not a stateless request; the caller's own decode will say why.
+fn declares_own_version(body: &[u8]) -> bool {
+    let Ok(decoded) = decode(body) else {
+        return false;
+    };
+    let Frame::Single(envelope) = decoded else {
+        return false;
+    };
+    let Some(params) = envelope.params() else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(params.get()) else {
+        return false;
+    };
+    declares_version(&parsed)
 }
 
 /// The params object a request carries, or an empty one.

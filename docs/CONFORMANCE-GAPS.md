@@ -19,7 +19,7 @@ cargo run -p protocol-droid-cli --all-features -- \
 | `2025-03-26`   |      — |      — |     — |
 | `2025-06-18`   |     55 |      0 |    55 |
 | `2025-11-25`   |     81 |      0 |    81 |
-| `2026-07-28`   |     11 |    108 |   119 |
+| `2026-07-28`   |     81 |     38 |   119 |
 
 `2025-03-26` is absent because the pinned suite ships no `2025-03-26`
 scenario set. That exclusion is recorded in
@@ -32,41 +32,64 @@ and the reason is one lifecycle change rather than a hundred.
 ## `2026-07-28`: the stateless lifecycle
 
 `2026-07-28` replaces the session-required Streamable HTTP lifecycle with a
-stateless one. A client sends no `Mcp-Session-Id`, and it does not keep a GET
-stream open to receive server-initiated messages. The lifecycle this crate
-serves is session-required: a request without a session header is refused
-with `-32600 missing_session`, and because that is the *first* thing every
-scenario does after `initialize`, the failure is total rather than partial.
+stateless one. A client sends no `Mcp-Session-Id`, and every request carries
+its own revision and its own capabilities in `params._meta` under
+SEP-2575. This crate now serves that: `Unsessioned::Stateless` existed in the
+router with no producer, and the handler now produces it when a body names
+`io.modelcontextprotocol/protocolVersion`.
 
-```text
-Error: Failed: this request requires an Mcp-Session-Id header
-```
-
-That single refusal accounts for almost all 108. It is one gap with one
-cause, not a list.
+The peer for such a request is built from that `_meta` alone —
+`HttpHandler::peer_from_meta` — because SEP-2575 says a server MUST NOT infer
+capabilities from prior requests. Reading them off a session would be exactly
+the inference the SEP closes.
 
 ## `2026-07-28`: SEP-2575
 
-Separate from the lifecycle, and independent of it — these fail on a server
-that *is* stateless too:
+- `server/discover` is implemented, with the five members the schema
+  requires (`resultType`, `supportedVersions`, `ttlMs`, `cacheScope`,
+  `capabilities`) and defined only on the revisions that have it. The
+  advertised capabilities are the profile's own advertisement, so a client
+  that discovers `prompts` cannot find `prompts/get` refused afterwards.
+- `-32022 UnsupportedProtocolVersionError` is produced for a revision this
+  build does not speak, with `data.supported` listing every revision it does
+  — newest first, which is the order a retrying client wants.
+- A `_meta` missing `protocolVersion` or `clientCapabilities` is `-32602`,
+  distinguished from a named-but-unknown version, which is `-32022`.
 
-- `server/discover` is not implemented. The suite requires it, requires a
-  server that supports prompts to declare `prompts` in its `DiscoverResult`,
-  and requires the declared `capabilities` to match what the server actually
-  honours on real RPC calls.
-- `_meta` on a stateless request. SEP-2575 carries
-  `io.modelcontextprotocol/protocolVersion` and
-  `io.modelcontextprotocol/clientCapabilities` there. This crate reads the
-  protocol version from the `initialize` handshake, which a stateless peer
-  does not have.
-- `sep-2575-http-server-error-jsonrpc-id` — error responses must carry the
-  request's JSON-RPC id. This crate answers a pre-routing refusal with
-  `id: null`, because the refusal happens before the id has been read off
-  the envelope.
+## `2026-07-28`: SEP-2549 result envelope
 
-The third is the one to fix first regardless of the other two: a transport
-that cannot echo an id it was handed has a defect that no revision gate
-reaches.
+Every result at this revision requires `resultType`, and the five cacheable
+results (four listings and `resources/read`) additionally require `ttlMs` and
+`cacheScope`. This was the single largest remaining cause: without it every
+list and read answer was schema-invalid, and the suite's client aborts on the
+first invalid message, so one missing member took out whole scenarios.
+
+`Dispatcher::dispatch` stamps it once on the way out rather than in each of
+the ten result-producing methods, and `result_envelope_defined_in` keeps it
+off the four revisions whose schemas have no such member.
+
+## Still failing
+
+| Scenario | Passing | Failing | Why |
+| -------- | ------: | ------: | --- |
+| `server-stateless` | 8 | 21 | `subscriptions/listen` is unimplemented; the suite waits on a stream that never streams. Also wants `-32020` header-mismatch, `-32021` missing-capability, and `404` on removed legacy methods. |
+| `http-custom-header-server-validation` | 1 | 5 | `Mcp-Method` / `Mcp-Name` are not enforced against the body at this revision. |
+| `tools-call-with-progress` | 1 | 1 | Progress notifications are not delivered on a stateless request. |
+| `input-required-result-*` (10) | 1–3 each | 1 each | Elicitation is not modelled as `InputRequiredResult` at this revision. |
+
+Three scenarios — `resources-list`, `resources-read-text` and
+`http-header-validation` — abort in the suite's client rather than reporting a
+denominator, so their checks are counted as failures here without a measured
+split.
+
+### Carried-over
+
+- **Error responses do not always carry the request's JSON-RPC id.** A
+  pre-routing refusal answers `id: null`, because the refusal happens before
+  the id is read off the envelope. This is the one item here worth fixing
+  regardless of revision, and it is independent of everything above: a
+  transport that cannot echo an id it was handed has a defect no revision gate
+  reaches.
 
 ## What is *not* a gap
 

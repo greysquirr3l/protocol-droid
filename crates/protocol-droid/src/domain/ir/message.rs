@@ -283,6 +283,20 @@ pub enum IrErrorCode {
 }
 
 impl IrErrorCode {
+    /// `-32022`, SEP-2575's unsupported-protocol-version code.
+    ///
+    /// Named rather than written at each use because the specification gives
+    /// it meaning rather than just a number: it is the code that carries
+    /// `data.supported`, so a client knows to retry against a revision this
+    /// server speaks instead of hunting for a bug in its own request. A bare
+    /// `-32022` at a call site reads as a typo, and this one is easy to typo.
+    ///
+    /// It lives in the implementation-defined range, which is why it is
+    /// [`Implementation`](Self::Implementation) and not a named variant of its
+    /// own: a new variant would be a promise that no other code can hold,
+    /// since nothing stops a peer sending this number for an unrelated reason.
+    pub const UNSUPPORTED_PROTOCOL_VERSION: Self = Self::Implementation(-32022);
+
     /// The numeric wire value.
     #[must_use]
     pub const fn code(self) -> i64 {

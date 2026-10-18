@@ -368,6 +368,14 @@ async fn exchange(
         .map_err(|error| Failure::from(format!("the fixture is not JSON: {error}")))?;
     let got: serde_json::Value = serde_json::from_str(called.as_str())
         .map_err(|error| Failure::from(format!("the answer is not JSON: {error}")))?;
+
+    // `2026-07-28` wraps every result in SEP-2549's envelope, so the answer
+    // legitimately carries `resultType` on top of what the tool returned.
+    // Comparing whole documents would make this test assert that the envelope
+    // is absent, which is false for one revision and true for the other four —
+    // and it would say nothing about the thing this test is for, which is that
+    // the handler's own members survive the round trip unchanged.
+    let got = strip_result_envelope(got);
     if sent != got {
         return Err(Failure::from(format!(
             "{v_client} -> {v_server}: sent {sent}, got {got}"
@@ -375,6 +383,21 @@ async fn exchange(
     }
 
     Ok(())
+}
+
+/// Removes the members SEP-2549 adds to a result at `2026-07-28`.
+///
+/// A list of names rather than a pattern, because a blanket filter would also
+/// drop a `resultType` the *tool* had returned on an older revision, and the
+/// point of the comparison is that the tool's own members are untouched.
+fn strip_result_envelope(result: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(mut members) = result else {
+        return result;
+    };
+    for envelope_member in ["resultType", "ttlMs", "cacheScope"] {
+        members.remove(envelope_member);
+    }
+    serde_json::Value::Object(members)
 }
 
 /// The tool names in a `tools/list` answer.

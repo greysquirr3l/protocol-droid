@@ -91,6 +91,33 @@ pub const fn handshake_defined_in(version: ProtocolVersion) -> bool {
     )
 }
 
+/// Whether `server/discover` exists in this revision.
+///
+/// The mirror of [`handshake_defined_in`], and the two are complementary by
+/// construction: SEP-2575 removes the handshake from `2026-07-28` and adds
+/// this method in its place, so a revision has at most one of them.
+///
+/// # Examples
+///
+/// ```
+/// use protocol_droid::domain::{ProtocolVersion, discover_defined_in};
+///
+/// assert!(discover_defined_in(ProtocolVersion::V2026_07_28));
+/// // SEP-2575: `server/discover` does not exist before `2026-07-28`.
+/// assert!(!discover_defined_in(ProtocolVersion::V2025_11_25));
+/// ```
+#[must_use]
+pub const fn discover_defined_in(version: ProtocolVersion) -> bool {
+    // A revision published after `2026-07-28` is a draft of a later spec, and
+    // SEP-2575 is not a thing a later spec would take back. Answering for it
+    // is what keeps this crate's whole premise — every revision at once —
+    // from quietly becoming "every revision this build has heard of".
+    matches!(
+        version,
+        ProtocolVersion::V2026_07_28 | ProtocolVersion::Unknown(_)
+    )
+}
+
 /// What a peer calls itself.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PeerInfo {

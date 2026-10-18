@@ -69,9 +69,9 @@ pub use mcp::{
 };
 pub use negotiation::{
     NegotiatedSession, NegotiationError, PeerInfo, ServerDecision, StatelessRequest,
-    assumed_version, assumed_version_without_signal, check_protocol_header, handshake_defined_in,
-    is_reserved_meta_key, negotiate_client, negotiate_server, negotiate_stateless,
-    stateless_meta_keys,
+    assumed_version, assumed_version_without_signal, check_protocol_header, discover_defined_in,
+    handshake_defined_in, is_reserved_meta_key, negotiate_client, negotiate_server,
+    negotiate_stateless, stateless_meta_keys,
 };
 pub use protocol_version::{ParseProtocolVersionError, ProtocolVersion, UnknownVersionError};
 pub use release_date::{ParseReleaseDateError, ReleaseDate};

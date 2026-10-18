@@ -9,3 +9,4 @@
 //! Post-MVP protocols slot in beside `initialize` in this directory.
 
 pub mod initialize;
+pub mod request_meta;
