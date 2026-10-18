@@ -23,13 +23,15 @@
 //! specification does not describe or is an impostor, and quietly normalising
 //! would accept the second.
 //!
-//! **Absent is tolerated.** `2026-07-28` changelog §7 (SEP-2468) makes the
-//! server's obligation a **SHOULD** — include `iss` — and the client's a
-//! **MUST** *validate a present* `iss`. So a response with no `iss` is
-//! accepted, and one with a wrong `iss` is fatal. RFC 9207 alone would be
-//! stricter: a server that advertises `iss` support in its metadata MUST always
-//! send it, so an absent value from such a server is a broken server. This
-//! follows the MCP rule because it is the more specific one, and records why.
+//! **Absent depends on what the server advertised.** The authorization page's
+//! table (SEP-2468, RFC 9207 §2.4) decides it: a server that sets
+//! `authorization_response_iss_parameter_supported: true` and then omits `iss`
+//! is refused, and a server that does not advertise it may omit `iss`. A
+//! present `iss` is compared either way.
+//! <https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#authorization-response-validation>
+//! [`check_response_issuer`] is the not-advertised row, kept for callers that
+//! have no metadata to read the flag from; a client that discovered the server
+//! calls [`check_response_issuer_advertised`].
 
 use crate::domain::mcp::authorization::AuthorizationModel;
 
@@ -53,11 +55,20 @@ pub enum AuthorizationResponseError {
         /// The issuer the response claimed.
         presented: String,
     },
+
+    /// The server advertised `authorization_response_iss_parameter_supported`
+    /// and the response carried no `iss`.
+    ///
+    /// RFC 9207 §2.4: such a server must always send it, so a response
+    /// without one did not come from the server the client asked.
+    #[error("the authorization server advertised `iss` and the response omitted it")]
+    IssuerMissing,
 }
 
 /// Check an authorization response's `iss` against the issuer the client asked.
 ///
-/// Returns `Ok(())` for a response that carries no `iss`, and for one that
+/// The not-advertised row: returns `Ok(())` for a response that carries no
+/// `iss`, and for one that
 /// carries the expected issuer. Anything else is a mix-up attempt and the
 /// client must not proceed with the grant.
 ///
@@ -97,6 +108,26 @@ pub fn check_response_issuer(
             presented: presented.to_owned(),
         }),
     }
+}
+
+/// [`check_response_issuer`], knowing whether the server advertised
+/// `authorization_response_iss_parameter_supported`.
+///
+/// # Errors
+///
+/// [`AuthorizationResponseError::IssuerMissing`] for an advertising server
+/// that omitted `iss`, and [`AuthorizationResponseError::IssuerMismatch`] for
+/// a present `iss` that is not the expected one.
+pub fn check_response_issuer_advertised(
+    model: &AuthorizationModel,
+    expected: &str,
+    presented: Option<&str>,
+    advertised: bool,
+) -> Result<(), AuthorizationResponseError> {
+    if model.issuer_parameter && advertised && presented.is_none() {
+        return Err(AuthorizationResponseError::IssuerMissing);
+    }
+    check_response_issuer(model, expected, presented)
 }
 
 #[cfg(test)]

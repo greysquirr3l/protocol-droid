@@ -66,7 +66,7 @@
 //! [`BatchPolicy`] and asks it against the session's profile, because whether
 //! a batch is legal is a negotiation outcome and not a transport fact.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -85,7 +85,7 @@ use crate::domain::RequestId;
 use crate::domain::ir::{IrErrorCode, JsonObject};
 use crate::domain::jsonrpc::reply::{self, ReplyError};
 use crate::domain::jsonrpc::{DecodeError, Envelope, Frame, WireId, decode};
-use crate::domain::session::CancellationToken;
+use crate::domain::session::{AbortReason, CancellationToken};
 
 /// The answer to a batch the session never negotiated.
 const BATCHING_REFUSED: &str = "batching was not negotiated for this session";
@@ -103,6 +103,8 @@ const IGNORED_REPLY: &str = "ignored a reply-shaped frame: no callback exchange 
 
 /// What is said when the peer closes the stream cleanly.
 const PEER_CLOSED: &str = "the peer closed the stream; the session is over";
+
+mod stateless;
 
 /// Reads a peer's frames, routes them, and writes the answers back.
 ///
@@ -133,6 +135,12 @@ pub struct ServeLoop<R, W, DW, P> {
     /// How the input ended while a handler was running, if it did: `Ok` for a
     /// clean close, `Err` for a failure, reported once the backlog is served.
     ended: Option<Result<(), SourceError>>,
+    /// Open `2026-07-28` listen streams, by their request id as JSON text.
+    /// Each guard ends its subscription when the client cancels it or the
+    /// loop ends.
+    listens: HashMap<String, ListSubscription>,
+    /// The last session id handed to a stateless request.
+    stateless_ids: u64,
 }
 
 impl<R, W, DW, P> core::fmt::Debug for ServeLoop<R, W, DW, P> {
@@ -229,6 +237,10 @@ impl<R, W, DW, P> ServeLoop<R, W, DW, P> {
             exchange,
             backlog: VecDeque::new(),
             ended: None,
+            listens: HashMap::new(),
+            // Clear of the handshake session's id, so a stateless request's
+            // idempotency keys can never coincide with the session's.
+            stateless_ids: 1 << 32,
         }
     }
 }
@@ -236,7 +248,7 @@ impl<R, W, DW, P> ServeLoop<R, W, DW, P> {
 impl<R, W, DW, P> ServeLoop<R, W, DW, P>
 where
     R: AsyncRead + Unpin + Send,
-    W: AsyncWrite + Unpin + Send,
+    W: AsyncWrite + Unpin + Send + 'static,
     DW: AsyncWrite + Unpin + Send,
     P: BatchPolicy + Send + Sync,
 {
@@ -454,6 +466,23 @@ where
             },
         };
 
+        let method: &str = envelope.method_str().unwrap_or_default();
+
+        // A cancellation that names an open listen stream ends it. Any other
+        // cancellation names a request that is not in flight — the loop only
+        // reaches here between requests — so it is a no-op, as the
+        // specification asks.
+        if method == "notifications/cancelled" {
+            let _ = self.cancel_listen(&params);
+            return Ok(None);
+        }
+
+        // SEP-2575: a request that names its own revision in `_meta` is served
+        // from that alone, with no handshake behind it.
+        if names_own_revision(&params) {
+            return self.answer_stateless(envelope.id(), method, &params).await;
+        }
+
         // The id is carried through untouched: the peer's `WireId` becomes
         // the handler's `RequestId` and is written back from the same value.
         let context = RequestContext::for_request_with_state(
@@ -463,7 +492,6 @@ where
             progress_token(&params),
             Arc::clone(self.dispatcher.state()),
         );
-        let method: &str = envelope.method_str().unwrap_or_default();
 
         // `initialize` is the one method that changes the session rather than
         // being answered from it. The handshake resolves a profile for the
@@ -505,7 +533,13 @@ where
             }));
         }
 
-        let outcome = self.run_handler(&context, method, &params).await;
+        let (outcome, cancelled) = self.run_handler(&context, method, &params).await;
+        // A cancelled request is answered with nothing: the specification has
+        // the receiver send no further messages for it, and the client has
+        // already stopped waiting.
+        if cancelled {
+            return Ok(None);
+        }
 
         // A notification is served and never answered — not even with an
         // error, which is what JSON-RPC 2.0 requires, and which is also what
@@ -545,10 +579,11 @@ where
         context: &RequestContext,
         method: &str,
         params: &JsonObject,
-    ) -> Result<JsonObject, DispatchError> {
+    ) -> (Result<JsonObject, DispatchError>, bool) {
         let dispatcher = Arc::clone(&self.dispatcher);
         let call = dispatcher.dispatch(context, method, params);
         tokio::pin!(call);
+        let mut cancelled = false;
         loop {
             let listening = self.ended.is_none();
             let step = tokio::select! {
@@ -557,11 +592,19 @@ where
                 frame = self.source.next_frame(), if listening => Step::Frame(frame),
             };
             match step {
-                Step::Done(outcome) => return outcome,
+                Step::Done(outcome) => return (outcome, cancelled),
                 Step::Frame(Ok(Some(frame))) => {
-                    if !self.take_reply(&frame) {
-                        self.backlog.push_back(frame);
+                    if self.take_reply(&frame) {
+                        continue;
                     }
+                    if cancels(&frame, context) {
+                        context
+                            .cancellation()
+                            .cancel(AbortReason::Cancelled(None));
+                        cancelled = true;
+                        continue;
+                    }
+                    self.backlog.push_back(frame);
                 }
                 Step::Frame(Ok(None)) => {
                     self.exchange.close();
@@ -687,6 +730,26 @@ pub enum ServeError {
     /// rather than serve requests from a state only it knows about.
     #[error("the diagnostics channel could not be written: {0}")]
     Diagnostics(#[source] StdioError),
+}
+
+/// Whether `params` names its own revision in `_meta` (SEP-2575).
+fn names_own_revision(params: &JsonObject) -> bool {
+    serde_json::from_str::<Value>(params.as_str())
+        .is_ok_and(|parsed| crate::application::mcp::request_meta::declares_version(&parsed))
+}
+
+/// Whether `frame` is a `notifications/cancelled` naming the request `context`
+/// is serving.
+fn cancels(frame: &str, context: &RequestContext) -> bool {
+    let Ok(parsed) = serde_json::from_str::<Value>(frame) else {
+        return false;
+    };
+    parsed.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
+        && parsed
+            .pointer("/params/requestId")
+            .is_some_and(|target| {
+            serde_json::from_str::<Value>(&context.request_id().to_json()).is_ok_and(|id| id == *target)
+        })
 }
 
 /// What one turn of [`ServeLoop::run_handler`] produced.

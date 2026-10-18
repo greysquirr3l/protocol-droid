@@ -64,9 +64,6 @@ None of these is measured by the suite. They're listed because they are real.
   work the bridge does not do yet. The library's own client *does* speak the
   stateless lifecycle (`StatelessHttpClient`, and `Client::connect_to` with an
   `http-stateless:` spec).
-- **No stateless lifecycle over stdio.** A `2026-07-28` peer on stdio is
-  answered only after an `initialize`, and `2026-07-28` has none. The HTTP
-  transport serves the stateless lifecycle in full.
 - **A `Server` cannot be served over the legacy 2024-11-05 HTTP+SSE
   transport.** `LegacyDispatcher` is synchronous and nothing adapts a `Server`
   to it, so a legacy-SSE endpoint needs a hand-written dispatcher. The
@@ -74,6 +71,21 @@ None of these is measured by the suite. They're listed because they are real.
   answers 2024-11-05 clients that speak Streamable HTTP.
 - **The client-side scenarios are not run.** The matrix is server scenarios
   only. A reference client fixture is the open half of T21.
+
+## stdio and the OAuth client
+
+stdio now serves the `2026-07-28` lifecycle: a request naming its revision in
+`_meta` is served with no `initialize`, a `subscriptions/listen` stream shares
+the channel (tagged with its request id, ended by `notifications/cancelled`),
+and a cancelled in-flight request is not answered.
+
+The client half of the authorization flow has its pure decisions in place —
+challenge parsing, discovery URL order, canonical resource, scope selection,
+step-up, `offline_access`, issuer validation (including the advertised-`iss`
+row), and the three token-endpoint authentication methods — but no network
+orchestrator ties them together, and the client conformance scenarios (OAuth,
+`request-metadata`, `http-*-headers`, `sep-2322-client-request-state`) are not
+run: there is no reference client fixture yet.
 
 ## How to reproduce a single scenario
 

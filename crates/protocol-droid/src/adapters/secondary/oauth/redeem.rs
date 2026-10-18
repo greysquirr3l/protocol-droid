@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use crate::adapters::secondary::oauth::http_body::{describe, read_capped};
+use crate::domain::oauth::registration::TokenAuthMethod;
 use crate::application::oauth::redeem::{TokenEndpoint, TokenEndpointError, TokenRequest};
 use crate::domain::oauth::issued_token::{IssuedToken, TokenResponseError};
 
@@ -80,14 +81,24 @@ impl TokenEndpoint for HttpTokenEndpoint {
             ("code", request.code()),
             ("redirect_uri", request.redirect_uri()),
             ("code_verifier", request.code_verifier().as_str()),
-            ("client_id", request.client_id().as_str()),
         ];
 
-        // Absent for a public client. See the module docs: an empty member is a
-        // value, and §2.3.1 reads the member's presence as a claim of
-        // confidentiality.
-        if let Some(secret) = request.client_secret() {
-            form.push(("client_secret", secret.expose()));
+        // RFC 6749 §2.3.1. `client_secret_basic` puts both halves in the
+        // `Authorization` header, each `application/x-www-form-urlencoded`
+        // first, and leaves `client_id` out of the body; `client_secret_post`
+        // puts both in the body; a public client sends its id and no secret.
+        // An absent secret is never sent empty: the member's presence is a
+        // claim that the client is confidential.
+        let mut basic = None;
+        match (request.auth_method(), request.client_secret()) {
+            (TokenAuthMethod::ClientSecretBasic, Some(secret)) => {
+                basic = Some(basic_credentials(request.client_id().as_str(), secret.expose()));
+            }
+            (TokenAuthMethod::ClientSecretPost, Some(secret)) => {
+                form.push(("client_id", request.client_id().as_str()));
+                form.push(("client_secret", secret.expose()));
+            }
+            _ => form.push(("client_id", request.client_id().as_str())),
         }
 
         // RFC 8707 §2: one `resource` member per indicator, repeated rather
@@ -95,11 +106,15 @@ impl TokenEndpoint for HttpTokenEndpoint {
         for resource in request.resource().iter() {
             form.push(("resource", resource));
         }
+        if let Some(scope) = request.scope() {
+            form.push(("scope", scope));
+        }
 
-        let response = self
-            .http
-            .post(&*self.endpoint)
-            .form(&form)
+        let mut post = self.http.post(&*self.endpoint).form(&form);
+        if let Some(credentials) = basic {
+            post = post.header(reqwest::header::AUTHORIZATION, credentials);
+        }
+        let response = post
             .send()
             .await
             .map_err(|failure| TokenEndpointError::Unavailable(describe(failure)))?;
@@ -132,6 +147,17 @@ impl TokenEndpoint for HttpTokenEndpoint {
 
         IssuedToken::parse(&body).map_err(TokenEndpointError::Refused)
     }
+}
+
+/// `Basic base64(urlencode(id) ":" urlencode(secret))`, per RFC 6749 §2.3.1.
+fn basic_credentials(id: &str, secret: &str) -> String {
+    use base64::Engine as _;
+    let encode = |text: &str| url::form_urlencoded::byte_serialize(text.as_bytes()).collect::<String>();
+    let pair = format!("{}:{}", encode(id), encode(secret));
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(pair.as_bytes())
+    )
 }
 
 #[cfg(test)]

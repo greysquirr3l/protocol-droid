@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use super::client::PendingAuthorization;
 use crate::domain::mcp::authorization::AuthorizationModel;
-use crate::domain::oauth::issuer::{AuthorizationResponseError, check_response_issuer};
+use crate::domain::oauth::issuer::{AuthorizationResponseError, check_response_issuer_advertised};
 use crate::domain::oauth::pkce::CodeVerifier;
 use crate::domain::oauth::registration::ClientId;
 use crate::domain::oauth::resource::ResourceBinding;
@@ -300,7 +300,12 @@ pub fn authorize_callback(
     // Second, and against what the client recorded on the way out. SEP-2468
     // makes a present `iss` mandatory to check and an absent one tolerable, and
     // that asymmetry lives in the predicate rather than being re-decided here.
-    check_response_issuer(model, pending.issuer(), callback.issuer())?;
+    check_response_issuer_advertised(
+        model,
+        pending.issuer(),
+        callback.issuer(),
+        pending.iss_advertised(),
+    )?;
 
     // Third: a response is a grant or a refusal, never both and never neither.
     if let Some(code) = callback.code() {

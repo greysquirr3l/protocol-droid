@@ -180,24 +180,7 @@ pub(super) const fn status_for(error: &DispatchError) -> StatusCode {
 /// The JSON-RPC error document for `error`, with the `data` its code requires.
 pub(super) fn error_document(id: Option<&WireId<'_>>, error: &DispatchError) -> Value {
     let (code, message) = error.as_wire();
-    let data = match error {
-        DispatchError::UnsupportedVersion {
-            requested,
-            supported,
-        } => Some(serde_json::json!({ "requested": requested, "supported": supported })),
-        // A `ClientCapabilities` object keyed by what is missing — not an array
-        // of names. The schema types `requiredCapabilities` as the same object
-        // a client declares, so a client can merge it into its next request.
-        DispatchError::MissingClientCapability { required } => {
-            let capabilities: serde_json::Map<String, Value> = required
-                .iter()
-                .map(|name| ((*name).to_owned(), Value::Object(serde_json::Map::new())))
-                .collect();
-            Some(serde_json::json!({ "requiredCapabilities": capabilities }))
-        }
-        _ => None,
-    };
-    match (id, data.and_then(|data| JsonObject::from_value(data).ok())) {
+    match (id, error.wire_data()) {
         (Some(id), Some(data)) => reply::error_reply_with_data(id, code, &message, &data),
         (Some(id), None) => reply::error_reply(id, code, &message),
         (None, _) => reply::unidentified_error_reply(code, &message),

@@ -19,6 +19,10 @@ pub mod callback;
 #[cfg(feature = "oauth")]
 pub mod client;
 #[cfg(feature = "oauth")]
+pub mod flow;
+#[cfg(feature = "oauth")]
+pub mod metadata;
+#[cfg(feature = "oauth")]
 pub mod redeem;
 #[cfg(feature = "oauth")]
 pub mod registration;

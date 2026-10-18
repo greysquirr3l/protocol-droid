@@ -44,6 +44,15 @@ behaviour, not fixture work, and several of the fixes apply to every revision.
   a handler waits on the client, delivers the answer, and queues any request
   that arrives meanwhile so replies keep their order.
 
+- **The `2026-07-28` lifecycle over stdio**: stateless requests,
+  `subscriptions/listen` on the shared channel, cancellation of an in-flight
+  request or a listen stream, and the same `-32022` / `-32021` data as HTTP.
+- **OAuth client building blocks**: `WWW-Authenticate` parsing, discovery URL
+  ordering, canonical resource URI, scope selection and step-up, metadata
+  parsing with issuer validation, `client_secret_basic` / `_post` / public
+  token authentication, and the `authorization_response_iss_parameter_supported`
+  rule (an advertising server that omits `iss` is refused).
+
 ### Fixed
 
 - **A numeric `progressToken` was echoed back as a string** (`927f9d0`) on every revision,

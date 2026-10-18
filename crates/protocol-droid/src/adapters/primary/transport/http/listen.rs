@@ -44,14 +44,11 @@ use crate::adapters::primary::transport::http::serve::{HttpHandler, Tail, TailSi
 use crate::adapters::primary::transport::http::stateless::{error_document, json_response};
 use crate::adapters::primary::transport::http::stream::{EventStream, StreamError, stream_response};
 use crate::application::server::context::PeerSession;
-use crate::application::server::{DispatchError, ListKind, ListSubscription};
+use crate::application::mcp::subscription;
+use crate::application::server::{DispatchError, ListSubscription};
 use crate::application::session::DynFrameSink;
-use crate::domain::Feature;
 use crate::domain::ir::JsonObject;
 use crate::domain::jsonrpc::WireId;
-
-/// The `_meta` key every message on a subscription carries.
-pub(super) const SUBSCRIPTION_ID_KEY: &str = "io.modelcontextprotocol/subscriptionId";
 
 /// How many undelivered notifications one subscription retains.
 ///
@@ -71,25 +68,6 @@ const LISTEN_CAPACITY: NonZeroUsize = match NonZeroUsize::new(16) {
 /// bytes for long enough closes the connection. Fifteen seconds is inside
 /// every common proxy idle timeout and costs one short line.
 const LISTEN_KEEP_ALIVE: Duration = Duration::from_secs(15);
-
-/// The filter members, with the feature each needs and the kind it maps to.
-const FILTER: [(&str, Feature, ListKind); 3] = [
-    (
-        "toolsListChanged",
-        Feature::ToolsListChanged,
-        ListKind::Tools,
-    ),
-    (
-        "promptsListChanged",
-        Feature::PromptsListChanged,
-        ListKind::Prompts,
-    ),
-    (
-        "resourcesListChanged",
-        Feature::ResourcesListChanged,
-        ListKind::Resources,
-    ),
-];
 
 /// An event stream that holds a subscription for exactly as long as it lives.
 struct Guarded {
@@ -126,62 +104,18 @@ impl HttpHandler {
             );
         };
 
-        // The subset this server will actually honour: requested, and
-        // negotiable on this request's profile. Resource URIs are honoured only
-        // for resources this server lists, for the reason `resources/subscribe`
-        // refuses an unknown one: a watch on a URI the server does not have is
-        // a wait for an update that cannot come.
-        let mut honoured = serde_json::Map::new();
-        let mut kinds = Vec::new();
-        for (member, feature, kind) in FILTER {
-            let requested = filter.get(member).and_then(Value::as_bool) == Some(true);
-            if requested && peer.allows(feature) {
-                honoured.insert(member.to_owned(), Value::Bool(true));
-                kinds.push(kind);
-            }
-        }
-
         let server = self.dispatcher.server();
-        let resources: Vec<String> = if peer.allows(Feature::ResourcesSubscribe) {
-            filter
-                .get("resourceSubscriptions")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .filter(|uri| server.reader(uri).is_some())
-                .map(ToOwned::to_owned)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        if !resources.is_empty() {
-            honoured.insert(
-                "resourceSubscriptions".to_owned(),
-                Value::Array(resources.iter().cloned().map(Value::String).collect()),
-            );
-        }
-
-        let subscription_id = serde_json::from_str::<Value>(&id.to_json()).unwrap_or(Value::Null);
-        let meta = serde_json::json!({ SUBSCRIPTION_ID_KEY: subscription_id });
+        let honoured = subscription::honour(filter, peer, server);
+        let id_value = serde_json::from_str::<Value>(&id.to_json()).unwrap_or(Value::Null);
+        let meta = subscription::tag(&id_value);
         let tail = Tail::new(LISTEN_CAPACITY);
-        tail.push(serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/subscriptions/acknowledged",
-            "params": {
-                "notifications": honoured,
-                "_meta": meta,
-            },
-        }));
+        tail.push(subscription::acknowledgement(&honoured, &meta));
 
         // Subscribed only after the acknowledgement is in the ring, so no
         // change can be queued ahead of it.
-        let sink: std::sync::Arc<dyn DynFrameSink> = std::sync::Arc::new(TailSink { tail: tail.clone() });
-        let handle = server.handle();
-        let subscription = handle.subscribe(&sink, peer.profile(), &kinds, Some(&meta));
-        for uri in &resources {
-            handle.watch_resource(&sink, uri, Some(&meta));
-        }
+        let sink: std::sync::Arc<dyn DynFrameSink> =
+            std::sync::Arc::new(TailSink { tail: tail.clone() });
+        let subscription = subscription::start(server, &sink, peer, &honoured, &meta);
 
         let stream = tail
             .plan(None)

@@ -747,6 +747,38 @@ impl DispatchError {
         }
     }
 
+    /// The `data` member this refusal's code requires, if it has one.
+    ///
+    /// `-32022` carries the revision the client asked for and every revision
+    /// this build speaks; `-32021` carries `requiredCapabilities` as a
+    /// `ClientCapabilities` object keyed by what is missing — not an array of
+    /// names, because the schema types it as the object a client declares.
+    /// Every other refusal carries none. One definition, so stdio and HTTP
+    /// cannot disagree about it.
+    #[must_use]
+    pub fn wire_data(&self) -> Option<JsonObject> {
+        let data = match self {
+            Self::UnsupportedVersion {
+                requested,
+                supported,
+            } => serde_json::json!({ "requested": requested, "supported": supported }),
+            Self::MissingClientCapability { required } => {
+                let capabilities: serde_json::Map<String, serde_json::Value> = required
+                    .iter()
+                    .map(|name| {
+                        (
+                            (*name).to_owned(),
+                            serde_json::Value::Object(serde_json::Map::new()),
+                        )
+                    })
+                    .collect();
+                serde_json::json!({ "requiredCapabilities": capabilities })
+            }
+            _ => return None,
+        };
+        JsonObject::from_value(data).ok()
+    }
+
     /// The code and message pair a transport writes to the wire.
     ///
     /// The message is [`thiserror`]'s own for the variant, never the method

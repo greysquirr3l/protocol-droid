@@ -854,39 +854,15 @@ fn refusal_document(
     error: &crate::application::server::DispatchError,
 ) -> Value {
     let (code, message) = error.as_wire();
-    // SEP-2575 gives `-32022` a `data` member the client acts on: the revision
-    // it asked for and every revision this server speaks, so it can retry
-    // rather than guess. A code without its data is a code that tells the
-    // client the problem and withholds the fix.
-    if let crate::application::server::DispatchError::UnsupportedVersion {
-        requested,
-        supported,
-    } = error
-        && let Some(id) = id
-        && let Ok(data) = unsupported_version_data(requested, supported)
-    {
-        return reply::error_reply_with_data(id, code, &message, &data);
+    // A code whose specification gives it a `data` member — `-32022`'s
+    // supported revisions, `-32021`'s required capabilities — is written with
+    // it: a code without its data tells the client the problem and withholds
+    // the fix.
+    match (id, error.wire_data()) {
+        (Some(id), Some(data)) => reply::error_reply_with_data(id, code, &message, &data),
+        (Some(id), None) => reply::error_reply(id, code, &message),
+        (None, _) => reply::unidentified_error_reply(code, &message),
     }
-    id.map_or_else(
-        || reply::unidentified_error_reply(code, &message),
-        |id| reply::error_reply(id, code, &message),
-    )
-}
-
-/// The `data` SEP-2575 requires on `-32022`.
-///
-/// Both members are required by the schema, and the list is this build's
-/// revisions in the order the specification states them as supported — which
-/// is newest first, because a client retrying a too-new version wants the
-/// closest thing it can reach rather than the oldest.
-fn unsupported_version_data(
-    requested: &str,
-    supported: &[String],
-) -> Result<JsonObject, crate::domain::ir::JsonObjectError> {
-    JsonObject::from_value(serde_json::json!({
-        "requested": requested,
-        "supported": supported,
-    }))
 }
 
 /// Checks the `MCP-Protocol-Version` header against what the session agreed.

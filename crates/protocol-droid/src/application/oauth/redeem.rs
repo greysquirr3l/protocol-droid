@@ -35,7 +35,7 @@ use std::fmt;
 use crate::application::oauth::callback::AuthorizedCode;
 use crate::domain::oauth::issued_token::{IssuedToken, TokenResponseError};
 use crate::domain::oauth::pkce::CodeVerifier;
-use crate::domain::oauth::registration::{ClientId, ClientSecret, RegisteredClient};
+use crate::domain::oauth::registration::{TokenAuthMethod, ClientId, ClientSecret, RegisteredClient};
 use crate::domain::oauth::resource::ResourceParameters;
 
 /// One token request, assembled from an [`AuthorizedCode`] and a registration.
@@ -80,6 +80,8 @@ pub struct TokenRequest<'a> {
     client_id: &'a ClientId,
     client_secret: Option<&'a ClientSecret>,
     resource: &'a ResourceParameters,
+    auth_method: TokenAuthMethod,
+    scope: Option<&'a str>,
 }
 
 impl<'a> TokenRequest<'a> {
@@ -118,6 +120,23 @@ impl<'a> TokenRequest<'a> {
     #[must_use]
     pub const fn client_secret(&self) -> Option<&'a ClientSecret> {
         self.client_secret
+    }
+
+    /// How the client authenticates at the token endpoint.
+    #[must_use]
+    pub const fn auth_method(&self) -> TokenAuthMethod {
+        self.auth_method
+    }
+
+    /// The `scope` to send with the token request, if any.
+    ///
+    /// The authorization page lets a client that wants a refresh token add
+    /// `offline_access` "to the `scope` parameter of the authorization and
+    /// token requests", so the token request carries the scope the
+    /// authorization request asked for.
+    #[must_use]
+    pub const fn scope(&self) -> Option<&'a str> {
+        self.scope
     }
 
     /// The RFC 8707 resource indicators this grant is bound to.
@@ -226,6 +245,20 @@ pub async fn redeem(
     client: &RegisteredClient,
     endpoint: &(impl TokenEndpoint + Sync),
 ) -> Result<IssuedToken, RedeemError> {
+    redeem_with_scope(code, client, endpoint, None).await
+}
+
+/// [`redeem`], sending `scope` with the token request.
+///
+/// # Errors
+///
+/// As [`redeem`].
+pub async fn redeem_with_scope(
+    code: AuthorizedCode,
+    client: &RegisteredClient,
+    endpoint: &(impl TokenEndpoint + Sync),
+    scope: Option<&str>,
+) -> Result<IssuedToken, RedeemError> {
     if code.client_id() != client.client_id() {
         return Err(RedeemError::ClientMismatch {
             expected: code.client_id().clone(),
@@ -243,6 +276,8 @@ pub async fn redeem(
         client_id: code.client_id(),
         client_secret: client.secret(),
         resource: code.resource().token_request(),
+        auth_method: client.auth_method(),
+        scope,
     };
 
     endpoint

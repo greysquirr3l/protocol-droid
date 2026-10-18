@@ -13,3 +13,4 @@ pub mod input_required;
 #[cfg(feature = "http")]
 pub mod param_headers;
 pub mod request_meta;
+pub mod subscription;
