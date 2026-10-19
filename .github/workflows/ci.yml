@@ -118,6 +118,14 @@ jobs:
         with:
           workspaces: . -> target
           key: ${{ matrix.features.name }}
+      # `cargo test` does not build benches, and it does not build examples
+      # unless one is a test target. A bench or example that imports a
+      # feature-gated module without declaring `required-features` therefore
+      # fails only for a consumer who opts into that feature — or for
+      # `cargo check --all-targets`, which nobody ran. `a2a_serving` shipped
+      # exactly this way and broke the plain default build.
+      - name: Check every target builds
+        run: cargo check --workspace --all-targets ${{ matrix.features.args }}
       - name: Test
         # 30 min is generous — the slowest cell (Linux all-features)
         # finishes in ~12 min locally. The ceiling exists because a
