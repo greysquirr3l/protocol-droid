@@ -730,8 +730,16 @@ mod tests {
             Some(Err(error)) => error.to_string(),
             _ => String::from("no error was produced"),
         };
-        for secret in ["the-code", VERIFIER, "s3cret"] {
-            assert!(!rendered.contains(secret), "{rendered} leaked {secret}");
+        // Indexed rather than named: this assertion exists because the values
+        // must *not* appear in the error text, so echoing one in the failure
+        // message would put it in the CI log in exactly the circumstance the
+        // test was written to prevent. The index says which of the three went
+        // wrong, which is all a reader needs to look at the code.
+        for (index, secret) in ["the-code", VERIFIER, "s3cret"].iter().enumerate() {
+            assert!(
+                !rendered.contains(*secret),
+                "credential {index} leaked into the error text: {rendered}"
+            );
         }
         Ok(())
     }
