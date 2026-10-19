@@ -286,6 +286,10 @@ jobs:
     needs: resolve-tag
     if: needs.resolve-tag.outputs.tag != ''
     runs-on: ${{ matrix.os }}
+    # Creating the draft GitHub Release and attaching assets is a write to
+    # `contents`; the workflow-wide default is read-only.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -327,18 +331,40 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
+      # `ring` compiles C and assembly, and the musl targets have no compiler
+      # on the runner. The x86_64 one is `musl-gcc` from `musl-tools`; the
+      # aarch64 one is the GNU cross compiler, which is enough for `ring`
+      # because Rust links musl's libc itself.
+      - name: Install a C compiler for the musl target
+        if: contains(matrix.target, 'linux-musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          else
+            sudo apt-get install -y musl-tools
+            echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+          fi
       - name: Build release binary
+        # Bash on every OS: the default shell on Windows is PowerShell, which
+        # cannot parse `set -euo pipefail`.
+        shell: bash
         # The CLI is a `[[bin]]` in the `protocol-droid-cli` crate. The build
         # is not `--workspace`; only the CLI ships, the library does not.
         # `--locked` is the gate against a Cargo.lock drift the verifier
         # never saw.
         run: |
           set -euo pipefail
+          binary="${{ matrix.binary }}"
           cargo build \
             --release \
             --locked \
             --target "${{ matrix.target }}" \
-            --bin "${{ matrix.binary }}"
+            --bin "${binary%.exe}"
       - name: Package archive
         shell: bash
         run: |
