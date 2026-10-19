@@ -155,10 +155,16 @@ mod tests {
         assert_ne!(first, second, "two draws must not be equal");
         // A `fetch_add` counter fails this even when the values happen to
         // differ; only an off-by-one accident could pass, at 2⁻⁶⁴.
+        //
+        // The message names the delta and not the two ids. The project does not
+        // put a session id in a log line, and a panic message is a log line —
+        // CodeQL flagged it for the same reason a reader would. Nothing is lost:
+        // "the second draw was the first plus one" is the whole diagnosis, and
+        // anyone reproducing it has the ids in hand anyway.
         assert_ne!(
             second.wrapping_sub(first),
             1,
-            "ids {first} and {second} differ by one, which is a counter"
+            "consecutive draws differ by one, which is a counter"
         );
         Ok(())
     }
