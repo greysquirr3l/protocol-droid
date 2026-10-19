@@ -29,7 +29,6 @@ use super::{
     Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned, authenticate, resolve_session,
 };
 use crate::adapters::primary::transport::http::limits::RateLimiter;
-use crate::adapters::primary::transport::http::protected_resource::serve_protected_resource;
 use crate::adapters::primary::transport::http::{
     AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders, ServerConfig,
     SessionStore, Streaming,
@@ -1721,16 +1720,15 @@ async fn the_challenge_resolves_to_a_document_this_server_serves() -> Result<(),
         .ok_or_else(|| fail("a 401 carried no WWW-Authenticate challenge"))?;
     let path = challenged_path(&challenge)?;
 
-    // 3. That path is served, unauthenticated, as JSON.
-    let app = harness
-        .router
-        .clone()
-        .merge(serve_protected_resource(&document()?));
+    // 3. That path is served by this router alone, with no `Authorization`
+    // header and no merge call anywhere — `with_resource_metadata` is the only
+    // setup, and the route is unreachable otherwise.
     let served = Request::builder()
         .uri(&path)
+        .header(header::HOST, HOST)
         .body(Body::empty())
         .map_err(|e| fail(format!("building GET {path}: {e}")))?;
-    let response = app.oneshot(served).await?;
+    let response = harness.router.clone().oneshot(served).await?;
     require(&response.status(), &StatusCode::OK, "metadata status")?;
 
     let content_type = response
@@ -1752,5 +1750,67 @@ async fn the_challenge_resolves_to_a_document_this_server_serves() -> Result<(),
         &Some(json!(RESOURCE)),
         "document resource",
     )?;
+    Ok(())
+}
+
+/// The discovery document is reachable without a credential, and refuses a
+/// `POST`.
+///
+/// Both halves matter. Reachable-because-absent is what stops the mount from
+/// deadlocking the OAuth flow — the client fetches this document precisely
+/// because it has nothing to present — and the `405` keeps it read-only, which
+/// RFC 9728 §3.1 specifies and which a document describing this server has no
+/// business mutating.
+#[tokio::test]
+async fn the_discovery_document_needs_no_credential_and_is_read_only() -> Result<(), TestError> {
+    let harness = Harness::from_parts(
+        publishing()?,
+        Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
+        true,
+        AuthPolicy::Require(ScopeSet::all()),
+        Some(Arc::new(OneToken)),
+    )?;
+    let path = document()?.resource().metadata_path();
+
+    let get = || -> Result<Request<Body>, TestError> {
+        Request::builder()
+            .uri(&path)
+            .header(header::HOST, HOST)
+            .body(Body::empty())
+            .map_err(|e| fail(format!("building GET {path}: {e}")))
+    };
+
+    // No `Authorization` header, under a policy that refuses anonymous callers.
+    // The MCP endpoint is 401 for this very request; the document is not.
+    let served = harness.router.clone().oneshot(get()?).await?;
+    require(&served.status(), &StatusCode::OK, "anonymous GET status")?;
+
+    let mut post = get()?;
+    *post.method_mut() = axum::http::Method::POST;
+    let refused = harness.router.clone().oneshot(post).await?;
+    require(
+        &refused.status(),
+        &StatusCode::METHOD_NOT_ALLOWED,
+        "POST status",
+    )?;
+    Ok(())
+}
+
+/// A server that publishes no document serves no well-known route.
+///
+/// The absence is the contract: an operator who has not configured metadata
+/// gets a `404` rather than a document describing a resource with no
+/// authorization servers, which a client would treat as an offer of zero
+/// issuers rather than as nothing there.
+#[tokio::test]
+async fn no_configured_document_means_no_well_known_route() -> Result<(), TestError> {
+    let harness = Harness::build(true)?;
+    let request = Request::builder()
+        .uri("/.well-known/oauth-protected-resource/mcp")
+        .header(header::HOST, HOST)
+        .body(Body::empty())
+        .map_err(|e| fail(format!("building GET: {e}")))?;
+    let response = harness.router.clone().oneshot(request).await?;
+    require(&response.status(), &StatusCode::NOT_FOUND, "status")?;
     Ok(())
 }

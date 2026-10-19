@@ -15,7 +15,31 @@
 //! discovery step. A deployment can be correctly configured and still be
 //! unreachable in practice.
 //!
-//! The router this builds merges into a consumer's own axum app:
+//! # How it is mounted
+//!
+//! [`ServerConfig::with_resource_metadata`](crate::adapters::primary::transport::http::ServerConfig::with_resource_metadata)
+//! mounts the document on the MCP
+//! router, from the same value that makes the `401` challenge name it. A
+//! consumer configuring a server does nothing else, and the two halves cannot
+//! drift.
+//!
+//! The router in this module is for what that cannot cover: a document served
+//! from a different origin or port than the MCP endpoint, or one routed by a
+//! proxy that sends `/.well-known/` elsewhere.
+//!
+//! # Why the route is mounted inside the MCP router despite needing no credential
+//!
+//! The document is fetched precisely *because* the client could not
+//! authenticate, so [`serve_document`](super::router) skips the authenticator
+//! and the policy. It still passes `enforce_origin`, `enforce_host` and the
+//! rate limiter — the same checks every MCP request on that server faces, and
+//! no more. `OriginPolicy::check` treats an absent `Origin` as the non-browser
+//! client it is, and `check_host` demands only the `Host` a public deployment
+//! already had to configure for its MCP requests to be answered at all.
+//!
+//! # Usually you do not call this
+//!
+//! # The router this builds merges into a consumer's own axum app:
 //!
 //! ```no_run
 //! use axum::Router;
@@ -38,9 +62,12 @@
 //! it is reached before any token exists, and putting it behind the
 //! authenticator would mean the client cannot read the document that tells it
 //! how to authenticate. It also cannot live on the MCP endpoint, which is
-//! POST-only. So it is a separate router a consumer merges — the same decision
-//! [`serve_well_known`](crate::adapters::primary::a2a::well_known_serve::serve_well_known)
-//! makes for the A2A agent card.
+//! POST-only.
+//!
+//! The route is nevertheless mounted on the MCP router rather than left to a
+//! separate one, because the layers it then passes through are exactly the ones
+//! it already faces as an MCP endpoint — and keeping the document beside its
+//! challenge is what stops the two naming different URLs.
 
 use std::sync::Arc;
 
@@ -56,6 +83,11 @@ use crate::domain::mcp::ResourceMetadata;
 const CONTENT_TYPE: &str = "application/json";
 
 /// Returns an axum [`Router`] serving `metadata` at its well-known path.
+///
+/// Most consumers want [`with_resource_metadata`](crate::adapters::primary::transport::http::ServerConfig::with_resource_metadata)
+/// instead, which mounts the same document on the MCP router itself. Reach for
+/// this when the document has to be served from somewhere the MCP router is
+/// not.
 ///
 /// The route is `GET` only. A `POST` to the path gets axum's `405 Method Not
 /// Allowed`, which is correct: §3.1 specifies a `GET` query, and the document

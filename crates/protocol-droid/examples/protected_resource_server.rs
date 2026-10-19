@@ -17,19 +17,21 @@
 //! rather than at the origin root: two resources on one host each get their
 //! own document without the two colliding.
 //!
-//! # Why the two routers are separate
+//! # No merge, and no second router
 //!
-//! `serve_protected_resource` builds its own [`Router`] and this example
-//! merges it. The MCP router cannot serve the document itself, because the
-//! document is reached *before* a client has a token — putting it behind the
-//! authenticator would mean the document that explains how to authenticate is
-//! itself unreachable.
+//! `ServerConfig::with_resource_metadata` mounts the document on the MCP router
+//! and points the `401` challenge at the same URL from the same value. There
+//! is nothing to merge and nothing to keep in step.
 //!
-//! `http_server.rs` shows mounting an MCP router the same way; a full server
-//! wires both together and binds one listener.
+//! The document is reached before a client has a token, so the route
+//! deliberately skips the authenticator — the escape route cannot require the
+//! credential it explains how to obtain. It still passes the same `Host` and
+//! rate-limit checks as every other route on the server.
+//!
+//! `serve_protected_resource` remains for serving the document from a different
+//! origin or port than the MCP endpoint; this example does not need it.
 
-use axum::Router;
-use protocol_droid::adapters::primary::transport::http::protected_resource::serve_protected_resource;
+use protocol_droid::adapters::primary::transport::http::ServerConfig;
 use protocol_droid::domain::mcp::{ResourceMetadata, ResourceUri};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,13 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resource.as_str()
     );
 
-    let app: Router = Router::new().merge(serve_protected_resource(&metadata));
-
-    // A full server merges an MCP router here and binds a listener:
-    // `McpRouter::new(config, sessions, handler).into_router()?` for the MCP
-    // routes, `axum::serve` for the socket. Building the app is enough here so
-    // the example runs anywhere without claiming a port or needing a shutdown
-    // signal.
-    let _ = app;
+    // This is the whole setup. The MCP router mounts the document at
+    // `metadata_path()` and a `401` carries a challenge naming that URL, both
+    // read from this one value.
+    let config = ServerConfig::new()?.with_resource_metadata(metadata);
+    eprintln!(
+        "protected_resource_server: challenge {:?}",
+        config.challenge()
+    );
+    let _ = config;
     Ok(())
 }

@@ -631,8 +631,29 @@ where
         let methods: MethodRouter<Arc<RouterState<S, H>>> = axum::routing::post(post_request)
             .get(open_stream)
             .delete(terminate_session);
-        let router = AxumRouter::new()
-            .route(&endpoint, methods)
+        let mut router = AxumRouter::new().route(&endpoint, methods);
+
+        // RFC 9728 §3.1's discovery document, mounted from the same config that
+        // made the `401` challenge name it. `with_resource_metadata` says this
+        // server publishes a document; leaving the caller to also remember to
+        // merge a router for it means the two halves can drift, and the drift
+        // is a `WWW-Authenticate` pointing at a `404`. The config is the single
+        // source of truth for both.
+        //
+        // Safe inside this router, which was the open question when this was
+        // written: `OriginPolicy::check` returns `Ok` for an absent `Origin`
+        // (a non-browser client, by design), and `check_host` only demands the
+        // `Host` a production deployment already had to configure for its MCP
+        // requests to be answered at all. So the discovery `GET` faces exactly
+        // the policy every other route on this server faces — no more.
+        if let Some(metadata) = state.config.resource_metadata() {
+            router = router.route(
+                &metadata.resource().metadata_path(),
+                axum::routing::get(serve_document),
+            );
+        }
+
+        let router = router
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 enforce_deadline,
@@ -858,6 +879,40 @@ fn stamp_media_type(response: Response) -> Response {
 }
 
 /// The `GET` route: open the session's stream, resuming from `Last-Event-ID`.
+/// Serves the RFC 9728 document this router was configured to publish.
+///
+/// Deliberately does **not** consult the authenticator or the policy. §3.1
+/// puts this document at a URL a client fetches *because* it could not
+/// authenticate, so running the same gate that produced the `401` would make
+/// the escape route require the credential it explains how to obtain. That is
+/// not a weakening of the policy: the document names authorization servers and
+/// scopes, and is exactly the content RFC 9728 §2 intends to be public.
+async fn serve_document<S, H>(State(state): State<Arc<RouterState<S, H>>>) -> Response
+where
+    S: EventSource,
+    H: RequestHandler<S>,
+{
+    let Some(metadata) = state.config.resource_metadata() else {
+        // The route is only mounted when there is a document, so this arm is
+        // unreachable through this router. Answering `404` rather than `500`
+        // keeps it that way: if the route and the config ever disagree, a
+        // client sees "no document here", which is what that is.
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    // Every field is a string, an `Arc<str>` or a `Vec` of those, so a failure
+    // here is a bug in the derive rather than anything a caller configured. The
+    // client gets a bodiless `500` because the wire contract is the document.
+    let Ok(body) = serde_json::to_vec(metadata) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
 async fn open_stream<S, H>(
     State(state): State<Arc<RouterState<S, H>>>,
     headers: HeaderMap,
