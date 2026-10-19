@@ -28,6 +28,7 @@ bridge = [
   "protocol-droid/stdio",
   "protocol-droid/legacy-sse",
   "protocol-droid/random-ids",
+  "protocol-droid/oauth",
 ]
 # `a2a` is the A2A side of the probe. It is gated to match the
 # library's A2A module: the A2A `AgentCard` type and the

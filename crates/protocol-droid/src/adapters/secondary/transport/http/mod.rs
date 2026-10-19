@@ -48,7 +48,11 @@ mod bridge_peer;
 mod client;
 mod error;
 mod frames;
+mod opaque;
+mod stateless;
 
+#[cfg(test)]
+mod resume_tests;
 #[cfg(test)]
 mod tests;
 
@@ -58,3 +62,4 @@ pub use client::{
 };
 pub use error::HttpClientError;
 pub use frames::{FrameError, FrameReader, split_block};
+pub use stateless::StatelessHttpClient;

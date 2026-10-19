@@ -155,6 +155,11 @@ pub struct PendingAuthorization {
     client_id: ClientId,
     redirect_uri: Arc<str>,
     issuer: Arc<str>,
+    /// The `scope` to request, already chosen by the caller.
+    scope: Option<Arc<str>>,
+    /// Whether the server's metadata advertised
+    /// `authorization_response_iss_parameter_supported`.
+    iss_advertised: bool,
 }
 
 impl PendingAuthorization {
@@ -202,6 +207,37 @@ impl PendingAuthorization {
         &self.issuer
     }
 
+    /// This request, asking for `scope` (space-separated).
+    ///
+    /// Omitted when not set: the authorization page has the client omit
+    /// `scope` entirely when neither the challenge nor `scopes_supported`
+    /// names any.
+    #[must_use]
+    pub fn with_scope(mut self, scope: impl AsRef<str>) -> Self {
+        self.scope = Some(Arc::from(scope.as_ref()));
+        self
+    }
+
+    /// The scope this request asks for, if any.
+    #[must_use]
+    pub fn scope(&self) -> Option<&str> {
+        self.scope.as_deref()
+    }
+
+    /// This request, recording that the server advertised `iss` support, so a
+    /// response without one is refused.
+    #[must_use]
+    pub const fn with_iss_advertised(mut self, advertised: bool) -> Self {
+        self.iss_advertised = advertised;
+        self
+    }
+
+    /// Whether the server advertised `iss` support.
+    #[must_use]
+    pub const fn iss_advertised(&self) -> bool {
+        self.iss_advertised
+    }
+
     /// Render the URL to send the user to.
     ///
     /// Appends to whatever query the endpoint already carries, because the
@@ -232,6 +268,9 @@ impl PendingAuthorization {
             for resource in self.resource.token_request().iter() {
                 query.append_pair("resource", resource);
             }
+            if let Some(scope) = &self.scope {
+                query.append_pair("scope", scope);
+            }
         }
         Ok(url)
     }
@@ -247,6 +286,8 @@ impl fmt::Debug for PendingAuthorization {
             .field("client_id", &self.client_id)
             .field("redirect_uri", &self.redirect_uri)
             .field("issuer", &self.issuer)
+            .field("scope", &self.scope)
+            .field("iss_advertised", &self.iss_advertised)
             .finish()
     }
 }
@@ -348,6 +389,8 @@ pub fn begin_authorization(
         client_id: client.client_id().clone(),
         redirect_uri: Arc::from(redirect_uri),
         issuer: Arc::from(client.issuer()),
+        scope: None,
+        iss_advertised: false,
     })
 }
 

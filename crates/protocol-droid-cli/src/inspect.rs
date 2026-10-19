@@ -63,6 +63,16 @@ pub struct InspectArgs {
     /// Machine-readable JSON on stdout, with the human summary on stderr.
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Sign in with OAuth 2.1 if the server answers `401`.
+    ///
+    /// Opens the system browser at the authorization server and waits for the
+    /// redirect on a loopback port, so a person has to be present. A client
+    /// registered ahead of time is named by `PROTOCOL_DROID_OAUTH_CLIENT_ID`
+    /// and `PROTOCOL_DROID_OAUTH_CLIENT_SECRET`. Without this flag a `401` is
+    /// reported as an error and nothing is opened.
+    #[arg(long, global = true)]
+    pub oauth: bool,
 }
 
 /// The sub-actions of `inspect`.
@@ -186,7 +196,7 @@ impl std::fmt::Display for Report {
 /// failures are reported by `clap` and exit the process before reaching
 /// here.
 pub async fn run(args: &InspectArgs) -> anyhow::Result<()> {
-    let client = open_session(&args.server).await?;
+    let client = open_session(&args.server, args.oauth).await?;
     let report = dispatch(&client, &args.command).await?;
     print_report(&report, args.json)?;
     Ok(())
@@ -246,10 +256,28 @@ pub fn print_report(report: &Report, json_only: bool) -> anyhow::Result<()> {
 /// the bridge, the probe, and any other client uses. A re-implementation
 /// here would be a second opinion on what "open a session" means, and a
 /// second opinion is what diverges the moment a transport changes shape.
-async fn open_session(spec: &str) -> anyhow::Result<Client> {
+async fn open_session(spec: &str, oauth: bool) -> anyhow::Result<Client> {
     let parsed: protocol_droid::domain::TransportSpec = spec
         .parse()
         .with_context(|| format!("{spec} is not a usable transport spec"))?;
+    #[cfg(feature = "bridge")]
+    if oauth {
+        use protocol_droid::application::client::handler::ConnectOptions;
+        let authorizer = crate::auth::browser_authorizer(parsed.target()).await?;
+        let versions = protocol_droid::domain::SupportedVersions::all()?;
+        return Client::connect_with(
+            &parsed,
+            &versions,
+            ConnectOptions::new().authorizing(authorizer),
+        )
+        .await
+        .with_context(|| format!("could not open a session to {spec}"));
+    }
+    #[cfg(not(feature = "bridge"))]
+    anyhow::ensure!(
+        !oauth,
+        "this build has no OAuth client; rebuild with --features bridge"
+    );
     Client::connect_to(&parsed)
         .await
         .with_context(|| format!("could not open a session to {spec}"))
@@ -329,6 +357,15 @@ async fn call_tool(client: &Client, tool: &str, arguments: &Value) -> anyhow::Re
             ),
             ClientError::Transport(reason) => {
                 anyhow::anyhow!("the call to `{tool}` did not complete: {reason}")
+            }
+            // A one-shot call that meets a question cannot answer it, and must
+            // not pretend to: the error names the callback so an agent knows
+            // what it would have had to wire.
+            ClientError::InputUnresolved { method } => anyhow::anyhow!(
+                "`{tool}` asked for `{method}` input, and a one-shot call has no one to ask"
+            ),
+            ClientError::TooManyRounds(rounds) => {
+                anyhow::anyhow!("`{tool}` asked for input more than {rounds} times")
             }
         })?;
     let value = serde_json::from_str::<Value>(reply.as_str())
@@ -923,6 +960,7 @@ mod tests {
     #[tokio::test]
     async fn run_refuses_a_malformed_spec_by_naming_it() -> Result<(), Failure> {
         let args = InspectArgs {
+            oauth: false,
             server: "no-colon-here".to_owned(),
             command: InspectCommand::List,
             json: false,
@@ -955,6 +993,7 @@ mod tests {
         // adapter in this build. The check is "we get a refusal and the
         // refusal names the spec, not a panic and not a hang".
         let args = InspectArgs {
+            oauth: false,
             server: "stdio:./some-program".to_owned(),
             command: InspectCommand::List,
             json: false,

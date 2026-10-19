@@ -21,8 +21,10 @@ use std::sync::Arc;
 
 use crate::adapters::secondary::idempotency::InMemoryIdempotencyStore;
 use crate::application::idempotency::IdempotencyStore;
+use crate::application::mcp::input_required::StateKey;
 use crate::application::registry::store::RegistryStore;
 use crate::application::server::context::RequestContext;
+use crate::application::server::live::{Handlers, Live, ServerHandle, ToolEntry};
 use crate::domain::idempotency::IdempotencyError;
 use crate::domain::ir::{IrErrorCode, JsonObject};
 use crate::domain::registry::{
@@ -78,25 +80,6 @@ pub type ResourceHandler = Arc<dyn Fn(RequestContext, String) -> BoxReadFuture +
 /// Owned arguments, for the same reason as [`ResourceHandler`].
 pub type PromptHandler = Arc<dyn Fn(RequestContext, JsonObject) -> BoxReadFuture + Send + Sync>;
 
-/// A tool: what it is, and how to run it.
-///
-/// Handwritten `Debug` rather than derived, for the same reason the session
-/// context's is: a `ToolHandler` is a boxed closure, and the derived form
-/// prints a vtable pointer and a captured environment that no one reading a
-/// log line can use. The name and the schema are the parts that identify it.
-struct ToolEntry {
-    name: PrimitiveId,
-    handler: ToolHandler,
-}
-
-impl core::fmt::Debug for ToolEntry {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ToolEntry")
-            .field("name", &self.name)
-            .finish_non_exhaustive()
-    }
-}
-
 /// A server, built.
 ///
 /// # Examples
@@ -148,12 +131,10 @@ impl core::fmt::Debug for ToolEntry {
 pub struct Server {
     name: String,
     version: String,
-    registry: RegistryStore,
-    tools: Vec<ToolEntry>,
-    /// Resources with their readers, in registration order.
-    resource_reads: Vec<(PrimitiveId, ResourceHandler)>,
-    /// Prompts with their getters, in registration order.
-    prompt_gets: Vec<(PrimitiveId, PromptHandler)>,
+    /// The registry, the handler table, and who is told when they change —
+    /// shared with every [`ServerHandle`] so a change made while serving lands
+    /// in the same place requests read from.
+    live: Arc<Live>,
     /// Deduplicates `tools/call` by request.
     ///
     /// A trait object rather than a concrete store because a caller serving
@@ -172,6 +153,9 @@ pub struct Server {
     /// that never called [`ServerBuilder::with_state`] gets an empty
     /// map and `state::<T>()` returns `None` for every `T`.
     state: Arc<crate::application::server::context::StateMap>,
+    /// What SEP-2322 `requestState` is sealed under. See
+    /// [`Server::request_state_key`].
+    state_key: Option<StateKey>,
 }
 
 impl core::fmt::Debug for Server {
@@ -185,7 +169,7 @@ impl core::fmt::Debug for Server {
         f.debug_struct("Server")
             .field("name", &self.name)
             .field("version", &self.version)
-            .field("tool_count", &self.tools.len())
+            .field("tool_count", &self.tool_count())
             .finish_non_exhaustive()
     }
 }
@@ -300,6 +284,7 @@ impl Server {
             prompt_gets: Vec::new(),
             idempotency: None,
             state: Vec::new(),
+            state_key: None,
         }
     }
 
@@ -325,8 +310,36 @@ impl Server {
 
     /// How many tools are registered, hidden or not.
     #[must_use]
-    pub const fn tool_count(&self) -> usize {
-        self.tools.len()
+    pub fn tool_count(&self) -> usize {
+        self.live.tool_count()
+    }
+
+    /// The key `requestState` is sealed under, if one was set.
+    ///
+    /// Set by [`ServerBuilder::request_state_key`], or filled from the OS
+    /// random source by a transport when the server is served without one. A
+    /// server with no key can still answer every request; it cannot hand out a
+    /// `requestState`, and a retry that carries one is refused as tampered,
+    /// because there is nothing to verify it against.
+    #[must_use]
+    pub const fn request_state_key(&self) -> Option<&StateKey> {
+        self.state_key.as_ref()
+    }
+
+    /// Installs `key` if the server has none, for a transport that is about to
+    /// serve it.
+    pub fn ensure_request_state_key(&mut self, key: impl FnOnce() -> Option<StateKey>) {
+        if self.state_key.is_none() {
+            self.state_key = key();
+        }
+    }
+
+    /// A handle that adds and removes tools, resources and prompts while this
+    /// server is serving, announcing each change to the sessions that
+    /// negotiated the matching `listChanged` capability.
+    #[must_use]
+    pub fn handle(&self) -> ServerHandle {
+        ServerHandle::new(Arc::clone(&self.live))
     }
 
     /// The store `tools/call` is deduplicated through.
@@ -359,6 +372,43 @@ impl Server {
         );
     }
 
+    /// Adds a tool to a server that was already built.
+    ///
+    /// [`ServerBuilder::tool`] is the builder API and takes precedence. This
+    /// exists for the same reason [`with_state`](Self::with_state) does: a
+    /// caller who went through `#[server]`'s `into_server` never saw a
+    /// builder, and until this there was nothing they could do about it.
+    ///
+    /// It is not a convenience for schemas a Rust type can derive. `#[tool]`
+    /// builds `inputSchema` through `schemars` from the handler's parameters,
+    /// and `schemars` cannot express what MCP asks a tool to be able to say:
+    /// `$schema`, `$defs` with an `$anchor`, `allOf`/`anyOf`, or `if`/`then`/
+    /// `else`. Those are SEP-1613 and SEP-2106 — a tool whose schema another
+    /// toolchain generated and shipped as JSON has exactly one way to reach a
+    /// peer through this crate, and before this method it had none through
+    /// the front door.
+    ///
+    /// Registering and publishing together, as on the builder: a tool in
+    /// `tools/list` with no handler is one a client can see and not call, and
+    /// a handler with no entry is one that never runs. There is no state in
+    /// between for a caller to be wrong in.
+    ///
+    /// It announces nothing: `&mut self` means nothing can be connected yet.
+    /// To change a server that is already serving, use [`Self::handle`].
+    ///
+    /// Infallible, unlike [`Tool::new`]: a [`Tool`] has already had its
+    /// `inputSchema` parsed and validated, so there is no second parse here to
+    /// fail.
+    pub fn add_tool(&mut self, tool: Tool, handler: ToolHandler) {
+        let name = tool.name.clone();
+        let _published = self
+            .live
+            .add(Registered::from(Primitive::from(tool)), |table| {
+                table.tools.retain(|entry| entry.name != name);
+                table.tools.push(ToolEntry { name, handler });
+            });
+    }
+
     /// The state map handlers read through
     /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
     ///
@@ -377,43 +427,36 @@ impl Server {
     /// publishing a new tool does not need the server borrowed mutably while
     /// a request is in flight.
     #[must_use]
-    pub const fn registry(&self) -> &RegistryStore {
-        &self.registry
+    pub fn registry(&self) -> &RegistryStore {
+        self.live.registry()
     }
 
     /// The handler for `name`, if there is one.
     ///
-    /// Takes the tool out under a lock-free read, so a concurrent
-    /// registration cannot invalidate the borrow.
+    /// Owned, because the table it came from can be replaced the moment this
+    /// returns: a handle may remove the tool while the caller still holds it.
     #[must_use]
-    pub fn handler(&self, name: &str) -> Option<&ToolHandler> {
-        self.tools
-            .iter()
-            .find(|entry| entry.name.as_str() == name)
-            .map(|entry| &entry.handler)
+    pub fn handler(&self, name: &str) -> Option<ToolHandler> {
+        self.live.tool(name)
     }
 
     /// The reader for `uri`, if one is registered.
     ///
     /// `None` for a resource that is listed but has no reader, which is a
-    /// state [`ServerBuilder::resource`] cannot produce — registration takes
-    /// both together — and which therefore means the URI is simply not this
-    /// server's.
-    pub fn reader(&self, uri: &str) -> Option<&ResourceHandler> {
-        self.resource_reads
-            .iter()
-            .find(|(registered, _)| registered.as_str() == uri)
-            .map(|(_, handler)| handler)
+    /// state [`ServerBuilder::resource_with`] cannot produce — registration
+    /// takes both together — and which therefore means the URI is simply not
+    /// this server's.
+    #[must_use]
+    pub fn reader(&self, uri: &str) -> Option<ResourceHandler> {
+        self.live.reader(uri)
     }
 
     /// The getter for `name`, if one is registered.
     ///
     /// `None` under the same reasoning as [`reader`](Self::reader).
-    pub fn getter(&self, name: &str) -> Option<&PromptHandler> {
-        self.prompt_gets
-            .iter()
-            .find(|(registered, _)| registered.as_str() == name)
-            .map(|(_, handler)| handler)
+    #[must_use]
+    pub fn getter(&self, name: &str) -> Option<PromptHandler> {
+        self.live.getter(name)
     }
 
     /// Finds `name` and runs it.
@@ -451,17 +494,13 @@ impl Server {
         name: &str,
         args: JsonObject,
     ) -> Result<JsonObject, DispatchError> {
-        let entry = self
-            .tools
-            .iter()
-            .find(|entry| entry.name.as_str() == name)
-            .ok_or(DispatchError::UnknownTool)?;
+        let handler = self.handler(name).ok_or(DispatchError::UnknownTool)?;
 
         // The gate, once, for both halves of the surface. After this the tool
         // is known to exist *and* to be visible to this session, so the
         // handler is reached with no further checking to disagree with.
         if self
-            .registry
+            .registry()
             .get_visible(
                 ctx.peer().auth(),
                 &ctx.peer().profile(),
@@ -473,7 +512,7 @@ impl Server {
             return Err(DispatchError::UnknownTool);
         }
 
-        Ok((entry.handler)(ctx.clone(), args).await)
+        Ok(handler(ctx.clone(), args).await)
     }
 }
 
@@ -555,6 +594,37 @@ pub enum DispatchError {
     #[error("the session is on a revision this build cannot serve")]
     UnnegotiableVersion,
 
+    /// A SEP-2575 request arrived without the `_meta` the schema requires.
+    ///
+    /// `2026-07-28` makes `RequestParams._meta` required on every request and
+    /// requires two keys in it — the revision and the client's capabilities —
+    /// because there is no handshake to carry them and no session to remember
+    /// them on. A request missing either is a well-formed message with a
+    /// missing argument, which is `-32602` and not a transport refusal.
+    ///
+    /// Its own variant rather than a reuse of
+    /// [`MalformedInitialize`](Self::MalformedInitialize) because the two are
+    /// different failures with different fixes: one says the handshake arrived
+    /// in a shape that would have to be guessed at, this says the shape is
+    /// right and a required key is not there.
+    #[error("the request `_meta` is missing a required key")]
+    MalformedRequestMeta,
+
+    /// A SEP-2575 request named a revision this build does not implement.
+    ///
+    /// Not [`MalformedParams`](Self::MalformedParams), and the difference is
+    /// the whole point of the code the specification assigns: `-32022` with
+    /// `data.supported` is what lets a client retry against a version this
+    /// server does speak, where `-32602` would send it looking for a bug in
+    /// its own request.
+    #[error("this server does not implement the requested protocol version")]
+    UnsupportedVersion {
+        /// The revision the client asked for, as it wrote it.
+        requested: String,
+        /// Every revision this build speaks, for the client to choose from.
+        supported: Vec<String>,
+    },
+
     /// A second request arrived with an id this session is still working on.
     ///
     /// The JSON-RPC reading, and the reason it is an error rather than a
@@ -566,6 +636,28 @@ pub enum DispatchError {
     /// comes straight back.
     #[error("request {} is already in flight on this session", .0)]
     DuplicateInFlight(String),
+
+    /// Serving the request needs client capabilities the request did not
+    /// declare (SEP-2575, `-32021`).
+    ///
+    /// Raised when a handler answers with an `InputRequiredResult` asking for
+    /// something the client said it cannot do: sending it anyway would ask a
+    /// client to sample or elicit after it declined to, and the specification
+    /// is explicit that a server "MUST NOT rely on capabilities the client has
+    /// not declared".
+    #[error("the request needs client capabilities it did not declare")]
+    MissingClientCapability {
+        /// The capability names, as `ClientCapabilities` keys.
+        required: Vec<&'static str>,
+    },
+
+    /// A SEP-2322 `requestState` did not verify.
+    ///
+    /// `-32602`, because the state is a request parameter and this one is not a
+    /// value this server issued. Refused before the handler runs, so no
+    /// handler can be made to act on a state a client wrote.
+    #[error("requestState failed its integrity check")]
+    TamperedRequestState,
 
     /// The store holding recorded results could not be reached.
     ///
@@ -617,15 +709,19 @@ impl DispatchError {
     pub const fn jsonrpc_code(&self) -> IrErrorCode {
         match self {
             Self::UnknownMethod => IrErrorCode::MethodNotFound,
-            Self::MalformedParams | Self::MalformedInitialize | Self::UnknownTool => {
-                IrErrorCode::InvalidParams
-            }
             // A URI or a prompt name that is not registered is the same
             // failure as a tool name that is not, and answers the same way. The
             // specification is explicit that an unknown tool is reported as an
             // error rather than an empty result, and a client cannot act on a
             // distinction between "no such thing" and "this thing is empty".
-            Self::UnknownResource | Self::UnknownPrompt => IrErrorCode::InvalidParams,
+            Self::MalformedParams
+            | Self::MalformedInitialize
+            | Self::UnknownTool
+            | Self::UnknownResource
+            | Self::UnknownPrompt
+            | Self::MalformedRequestMeta
+            | Self::TamperedRequestState => IrErrorCode::InvalidParams,
+            Self::MissingClientCapability { .. } => IrErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY,
             // A request that names an id this session is already working on is
             // a frame that violates JSON-RPC, so it takes the code for a frame
             // the specification does not permit — not the code for a tool it
@@ -638,6 +734,10 @@ impl DispatchError {
             Self::NotCallable | Self::UnnegotiableVersion | Self::IdempotencyUnavailable(_) => {
                 IrErrorCode::InternalError
             }
+            // SEP-2575 assigns this its own code precisely so a client can
+            // distinguish "you asked for something real that I do not speak"
+            // from "your request was wrong", and act on the first by retrying.
+            Self::UnsupportedVersion { .. } => IrErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
             // A handler that refused is this server's problem whatever the peer
             // sent. The peer asked for a resource or a prompt, named it
             // correctly, and the answer is that the backing store is
@@ -645,6 +745,38 @@ impl DispatchError {
             // client hunting in its own request for something it got right.
             Self::HandlerFailed(_) => IrErrorCode::InternalError,
         }
+    }
+
+    /// The `data` member this refusal's code requires, if it has one.
+    ///
+    /// `-32022` carries the revision the client asked for and every revision
+    /// this build speaks; `-32021` carries `requiredCapabilities` as a
+    /// `ClientCapabilities` object keyed by what is missing — not an array of
+    /// names, because the schema types it as the object a client declares.
+    /// Every other refusal carries none. One definition, so stdio and HTTP
+    /// cannot disagree about it.
+    #[must_use]
+    pub fn wire_data(&self) -> Option<JsonObject> {
+        let data = match self {
+            Self::UnsupportedVersion {
+                requested,
+                supported,
+            } => serde_json::json!({ "requested": requested, "supported": supported }),
+            Self::MissingClientCapability { required } => {
+                let capabilities: serde_json::Map<String, serde_json::Value> = required
+                    .iter()
+                    .map(|name| {
+                        (
+                            (*name).to_owned(),
+                            serde_json::Value::Object(serde_json::Map::new()),
+                        )
+                    })
+                    .collect();
+                serde_json::json!({ "requiredCapabilities": capabilities })
+            }
+            _ => return None,
+        };
+        JsonObject::from_value(data).ok()
     }
 
     /// The code and message pair a transport writes to the wire.
@@ -700,6 +832,7 @@ pub struct ServerBuilder {
     /// into a `HashMap` keyed by a value the caller cannot see is the
     /// wrong shape for a builder.
     state: Vec<(std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>)>,
+    state_key: Option<StateKey>,
 }
 
 impl core::fmt::Debug for ServerBuilder {
@@ -721,6 +854,18 @@ impl core::fmt::Debug for ServerBuilder {
 }
 
 impl ServerBuilder {
+    /// Sets the key SEP-2322 `requestState` is sealed under.
+    ///
+    /// Optional: a transport fills one from the OS random source when it is
+    /// absent. Set it explicitly when several replicas serve one endpoint —
+    /// they must share it, or a retry that lands on a different replica finds
+    /// its state refused.
+    #[must_use]
+    pub const fn request_state_key(mut self, key: StateKey) -> Self {
+        self.state_key = Some(key);
+        self
+    }
+
     /// Sets the version this server reports in `serverInfo`.
     ///
     /// Defaults to the version of the crate that built it, which is right for
@@ -908,16 +1053,21 @@ impl ServerBuilder {
         Server {
             name: self.name,
             version: self.version,
-            registry: self.registry,
-            tools: self.tools,
-            resource_reads: self.resource_reads,
-            prompt_gets: self.prompt_gets,
+            live: Arc::new(Live::new(
+                self.registry,
+                Handlers {
+                    tools: self.tools,
+                    resources: self.resource_reads,
+                    prompts: self.prompt_gets,
+                },
+            )),
             idempotency,
             state: Arc::new(
                 self.state
                     .into_iter()
                     .collect::<std::collections::HashMap<_, _>>(),
             ),
+            state_key: self.state_key,
         }
     }
 }
@@ -1047,6 +1197,53 @@ mod tests {
 
         assert_eq!(server.tool_count(), 1);
         assert_eq!(server.registry().snapshot().len(PrimitiveKind::Tool), 1);
+        Ok(())
+    }
+
+    /// A tool added after `into_server` lists *and* runs.
+    ///
+    /// Both halves, because the registry and the handler table are two places
+    /// a method like this could write to only one of. A tool in `tools/list`
+    /// with no handler is one a client can see and not call — the failure mode
+    /// the builder's own doc calls out — and it would pass a listing-only test.
+    #[test]
+    fn a_tool_added_after_the_build_lists_and_runs() -> Result<(), TestError> {
+        use crate::domain::registry::{Primitive, Tool};
+
+        let mut server = Server::builder("demo")
+            .simple_tool("echo", r#"{"type":"object"}"#, answering("{}")?)?
+            .build();
+
+        // The schema is the one thing `add_tool` exists for: `$defs`, an
+        // `$anchor` and `if`/`then`/`else` are JSON Schema 2020-12 keywords no
+        // Rust type derives, so this is the whole reason the method is here.
+        let raw = Tool::new(
+            "json_schema_2020_12",
+            r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","$defs":{"address":{"$anchor":"addressDef","type":"string"}},"if":{"properties":{"a":{"const":1}}},"then":{"required":["b"]}}"#,
+        )?;
+        server.add_tool(raw, answering(r#"{"ok":true}"#)?);
+
+        assert_eq!(server.tool_count(), 2);
+        assert_eq!(server.registry().snapshot().len(PrimitiveKind::Tool), 2);
+        assert!(server.handler("json_schema_2020_12").is_some());
+
+        // The listing, not just the count: the schema has to reach `tools/list`
+        // with the keywords intact, since that is the wire the suite reads.
+        let snapshot = server.registry().snapshot();
+        let advertised = snapshot
+            .list(PrimitiveKind::Tool)
+            .iter()
+            .find(|tool| tool.id().as_str() == "json_schema_2020_12")
+            .ok_or("the added tool is not in the registry")?;
+        let Primitive::Tool(advertised) = advertised.primitive() else {
+            return Err("a tool listing held something that is not a tool".into());
+        };
+        let text = advertised.input_schema.as_str();
+        for keyword in ["$schema", "$defs", "$anchor", "if", "then"] {
+            if !text.contains(keyword) {
+                return Err(format!("{keyword} did not reach the listing").into());
+            }
+        }
         Ok(())
     }
 

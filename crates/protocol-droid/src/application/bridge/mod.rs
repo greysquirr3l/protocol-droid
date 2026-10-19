@@ -10,6 +10,7 @@ mod content;
 mod downstream;
 mod forward;
 mod serve;
+mod transport_peer;
 mod unsolicited;
 mod upstream;
 
@@ -24,6 +25,7 @@ pub use content::{ToolResultCodec, Translated, Translator};
 pub use downstream::{Downstream, DownstreamConfig, DownstreamError, Identity};
 pub use forward::{Bridge, BridgeError, BridgePeer, Forwarded, SendFuture};
 pub use serve::{BridgeLoop, LoopError, LoopReport, Wiring};
+pub use transport_peer::TransportPeer;
 pub use unsolicited::Unsolicited;
 pub use upstream::{BridgeClientError, OpenedUpstream, Upstream, UpstreamError, run_client};
 

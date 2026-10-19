@@ -49,6 +49,7 @@
 //! the peer is mid-message or has gone away.
 
 mod diagnostics;
+mod exchange;
 mod serve;
 mod sink;
 mod source;

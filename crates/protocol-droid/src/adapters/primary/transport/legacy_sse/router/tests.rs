@@ -30,14 +30,17 @@ use tower::ServiceExt;
 use super::{
     DEFAULT_MESSAGE_PATH, DEFAULT_STREAM_PATH, LegacyRouter, RouteError, SESSION_PARAMETER,
 };
+use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::{
     AuthPolicy, Authenticator, Credentials, Refusal, ServerConfig, SessionStore,
 };
-use crate::adapters::primary::transport::legacy_sse::{LegacyDispatcher, Origin, OriginPolicy};
+use crate::adapters::primary::transport::legacy_sse::{
+    LegacyDispatcher, LegacySession, LegacyTail, Origin, OriginPolicy,
+};
 use crate::application::session::IdSource;
-use crate::domain::McpSessionId;
 use crate::domain::registry::auth::{AuthContext, ScopeSet};
 use crate::domain::session::SessionId;
+use crate::domain::{McpSessionId, RateLimit};
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -128,26 +131,33 @@ impl Authenticator for OneToken {
 struct Echo(Arc<Recorder>);
 
 impl LegacyDispatcher for Echo {
+    type Session = ();
+
+    fn open(&self, _id: SessionId, _tail: &LegacyTail) {}
+
     fn dispatch(
         &self,
         auth: &AuthContext,
         session: &McpSessionId,
+        _state: &(),
         frame: &Value,
-    ) -> Result<Vec<Value>, Refusal> {
-        self.0.calls.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut seen) = self.0.seen.lock() {
-            // All three recorded, so a test can assert *which* session, *what*
-            // body, and *who* the dispatcher was reached with. Recording the
-            // body too is what makes "the session came from the query string,
-            // not from the body" a claim a test can make rather than assert.
-            seen.push(format!("{session} {frame} {}", auth.principal()));
-        }
-        let scripted = self.0.reply.lock().ok().and_then(|r| r.clone());
-        match scripted {
-            Some(Ok(replies)) => Ok(replies),
-            Some(Err(message)) => Err(Refusal::Handler(message)),
-            None => Ok(vec![json!({"jsonrpc": "2.0", "id": 7, "result": {}})]),
-        }
+    ) -> impl core::future::Future<Output = Result<Vec<Value>, Refusal>> + Send {
+        core::future::ready({
+            self.0.calls.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut seen) = self.0.seen.lock() {
+                // All three recorded, so a test can assert *which* session, *what*
+                // body, and *who* the dispatcher was reached with. Recording the
+                // body too is what makes "the session came from the query string,
+                // not from the body" a claim a test can make rather than assert.
+                seen.push(format!("{session} {frame} {}", auth.principal()));
+            }
+            let scripted = self.0.reply.lock().ok().and_then(|r| r.clone());
+            match scripted {
+                Some(Ok(replies)) => Ok(replies),
+                Some(Err(message)) => Err(Refusal::Handler(message)),
+                None => Ok(vec![json!({"jsonrpc": "2.0", "id": 7, "result": {}})]),
+            }
+        })
     }
 }
 
@@ -155,7 +165,7 @@ impl LegacyDispatcher for Echo {
 /// session and post to it.
 struct Harness {
     router: Router,
-    sessions: Arc<SessionStore<crate::adapters::primary::transport::legacy_sse::LegacyTail>>,
+    sessions: Arc<SessionStore<LegacySession<()>>>,
     recorder: Arc<Recorder>,
 }
 
@@ -222,9 +232,9 @@ impl Harness {
     fn open(&self) -> Result<McpSessionId, TestError> {
         let capacity =
             core::num::NonZeroUsize::new(8).ok_or("a capacity of zero is not a capacity")?;
-        Ok(self.sessions.open(Arc::new(
-            crate::adapters::primary::transport::legacy_sse::LegacyTail::new(capacity),
-        ))?)
+        Ok(self
+            .sessions
+            .open(Arc::new(LegacySession::new(LegacyTail::new(capacity), ())))?)
     }
 
     async fn send(&self, request: Request<Body>) -> Result<axum::response::Response, TestError> {
@@ -240,6 +250,7 @@ fn get(path: &str) -> Result<Request<Body>, TestError> {
     Ok(Request::builder()
         .method("GET")
         .uri(path)
+        .header(header::HOST, "127.0.0.1:8931")
         .body(Body::empty())?)
 }
 
@@ -247,6 +258,7 @@ fn post(path: &str, body: &str) -> Result<Request<Body>, TestError> {
     Ok(Request::builder()
         .method("POST")
         .uri(path)
+        .header(header::HOST, "127.0.0.1:8931")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_owned()))?)
 }
@@ -365,6 +377,7 @@ async fn the_advertised_query_is_the_query_that_is_read() -> Result<(), TestErro
                     "sessionId=0000000000000001",
                     &format!("sessionId={SESSION_ONE}"),
                 ))
+                .header(header::HOST, "127.0.0.1:8931")
                 .body(Body::from(r#"{"jsonrpc":"2.0","id":1}"#.to_owned()))?,
         )
         .await?;
@@ -787,4 +800,70 @@ async fn the_authenticated_principal_reaches_the_dispatcher() -> Result<(), Test
         &format!("{id} {{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"ping\"}} holder"),
         "the dispatcher was reached as the principal the token authenticates to",
     )
+}
+
+/// `Origin` is absent from every non-browser client, so a rebound DNS name is
+/// caught by `Host` or not at all.
+#[tokio::test]
+async fn a_foreign_host_is_refused_on_both_routes() -> Result<(), TestError> {
+    let harness = Harness::new()?;
+    let id = harness.open()?;
+    for request in [get("/sse")?, post(&message_uri(id), "{}")?] {
+        let (mut parts, body) = request.into_parts();
+        parts.headers.insert(header::HOST, "evil.example".parse()?);
+        let response = harness.send(Request::from_parts(parts, body)).await?;
+        require(
+            &response.status(),
+            &StatusCode::FORBIDDEN,
+            "a request addressed to a host this server does not serve is refused",
+        )?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_request_with_no_host_is_refused() -> Result<(), TestError> {
+    let harness = Harness::new()?;
+    let request = Request::builder()
+        .method("GET")
+        .uri("/sse")
+        .body(Body::empty())?;
+    let response = harness.send(request).await?;
+    require(
+        &response.status(),
+        &StatusCode::FORBIDDEN,
+        "no Host header is no evidence either way, and is refused",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_beyond_the_allowance_are_answered_429() -> Result<(), TestError> {
+    let sessions = Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0)))));
+    let limiter = RateLimiter::new(RateLimit::new(
+        core::num::NonZeroU32::new(2).ok_or("a zero limit")?,
+        core::time::Duration::from_secs(3600),
+    ));
+    let router = LegacyRouter::new(
+        ServerConfig::new()?,
+        Arc::clone(&sessions),
+        Echo(Arc::new(Recorder::default())),
+    )
+    .with_rate_limiter(limiter)
+    .into_router()?;
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        let response = router.clone().oneshot(get("/sse")?).await?;
+        statuses.push(response.status());
+    }
+    require(
+        &statuses,
+        &vec![
+            StatusCode::OK,
+            StatusCode::OK,
+            StatusCode::TOO_MANY_REQUESTS,
+        ],
+        "the third request inside the window is limited",
+    )?;
+    Ok(())
 }

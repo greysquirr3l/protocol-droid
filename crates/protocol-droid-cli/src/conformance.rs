@@ -194,6 +194,14 @@ pub struct SelfArgs {
     #[arg(long, value_name = "SUITE")]
     pub suite: Option<String>,
 
+    /// Which half to run: this crate's server, its client, or both.
+    ///
+    /// Defaults to both, except that naming a `--scenario` runs the server half
+    /// only, since a scenario belongs to one side. Pass `--side client` to run
+    /// a client scenario by name.
+    #[arg(long, value_enum)]
+    pub side: Option<Side>,
+
     /// How long to wait for the suite to finish before giving up.
     #[arg(long, value_name = "DURATION", default_value = "10m")]
     pub timeout: String,
@@ -201,6 +209,17 @@ pub struct SelfArgs {
     /// Print a JSON report of what was run.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Which half of `conformance self` to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Side {
+    /// This crate's reference server, against the suite's server scenarios.
+    Server,
+    /// This crate's reference client, against the suite's mock servers.
+    Client,
+    /// Both, server first.
+    Both,
 }
 
 /// What `npx` returned, and how the wrapper decided to report it.
@@ -289,6 +308,74 @@ async fn run_client(args: &ClientArgs) -> anyhow::Result<()> {
 /// what `self` should exercise.
 async fn run_self(args: &SelfArgs) -> anyhow::Result<()> {
     let pinned = read_pinned_version()?;
+    let side = args.side.unwrap_or_else(|| {
+        if args.scenario.is_some() {
+            Side::Server
+        } else {
+            Side::Both
+        }
+    });
+    let mut failures: Vec<String> = Vec::new();
+    if side != Side::Client
+        && let Err(error) = run_self_server(&pinned, args).await
+    {
+        failures.push(format!("server: {error:#}"));
+    }
+    if side != Side::Server
+        && let Err(error) = run_self_client(&pinned, args).await
+    {
+        failures.push(format!("client: {error:#}"));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("{}", failures.join("; "))
+    }
+}
+
+/// Runs the client half: the reference client against each scenario the
+/// revision requires, one at a time so a failure names its scenario.
+async fn run_self_client(pinned: &str, args: &SelfArgs) -> anyhow::Result<()> {
+    let scenarios: Vec<&str> = args.scenario.as_ref().map_or_else(
+        || crate::conformance_client::client_scenarios(&args.spec_version).to_vec(),
+        |one| vec![one.as_str()],
+    );
+    if scenarios.is_empty() {
+        eprintln!(
+            "no client scenarios at {} for the pinned suite; nothing to run",
+            args.spec_version
+        );
+        return Ok(());
+    }
+    let client = crate::conformance_client::build_reference_client().await?;
+    let mut failed: Vec<&str> = Vec::new();
+    for scenario in scenarios {
+        let command =
+            crate::conformance_client::client_argv(pinned, &client, &args.spec_version, scenario);
+        if invoke_suite(
+            command,
+            &args.timeout,
+            pinned,
+            "self-client",
+            &args.spec_version,
+            args.json,
+        )
+        .await
+        .is_err()
+        {
+            failed.push(scenario);
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("client scenarios failed: {}", failed.join(", "))
+    }
+}
+
+/// Runs the server half: the reference server, against the suite's scenarios.
+async fn run_self_server(pinned: &str, args: &SelfArgs) -> anyhow::Result<()> {
+    let pinned = pinned.to_owned();
     let port = pick_port(args.port)?;
     let server = spawn_reference_server(port).await?;
     let url = format!("http://127.0.0.1:{port}/mcp");
@@ -459,7 +546,7 @@ fn build_reference_server_command(port: u16) -> tokio::process::Command {
 /// `cargo build --manifest-path` machinery gives, and it lets a
 /// published binary reach the example from outside the workspace
 /// without the operator passing `--manifest-path` themselves.
-fn workspace_manifest_path() -> std::path::PathBuf {
+pub(crate) fn workspace_manifest_path() -> std::path::PathBuf {
     let mut cursor = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for _ in 0..2 {
         cursor = cursor.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -804,6 +891,7 @@ mod tests {
             port: 0,
             scenario: Some("server-initialize".to_owned()),
             suite: None,
+            side: None,
             timeout: "60s".to_owned(),
             json: false,
         };
@@ -852,6 +940,7 @@ mod tests {
                 port: 0,
                 scenario: Some("server-initialize".to_owned()),
                 suite: None,
+                side: None,
                 timeout: "60s".to_owned(),
                 json: false,
             }),
@@ -870,6 +959,7 @@ mod tests {
             port: 8080,
             scenario: Some("tools_call".to_owned()),
             suite: Some("active".to_owned()),
+            side: None,
             timeout: "5m".to_owned(),
             json: true,
         };

@@ -119,6 +119,11 @@ pub fn read_offer(params: &JsonObject) -> Result<Offer, InitializeError> {
 
 /// Reads a `ClientCapabilities` object as a [`CapabilitySet`].
 ///
+/// Public because SEP-2575's per-request `_meta` carries the same object in a
+/// different message, and reading it twice with two tables would be two
+/// definitions of what a client is allowed to say. See
+/// [`crate::application::mcp::request_meta`].
+///
 /// The inverse of the client's own renderer, and table-driven for the same
 /// reason: [`Capability::as_str`] is a dot in a Rust name and two levels in
 /// JSON, so a capability advertised under the wrong key is one this cannot see.
@@ -131,7 +136,7 @@ pub fn read_offer(params: &JsonObject) -> Result<Offer, InitializeError> {
 /// handshake over one would make every future client unconnectable.
 ///
 /// [`Capability::as_str`]: crate::domain::Capability::as_str
-fn client_capabilities(object: &serde_json::Map<String, serde_json::Value>) -> CapabilitySet {
+pub fn client_capabilities(object: &serde_json::Map<String, serde_json::Value>) -> CapabilitySet {
     let mut set = CapabilitySet::empty();
     for (capability, path) in CLIENT_CAPABILITY_WIRE {
         if path_present(object, path) {

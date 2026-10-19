@@ -117,6 +117,19 @@ impl IdSource for RandomIds {
     }
 }
 
+/// A fresh SEP-2322 `requestState` key from the OS CSPRNG.
+///
+/// `None` when the OS will not supply entropy. A transport serving without a
+/// key still answers every request; it simply cannot hand out a sealed state,
+/// which is the safe failure — a predictable key would let any client forge
+/// one.
+#[must_use]
+pub fn random_state_key() -> Option<crate::application::mcp::input_required::StateKey> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(crate::application::mcp::input_required::StateKey::from_bytes(bytes))
+}
+
 /// Eight bytes from the OS CSPRNG.
 fn draw() -> Result<u64, EntropyError> {
     let mut bytes = [0_u8; 8];

@@ -62,7 +62,7 @@ starts:
 | --------------- | ---------------------------------------------------------------------- |
 | `stdio`         | The stdio transport, server and client. **On by default**               |
 | `http`          | Streamable HTTP plus the `2026-07-28` stateless lifecycle              |
-| `legacy-sse`    | The deprecated `2024-11-05` HTTP+SSE transport. Implies `http`         |
+| `legacy-sse`    | The deprecated `2024-11-05` HTTP+SSE transport, client and server (`HttpBuilder::legacy_sse()`). Implies `http` |
 | `oauth`         | The OAuth 2.1 resource server and PKCE client. Implies `http`          |
 | `a2a`           | The A2A v1.0 server, client, and cross-protocol bridge                  |
 | `acp-experimental` | Zed's ACP v1.25.0. Pre-1.0, so it carries no semver guarantee         |
@@ -135,6 +135,50 @@ protocol-droid bridge \
   --listen stdio:. \
   --upstream http://backend:3000/mcp
 ```
+
+The upstream can also be a legacy HTTP+SSE server (`sse:http://host/sse`) or a
+stateless `2026-07-28` one (`http-stateless:http://host/mcp`), so a
+`2025-11-25` client can use a server that has no handshake at all.
+
+A server that needs a login is reached with `--oauth`, which signs in through
+the system browser and refreshes the token when it expires:
+
+```bash
+protocol-droid inspect https://mcp.example.com/mcp --oauth list
+```
+
+To serve the `2024-11-05` transport beside Streamable HTTP, add `.legacy_sse()`
+to the `HttpBuilder`; the same tools answer on both.
+
+Changing a server while it serves goes through a `ServerHandle`. Every change
+is published and then announced as `notifications/*/list_changed` to the
+sessions that negotiated it — on stdio, on a Streamable HTTP session, or on a
+`2026-07-28` `subscriptions/listen` stream:
+
+```rust
+let server = Greeter.into_server()?;
+let handle = server.handle();            // cheap to clone; store it anywhere
+handle.add_tool(tool, handler).await;     // listed, callable, announced
+handle.notify_resource_updated("file:///notes.md").await;
+```
+
+At `2026-07-28` a server cannot send a request of its own, so a tool that needs
+the user answers with an `InputRequiredResult` and reads the reply on the
+client's retry. `requestState` is sealed by the library, so a client that edits
+it is refused before the handler runs:
+
+```rust
+if let Some(answer) = ctx.input_response("name") {
+    return text(&format!("hello, {}", answer.as_str()));
+}
+InputRequired::new()
+    .elicit("name", &ask)
+    .with_state(ctx.seal_state("round-1")?)
+    .into_result()
+```
+
+The full worked set — every SEP-2322 shape the conformance suite exercises — is
+in [`examples/conformance_reference_server/stateless.rs`](crates/protocol-droid/examples/conformance_reference_server/stateless.rs).
 
 `--json` puts the plan or the run report on stdout and the human summary on
 stderr, so an agent parses the machine-readable half and a person watches the
@@ -311,53 +355,48 @@ unmergeable on a context that will never report.
 
 ## Project status
 
-The crate is at **0.2.0** and has not been published to crates.io yet; the
-automated publish is deliberately disabled pending a release-environment review
-gate (see [Releasing](#releasing)). The four crates version together, so
-`protocol-droid = "0.2"` pulls a matching `protocol-droid-schema`,
-`protocol-droid-macros`, and `protocol-droid-cli`.
+The crates are at **0.2.0** and not yet on crates.io. All four version
+together, so `protocol-droid = "0.2"` pulls matching `protocol-droid-schema`,
+`protocol-droid-macros` and `protocol-droid-cli`.
 
-Preflight is green: **2,370 tests** across the workspace
-(`cargo test --workspace --all-features`), plus `cargo l` and
-`cargo deny --all-features check`.
+**Conformance is green on every revision the pinned suite covers** — 3/3 on
+`2025-03-26`, 55/55 on `2025-06-18`, 81/81 on `2025-11-25` and 151/151 on
+`2026-07-28`, including the scenarios the suite does not yet score. The
+`2026-07-28` stateless lifecycle is served in full over HTTP: per-request
+`_meta`, `server/discover`, `subscriptions/listen`, SEP-2322 multi round-trip
+requests, and the request-metadata headers. The measurements, what closed them,
+and the known limitations are in
+[`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
 
-**Conformance is not complete.** The official
-[`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance)
-suite runs end-to-end against a reference server across four revisions, and
-`tools-call-error` currently fails on `2025-06-18`, `2025-11-25`, and
-`2026-07-28`. The cause is a fixture gap rather than a codec defect — the
-scenarios call for tools and prompts the reference server does not yet register,
-while the codecs and the session engine round-trip every wire shape the suite
-checks. The root-cause analysis and the six-step order of operations for closing
-the matrix are in [`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
+Preflight — `cargo build`, `cargo test --workspace --all-features`, `cargo l`
+and `cargo deny --all-features check` — is the gate on every commit.
 
 ## Releasing
 
-> **Automatic release is currently disabled.** `release.yml` has no automatic
-> trigger on purpose. The `publish` job uploads four crates to crates.io, and the
-> review gate meant to sit in front of it does not exist: the `release`
-> environment is created but carries no protection rules, because GitHub does
-> not offer required reviewers for private repositories on the free plan. The
-> automatic trigger was removed rather than left armed behind a gate that does
-> not bite.
->
-> To re-enable, see the comment at the top of
-> [release.yml](.github/workflows/release.yml) — it takes two changes, and the
-> environment rules are the one that is not code.
-
-The chain, once re-enabled, is:
+The chain is:
 
 ```
 CI (on main, green) → auto-tag.yml → tag → release.yml → crates.io
 ```
 
-A tag is created with `GITHUB_TOKEN`, which deliberately does **not** trigger
-other workflows' `on: push` filters — so `release.yml` is triggered by
-`workflow_run`, not by `push: tags`, and resolves the tag from the run's
-`head_sha`.
+`auto-tag.yml` tags `v<workspace version>` when CI is green on a push to
+`main` and that tag does not exist yet. `release.yml` runs on Auto Tag's
+completion and resolves the tag from the commit; a green push that did not
+create a tag is reported as "nothing to release" and every downstream job is
+skipped, so bumping `[workspace.package] version` is what makes a release.
 
-There is also nothing to do if you are on a fork with no registry token: the
-publish job warns and exits 0 instead of failing the chain.
+The upload sits behind the `release` GitHub environment, which must carry
+required reviewers. An environment with no protection rules is a label, not a
+gate — check it before trusting a green run:
+
+```bash
+gh api repos/greysquirr3l/protocol-droid/environments/release --jq '.protection_rules'
+```
+
+A tag is created with `GITHUB_TOKEN`, which deliberately does **not** trigger
+other workflows' `on: push` filters — which is why `release.yml` listens for
+`workflow_run` rather than `push: tags`. A manual `workflow_dispatch` naming a
+tag re-runs a release the trigger missed.
 
 ## The docs site
 

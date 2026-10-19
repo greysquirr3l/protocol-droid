@@ -221,7 +221,7 @@ fn to_params(method: &'static str, value: &Value) -> Result<JsonObject, Handshak
 /// dot in a Rust name and two levels in JSON.
 ///
 /// [`CLIENT_CAPABILITY_WIRE`]: crate::domain::CLIENT_CAPABILITY_WIRE
-fn client_capabilities(config: &ClientConfig) -> serde_json::Map<String, Value> {
+pub(super) fn client_capabilities(config: &ClientConfig) -> serde_json::Map<String, Value> {
     let mut root = serde_json::Map::new();
     for (capability, path) in CLIENT_CAPABILITY_WIRE {
         if config.capabilities().contains(*capability) {

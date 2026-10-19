@@ -39,11 +39,13 @@ use protocol_droid::adapters::secondary::codec::result::WireToolResults;
 use protocol_droid::adapters::secondary::transport::http::{HttpClient, HttpClientConfig};
 use protocol_droid::adapters::secondary::transport::legacy_sse::{LegacySseConfig, LegacySsePeer};
 use protocol_droid::application::bridge::{
-    BridgePeer, DownstreamConfig, LoopReport, OpenedUpstream, Upstream, UpstreamError, run_client,
+    BridgePeer, DownstreamConfig, LoopReport, OpenedUpstream, TransportPeer, Upstream,
+    UpstreamError, run_client,
 };
-use protocol_droid::application::client::{ClientConfig, ClientTransport, handshake};
+use protocol_droid::application::client::{ClientConfig, ClientTransport, handshake, open};
 use protocol_droid::domain::{
     DegradePolicy, Leg, MaxFrameSize, SupportedVersions, TransportKind, TransportSpec,
+    handshake_defined_in,
 };
 
 /// Opens the upstream and settles what it can do.
@@ -84,14 +86,15 @@ pub async fn connect(
             "a stdio upstream needs a program to run, and --upstream carries only \
              kind:target; spawn the server yourself and bridge to an http endpoint"
         ),
-        // Refused here as well as by the plan's check. The plan already turns
-        // this into a non-zero exit with a note naming the target, so reaching
-        // this arm means the two disagreed — and the arm that says so is the one
-        // that should be reached, not a silent `todo!()`.
-        TransportKind::StatelessHttp => anyhow::bail!(
-            "this build has no stateless-http client adapter, so it cannot open \
-             an upstream session to forward to"
-        ),
+        // The upstream has no session, so there is no handshake to forward:
+        // `open` discovers the server's revision, and every request the
+        // downstream client sends is carried with that revision and the
+        // bridge's capabilities in its own `_meta`.
+        TransportKind::StatelessHttp => {
+            let (client, transport) = open(upstream, versions).await?;
+            let leg = Leg::new(client.negotiated(), client.profile());
+            Ok((leg, Arc::new(TransportPeer::new(transport))))
+        }
     }
 }
 
@@ -104,7 +107,18 @@ async fn negotiate(
     kind: TransportKind,
     versions: &SupportedVersions,
 ) -> anyhow::Result<Leg> {
-    let config = ClientConfig::speaking(versions.as_slice().to_vec(), kind)?;
+    // Newest first: the first revision is the one offered, and `versions` is
+    // sorted oldest-first, so offering it as given opens every upstream
+    // connection by asking for 2024-11-05 and pins the bridge to it. Only
+    // revisions with an `initialize` handshake; `2026-07-28` has none.
+    let mut offered: Vec<_> = versions
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|version| handshake_defined_in(*version))
+        .collect();
+    offered.sort_by(|left, right| right.cmp(left));
+    let config = ClientConfig::speaking(offered, kind)?;
     let session = handshake(transport, &config).await?;
 
     // The profile is the session's, not re-resolved from the two capability

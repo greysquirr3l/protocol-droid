@@ -36,6 +36,9 @@
 //! revision, and reports its findings through the wrapper.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+pub mod stateless;
 
 // `#[tool]` is called once per request rather than once per server, and
 // the function is `async fn` because the call site `.await`s it. A body
@@ -54,7 +57,7 @@ use protocol_droid::domain::ir::{
     AudioContent, Content, EmbeddedResource, ImageContent, JsonObject, LogLevel, PromptMessage,
     ResourceContents, Role, TextContent, ToolResult,
 };
-use protocol_droid::domain::registry::{Prompt, PromptArgument, Resource};
+use protocol_droid::domain::registry::{Prompt, PromptArgument, Resource, Tool};
 use protocol_droid::serde::Serialize;
 use protocol_droid::serde_json;
 
@@ -83,6 +86,15 @@ const WAV_SILENT: &str = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQ
 /// macro only accepts string literals — the constant and the literal are
 /// the same fact, and keeping them in one block is the rule.
 const SERVER_NAME: &str = "conformance-reference-server";
+
+/// The `message` the two SEP elicitation tools ask with.
+///
+/// Shared by [`elicitation_request`] and [`elicitation_with_schema`] so the
+/// three eliciting tools agree on it. Neither scenario asserts the wording —
+/// both check the `requestedSchema` the request carries — so this is one
+/// message rather than three, and changing it cannot make one scenario pass and
+/// another fail.
+const ELICITATION_MESSAGE: &str = "This tool requires user input.";
 
 /// A tool result for `echo` and `add`, with a small structured payload.
 ///
@@ -249,9 +261,14 @@ impl ConformanceFixture {
     /// `progress-test-1`, so this returns the increments it asks for.
     #[protocol_droid::tool]
     async fn test_tool_with_progress(ctx: RequestContext) -> ToolResult {
-        yield_to_runtime().await;
-        for (progress, total) in [(0, 3), (1, 3), (2, 3)] {
-            progress_message(&ctx, progress, total).await;
+        // The scenario's own sequence: 0, 50 and 100 out of 100, about 50 ms
+        // apart, so the notifications are visibly separate on the stream
+        // rather than one burst that a client could not tell from a batch.
+        for (index, progress) in [0, 50, 100].into_iter().enumerate() {
+            if index > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            progress_message(&ctx, progress, 100).await;
         }
         ToolResult::text("Reported progress.")
     }
@@ -294,6 +311,49 @@ impl ConformanceFixture {
         };
         match ctx.elicit(&request).await {
             Ok(_) => ToolResult::text("Elicitation completed."),
+            Err(failure) => ToolResult::text(format!("Elicitation was not completed: {failure}")),
+        }
+    }
+
+    /// `test_elicitation_sep1034_defaults` — elicits with a `default` on
+    /// every primitive type (SEP-1034).
+    ///
+    /// The schema is the subject, not the arguments: the scenario asserts
+    /// that `requestedSchema.properties` carries a `default` beside each of
+    /// `string`, `integer`, `number`, `enum` and `boolean`, and that the enum's
+    /// default is one of its own members. It takes no arguments because there
+    /// is nothing to vary — every value it asks for is fixed by the SEP.
+    ///
+    /// Reported the same way as [`Self::test_elicitation`], so a refusal is
+    /// visible as a refusal rather than as a tool that said nothing happened.
+    #[protocol_droid::tool(name = "test_elicitation_sep1034_defaults")]
+    async fn test_elicitation_sep1034_defaults(ctx: RequestContext) -> ToolResult {
+        yield_to_runtime().await;
+        let Some(request) = elicitation_with_schema(SEP1034_SCHEMA) else {
+            return ToolResult::text("The elicitation request could not be built.");
+        };
+        match ctx.elicit(&request).await {
+            Ok(answer) => elicitation_report(&answer),
+            Err(failure) => ToolResult::text(format!("Elicitation was not completed: {failure}")),
+        }
+    }
+
+    /// `test_elicitation_sep1330_enums` — elicits with all five enum-schema
+    /// spellings SEP-1330 defines (SEP-1330).
+    ///
+    /// Five properties, each the one variant it is named for, because the
+    /// point of the SEP is that these are *different* spellings of the same
+    /// thing and a client has to tell them apart: a bare `enum`, `oneOf` with
+    /// `const`+`title`, the deprecated `enumNames` pairing, and the two array
+    /// forms. Emitting one and calling the scenario covered would test nothing.
+    #[protocol_droid::tool(name = "test_elicitation_sep1330_enums")]
+    async fn test_elicitation_sep1330_enums(ctx: RequestContext) -> ToolResult {
+        yield_to_runtime().await;
+        let Some(request) = elicitation_with_schema(SEP1330_SCHEMA) else {
+            return ToolResult::text("The elicitation request could not be built.");
+        };
+        match ctx.elicit(&request).await {
+            Ok(answer) => elicitation_report(&answer),
             Err(failure) => ToolResult::text(format!("Elicitation was not completed: {failure}")),
         }
     }
@@ -764,6 +824,184 @@ fn elicitation_request(message: &str) -> Option<JsonObject> {
     })
 }
 
+/// `test_elicitation_sep1034_defaults`'s `requestedSchema`, verbatim.
+///
+/// One `default` beside each of the five primitive spellings the SEP names.
+/// Every value is fixed by the SEP rather than chosen here, so the schema is a
+/// constant rather than something a handler builds: a default that moved would
+/// be a fixture disagreeing with the specification, and the scenario's failure
+/// message names the expected value, so the disagreement would be visible but
+/// the cause would not.
+///
+/// `status` carries an `enum` and its `default` is one of its own members,
+/// which the scenario checks separately — a default outside the enum is the
+/// shape a client cannot apply.
+const SEP1034_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "title": "Name", "default": "John Doe" },
+    "age": { "type": "integer", "title": "Age", "default": 30 },
+    "score": { "type": "number", "title": "Score", "default": 95.5 },
+    "status": {
+      "type": "string",
+      "title": "Status",
+      "enum": ["active", "inactive", "pending"],
+      "default": "active"
+    },
+    "verified": { "type": "boolean", "title": "Verified", "default": true }
+  },
+  "required": ["name", "age", "score", "status", "verified"]
+}"#;
+
+/// `test_elicitation_sep1330_enums`'s `requestedSchema`, verbatim.
+///
+/// The five spellings SEP-1330 distinguishes, one property each. What makes
+/// them worth five properties rather than one is that the scenario asserts the
+/// *absence* of the neighbouring spelling in each case — no `oneOf` on an
+/// `enum`, no `enum` on a `oneOf`, no `anyOf` on an untitled array — so a
+/// schema that used one spelling for all five would fail five checks rather
+/// than pass them.
+const SEP1330_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "untitledSingle": {
+      "type": "string",
+      "enum": ["option1", "option2", "option3"]
+    },
+    "titledSingle": {
+      "type": "string",
+      "oneOf": [
+        { "const": "value1", "title": "First Option" },
+        { "const": "value2", "title": "Second Option" }
+      ]
+    },
+    "legacyEnum": {
+      "type": "string",
+      "enum": ["opt1", "opt2", "opt3"],
+      "enumNames": ["Option One", "Option Two", "Option Three"]
+    },
+    "untitledMulti": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["option1", "option2", "option3"] }
+    },
+    "titledMulti": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          { "const": "value1", "title": "First Choice" },
+          { "const": "value2", "title": "Second Choice" }
+        ]
+      }
+    }
+  },
+  "required": ["untitledSingle", "titledSingle", "legacyEnum", "untitledMulti", "titledMulti"]
+}"#;
+
+/// `json_schema_2020_12_tool`'s `inputSchema`, verbatim.
+///
+/// SEP-1613 (`$schema`, `$defs`, `additionalProperties`) and SEP-2106 (the
+/// `allOf`/`anyOf` composition, the `if`/`then`/`else` condition, and an
+/// `$anchor` inside `$defs`). It is a constant for the same reason the two
+/// elicitation schemas are, and for one more: the crate cannot derive it.
+/// `#[tool]` builds a schema through `schemars` from the handler's parameters,
+/// and none of these five keywords is expressible as a Rust type — which is
+/// what [`Server::add_tool`](protocol_droid::application::server::Server::add_tool)
+/// exists for.
+const JSON_SCHEMA_2020_12_INPUT: &str = r##"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "$defs": {
+    "address": {
+      "$anchor": "addressDef",
+      "type": "object",
+      "properties": {
+        "street": { "type": "string" },
+        "city": { "type": "string" }
+      }
+    }
+  },
+  "properties": {
+    "name": { "type": "string" },
+    "address": { "$ref": "#/$defs/address" },
+    "contactMethod": { "type": "string", "enum": ["phone", "email"] },
+    "phone": { "type": "string" },
+    "email": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "anyOf": [
+        { "required": ["phone"] },
+        { "required": ["email"] }
+      ]
+    }
+  ],
+  "if": {
+    "properties": { "contactMethod": { "const": "phone" } },
+    "required": ["contactMethod"]
+  },
+  "then": { "required": ["phone"] },
+  "else": { "required": ["email"] },
+  "additionalProperties": false
+}"##;
+
+/// `json_schema_2020_12_tool`'s answer.
+///
+/// The scenario calls this tool and asserts the call succeeds, so the body has
+/// to be a value the handler can return rather than a refusal. It echoes the
+/// arguments back under `received`, which is the only part of the answer that
+/// can be wrong in an interesting way: a tool that ignored its input would
+/// answer the same thing every time, and the echo is what would make that
+/// visible if the arguments ever stopped reaching the handler.
+fn json_schema_2020_12_result(arguments: &JsonObject) -> JsonObject {
+    let echoed = format!(r#"{{"received":{}}}"#, arguments.as_str());
+    JsonObject::new(echoed).unwrap_or_default()
+}
+
+/// Wraps a `requestedSchema` in the `elicitation/create` request around it.
+///
+/// Split from [`elicitation_request`] because the two callers differ in exactly
+/// one member and nothing else: SEP-1034 and SEP-1330 are about the schema, and
+/// a request shape that varied between them would be a second thing to fail.
+fn elicitation_with_schema(schema: &str) -> Option<JsonObject> {
+    serde_json::to_string(ELICITATION_MESSAGE)
+        .ok()
+        .and_then(|text| {
+            JsonObject::new(format!(
+                r#"{{"message":{text},"requestedSchema":{schema}}}"#
+            ))
+            .ok()
+        })
+}
+
+/// The text an elicitation tool answers with, naming what came back.
+///
+/// The suite reads this, so it carries the action and the content rather than
+/// the word "completed": a fixture that answered `Elicitation completed.` on a
+/// decline would satisfy "the tool returned text" while reporting the opposite
+/// of what the peer did. `action` and `content` are top-level members of
+/// `ElicitationResult`, so an answer from a peer that declined has no
+/// `content` and this reports the absence rather than inventing one.
+fn elicitation_report(answer: &JsonObject) -> ToolResult {
+    let parsed: serde_json::Value = match serde_json::from_str(answer.as_str()) {
+        Ok(parsed) => parsed,
+        Err(failure) => {
+            return ToolResult::text(format!(
+                "Elicitation answered with unreadable JSON: {failure}"
+            ));
+        }
+    };
+    let action = parsed.get("action").and_then(serde_json::Value::as_str);
+    let content = parsed.get("content").unwrap_or(&serde_json::Value::Null);
+    action.map_or_else(
+        || ToolResult::text(format!("Elicitation answered with no action: {content}")),
+        |action| {
+            ToolResult::text(format!(
+                "Elicitation completed: action={action}, content={content}"
+            ))
+        },
+    )
+}
+
 /// Emits one `notifications/message` record at `info`.
 ///
 /// `ctx.log` is gated on the session having negotiated logging, and returns a
@@ -847,9 +1085,49 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     // job harder. The `HttpBuilder` is the explicit form that takes an
     // address, and the only piece of the suite of choices the fixture
     // actually needs to make.
-    let server: Server = ConformanceFixture.into_server()?;
-    let builder =
-        protocol_droid::adapters::primary::transport::http::HttpBuilder::new(server).addr(addr);
+    let mut server: Server = ConformanceFixture.into_server()?;
+    // The `2026-07-28` surface: SEP-2322 round trips, the SEP-2575
+    // diagnostics, and the list-change triggers. In its own module because
+    // none of it is expressible through `#[tool]`.
+    stateless::register(&mut server).await?;
+    // One tool is not a `#[tool]`, because the crate cannot derive its schema.
+    // `json_schema_2020_12_tool` advertises JSON Schema 2020-12 — `$schema`,
+    // `$defs` with an `$anchor`, `allOf`/`anyOf`, `if`/`then`/`else` — and
+    // `schemars` derives a schema from Rust types, none of which is one of
+    // those keywords. The scenario checks that they survive to the wire, so a
+    // schema that dropped them would pass a `tools/list` shape check and fail
+    // the one this scenario exists for.
+    server.add_tool(
+        Tool::new("json_schema_2020_12_tool", JSON_SCHEMA_2020_12_INPUT)?
+            .described("Tool with JSON Schema 2020-12 features"),
+        Arc::new(|_ctx: RequestContext, arguments: JsonObject| {
+            Box::pin(async move { json_schema_2020_12_result(&arguments) })
+        }),
+    );
+    // The suite exercises elicitation and sampling, which a tool can only
+    // reach by putting a question on a stream and waiting for the answer. A
+    // server answering with one JSON document has no stream to put it on, so
+    // this is the one configuration choice the fixture has to make — and it
+    // is made here, out loud, rather than left to a default it has to break.
+    //
+    // Without it those scenarios fail with the tool reporting that it cannot
+    // ask the peer, which is the correct behaviour for the default and the
+    // wrong one for this fixture.
+    let config = protocol_droid::adapters::primary::transport::http::ServerConfig::new()?
+        .with_streaming(protocol_droid::adapters::primary::transport::http::Streaming::EventStream);
+    let builder = protocol_droid::adapters::primary::transport::http::HttpBuilder::new(server)
+        .addr(addr)
+        .config(config);
+    // `--legacy-sse` also mounts the `2024-11-05` HTTP+SSE routes (`/sse` and
+    // `/messages`) beside `/mcp`, for trying a legacy client against the same
+    // tools. Off by default: that transport has been deprecated since
+    // `2025-03-26`, and the conformance suite has nothing to say about it.
+    #[cfg(feature = "legacy-sse")]
+    let builder = if std::env::args().any(|arg| arg == "--legacy-sse") {
+        builder.legacy_sse()
+    } else {
+        builder
+    };
     let bound = builder.serve().await?;
     eprintln!("{}: listening on {}", SERVER_NAME, bound.addr);
     Ok(())

@@ -86,8 +86,13 @@ jobs:
             fi
             tag="$(git tag --points-at "${HEAD_SHA}" --sort=-creatordate | head -n 1)"
             if [ -z "${tag}" ]; then
-              echo "::error::no tag points at ${HEAD_SHA}"
-              exit 1
+              # Auto Tag succeeds without tagging when the workspace version
+              # already has a tag on an earlier commit. That is the common
+              # case, not a failure: most green pushes to main are not
+              # releases. Report it and let every downstream job skip.
+              echo "No tag points at ${HEAD_SHA}; nothing to release."
+              echo "tag=" >> "${GITHUB_OUTPUT}"
+              exit 0
             fi
           fi
           echo "Resolved release tag: ${tag}"
@@ -120,6 +125,7 @@ jobs:
   verify:
     name: verify packaging
     needs: resolve-tag
+    if: needs.resolve-tag.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -278,6 +284,7 @@ jobs:
   binaries:
     name: binaries (${{ matrix.label }})
     needs: resolve-tag
+    if: needs.resolve-tag.outputs.tag != ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

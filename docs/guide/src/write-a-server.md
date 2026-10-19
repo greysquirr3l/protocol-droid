@@ -90,6 +90,41 @@ conformance suite reads copies
 [`conformance_reference_server.rs`](../../crates/protocol-droid/examples/conformance_reference_server.rs)
 instead — the same `HttpBuilder`, every feature wired.
 
+## Serving the legacy `2024-11-05` transport too
+
+`HttpBuilder::legacy_sse()` mounts the old HTTP+SSE routes beside
+Streamable HTTP on the same listener:
+
+```rust
+let report = HttpBuilder::new(server).addr(addr).legacy_sse().serve().await?;
+```
+
+A client opens a stream with `GET /sse`, is told where to `POST` by the
+`endpoint` event, and speaks `2024-11-05` over the pair (use
+`legacy_sse_at(stream, message)` to move the paths). The same tools,
+resources and prompts answer on both transports. `list_changed`,
+progress and log records go out on the session's stream, and a tool
+can ask the client a question and wait for the answer. A client that
+offers a later revision is answered with `2024-11-05`, the only
+revision that defines the transport. The authenticator, `Origin`
+policy, `Host` check and rate limit set on the builder apply to both
+transports. `conformance_reference_server --legacy-sse` runs this.
+
+## Registering and removing primitives while serving
+
+`Server::handle()` returns a `ServerHandle`. `add_tool`, `remove_tool`,
+and the matching calls for resources, templates and prompts change what
+the server lists while it is running, and each change is announced with
+`list_changed` to the sessions that negotiated it, and only those.
+
+## How long a retry is remembered
+
+A `tools/call` retried after a dropped connection replays its recorded
+answer rather than running the tool again. The server keeps the last
+4 096 completed results; once full it drops the oldest finished one,
+never a call still running. A retry of something older than that window
+runs again.
+
 ## What the server does not do
 
 - It does not start a tokio runtime; `serve_stdio` builds one

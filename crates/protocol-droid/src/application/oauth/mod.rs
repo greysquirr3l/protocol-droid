@@ -15,9 +15,17 @@
 // it is pure claim logic with no dependency on a SHA-256 implementation or a
 // base64url codec.
 #[cfg(feature = "oauth")]
+pub mod authorizer;
+#[cfg(feature = "oauth")]
 pub mod callback;
 #[cfg(feature = "oauth")]
 pub mod client;
+#[cfg(feature = "oauth")]
+pub mod environment;
+#[cfg(feature = "oauth")]
+pub mod flow;
+#[cfg(feature = "oauth")]
+pub mod metadata;
 #[cfg(feature = "oauth")]
 pub mod redeem;
 #[cfg(feature = "oauth")]

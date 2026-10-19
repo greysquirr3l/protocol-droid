@@ -283,6 +283,34 @@ pub enum IrErrorCode {
 }
 
 impl IrErrorCode {
+    /// `-32022`, SEP-2575's unsupported-protocol-version code.
+    ///
+    /// Named rather than written at each use because the specification gives
+    /// it meaning rather than just a number: it is the code that carries
+    /// `data.supported`, so a client knows to retry against a revision this
+    /// server speaks instead of hunting for a bug in its own request. A bare
+    /// `-32022` at a call site reads as a typo, and this one is easy to typo.
+    ///
+    /// It lives in the implementation-defined range, which is why it is
+    /// [`Implementation`](Self::Implementation) and not a named variant of its
+    /// own: a new variant would be a promise that no other code can hold,
+    /// since nothing stops a peer sending this number for an unrelated reason.
+    pub const UNSUPPORTED_PROTOCOL_VERSION: Self = Self::Implementation(-32022);
+
+    /// `-32020`, `HeaderMismatchError` (`2026-07-28`).
+    ///
+    /// An HTTP header disagrees with the body it describes, or a required one
+    /// is missing. Renumbered from `-32001` when the revision partitioned the
+    /// server-error range; see that revision's changelog, minor change 12.
+    pub const HEADER_MISMATCH: Self = Self::Implementation(-32020);
+
+    /// `-32021`, `MissingRequiredClientCapabilityError` (`2026-07-28`).
+    ///
+    /// Serving the request needs a capability the client did not declare in
+    /// its per-request `clientCapabilities`. Carries
+    /// `data.requiredCapabilities`, a `ClientCapabilities` object.
+    pub const MISSING_REQUIRED_CLIENT_CAPABILITY: Self = Self::Implementation(-32021);
+
     /// The numeric wire value.
     #[must_use]
     pub const fn code(self) -> i64 {

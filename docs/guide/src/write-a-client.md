@@ -45,6 +45,62 @@ public and `connect_stdio` is the easy one.
   is the boundary the handler can plug into; the order
   (check → execute → persist) is the contract.
 
+## Signing in to an OAuth-protected server
+
+When a server answers `401` or `403`, an `OAuthAuthorizer` obtains
+a token and the request is retried. It follows the authorization
+page of the spec: it reads the protected resource metadata (from the
+challenge, else the well-known location), checks that it describes the
+server being called, finds the authorization server, and refuses one
+that does not advertise PKCE with `S256`. It then picks a client in
+priority order (one it already holds, pre-registered credentials, a
+client metadata document, dynamic registration), asks for the scope the
+challenge names, and sends the `resource` exactly as the metadata
+published it. Responses are checked against RFC 9207's `iss`
+rules. After three refusals it stops.
+
+```rust
+use std::sync::Arc;
+use protocol_droid::adapters::secondary::oauth::LoopbackBrowser;
+use protocol_droid::adapters::secondary::oauth::environment::HttpOAuthEnvironment;
+use protocol_droid::adapters::secondary::oauth::secrets::OsSecrets;
+use protocol_droid::application::client::handler::ConnectOptions;
+use protocol_droid::application::oauth::authorizer::{OAuthAuthorizer, OAuthConfig};
+use protocol_droid::domain::ProtocolVersion;
+
+let browser = LoopbackBrowser::bind().await?;
+let config = OAuthConfig::new("https://mcp.example.com/mcp", ProtocolVersion::latest_known())?
+    .redirect_to(browser.redirect_uri())
+    .wanting_refresh_tokens();
+let authorizer = OAuthAuthorizer::new(config, HttpOAuthEnvironment::new(Arc::new(browser))?, OsSecrets);
+
+let client = Client::connect_with(&spec, &versions, ConnectOptions::new().authorizing(authorizer)).await?;
+```
+
+`LoopbackBrowser` opens the system browser and receives the redirect on
+`127.0.0.1`; it gives up after five minutes by default.
+`FollowsRedirect` is the headless alternative, for an authorization
+server that approves without asking (tests and CI). A server
+you register with ahead of time is described with
+`OAuthConfig::with_pre_registered`.
+
+When a token expires the authorizer trades its refresh token for a new
+one, without asking the user again. A refused refresh token is
+forgotten and the whole flow runs; a challenge for more scope always
+goes back to the user, and the new request asks for the union of what
+was granted and what is now needed.
+
+From the command line, `protocol-droid inspect <server> --oauth list` does the same.
+
+## Stateless servers
+
+A `2026-07-28` server is reached with an `http-stateless:` spec.
+`Client::connect_to` discovers the revision (renegotiating on `-32022`),
+sends the revision and capabilities in every request's `_meta`, and
+mirrors tool arguments annotated `x-mcp-header` into
+`Mcp-Param-*` headers. A tool whose annotations are invalid is dropped
+from the listing, as the specification asks.
+
 ## What the client does not do
 
 - It does not implement your tool's logic. A `tools/call` is

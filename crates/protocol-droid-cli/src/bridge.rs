@@ -103,7 +103,7 @@ pub struct BridgeArgs {
     /// one who should be choosing to take it. Some losses have no rule at all
     /// and stay refused regardless — `--allow-downgrade` cannot authorise a
     /// fallback the specification does not define.
-    #[arg(long, requires = "check_result")]
+    #[arg(long)]
     pub allow_downgrade: bool,
 
     /// Machine-readable JSON on stdout, with the human summary on stderr.
@@ -342,9 +342,10 @@ fn parse(spec: &str, field: &'static str) -> Result<TransportSpec, SpecFailure> 
 ///
 /// An upstream is the side the bridge *calls*, so it needs a `BridgePeer`
 /// adapter that this build can also open a session with. `http` and
-/// `legacy-sse` have both. `stdio` has a client adapter but no way to *name* a
-/// program to run — `--upstream` carries `kind:target`, which has no room for a
-/// command line — and `stateless-http` has no client adapter at all.
+/// `legacy-sse` have both, and so does `http-stateless`, whose per-request
+/// `_meta` the peer adds. `stdio` has a client adapter but no way to *name* a
+/// program to run: `--upstream` carries `kind:target`, which has no room for a
+/// command line.
 ///
 /// This check once read `kind != TransportKind::Stdio`, refusing stdio on the
 /// grounds that it had a server adapter but no client one. That was true once
@@ -358,7 +359,7 @@ fn parse(spec: &str, field: &'static str) -> Result<TransportSpec, SpecFailure> 
 const fn upstream_supported(kind: TransportKind) -> bool {
     matches!(
         kind,
-        TransportKind::StreamableHttp | TransportKind::LegacySse
+        TransportKind::StreamableHttp | TransportKind::LegacySse | TransportKind::StatelessHttp
     )
 }
 
@@ -558,13 +559,7 @@ mod tests {
     /// the operator has already started reading the run's output.
     #[test]
     fn an_unsupported_upstream_is_not_servable() -> Result<(), TestError> {
-        assert!(
-            !plan(
-                &spec("stdio:./bridge")?,
-                &spec("http-stateless://backend:3000/mcp")?
-            )
-            .serve
-        );
+        assert!(!plan(&spec("stdio:./bridge")?, &spec("stdio:./other-server")?).serve);
         Ok(())
     }
 

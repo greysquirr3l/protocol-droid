@@ -36,10 +36,13 @@ pub mod builder;
 pub mod context;
 pub mod dispatch;
 pub mod error;
+pub mod live;
+pub mod log_gate;
 pub mod read;
 pub mod result;
 #[cfg(feature = "stdio")]
 pub mod serve;
+mod watch;
 
 pub use builder::{BoxFuture, DispatchError, Server, ServerBuilder, ToolHandler};
 pub use context::{
@@ -47,4 +50,6 @@ pub use context::{
 };
 pub use dispatch::Dispatcher;
 pub use error::GatedError;
+pub use live::{ListKind, ListSubscription, ServerHandle};
+pub use log_gate::LogGate;
 pub use result::OutcomeError;

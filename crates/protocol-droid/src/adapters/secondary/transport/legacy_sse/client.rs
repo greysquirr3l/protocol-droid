@@ -586,7 +586,12 @@ impl LegacySseClient {
 /// The `result` of `payload` when it answers `id`.
 fn reply_for(payload: &Value, id: &RequestId) -> Option<Result<JsonObject, RequestError>> {
     let members = payload.as_object()?;
-    if members.get("id") != Some(&Value::from(id.to_json())) {
+    // `to_json` is the id as JSON text — `1`, or `"a"` with its quotes — so it
+    // is parsed before it is compared. Wrapping the text in a `Value::String`
+    // matched only a server that answered a numeric id with a string, which is
+    // no server.
+    let wanted: Option<Value> = serde_json::from_str(&id.to_json()).ok();
+    if wanted.as_ref() != members.get("id") {
         return None;
     }
     // `reply_result` re-parses what was just walked, which is a second pass over

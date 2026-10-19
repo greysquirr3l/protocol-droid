@@ -28,8 +28,11 @@ use crate::domain::{
     CapabilitySet, NegotiatedSession, ProtocolVersion, SupportedVersions, TransportKind,
 };
 
+pub mod bearer;
 mod connect;
+pub mod handler;
 mod handshake;
+pub mod inputs;
 
 pub use connect::{ConnectError, default_versions, open};
 
@@ -92,6 +95,47 @@ pub enum TransportError {
     /// business enumerating them.
     #[error("{0}")]
     Unavailable(String),
+
+    /// The peer answered, and the answer was a JSON-RPC error.
+    ///
+    /// Separate from [`Unavailable`](Self::Unavailable) because the peer is
+    /// fine and the request was not: a caller can act on the code. SEP-2575's
+    /// `-32022` carries the revisions the server does speak, and `-32021` the
+    /// capabilities it needs, and a client that flattened them to a string
+    /// could neither renegotiate nor retry.
+    #[error("the peer refused with {code}: {message}")]
+    Refused {
+        /// The JSON-RPC error code.
+        code: i64,
+        /// The peer's message.
+        message: String,
+        /// The error's `data` member as JSON text, when there was one.
+        data: Option<String>,
+    },
+}
+
+impl TransportError {
+    /// The revisions a `-32022` refusal says the server supports.
+    #[must_use]
+    pub fn supported_versions(&self) -> Option<Vec<String>> {
+        let Self::Refused {
+            code: -32022,
+            data: Some(data),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
+        Some(
+            parsed
+                .get("supported")?
+                .as_array()?
+                .iter()
+                .filter_map(|version| version.as_str().map(ToOwned::to_owned))
+                .collect(),
+        )
+    }
 }
 
 /// Why a client call did not happen.
@@ -113,6 +157,21 @@ pub enum ClientError {
     /// The request could not be delivered or answered.
     #[error("the request did not complete: {0}")]
     Transport(#[from] TransportError),
+
+    /// The server asked for input and nothing could provide it.
+    ///
+    /// Names the callback so a one-shot caller sees what to wire rather than
+    /// a hang: an agent loop that waits for a person who is not there is worse
+    /// than one that fails.
+    #[error("the server asked for `{method}` input, which no resolver provided")]
+    InputUnresolved {
+        /// The input request's method, e.g. `elicitation/create`.
+        method: String,
+    },
+
+    /// The server kept asking for input past the round limit.
+    #[error("the server asked for input more than {0} times")]
+    TooManyRounds(u32),
 }
 
 impl ClientError {
@@ -121,7 +180,7 @@ impl ClientError {
     pub const fn feature(&self) -> Option<Feature> {
         match self {
             Self::FeatureUnavailable { feature, .. } => Some(*feature),
-            Self::Transport(_) => None,
+            Self::Transport(_) | Self::InputUnresolved { .. } | Self::TooManyRounds(_) => None,
         }
     }
 }
@@ -456,6 +515,24 @@ impl Client {
         Ok(connect::open(spec, versions).await?.0)
     }
 
+    /// Connects to `spec`, offering `versions` and applying `options`.
+    ///
+    /// For a client that can answer the server: a server asks for sampling,
+    /// elicitation or roots only when the client declared them, so
+    /// [`connect_to`](Self::connect_to), which declares nothing, can never be
+    /// asked. The handler in `options` answers what the server does ask.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_to_speaking`](Self::connect_to_speaking).
+    pub async fn connect_with(
+        spec: &TransportSpec,
+        versions: &SupportedVersions,
+        options: handler::ConnectOptions,
+    ) -> Result<Self, ConnectError> {
+        Ok(connect::open_with(spec, versions, options).await?.0)
+    }
+
     /// Connects to an MCP server over stdio by spawning it as a child.
     ///
     /// `spec` is the program and (optionally) arguments; `args` is
@@ -560,6 +637,25 @@ impl Client {
         self.session.profile.allows(feature)
     }
 
+    /// Sends `method` exactly as given, skipping the capability gate.
+    ///
+    /// The typed methods refuse what the server did not advertise, which is
+    /// right for an application and wrong for a tool whose job is to see what a
+    /// server actually does: an inspector, a prober, a conformance client. A
+    /// server may serve a method it did not advertise, and the only way to
+    /// learn that is to ask.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Transport`] as for any request.
+    pub async fn send_unchecked(
+        &self,
+        method: &str,
+        params: &JsonObject,
+    ) -> Result<JsonObject, ClientError> {
+        Ok(self.transport.send(method, params).await?)
+    }
+
     /// Lists the server's tools.
     ///
     /// # Errors
@@ -605,6 +701,29 @@ impl Client {
             .map_err(ClientError::from)
     }
 
+    /// Calls `name`, answering any input the server asks for along the way.
+    ///
+    /// See [`call_resolving`](inputs::call_resolving) for the rules.
+    ///
+    /// # Errors
+    ///
+    /// As [`call_tool`](Self::call_tool), plus
+    /// [`ClientError::InputUnresolved`] and [`ClientError::TooManyRounds`].
+    pub async fn call_tool_resolving(
+        &self,
+        name: &str,
+        arguments: &JsonObject,
+        resolve: &(impl inputs::InputResolver + ?Sized),
+    ) -> Result<JsonObject, ClientError> {
+        self.require(Feature::Tools)?;
+        let nested = serde_json::from_str::<serde_json::Value>(arguments.as_str())
+            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+        let params =
+            JsonObject::from_value(serde_json::json!({ "name": name, "arguments": nested }))
+                .unwrap_or_default();
+        inputs::call_resolving(self.transport.as_ref(), "tools/call", &params, resolve).await
+    }
+
     /// Lists the server's resources.
     ///
     /// # Errors
@@ -627,6 +746,46 @@ impl Client {
     pub async fn list_prompts(&self) -> Result<JsonObject, ClientError> {
         self.require(Feature::Prompts)?;
         self.request("prompts/list", "{}").await
+    }
+
+    /// Lists the server's resource templates.
+    ///
+    /// # Errors
+    ///
+    /// As [`list_resources`](Self::list_resources).
+    pub async fn list_resource_templates(&self) -> Result<JsonObject, ClientError> {
+        self.require(Feature::Resources)?;
+        self.request("resources/templates/list", "{}").await
+    }
+
+    /// Reads the resource at `uri`.
+    ///
+    /// # Errors
+    ///
+    /// As [`list_resources`](Self::list_resources).
+    pub async fn read_resource(&self, uri: &str) -> Result<JsonObject, ClientError> {
+        self.require(Feature::Resources)?;
+        let params = JsonObject::from_value(serde_json::json!({ "uri": uri })).unwrap_or_default();
+        Ok(self.transport.send("resources/read", &params).await?)
+    }
+
+    /// Gets the prompt `name`, rendered with `arguments`.
+    ///
+    /// # Errors
+    ///
+    /// As [`list_prompts`](Self::list_prompts).
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &JsonObject,
+    ) -> Result<JsonObject, ClientError> {
+        self.require(Feature::Prompts)?;
+        let nested = serde_json::from_str::<serde_json::Value>(arguments.as_str())
+            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+        let params =
+            JsonObject::from_value(serde_json::json!({ "name": name, "arguments": nested }))
+                .unwrap_or_default();
+        Ok(self.transport.send("prompts/get", &params).await?)
     }
 
     /// The gate, in one place, called by every typed method.

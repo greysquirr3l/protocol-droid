@@ -29,16 +29,19 @@
 use std::sync::Arc;
 
 use crate::application::mcp::initialize::{read_offer, server_capabilities_json};
+use crate::application::mcp::input_required::{InputRound, capability_for, is_input_required};
 use crate::application::registry::listing::Listing;
 use crate::application::server::builder::{DispatchError, Server};
 use crate::application::server::context::{PeerSession, RequestContext};
 use crate::domain::feature::{Feature, FeatureProfile};
 use crate::domain::idempotency::{Claim, IdempotencyKey};
 use crate::domain::ir::JsonObject;
+use crate::domain::ir::LogLevel;
 use crate::domain::registry::{Primitive, PrimitiveKind, PromptArgument, Registered};
 use crate::domain::{
-    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, handshake_defined_in,
-    negotiate_server, resolve,
+    CapabilitySet, Negotiation, ProtocolVersion, SupportedVersions, TransportKind,
+    client_method_defined_in, discover_defined_in, handshake_defined_in, negotiate_server, resolve,
+    transport_allowed,
 };
 
 /// Routes methods to a server's handlers.
@@ -167,6 +170,171 @@ impl Dispatcher {
         method: &str,
         params: &JsonObject,
     ) -> Result<JsonObject, DispatchError> {
+        let version = ctx.peer().negotiated();
+        let answered = self.route(ctx, method, params).await?;
+        // `resultType` belongs on every result at 2026-07-28 and on none
+        // before it, so it is stamped here rather than in each method: there
+        // are ten of them and a per-method call is a call someone forgets.
+        let stamped = stamp_result(answered, Cacheable::No, version);
+        Ok(self.identify(stamped, version))
+    }
+
+    /// Adds `_meta["io.modelcontextprotocol/serverInfo"]` at 2026-07-28.
+    ///
+    /// SEP-2575: with no handshake there is no `InitializeResult` to carry
+    /// `serverInfo`, so a server "SHOULD identify itself in each result's
+    /// `_meta`". Older revisions carry it once, in the handshake, and their
+    /// result schemas have no such key.
+    fn identify(&self, result: JsonObject, version: ProtocolVersion) -> JsonObject {
+        if !result_envelope_defined_in(version) {
+            return result;
+        }
+        let Ok(serde_json::Value::Object(mut members)) =
+            serde_json::from_str::<serde_json::Value>(result.as_str())
+        else {
+            return result;
+        };
+        let meta = members
+            .entry("_meta")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(meta) = meta.as_object_mut() {
+            meta.insert(
+                "io.modelcontextprotocol/serverInfo".to_owned(),
+                serde_json::json!({
+                    "name": self.server.name(),
+                    "version": self.server.version(),
+                }),
+            );
+        }
+        JsonObject::from_value(serde_json::Value::Object(members)).unwrap_or(result)
+    }
+
+    /// The SEP-2322 round a retry carries, verified.
+    ///
+    /// Both members are optional and both are read only here. A `requestState`
+    /// that does not open under this server's key is refused before any
+    /// handler sees it — the handler is only ever handed a state this server
+    /// issued.
+    fn input_round(&self, params: &JsonObject) -> Result<InputRound, DispatchError> {
+        let responses = match parsed_param(params, "inputResponses")? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Object(map)) => Some(map),
+            Some(_) => return Err(DispatchError::MalformedParams),
+        };
+        let state = match parsed_param(params, "requestState")? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(sealed)) => {
+                let key = self
+                    .server
+                    .request_state_key()
+                    .ok_or(DispatchError::TamperedRequestState)?;
+                Some(
+                    key.open(&sealed)
+                        .ok_or(DispatchError::TamperedRequestState)?
+                        .to_owned(),
+                )
+            }
+            Some(_) => return Err(DispatchError::MalformedParams),
+        };
+        Ok(InputRound {
+            responses,
+            state,
+            key: self.server.request_state_key().cloned(),
+        })
+    }
+
+    /// Checks an interim result against what the request may receive.
+    ///
+    /// Two rules from SEP-2322 and one from SEP-2575. An `InputRequiredResult`
+    /// exists only at `2026-07-28` and later, and only on `tools/call`,
+    /// `prompts/get` and `resources/read` — "servers MUST NOT send
+    /// `InputRequiredResult` responses on any client requests other than the
+    /// supported ones". And every input request it carries needs the client
+    /// capability for that request, which the client must have declared on
+    /// *this* request: otherwise the answer is `-32021`.
+    fn check_interim(
+        ctx: &RequestContext,
+        method: &str,
+        result: JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        let Ok(serde_json::Value::Object(members)) =
+            serde_json::from_str::<serde_json::Value>(result.as_str())
+        else {
+            return Ok(result);
+        };
+        if !is_input_required(&members) {
+            return Ok(result);
+        }
+        if !accepts_input_round(method) || !result_envelope_defined_in(ctx.peer().negotiated()) {
+            return Err(DispatchError::HandlerFailed(
+                "an InputRequiredResult is not defined for this request".to_owned(),
+            ));
+        }
+        let mut required: Vec<&'static str> = Vec::new();
+        if let Some(requests) = members
+            .get("inputRequests")
+            .and_then(serde_json::Value::as_object)
+        {
+            for request in requests.values() {
+                let Some(capability) = request
+                    .get("method")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(capability_for)
+                else {
+                    continue;
+                };
+                let feature = match capability {
+                    "sampling" => Feature::Sampling,
+                    "elicitation" => Feature::Elicitation,
+                    _ => Feature::Roots,
+                };
+                if !ctx.peer().allows(feature) && !required.contains(&capability) {
+                    required.push(capability);
+                }
+            }
+        }
+        if !required.is_empty() {
+            return Err(DispatchError::MissingClientCapability { required });
+        }
+        Ok(result)
+    }
+
+    /// Routes one method to its handler.
+    ///
+    /// Split from [`dispatch`](Self::dispatch) so the result envelope is added
+    /// once, on the way out, instead of at each of the ten places a result is
+    /// built.
+    async fn route(
+        &self,
+        ctx: &RequestContext,
+        method: &str,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
+        let version = ctx.peer().negotiated();
+        // A method the negotiated revision does not define is `-32601`
+        // whatever this server could otherwise do with it: answering `ping` on
+        // `2026-07-28` would tell a client the method exists there.
+        if !client_method_defined_in(version, method) {
+            return Err(DispatchError::UnknownMethod);
+        }
+        let round;
+        let ctx = if accepts_input_round(method) && result_envelope_defined_in(version) {
+            round = ctx.clone().with_input_round(self.input_round(params)?);
+            &round
+        } else {
+            ctx
+        };
+        let answered = self.route_defined(ctx, method, params).await?;
+        Self::check_interim(ctx, method, answered)
+    }
+
+    /// Routes a method the negotiated revision defines.
+    async fn route_defined(
+        &self,
+        ctx: &RequestContext,
+        method: &str,
+        params: &JsonObject,
+    ) -> Result<JsonObject, DispatchError> {
         match method {
             // `initialize` is the one method with no gate, and for the
             // opposite reason to `ping`. `ping` may be answered on a session
@@ -182,6 +350,10 @@ impl Dispatcher {
             // revision that is: on `2026-07-28` there is no handshake to
             // perform, and the handler refuses rather than inventing one.
             "initialize" => self.initialize(ctx, params),
+            // SEP-2575's replacement for the handshake, and defined only where
+            // the handshake is not. The two are complementary, so a revision
+            // never has both.
+            "server/discover" => Self::discover(ctx),
             // `ping` is defined in every revision that has a session and
             // answers on an otherwise idle one, so gating it would refuse the
             // request it exists for.
@@ -203,28 +375,64 @@ impl Dispatcher {
         }
     }
 
+    /// Serves `server/discover`: what this server speaks, and for how long a
+    /// client may keep the answer.
+    ///
+    /// SEP-2575 removed `initialize` from `2026-07-28` and made every request
+    /// carry its own version and capabilities in `_meta`. That is enough to
+    /// *use* the server and not enough to *choose* one, which is the gap this
+    /// fills: a client with no session and no `initialize` has no other way to
+    /// learn the revisions on offer.
+    ///
+    /// The capabilities are the profile's own advertisement rather than a
+    /// separate list, because a second list is a second opinion: a client that
+    /// discovered `tools` and then found `tools/call` refused would have been
+    /// told something this crate does not do.
+    ///
+    /// `ttlMs` is `0`. This server has no cache and re-derives the answer on
+    /// every call, so advertising a lifetime it cannot honour would tell a
+    /// client to reuse a result whose backing registry may since have changed.
+    /// Zero is the honest value and the specification permits it: "should be
+    /// considered immediately stale".
+    ///
+    /// `cacheScope` is `private`. The advertisement describes what this
+    /// process can do, and there is nothing user-specific in it, but a
+    /// capability set is also a map of what an operator has turned on, and
+    /// `"public"` invites an intermediary to share it across authorization
+    /// contexts. `"private"` is the safe reading of the same answer.
+    fn discover(ctx: &RequestContext) -> Result<JsonObject, DispatchError> {
+        if !discover_defined_in(ctx.peer().negotiated()) {
+            return Err(DispatchError::UnknownMethod);
+        }
+        let result = serde_json::json!({
+            "resultType": "complete",
+            "supportedVersions": SupportedVersions::all()
+                .map_err(|_| DispatchError::UnnegotiableVersion)?
+                .into_iter()
+                .rev()
+                .map(|version| version.as_wire().into_owned())
+                .collect::<Vec<_>>(),
+            "ttlMs": 0,
+            "cacheScope": "private",
+            "capabilities": server_capabilities_json(ctx.peer().profile()),
+        });
+        JsonObject::from_value(result).map_err(|_| DispatchError::MalformedParams)
+    }
+
     /// Serves `resources/subscribe` and `resources/unsubscribe`.
     ///
-    /// Both answer the empty object, and neither records anything. The fixture
-    /// emits no `notifications/resources/updated`, so a subscription here is a
-    /// promise kept by never being tested — and remembering it would only buy
-    /// the ability to answer `unsubscribe` for a resource that was never
-    /// watched.
+    /// Both answer the empty object. A subscription is recorded against the
+    /// session's own sink, so [`ServerHandle::notify_resource_updated`] reaches
+    /// exactly the sessions that asked, and it ends with the session.
     ///
-    /// That is the honest gap, and it is worth stating rather than hiding: a
-    /// server that advertised `subscribe` and then dropped every update would
-    /// fail this same scenario suite for a peer. What the scenario checks is
-    /// that the method is *accepted* for a URI the server lists, which is the
-    /// part the spec makes mandatory. The notification path has no fixture to
-    /// exercise it — see the `resources-subscribe` entry in the conformance
-    /// gap doc for what closing it would take.
+    /// [`ServerHandle::notify_resource_updated`]: crate::application::server::ServerHandle::notify_resource_updated
     fn subscribe(
         &self,
         ctx: &RequestContext,
         params: &JsonObject,
         op: SubscribeOp,
     ) -> Result<JsonObject, DispatchError> {
-        Self::require(ctx, Feature::Resources)?;
+        Self::require(ctx, Feature::ResourcesSubscribe)?;
         let uri = string_param(params, "uri")?;
         // The URI must be one this server lists. Accepting a subscription for
         // a resource that does not exist is how a client ends up waiting for
@@ -233,9 +441,12 @@ impl Dispatcher {
         if self.server.reader(&uri).is_none() {
             return Err(DispatchError::UnknownResource);
         }
+        let handle = self.server.handle();
         match op {
-            SubscribeOp::Subscribe | SubscribeOp::Unsubscribe => Ok(JsonObject::default()),
+            SubscribeOp::Subscribe => handle.watch_resource(ctx.peer().sink(), &uri, None),
+            SubscribeOp::Unsubscribe => handle.unwatch_resource(ctx.peer().sink(), &uri),
         }
+        Ok(JsonObject::default())
     }
 
     /// Serves `resources/read`.
@@ -256,7 +467,14 @@ impl Dispatcher {
             .server
             .reader(&uri)
             .ok_or(DispatchError::UnknownResource)?;
-        reader(ctx.clone(), uri).await
+        // One of the five cacheable results at 2026-07-28, and the only one
+        // that is not a listing — which is exactly why it is marked here
+        // rather than inferred from the method name.
+        Ok(stamp_result(
+            reader(ctx.clone(), uri).await?,
+            Cacheable::Yes,
+            ctx.peer().negotiated(),
+        ))
     }
 
     /// Serves `prompts/get`.
@@ -293,11 +511,11 @@ impl Dispatcher {
     /// place and stops sending the records it would otherwise have expected,
     /// and the peer has no way to tell "set to debug" from "set to a typo".
     ///
-    /// Nothing is filtered here. This crate emits no `notifications/message`,
-    /// so honouring the level would record a preference nothing reads.
-    /// Accepting the request and dropping it is what the method asks of a
-    /// server with no log output; refusing a well-formed request over
-    /// behaviour the peer never observes would be the worse answer.
+    /// The level is stored on the session's [`LogGate`], which every later
+    /// request's context shares, so [`RequestContext::log`] filters against
+    /// it from the next record on.
+    ///
+    /// [`LogGate`]: crate::application::server::LogGate
     fn set_log_level(
         ctx: &RequestContext,
         params: &JsonObject,
@@ -307,13 +525,10 @@ impl Dispatcher {
         // A `level` outside the spec's own set is a client error, and answers
         // `InvalidParams` — the same answer as a missing member, because a
         // peer cannot act on either and the difference is not one it can use.
-        let recognised = matches!(
-            level.as_str(),
-            "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
-        );
-        if !recognised {
-            return Err(DispatchError::MalformedParams);
-        }
+        let level = level
+            .parse::<LogLevel>()
+            .map_err(|_| DispatchError::MalformedParams)?;
+        ctx.peer().log_gate().set(level);
         Ok(JsonObject::default())
     }
 
@@ -408,7 +623,11 @@ impl Dispatcher {
             self.server
                 .registry()
                 .list_visible(ctx.peer().auth(), &ctx.peer().profile(), kind);
-        Ok(wrap_listing(key, &listing))
+        Ok(stamp_result(
+            wrap_listing(key, &listing),
+            Cacheable::Yes,
+            ctx.peer().negotiated(),
+        ))
     }
 
     /// `tools/call`, through the server's own dispatch.
@@ -621,11 +840,98 @@ fn parsed_param(
 /// could be invalid is a bug here. It falls back to `{}` rather than
 /// propagating because a listing that cannot be encoded should read as empty
 /// to the caller rather than take the whole response down.
+/// Whether a result carries SEP-2549's caching hints.
+///
+/// A second parameter to [`stamp_result`] rather than a flag on every method:
+/// the schema draws the line itself, and this names which side a result is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cacheable {
+    /// `ttlMs` and `cacheScope` belong on this result.
+    Yes,
+    /// They do not — a `CallToolResult` is not something to cache.
+    No,
+}
+
+/// Adds the members **2026-07-28** requires on a result.
+///
+/// Two SEPs, one place:
+///
+/// - `resultType` is required on *every* result at this revision. Every
+///   definition in the vendored schema that ends in `Result` lists it, so a
+///   result without one is schema-invalid rather than merely dated.
+/// - `ttlMs` and `cacheScope` are required only on the cacheable ones —
+///   the four listings and `resources/read`. A `CallToolResult` carrying a
+///   `ttlMs` would be telling the client to reuse a side effect.
+///
+/// Older revisions are untouched: both members are absent from every
+/// pre-2026 result definition, and adding them would make this crate's own
+/// answer invalid on the four revisions it already passes.
+///
+/// `ttlMs` is `0` and `cacheScope` is `private` for the same reasons as in
+/// [`Dispatcher::discover`]: this server holds no cache, so the only lifetime
+/// it can honour is "not at all", and the answer describes a registry whose
+/// contents can change under a caller, which is not shareable across
+/// authorization contexts.
+fn stamp_result(result: JsonObject, cacheable: Cacheable, version: ProtocolVersion) -> JsonObject {
+    if !result_envelope_defined_in(version) {
+        return result;
+    }
+    let mut merged: serde_json::Map<String, serde_json::Value> =
+        match serde_json::from_str(result.as_str()) {
+            Ok(serde_json::Value::Object(members)) => members,
+            _ => return result,
+        };
+    // A result that already names its type keeps it: an interim
+    // `InputRequiredResult` says `"input_required"`, and overwriting that with
+    // `"complete"` would tell the client the request finished.
+    merged
+        .entry("resultType")
+        .or_insert_with(|| serde_json::Value::from("complete"));
+    if cacheable == Cacheable::Yes {
+        merged.insert("ttlMs".to_owned(), serde_json::Value::from(0));
+        merged.insert("cacheScope".to_owned(), serde_json::Value::from("private"));
+    }
+    JsonObject::from_value(serde_json::Value::Object(merged)).unwrap_or(result)
+}
+
+/// Whether `method` may answer with a SEP-2322 `InputRequiredResult`.
+///
+/// `tasks/result` is the fourth the SEP names; it belongs to the tasks
+/// extension, which this crate does not serve.
+fn accepts_input_round(method: &str) -> bool {
+    matches!(method, "tools/call" | "prompts/get" | "resources/read")
+}
+
+/// Drops members whose value is `null`.
+///
+/// Every optional member of a listing entry is typed as a string, a boolean or
+/// an object in every revision's schema, and none admits `null`. Writing an
+/// absent description as `"description": null` is therefore a schema-invalid
+/// entry, and a client that validates its input — the `2026-07-28` reference
+/// client does — refuses the whole listing over it. Only the top level is
+/// touched: a tool's `inputSchema` is the tool author's document, and `null`
+/// is a legitimate value inside one.
+fn without_nulls(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(members) = value.as_object_mut() {
+        members.retain(|_, member| !member.is_null());
+    }
+    value
+}
+
+/// Whether SEP-2549's result envelope exists in this revision.
+#[must_use]
+pub const fn result_envelope_defined_in(version: ProtocolVersion) -> bool {
+    matches!(
+        version,
+        ProtocolVersion::V2026_07_28 | ProtocolVersion::Unknown(_)
+    )
+}
+
 fn wrap_listing(key: &str, listing: &Listing) -> JsonObject {
     let entries: Vec<serde_json::Value> = listing
         .visible()
         .iter()
-        .map(|entry| listing_entry(entry))
+        .map(|entry| without_nulls(listing_entry(entry)))
         .collect();
     JsonObject::from_value(serde_json::json!({ key: entries })).unwrap_or_default()
 }
@@ -686,11 +992,11 @@ fn listing_entry(registered: &Registered) -> serde_json::Value {
 /// instead of the codec's. `title` is skipped for the same reason the
 /// other listings skip it — `2026-07-28` only.
 fn prompt_argument(argument: &PromptArgument) -> serde_json::Value {
-    serde_json::json!({
+    without_nulls(serde_json::json!({
         "name": argument.name,
         "description": argument.description,
         "required": argument.required,
-    })
+    }))
 }
 
 /// The revision and profile `initialize` settles on with this peer.
@@ -709,16 +1015,38 @@ fn negotiate(
     ctx: &RequestContext,
     params: &JsonObject,
 ) -> Result<(ProtocolVersion, FeatureProfile), DispatchError> {
-    let supported = SupportedVersions::all().map_err(|_| DispatchError::UnnegotiableVersion)?;
+    let transport = ctx.peer().transport();
+    let supported = supported_on(transport)?;
     let offer = read_offer(params).map_err(|_| DispatchError::MalformedInitialize)?;
     let version = negotiate_server(offer.version, &supported).version();
     let profile = resolve(Negotiation {
         version,
         client_caps: offer.capabilities,
         server_caps: CapabilitySet::all_for(version),
-        transport: ctx.peer().transport(),
+        transport,
     });
     Ok((version, profile))
+}
+
+/// The revisions this server will agree to over `transport`.
+///
+/// HTTP+SSE belongs to `2024-11-05` alone, so a legacy session is never
+/// answered with a revision that does not define it: a client that offers
+/// `2025-11-25` over it is counter-offered `2024-11-05` and decides for itself
+/// whether it can continue. Other transports answer with whatever the client
+/// offered when this build speaks it.
+fn supported_on(transport: TransportKind) -> Result<SupportedVersions, DispatchError> {
+    let all = SupportedVersions::all().map_err(|_| DispatchError::UnnegotiableVersion)?;
+    if transport != TransportKind::LegacySse {
+        return Ok(all);
+    }
+    let defining: Vec<ProtocolVersion> = all
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|version| transport_allowed(*version, transport))
+        .collect();
+    SupportedVersions::from_slice(&defining).map_err(|_| DispatchError::UnnegotiableVersion)
 }
 
 #[cfg(test)]
@@ -737,7 +1065,7 @@ mod tests {
     use crate::domain::ir::{JsonObject, JsonObjectError};
     use crate::domain::registry::{AuthContext, Primitive, Registered, Scope, ScopeSet, Tool};
     use crate::domain::session::{CancellationToken, SessionId};
-    use crate::domain::{CapabilitySet, ProtocolVersion, RequestId, TransportKind};
+    use crate::domain::{Capability, CapabilitySet, ProtocolVersion, RequestId, TransportKind};
 
     /// What a test here can fail with.
     #[derive(Debug)]
@@ -1214,6 +1542,143 @@ mod tests {
             .dispatch(&ctx(&peer), "tools/list", &JsonObject::default())
             .await;
         assert_eq!(outcome, Err(DispatchError::NotCallable));
+        Ok(())
+    }
+
+    /// `server/discover` answers on `2026-07-28` and nowhere else.
+    ///
+    /// Both halves, because SEP-2575 defines it in the one revision that
+    /// removed the handshake and a build that answered it everywhere would be
+    /// offering a method no earlier spec has.
+    ///
+    /// The five required members are checked by name and by presence, which is
+    /// what the schema requires and the only thing a result can be wrong about
+    /// before anything reads its contents.
+    #[tokio::test]
+    async fn discover_answers_only_where_sep_2575_defines_it() -> Result<(), TestError> {
+        let modern = ProtocolVersion::V2026_07_28;
+        let answered = dispatcher()?
+            .dispatch(
+                &ctx(&peer(modern, ScopeSet::empty(), caps(modern))),
+                "server/discover",
+                &JsonObject::default(),
+            )
+            .await
+            .map_err(|error| Failure::from(error.to_string()))?;
+        let parsed: serde_json::Value = serde_json::from_str(answered.as_str())
+            .map_err(|error| Failure::from(error.to_string()))?;
+        for member in [
+            "resultType",
+            "supportedVersions",
+            "ttlMs",
+            "cacheScope",
+            "capabilities",
+        ] {
+            assert!(
+                parsed.get(member).is_some(),
+                "DiscoverResult is missing required member `{member}`",
+            );
+        }
+        assert_eq!(
+            parsed.get("resultType").and_then(serde_json::Value::as_str),
+            Some("complete")
+        );
+
+        let older = ProtocolVersion::V2025_11_25;
+        let refused = dispatcher()?
+            .dispatch(
+                &ctx(&peer(older, ScopeSet::empty(), caps(older))),
+                "server/discover",
+                &JsonObject::default(),
+            )
+            .await;
+        assert_eq!(
+            refused.map(|answer| answer.as_str().to_string()),
+            Err(DispatchError::UnknownMethod),
+            "SEP-2575 defines server/discover only from 2026-07-28",
+        );
+        Ok(())
+    }
+
+    /// The advertised capabilities are the ones this server honours.
+    ///
+    /// A second list here would be a second opinion, and the suite's
+    /// `discover-capabilities-match-handlers` check exists precisely because
+    /// servers get that wrong: a client that discovers `prompts` and then
+    /// finds `prompts/get` refused has been told something untrue.
+    #[tokio::test]
+    async fn discover_advertises_the_profile_the_server_honours() -> Result<(), TestError> {
+        let version = ProtocolVersion::V2026_07_28;
+        let server_caps = CapabilitySet::empty().with(Capability::Tools);
+        let peer = peer(version, ScopeSet::empty(), server_caps);
+        let answered = dispatcher()?
+            .dispatch(&ctx(&peer), "server/discover", &JsonObject::default())
+            .await
+            .map_err(|error| Failure::from(error.to_string()))?;
+        let parsed: serde_json::Value = serde_json::from_str(answered.as_str())
+            .map_err(|error| Failure::from(error.to_string()))?;
+        let capabilities = parsed
+            .get("capabilities")
+            .ok_or("the result carried no capabilities")?;
+
+        assert!(
+            capabilities.get("tools").is_some(),
+            "tools was negotiated and not advertised: {capabilities}",
+        );
+        assert!(
+            capabilities.get("prompts").is_none(),
+            "prompts was not negotiated and was advertised anyway: {capabilities}",
+        );
+        Ok(())
+    }
+
+    /// SEP-2549's envelope appears at `2026-07-28` and nowhere else.
+    ///
+    /// Both directions, and the second is the one that matters: a build that
+    /// stamped `resultType` everywhere would pass the first check and break the
+    /// four revisions it already answers correctly, because `resultType`
+    /// appears in no pre-2026 result definition.
+    ///
+    /// The cacheable half is checked on a listing and the non-cacheable half on
+    /// a call, because those are exactly the two sides of [`Cacheable`] and a
+    /// test that only listed would not notice a `ttlMs` on a side effect.
+    #[tokio::test]
+    async fn the_result_envelope_is_stamped_only_from_2026_07_28() -> Result<(), TestError> {
+        let modern = ProtocolVersion::V2026_07_28;
+        let listed = dispatcher()?
+            .dispatch(
+                &ctx(&peer(modern, ScopeSet::empty(), caps(modern))),
+                "tools/list",
+                &JsonObject::default(),
+            )
+            .await
+            .map_err(|error| Failure::from(error.to_string()))?;
+        let listed: serde_json::Value = serde_json::from_str(listed.as_str())
+            .map_err(|error| Failure::from(error.to_string()))?;
+        for member in ["resultType", "ttlMs", "cacheScope"] {
+            assert!(
+                listed.get(member).is_some(),
+                "a cacheable result is missing `{member}`: {listed}",
+            );
+        }
+
+        let older = ProtocolVersion::V2025_11_25;
+        let legacy = dispatcher()?
+            .dispatch(
+                &ctx(&peer(older, ScopeSet::empty(), caps(older))),
+                "tools/list",
+                &JsonObject::default(),
+            )
+            .await
+            .map_err(|error| Failure::from(error.to_string()))?;
+        let legacy: serde_json::Value = serde_json::from_str(legacy.as_str())
+            .map_err(|error| Failure::from(error.to_string()))?;
+        for member in ["resultType", "ttlMs", "cacheScope"] {
+            assert!(
+                legacy.get(member).is_none(),
+                "`{member}` is not defined before 2026-07-28 and was stamped anyway: {legacy}",
+            );
+        }
         Ok(())
     }
 

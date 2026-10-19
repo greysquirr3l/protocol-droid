@@ -19,19 +19,22 @@ end-to-end.
 
 ## Feature flags
 
-The default build pulls in everything you need to write a server or a
-client, including all schema revisions and all transports. The
-non-default features are additive and do not change behaviour on the
+The default build is the domain, the IR, every codec, and the stdio
+transport. Everything else is additive and does not change behaviour on the
 default path:
 
-| Feature    | What it adds                                              |
-| ---------- | --------------------------------------------------------- |
-| `http`     | Streamable HTTP transport (client and server)             |
-| `oauth`    | OAuth 2.1 resource server, PKCE client, CIMD registration |
-| `legacy-sse` | Legacy HTTP+SSE binding (`2024-11-05`)                  |
-| `a2a`      | A2A v1.0 server, client, and cross-protocol bridge        |
-| `acp`      | Agent Client Protocol (experimental)                      |
-| `cli`      | The `protocol-droid` binary                               |
+| Feature            | What it adds                                                                     |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `stdio`            | The stdio transport, server and client. **On by default**                        |
+| `http`             | Streamable HTTP and the `2026-07-28` stateless lifecycle, client and server      |
+| `legacy-sse`       | The deprecated `2024-11-05` HTTP+SSE transport, client and server. Implies `http` |
+| `oauth`            | The OAuth 2.1 resource server and client (PKCE, discovery, registration, refresh, browser sign-in). Implies `http` |
+| `random-ids`       | CSPRNG session ids instead of a counter. An HTTP server needs ids from somewhere |
+| `a2a`              | The A2A v1.0 server, client, and cross-protocol bridge. Implies `http`           |
+| `acp-experimental` | Zed's Agent Client Protocol v1.25.0. Pre-1.0, no semver guarantee                |
+
+The CLI is a separate crate (`protocol-droid-cli`); its `bridge` feature, on by
+default, pulls in `http`, `stdio`, `legacy-sse`, `random-ids` and `oauth`.
 
 All schema revisions are *always* compiled. They are data, not optional
 features — a `--no-default-features` build still speaks every revision,

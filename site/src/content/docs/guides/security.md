@@ -23,14 +23,40 @@ authorization predicates are pure domain functions.
   check is the default; an `?`-skipped check is not in the
   library.
 
+## Protecting a server, and signing in to one
+
+Both HTTP transports a server offers (Streamable HTTP and the legacy
+HTTP+SSE routes) check the `Origin` header and the `Host` header
+(the second catches a rebound DNS name, since `Origin` is absent from
+every non-browser client), count requests against a per-subject rate
+limit before authenticating, and put the same security headers on every
+response, including the ones no handler wrote. A request with no
+`Host` is refused.
+
+On the client side, the OAuth flow:
+
+- refuses a server whose metadata describes a different resource,
+- refuses an authorization server that does not advertise PKCE `S256`,
+- sends `resource` as the metadata published it and checks `iss` on the
+  response,
+- never takes a client id from one authorization server to another,
+- only opens web URLs in the browser, and receives the redirect on
+  `127.0.0.1`,
+- gives up after three refusals instead of asking a person forever.
+
+A client registered ahead of time is named through
+`PROTOCOL_DROID_OAUTH_CLIENT_ID` and `PROTOCOL_DROID_OAUTH_CLIENT_SECRET`
+in the CLI, never a flag, so a secret does not reach shell history or a
+process listing.
+
 ## What the library does not do
 
 - **Token storage.** The `AuthorizationSecrets` port trait
   is the consumer-side seam. `OsSecrets` is one
   implementation (reads from the OS keyring); a consumer
   that wants a different source implements the trait.
-- **Rate limiting.** The transport adapters expose the
-  rate-limit knob; the policy is the consumer's.
+- **Choosing the rate limit.** Both HTTP transports enforce one; the
+  allowance is the consumer's to set.
 - **CORS.** The Streamable HTTP server's CORS configuration
   is a transport-level concern; the library does not
   second-guess it.

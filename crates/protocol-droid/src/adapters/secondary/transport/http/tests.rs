@@ -539,7 +539,7 @@ async fn a_session_header_the_client_cannot_parse_is_refused() -> Result<(), Tes
         StatusCode::OK,
         "application/json",
         "{}",
-        Some("not-a-session"),
+        Some("has a space"),
     ))
     .await?;
 
@@ -550,8 +550,36 @@ async fn a_session_header_the_client_cannot_parse_is_refused() -> Result<(), Tes
         Ok(_) => return Err(fail("a bad session id was accepted")),
     }
     require(
-        client.session_id().is_none(),
-        "an unparseable session id was kept anyway",
+        client.session_token().is_none(),
+        "an id outside visible ASCII was kept anyway",
+    )?;
+    Ok(())
+}
+
+/// The specification asks only that a session id be visible ASCII. A server
+/// that issues a UUID, a counter, or `session-17` is conforming, and a client
+/// that insisted on this crate's own sixteen-digit form could talk to none of
+/// them.
+#[tokio::test]
+async fn any_visible_ascii_session_id_is_kept_verbatim() -> Result<(), TestError> {
+    let seen = Arc::new(Seen::default());
+    let server = TestServer::start(seen_route(
+        Arc::clone(&seen),
+        StatusCode::OK,
+        "application/json",
+        "{}",
+        Some("session-1792335438"),
+    ))
+    .await?;
+
+    let client = server.client()?;
+    client
+        .post(b"{}", false)
+        .await
+        .map_err(|error| fail(format!("a conforming session id was refused: {error}")))?;
+    require(
+        client.session_token().as_deref() == Some("session-1792335438"),
+        "the id was not kept exactly as the server wrote it",
     )?;
     Ok(())
 }
@@ -963,5 +991,35 @@ async fn a_stream_reports_the_last_id_it_delivered() -> Result<(), TestError> {
         !stream.has_partial(),
         "a fully-read stream still holds bytes",
     )?;
+    Ok(())
+}
+
+/// One client, two handshakes at different revisions, against this crate's
+/// server — the shape `protocol-droid probe` drives. The revision the first
+/// handshake settled on must not be sent as `MCP-Protocol-Version` on the
+/// second `initialize`, or the server compares it with the session it is
+/// replacing and refuses.
+#[tokio::test]
+async fn a_client_can_handshake_again_at_another_revision() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::adapters::primary::transport::http::{HttpBuilder, ServerConfig};
+    use crate::adapters::secondary::transport::http::{HttpClient, HttpClientConfig};
+    use crate::application::client::{ClientConfig, handshake};
+    use crate::application::server::Server;
+    use crate::domain::{ProtocolVersion, TransportKind};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let builder =
+        HttpBuilder::new(Server::builder("rehandshake").build()).config(ServerConfig::new()?);
+    tokio::spawn(async move {
+        let _ = builder.serve_on(listener).await;
+    });
+    let client = HttpClient::new(HttpClientConfig::new(&format!("http://{addr}/mcp"))?)?;
+    for version in [ProtocolVersion::V2025_06_18, ProtocolVersion::V2025_11_25] {
+        let config = ClientConfig::speaking(vec![version], TransportKind::StreamableHttp)?;
+        let session = handshake(&client, &config).await?;
+        assert_eq!(session.version, version);
+    }
     Ok(())
 }

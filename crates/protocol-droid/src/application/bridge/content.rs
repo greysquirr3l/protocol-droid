@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+use crate::domain::feature::Feature;
 use crate::domain::ir::ToolResult;
 use crate::domain::ir::lower::{LowerError, TranslationReport, check_expressible};
 use crate::domain::{DegradePolicy, Leg, ProtocolVersion};
@@ -49,6 +50,9 @@ const RESULT: &str = "result";
 
 /// The member a refusal travels under, and which excludes [`RESULT`].
 const ERROR: &str = "error";
+
+/// The `resultType` of an ordinary, finished result.
+const RESULT_TYPE_COMPLETE: &str = "complete";
 
 /// Reads and writes a `ToolResult` in one revision's wire encoding.
 ///
@@ -289,6 +293,20 @@ impl<C: ToolResultCodec> Translator<C> {
             });
         };
 
+        // `complete` is what a result with no `resultType` means: the
+        // `2026-07-28` text has a client read an absent field as `complete`. A
+        // client at a revision without the field reads it the same way, so
+        // there is nothing to lose here, and refusing would make every tool
+        // result from a new server unreadable to an old client. Any other value
+        // (`input_required`) has no older form and is left for the check below
+        // to refuse.
+        let mut lifted = lifted;
+        if lifted.result_type.as_deref() == Some(RESULT_TYPE_COMPLETE)
+            && !to.profile.allows(Feature::ToolResultType)
+        {
+            lifted.result_type = None;
+        }
+
         // Nothing the client cannot read means nothing to decide, which is what
         // makes returning the peer's own bytes correct rather than merely
         // convenient. Asking before lowering is also what keeps the codec from
@@ -474,6 +492,52 @@ mod tests {
             "a reply with nothing to decide is not rebuilt"
         );
         Ok(())
+    }
+
+    /// A finished result from a `2026-07-28` server reads the same to a client
+    /// whose revision has no `resultType`, so it is forwarded rather than refused.
+    #[test]
+    fn a_complete_result_type_does_not_stop_an_older_client() -> Result<(), TestError> {
+        let mut finished = ToolResult::text("answer");
+        finished.result_type = Some("complete".to_owned());
+        let codec = Arc::new(Counting::reading(finished));
+        let sent = reply(json!({
+            "content": [{ "type": "text", "text": "answer" }],
+            "resultType": "complete",
+        }));
+
+        let translated = Translator::new(Arc::clone(&codec)).translate(
+            sent.clone(),
+            ProtocolVersion::V2026_07_28,
+            &client_leg(),
+            DegradePolicy::strict(),
+        )?;
+
+        assert_eq!(translated.reply, sent);
+        assert_eq!(codec.lowers(), 0);
+        Ok(())
+    }
+
+    /// `input_required` asks the client to do something an older revision cannot
+    /// express, and no policy can make it complete.
+    #[test]
+    fn an_input_required_result_is_still_refused_for_an_older_client() {
+        let mut pending = ToolResult::text("answer");
+        pending.result_type = Some("input_required".to_owned());
+        let codec = Arc::new(Counting::reading(pending));
+        let sent = reply(json!({
+            "content": [{ "type": "text", "text": "answer" }],
+            "resultType": "input_required",
+        }));
+
+        let outcome = Translator::new(codec).translate(
+            sent,
+            ProtocolVersion::V2026_07_28,
+            &client_leg(),
+            DegradePolicy::permissive(),
+        );
+
+        assert!(outcome.is_err(), "{outcome:?}");
     }
 
     /// A value this build cannot read is forwarded, not refused.

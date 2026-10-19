@@ -66,19 +66,26 @@
 //! [`BatchPolicy`] and asks it against the session's profile, because whether
 //! a batch is legal is a negotiation outcome and not a transport fact.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use super::exchange::{StdioExchange, answer_of};
 use super::{Diagnostics, StdioConfig, StdioError, StdioSink, StdioSource};
 use crate::application::jsonrpc::{BatchPolicy, SourceError};
-use crate::application::server::{Dispatcher, PeerSession, RequestContext};
+use crate::application::mcp::request_meta::progress_token;
+use crate::application::server::{DispatchError, DynExchange};
+use crate::application::server::{
+    Dispatcher, ListKind, ListSubscription, PeerSession, RequestContext,
+};
+use crate::application::session::DynFrameSink;
 use crate::domain::RequestId;
 use crate::domain::ir::{IrErrorCode, JsonObject};
 use crate::domain::jsonrpc::reply::{self, ReplyError};
 use crate::domain::jsonrpc::{DecodeError, Envelope, Frame, WireId, decode};
-use crate::domain::session::CancellationToken;
+use crate::domain::session::{AbortReason, CancellationToken};
 
 /// The answer to a batch the session never negotiated.
 const BATCHING_REFUSED: &str = "batching was not negotiated for this session";
@@ -97,6 +104,8 @@ const IGNORED_REPLY: &str = "ignored a reply-shaped frame: no callback exchange 
 /// What is said when the peer closes the stream cleanly.
 const PEER_CLOSED: &str = "the peer closed the stream; the session is over";
 
+mod stateless;
+
 /// Reads a peer's frames, routes them, and writes the answers back.
 ///
 /// Generic over both streams so that the bytes can come from a child process,
@@ -105,11 +114,33 @@ const PEER_CLOSED: &str = "the peer closed the stream; the session is over";
 /// hard-wired here. See the module docs for what the loop guarantees.
 pub struct ServeLoop<R, W, DW, P> {
     source: StdioSource<R>,
-    sink: StdioSink<W>,
+    /// Shared with the peer, so a handler's notifications — progress, log
+    /// records, list changes — go out on the same line-framed stream as the
+    /// replies. The sink's own lock serialises the two, one whole line at a
+    /// time, so a notification can never land inside a reply.
+    sink: Arc<StdioSink<W>>,
     diagnostics: Diagnostics<DW>,
     dispatcher: Arc<Dispatcher>,
     peer: PeerSession,
     policy: P,
+    /// This connection's standing interest in list changes, taken once the
+    /// handshake has settled what the peer negotiated, and dropped with the
+    /// loop.
+    lists: Option<ListSubscription>,
+    /// Requests this server has sent the peer and is waiting to hear back on.
+    exchange: Arc<StdioExchange<W>>,
+    /// Requests that arrived while a handler was waiting on the peer, served
+    /// in arrival order once it finishes.
+    backlog: VecDeque<String>,
+    /// How the input ended while a handler was running, if it did: `Ok` for a
+    /// clean close, `Err` for a failure, reported once the backlog is served.
+    ended: Option<Result<(), SourceError>>,
+    /// Open `2026-07-28` listen streams, by their request id as JSON text.
+    /// Each guard ends its subscription when the client cancels it or the
+    /// loop ends.
+    listens: HashMap<String, ListSubscription>,
+    /// The last session id handed to a stateless request.
+    stateless_ids: u64,
 }
 
 impl<R, W, DW, P> core::fmt::Debug for ServeLoop<R, W, DW, P> {
@@ -163,13 +194,20 @@ impl<R, W, DW, P> ServeLoop<R, W, DW, P> {
     /// #     dispatcher: Arc<protocol_droid::application::server::Dispatcher>,
     /// #     peer: protocol_droid::application::server::PeerSession,
     /// #     policy: P,
-    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// # ) -> Result<(), Box<dyn std::error::Error>>
+    /// # where
+    /// #     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    /// # {
     /// let config = StdioConfig::new(MaxFrameSize::new(1024)?);
     /// let server = ServeLoop::new(reader, writer, diagnostics, config, dispatcher, peer, policy);
     /// # let _ = server;
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// The peer's sink is replaced with this loop's own. A handler that
+    /// publishes on any other sink is publishing somewhere the peer at the
+    /// other end of this pipe will never read.
     #[must_use]
     pub fn new(
         reader: R,
@@ -179,14 +217,30 @@ impl<R, W, DW, P> ServeLoop<R, W, DW, P> {
         dispatcher: Arc<Dispatcher>,
         peer: PeerSession,
         policy: P,
-    ) -> Self {
+    ) -> Self
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let sink = Arc::new(StdioSink::new(writer, config));
+        let exchange = Arc::new(StdioExchange::new(Arc::clone(&sink)));
+        let peer = peer
+            .with_sink(Arc::clone(&sink) as Arc<dyn DynFrameSink>)
+            .with_exchange(Arc::clone(&exchange) as Arc<dyn DynExchange>);
         Self {
             source: StdioSource::new(reader, config),
-            sink: StdioSink::new(writer, config),
+            sink,
             diagnostics,
             dispatcher,
             peer,
             policy,
+            lists: None,
+            exchange,
+            backlog: VecDeque::new(),
+            ended: None,
+            listens: HashMap::new(),
+            // Clear of the handshake session's id, so a stateless request's
+            // idempotency keys can never coincide with the session's.
+            stateless_ids: 1 << 32,
         }
     }
 }
@@ -194,7 +248,7 @@ impl<R, W, DW, P> ServeLoop<R, W, DW, P> {
 impl<R, W, DW, P> ServeLoop<R, W, DW, P>
 where
     R: AsyncRead + Unpin + Send,
-    W: AsyncWrite + Unpin + Send,
+    W: AsyncWrite + Unpin + Send + 'static,
     DW: AsyncWrite + Unpin + Send,
     P: BatchPolicy + Send + Sync,
 {
@@ -232,7 +286,7 @@ where
     /// # ) -> Result<ServeReport, Box<dyn std::error::Error>>
     /// # where
     /// #     R: tokio::io::AsyncRead + Unpin + Send,
-    /// #     W: tokio::io::AsyncWrite + Unpin + Send,
+    /// #     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     /// #     P: protocol_droid::application::jsonrpc::BatchPolicy + Send + Sync,
     /// # {
     /// let server = ServeLoop::new(
@@ -261,11 +315,29 @@ where
             // reaches this call — see the `stdio` module docs for why
             // forwarding it would be a quiet way to drop half of every
             // conversation.
-            let Some(frame) = self.source.next_frame().await.map_err(ServeError::Source)? else {
-                self.note(PEER_CLOSED).await?;
-                return Ok(report);
+            let frame = if let Some(queued) = self.backlog.pop_front() {
+                queued
+            } else {
+                match self.ended.take() {
+                    Some(Err(error)) => return Err(ServeError::Source(error)),
+                    Some(Ok(())) => {
+                        self.note(PEER_CLOSED).await?;
+                        return Ok(report);
+                    }
+                    None => {}
+                }
+                let next = self.source.next_frame().await;
+                let Some(frame) = next.map_err(ServeError::Source)? else {
+                    self.exchange.close();
+                    self.note(PEER_CLOSED).await?;
+                    return Ok(report);
+                };
+                frame
             };
             report.frames += 1;
+            if self.take_reply(&frame) {
+                continue;
+            }
             self.serve_frame(&frame, &mut report).await?;
         }
     }
@@ -394,16 +466,32 @@ where
             },
         };
 
+        let method: &str = envelope.method_str().unwrap_or_default();
+
+        // A cancellation that names an open listen stream ends it. Any other
+        // cancellation names a request that is not in flight — the loop only
+        // reaches here between requests — so it is a no-op, as the
+        // specification asks.
+        if method == "notifications/cancelled" {
+            let _ = self.cancel_listen(&params);
+            return Ok(None);
+        }
+
+        // SEP-2575: a request that names its own revision in `_meta` is served
+        // from that alone, with no handshake behind it.
+        if names_own_revision(&params) {
+            return self.answer_stateless(envelope.id(), method, &params).await;
+        }
+
         // The id is carried through untouched: the peer's `WireId` becomes
         // the handler's `RequestId` and is written back from the same value.
         let context = RequestContext::for_request_with_state(
             &self.peer,
             RequestId::from_wire(envelope.id()),
             CancellationToken::new(),
-            None,
+            progress_token(&params),
             Arc::clone(self.dispatcher.state()),
         );
-        let method: &str = envelope.method_str().unwrap_or_default();
 
         // `initialize` is the one method that changes the session rather than
         // being answered from it. The handshake resolves a profile for the
@@ -419,6 +507,15 @@ where
             };
             return Ok(Some(match outcome {
                 Ok((reply, narrowed)) => {
+                    // Subscribed against the negotiated profile, so a peer that
+                    // did not negotiate `listChanged` for a kind is never sent
+                    // one. Replacing an earlier subscription drops it.
+                    self.lists = Some(self.dispatcher.server().handle().subscribe(
+                        narrowed.sink(),
+                        narrowed.profile(),
+                        &ListKind::ALL,
+                        None,
+                    ));
                     self.peer = narrowed;
                     match reply::result_reply(id, &reply) {
                         Ok(document) => document,
@@ -436,7 +533,13 @@ where
             }));
         }
 
-        let outcome = self.dispatcher.dispatch(&context, method, &params).await;
+        let (outcome, cancelled) = self.run_handler(&context, method, &params).await;
+        // A cancelled request is answered with nothing: the specification has
+        // the receiver send no further messages for it, and the client has
+        // already stopped waiting.
+        if cancelled {
+            return Ok(None);
+        }
 
         // A notification is served and never answered — not even with an
         // error, which is what JSON-RPC 2.0 requires, and which is also what
@@ -461,6 +564,78 @@ where
                 reply::error_reply(id, code, &message)
             }
         }))
+    }
+
+    /// Runs a handler while still listening to the peer.
+    ///
+    /// A handler that asks the peer to sample or elicit is waiting on an answer
+    /// that arrives on stdin, so the loop cannot simply await it: nothing would
+    /// read the answer. Instead it races the handler against the next frame. A
+    /// frame that answers one of this server's requests is delivered to the
+    /// exchange; any other frame is queued and served after this handler, so
+    /// replies still leave in the order their requests arrived.
+    async fn run_handler(
+        &mut self,
+        context: &RequestContext,
+        method: &str,
+        params: &JsonObject,
+    ) -> (Result<JsonObject, DispatchError>, bool) {
+        let dispatcher = Arc::clone(&self.dispatcher);
+        let call = dispatcher.dispatch(context, method, params);
+        tokio::pin!(call);
+        let mut cancelled = false;
+        loop {
+            let listening = self.ended.is_none();
+            let step = tokio::select! {
+                biased;
+                outcome = &mut call => Step::Done(outcome),
+                frame = self.source.next_frame(), if listening => Step::Frame(frame),
+            };
+            match step {
+                Step::Done(outcome) => return (outcome, cancelled),
+                Step::Frame(Ok(Some(frame))) => {
+                    if self.take_reply(&frame) {
+                        continue;
+                    }
+                    if cancels(&frame, context) {
+                        context.cancellation().cancel(AbortReason::Cancelled(None));
+                        cancelled = true;
+                        continue;
+                    }
+                    self.backlog.push_back(frame);
+                }
+                Step::Frame(Ok(None)) => {
+                    self.exchange.close();
+                    self.ended = Some(Ok(()));
+                }
+                Step::Frame(Err(error)) => {
+                    self.exchange.close();
+                    self.ended = Some(Err(error));
+                }
+            }
+        }
+    }
+
+    /// Delivers `frame` to the exchange if it answers one of this server's
+    /// requests, and reports whether it did.
+    ///
+    /// A reply is a JSON object with an `id`, no `method`, and a `result` or
+    /// an `error`. Recognised here, before decoding, because the request-side
+    /// decoder has no shape for a reply and would answer it as a bad request.
+    fn take_reply(&self, frame: &str) -> bool {
+        let Ok(serde_json::Value::Object(members)) = serde_json::from_str::<Value>(frame) else {
+            return false;
+        };
+        if members.contains_key("method")
+            || !(members.contains_key("result") || members.contains_key("error"))
+        {
+            return false;
+        }
+        if let Some(id) = members.get("id").and_then(Value::as_i64) {
+            self.exchange
+                .resolve(id, answer_of(&Value::Object(members)));
+        }
+        true
     }
 
     /// Writes one line to the diagnostics channel.
@@ -553,6 +728,33 @@ pub enum ServeError {
     /// rather than serve requests from a state only it knows about.
     #[error("the diagnostics channel could not be written: {0}")]
     Diagnostics(#[source] StdioError),
+}
+
+/// Whether `params` names its own revision in `_meta` (SEP-2575).
+fn names_own_revision(params: &JsonObject) -> bool {
+    serde_json::from_str::<Value>(params.as_str())
+        .is_ok_and(|parsed| crate::application::mcp::request_meta::declares_version(&parsed))
+}
+
+/// Whether `frame` is a `notifications/cancelled` naming the request `context`
+/// is serving.
+fn cancels(frame: &str, context: &RequestContext) -> bool {
+    let Ok(parsed) = serde_json::from_str::<Value>(frame) else {
+        return false;
+    };
+    parsed.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
+        && parsed.pointer("/params/requestId").is_some_and(|target| {
+            serde_json::from_str::<Value>(&context.request_id().to_json())
+                .is_ok_and(|id| id == *target)
+        })
+}
+
+/// What one turn of [`ServeLoop::run_handler`] produced.
+enum Step<T> {
+    /// The handler finished.
+    Done(T),
+    /// A frame arrived first.
+    Frame(Result<Option<String>, SourceError>),
 }
 
 #[cfg(test)]
@@ -1093,7 +1295,7 @@ mod tests {
         let (served, stdout, _stderr) = run_under(
             &["{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n"],
             AllowBatching,
-            96,
+            64,
         )
         .await?;
 

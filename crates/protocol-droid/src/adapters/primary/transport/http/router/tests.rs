@@ -128,7 +128,7 @@ struct Echo {
 }
 
 impl RequestHandler<EventTail<Value>> for Echo {
-    fn unsessioned(&self, _body: &[u8]) -> Unsessioned {
+    fn unsessioned(&self, _body: &[u8], _headers: &axum::http::HeaderMap) -> Unsessioned {
         if self.establish {
             Unsessioned::Establishing
         } else if self.stateless {
@@ -289,10 +289,20 @@ impl Harness {
     }
 }
 
+/// The `Host` every helper below sends.
+///
+/// A request built from a bare `/mcp` URI carries no `Host`, which HTTP/1.1
+/// requires and HTTP/2 carries as `:authority` — so a helper that omits it is
+/// not describing a request a client could make, and the rebinding check has
+/// nothing to read. Loopback, so it answers every test that is not about the
+/// `Host` header itself.
+const HOST: &str = "localhost:3000";
+
 fn request(method: &str, uri: &str) -> Result<Request<Body>, TestError> {
     Ok(Request::builder()
         .method(method)
         .uri(uri)
+        .header(header::HOST, HOST)
         .body(Body::empty())?)
 }
 
@@ -301,6 +311,7 @@ fn post(body: &str) -> Result<Request<Body>, TestError> {
         .method("POST")
         .uri("/mcp")
         .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, HOST)
         .body(Body::from(body.to_owned()))?)
 }
 
@@ -333,6 +344,7 @@ fn wrong_token() -> Result<Request<Body>, TestError> {
         .uri("/mcp")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, "Bearer wrong")
+        .header(header::HOST, HOST)
         .body(Body::from("{}"))?)
 }
 
@@ -342,6 +354,7 @@ fn right_token() -> Result<Request<Body>, TestError> {
         .uri("/mcp")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, "Bearer good")
+        .header(header::HOST, HOST)
         .body(Body::from("{}"))?)
 }
 
@@ -640,6 +653,7 @@ async fn a_malformed_session_id_is_a_400() -> Result<(), TestError> {
         .uri("/mcp")
         .header("mcp-session-id", "not a session id")
         .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, HOST)
         .body(Body::from("{}"))?;
 
     if harness.send(request).await?.status() != StatusCode::BAD_REQUEST {
@@ -1457,7 +1471,8 @@ fn post_with(body: &str, headers: &[(&str, &str)]) -> Result<Request<Body>, Test
     let mut builder = Request::builder()
         .method("POST")
         .uri("/mcp")
-        .header(header::CONTENT_TYPE, "application/json");
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, HOST);
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
@@ -1495,7 +1510,60 @@ async fn a_request_with_no_origin_is_answered() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The origin a policy names must still be answered, or the allow-list is a
+/// A rebound browser names the attacker's domain in `Host`, and sends no
+/// `Origin` it could have forged either.
+///
+/// This is the attack the `Origin` check alone does not catch, and the one
+/// the conformance suite's `dns-rebinding-protection` scenario reports as a
+/// server accepting a request it must refuse. Stated as an end-to-end
+/// refusal rather than a unit test on the policy, because the defect was a
+/// missing middleware and a policy that was correct would not have found it.
+#[tokio::test]
+async fn a_foreign_host_is_refused_before_the_handler() -> Result<(), TestError> {
+    let router = hardened(origin("http://localhost:3000")?, limiter(10)?)?;
+
+    let mut request = post(INITIALIZE)?;
+    request
+        .headers_mut()
+        .insert(header::HOST, "evil.example.com".parse()?);
+
+    let response = router.oneshot(request).await?;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a request for another name was answered"
+    );
+    Ok(())
+}
+
+/// The loopback spellings the specification's suite calls valid, over the
+/// wire rather than through the policy, because what was wrong was the
+/// default: a browser and the suite both send `Origin: http://localhost:PORT`
+/// and a server that refuses it serves neither.
+#[tokio::test]
+async fn a_loopback_origin_is_answered_on_the_wire() -> Result<(), TestError> {
+    let router = hardened(origin("http://localhost:3000")?, limiter(10)?)?;
+
+    for origin in [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://[::1]:3000",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(post_with(INITIALIZE, &[("origin", origin)])?)
+            .await?;
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{origin} was refused"
+        );
+    }
+    Ok(())
+}
+
+/// An origin a policy names must still be answered, or the allow-list is a
 /// denial list wearing a different hat.
 #[tokio::test]
 async fn the_permitted_origin_is_answered() -> Result<(), TestError> {

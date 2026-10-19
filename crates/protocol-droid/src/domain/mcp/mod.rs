@@ -25,6 +25,7 @@
 //! would be untestable without an HTTP runtime, and this stage has no HTTP
 //! dependency at all by design.
 
+mod client_methods;
 mod routing_headers;
 mod session_id;
 
@@ -32,6 +33,7 @@ pub mod authorization;
 pub mod resource_metadata;
 
 pub use authorization::{AuthorizationModel, ClientRegistration, authorization_model};
+pub use client_methods::client_method_defined_in;
 pub use resource_metadata::{
     BearerMethod, ResourceMetadata, ResourceUri, ResourceUriError, WELL_KNOWN,
 };

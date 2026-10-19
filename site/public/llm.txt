@@ -26,11 +26,11 @@ and replays sessions, and runs the conformance suite.
 ## Guides
 - [Why one IR](https://greysquirr3l.github.io/protocol-droid/guides/why-one-ir/): The case against forking per spec revision; what a single canonical model buys you.
 - [FeatureProfile and gating](https://greysquirr3l.github.io/protocol-droid/guides/feature-profile/): How the negotiated protocol version, client capabilities, server capabilities, and transport collapse into a `FeatureProfile` every code path checks.
-- [Bridge two peers](https://greysquirr3l.github.io/protocol-droid/guides/bridge/): Run a version-translating bridge between an old client and a new server, with no application changes.
-- [Write a server](https://greysquirr3l.github.io/protocol-droid/guides/write-a-server/): Register tools, resources, and prompts; serve over stdio, HTTP+SSE, or Streamable HTTP.
-- [Write a client](https://greysquirr3l.github.io/protocol-droid/guides/write-a-client/): Connect, negotiate, dispatch requests, handle notifications.
+- [Bridge two peers](https://greysquirr3l.github.io/protocol-droid/guides/bridge/): Run a version-translating bridge between an old client and a new server, including a stateless 2026-07-28 upstream.
+- [Write a server](https://greysquirr3l.github.io/protocol-droid/guides/write-a-server/): Register tools, resources, and prompts (also at runtime); serve over stdio, Streamable HTTP, and legacy HTTP+SSE.
+- [Write a client](https://greysquirr3l.github.io/protocol-droid/guides/write-a-client/): Connect, negotiate, dispatch requests, sign in with OAuth 2.1, reach stateless servers.
 - [Write an A2A server](https://greysquirr3l.github.io/protocol-droid/guides/write-a-server-a2a/): Same internal model, A2A wire — cross-protocol servers without re-implementing your application.
-- [Security model](https://greysquirr3l.github.io/protocol-droid/guides/security/): AuthContext, default deny, redaction, elicitation response handling.
+- [Security model](https://greysquirr3l.github.io/protocol-droid/guides/security/): AuthContext, default deny, Origin/Host/rate limiting, the OAuth client's checks, redaction.
 - [Spec refresh process](https://greysquirr3l.github.io/protocol-droid/guides/spec-refresh/): How a new revision lands — vendoring the schema, running the conformance suite, gating the codec.
 - [Release process](https://greysquirr3l.github.io/protocol-droid/guides/release/): Versioning policy, deprecation timeline, public API surface.
 

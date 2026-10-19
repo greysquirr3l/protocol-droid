@@ -151,6 +151,40 @@ impl fmt::Debug for ClientSecret {
     }
 }
 
+/// How a client authenticates at the token endpoint (RFC 7591 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAuthMethod {
+    /// HTTP Basic with the URL-encoded id and secret (RFC 6749 §2.3.1).
+    ClientSecretBasic,
+    /// `client_id` and `client_secret` in the form body.
+    ClientSecretPost,
+    /// A public client: `client_id` in the body, no secret anywhere.
+    None,
+}
+
+impl TokenAuthMethod {
+    /// The RFC 7591 name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientSecretBasic => "client_secret_basic",
+            Self::ClientSecretPost => "client_secret_post",
+            Self::None => "none",
+        }
+    }
+
+    /// Reads an RFC 7591 name; anything else is not a method this client speaks.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "client_secret_basic" => Some(Self::ClientSecretBasic),
+            "client_secret_post" => Some(Self::ClientSecretPost),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 /// A client as one authorization server knows it.
 ///
 /// The issuer is part of the identity rather than a field a caller must remember
@@ -162,6 +196,7 @@ pub struct RegisteredClient {
     issuer: Arc<str>,
     client_id: ClientId,
     secret: Option<ClientSecret>,
+    auth_method: TokenAuthMethod,
 }
 
 impl RegisteredClient {
@@ -180,10 +215,18 @@ impl RegisteredClient {
         if client_id.0.starts_with("https://") {
             return Err(ClientIdError::DocumentRegistration);
         }
+        // RFC 7591 §2: the default is `client_secret_basic`, which needs a
+        // secret; a client issued none can only be public.
+        let auth_method = if secret.is_some() {
+            TokenAuthMethod::ClientSecretBasic
+        } else {
+            TokenAuthMethod::None
+        };
         Ok(Self {
             issuer: Arc::from(issuer.as_ref()),
             client_id,
             secret,
+            auth_method,
         })
     }
 
@@ -198,7 +241,26 @@ impl RegisteredClient {
             issuer: Arc::from(issuer.as_ref()),
             client_id,
             secret: None,
+            auth_method: TokenAuthMethod::None,
         }
+    }
+
+    /// This client, authenticating at the token endpoint with `method`.
+    ///
+    /// For the method the registration response named, or the one a
+    /// pre-registration was issued with. A secret-based method on a client
+    /// with no secret is kept as asked; the token endpoint will refuse it,
+    /// which is a clearer failure than silently going public.
+    #[must_use]
+    pub const fn with_auth_method(mut self, method: TokenAuthMethod) -> Self {
+        self.auth_method = method;
+        self
+    }
+
+    /// How this client authenticates at the token endpoint.
+    #[must_use]
+    pub const fn auth_method(&self) -> TokenAuthMethod {
+        self.auth_method
     }
 
     /// The issuer whose credential this is.

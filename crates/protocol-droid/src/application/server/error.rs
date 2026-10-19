@@ -42,6 +42,14 @@ pub enum GatedError {
     #[error("this request has no progress token; the client did not open one")]
     NoProgressToken,
 
+    /// A `requestState` was to be sealed and the server holds no key.
+    ///
+    /// A server built in-process with no key, serving through no transport
+    /// that would have supplied one. Sealing under a placeholder would hand
+    /// out a state any client could forge, which is worse than refusing.
+    #[error("this server has no request-state key to seal with")]
+    NoStateKey,
+
     /// The peer's answer to a server-initiated request did not arrive as JSON,
     /// or the exchange did not complete.
     ///
@@ -70,7 +78,7 @@ impl GatedError {
     pub const fn feature(&self) -> Option<Feature> {
         match self {
             Self::FeatureUnavailable { feature, .. } => Some(*feature),
-            Self::NoProgressToken | Self::MalformedAnswer { .. } => None,
+            Self::NoProgressToken | Self::NoStateKey | Self::MalformedAnswer { .. } => None,
         }
     }
 
@@ -84,7 +92,7 @@ impl GatedError {
     #[must_use]
     pub const fn wrote_nothing(&self) -> bool {
         match self {
-            Self::FeatureUnavailable { .. } | Self::NoProgressToken => true,
+            Self::FeatureUnavailable { .. } | Self::NoProgressToken | Self::NoStateKey => true,
             Self::MalformedAnswer { .. } => false,
         }
     }

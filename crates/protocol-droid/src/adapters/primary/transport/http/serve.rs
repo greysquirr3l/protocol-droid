@@ -35,25 +35,32 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::adapters::primary::transport::http::config::ServerConfig;
-use crate::adapters::primary::transport::http::exchange::{Answer, ExchangeTable, HttpExchange};
+use crate::adapters::primary::transport::http::config::Streaming;
+use crate::adapters::primary::transport::http::documents::{
+    answer_of, id_as_i64, method_of, params_of, refusal_document, refusal_document_from_refusal,
+    result_document,
+};
+use crate::adapters::primary::transport::http::exchange::{ExchangeTable, HttpExchange};
 use crate::adapters::primary::transport::http::limits::RateLimiter;
 use crate::adapters::primary::transport::http::refusal::Refusal;
 use crate::adapters::primary::transport::http::router::{
     EventSource, Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned,
 };
 use crate::adapters::primary::transport::http::session_store::SessionStore;
+use crate::adapters::primary::transport::http::stateless::{StatelessHeaders, StatelessRequest};
 use crate::adapters::primary::transport::http::stream::{EventTail, Finishing};
 use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
+use crate::application::mcp::request_meta::declares_version;
 use crate::application::server::Server;
-use crate::application::server::context::{ExchangeError, PeerSession, RequestContext};
+use crate::application::server::context::{PeerSession, RequestContext};
 use crate::application::server::dispatch::Dispatcher;
+use crate::application::server::{ListKind, ListSubscription};
 use crate::application::session::IdSource;
 use crate::application::session::frame_sink::{FrameSink, SinkError};
 use crate::domain::feature::resolve;
-use crate::domain::ir::{IrErrorCode, JsonObject};
-use crate::domain::jsonrpc::reply::{self, ReplyError};
-use crate::domain::jsonrpc::{Envelope, Frame, WireId, decode};
+use crate::domain::ir::JsonObject;
+use crate::domain::jsonrpc::{Frame, WireId, decode};
 use crate::domain::mcp::McpSessionId;
 use crate::domain::session::{CancellationToken, ProgressToken, SessionId};
 use crate::domain::{
@@ -62,7 +69,7 @@ use crate::domain::{
 };
 
 /// The tail this session's server-initiated messages are published on.
-type Tail = EventTail<Value>;
+pub(super) type Tail = EventTail<Value>;
 
 /// Where an [`IdSource`] mints session ids from.
 ///
@@ -82,9 +89,9 @@ type Ids = Arc<dyn IdSource + Send + Sync>;
 /// keep-alive only matters to a stream that is staying open. A non-zero value
 /// here would emit `:ping` frames into the middle of a response that is about
 /// to close.
-const KEEP_ALIVE: core::time::Duration = core::time::Duration::ZERO;
+pub(super) const KEEP_ALIVE: core::time::Duration = core::time::Duration::ZERO;
 
-const TAIL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(64) {
+pub(super) const TAIL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(64) {
     Some(capacity) => capacity,
     // A const context cannot call `ok_or`, and `None` here would mean a zero,
     // which is not a capacity. Unreachable for any value above zero.
@@ -138,6 +145,14 @@ pub enum ServeError {
     #[error("the route table could not be built: {0}")]
     Routes(#[from] crate::adapters::primary::transport::http::router::RouterError),
 
+    /// The legacy HTTP+SSE routes could not be mounted.
+    ///
+    /// A path that is not an absolute path on this origin, or a configured
+    /// security header that is not a legal value.
+    #[cfg(feature = "legacy-sse")]
+    #[error("the legacy HTTP+SSE routes could not be mounted: {0}")]
+    LegacyRoutes(#[from] crate::adapters::primary::transport::legacy_sse::RouteError),
+
     /// No session-id source is available in this build.
     #[error(
         "this build has no id source: build with `random-ids`, or pass one to \
@@ -177,6 +192,14 @@ pub struct HttpSession {
     /// to sample both mint id `1`, and a shared table would hand the second
     /// answer to the first session's tool.
     exchange: ExchangeTable,
+    /// This session's standing interest in list changes.
+    ///
+    /// Held here so the session and the subscription end together: the store
+    /// dropping an expired or deleted session drops this guard, and the
+    /// fan-out stops writing to a tail nobody reads. `None` on a session that
+    /// has not finished its handshake, because nothing has been negotiated yet
+    /// that could gate a notification.
+    _lists: Option<ListSubscription>,
 }
 
 impl EventSource for HttpSession {
@@ -209,11 +232,11 @@ impl HttpSession {
 pub struct HttpHandler {
     /// The protocol layer. Shared, because the router is cheap to clone and the
     /// dispatcher is not.
-    dispatcher: Arc<Dispatcher>,
+    pub(super) dispatcher: Arc<Dispatcher>,
     /// This server's sessions. The handler owns the store rather than being
     /// handed one per request because *minting* is a protocol-layer decision:
     /// the router can look a session up but cannot decide what a session is.
-    sessions: Arc<SessionStore<HttpSession>>,
+    pub(super) sessions: Arc<SessionStore<HttpSession>>,
     /// The revision to gate a session with before it has been negotiated.
     ceiling: ProtocolVersion,
 }
@@ -274,10 +297,21 @@ impl HttpHandler {
 
     /// A session at the ceiling, for a connection that has not handshaken.
     fn seed(&self) -> HttpSession {
+        Self::session_for(self.ceiling, CapabilitySet::empty())
+    }
+
+    /// A peer resolved for `version` and what the client said it supports.
+    ///
+    /// Shared by the two callers that need a session with no handshake behind
+    /// it: the ceiling seed for a request that has not negotiated, and the
+    /// stateless peer, which differs only in that it knows its revision and its
+    /// capabilities. Building both from one function is what keeps the
+    /// stateless path from quietly acquiring a difference of its own.
+    pub(super) fn session_for(version: ProtocolVersion, client_caps: CapabilitySet) -> HttpSession {
         let profile = resolve(Negotiation {
-            version: self.ceiling,
-            client_caps: CapabilitySet::empty(),
-            server_caps: CapabilitySet::all_for(self.ceiling),
+            version,
+            client_caps,
+            server_caps: CapabilitySet::all_for(version),
             transport: TransportKind::StreamableHttp,
         });
         let tail = Tail::new(TAIL_CAPACITY);
@@ -285,7 +319,7 @@ impl HttpHandler {
         let sink = Arc::new(TailSink { tail: tail.clone() });
         HttpSession {
             peer: PeerSession::new(
-                self.ceiling,
+                version,
                 profile,
                 SessionId::new(1),
                 TransportKind::StreamableHttp,
@@ -294,6 +328,7 @@ impl HttpHandler {
             ),
             tail,
             exchange,
+            _lists: None,
         }
     }
     /// Answers a request beside a stream that is already open.
@@ -416,15 +451,42 @@ impl HttpHandler {
 }
 
 impl RequestHandler<HttpSession> for HttpHandler {
-    /// Whether a body with no session header opens one.
+    /// What a body means when the request named no session.
     ///
-    /// Only `initialize` does. Anything else arriving without a session id is a
-    /// stateful call missing its header, which the router answers with a `400`
-    /// and never hands here — so returning [`Unsessioned::NeedsSession`] for it
-    /// is not a guess, it is the arm that produces that `400`.
-    fn unsessioned(&self, body: &[u8]) -> Unsessioned {
-        match method_of(body).as_deref() {
-            Some("initialize") => Unsessioned::Establishing,
+    /// Three arms, and which one a body falls in is a wire-format question
+    /// this method can answer on its own:
+    ///
+    /// - `initialize` opens a session. It is the only method that does.
+    /// - A body whose `params._meta` names
+    ///   [`PROTOCOL_VERSION_KEY`](crate::application::mcp::request_meta::PROTOCOL_VERSION_KEY)
+    ///   is a SEP-2575 stateless request. It carries its own revision and its
+    ///   own capabilities, so it needs no session and is served against its
+    ///   own profile.
+    /// - Anything else is a stateful call missing its header, which the router
+    ///   answers with a `400` and never hands here — so returning
+    ///   [`Unsessioned::NeedsSession`] for it is not a guess, it is the arm
+    ///   that produces that `400`.
+    ///
+    /// The version key is what makes a body self-describing, and it is the
+    /// only member that can: capabilities without a revision would not say
+    /// which gates the answer is read against.
+    ///
+    /// This runs on every sessionless POST, so the check is a lookup and not a
+    /// parse — a full [`RequestMeta::read`] would decode the whole body only
+    /// for a caller with a session header to throw it away.
+    ///
+    /// [`RequestMeta::read`]: crate::application::mcp::request_meta::RequestMeta::read
+    fn unsessioned(&self, body: &[u8], headers: &axum::http::HeaderMap) -> Unsessioned {
+        // Stateless first. A body naming its own revision, or a request whose
+        // `MCP-Protocol-Version` is a revision with no sessions, is served by
+        // the stateless lifecycle — including an `initialize`, which that
+        // lifecycle answers with `-32601` rather than by opening a session the
+        // client's own revision says do not exist.
+        if declares_own_version(body) || StatelessHeaders::names_stateless_revision(headers) {
+            return Unsessioned::Stateless;
+        }
+        match method_of(body) {
+            Some(method) if method == "initialize" => Unsessioned::Establishing,
             _ => Unsessioned::NeedsSession,
         }
     }
@@ -446,16 +508,30 @@ impl RequestHandler<HttpSession> for HttpHandler {
         // neither of which outlives this function.
         let body = call.body.to_vec();
         let protocol = call.protocol;
+        // Captured here because the framing decision below happens after the
+        // body is owned, and this is the only record of how the server was
+        // configured to answer. See [`Streaming`].
+        let streaming = call.streaming;
         let opening = matches!(call.session, SessionHandle::Establishing);
+        let stateless = matches!(call.session, SessionHandle::Stateless);
         let stored = match &call.session {
             SessionHandle::Establishing | SessionHandle::Stateless => None,
             SessionHandle::Live { session, .. } => Some(Arc::clone(session)),
         };
         // The principal is this request's, not the session's — see
         // `peer_for`, where the reasoning lives.
-        let peer = self
-            .peer_for(stored.as_ref())
-            .with_auth(call.context.clone());
+        //
+        // A stateless request's peer is *not* built here, because there is
+        // nothing yet to build it from: the revision and the capabilities both
+        // live in this request's `_meta`, and the body has not been decoded
+        // until the future below runs. The seed peer stands in for that case
+        // and is replaced before anything reads it.
+        let auth = call.context.clone();
+        let peer = self.peer_for(stored.as_ref()).with_auth(auth.clone());
+        // Copied now for the same reason as the body: the header map is the
+        // router's, and a stateless request is checked against it after the
+        // body has been decoded.
+        let stateless_headers = stateless.then(|| StatelessHeaders::read(call.headers));
 
         async move {
             // Decoded once. A body that is a batch, or a reply shape, or
@@ -469,20 +545,6 @@ impl RequestHandler<HttpSession> for HttpHandler {
                     reason: "an HTTP request body carries one message".to_owned(),
                 });
             };
-            // The progress token lives in `params._meta.progressToken`, which
-            // is where the specification puts it and not beside the request id.
-            // It is optional in the strongest sense: a request without one is
-            // valid and gets no progress updates, so reading it is a lookup and
-            // never a gate.
-            //
-            // Not reading it is the quiet failure it is: `report_progress`
-            // then answers `NoProgressToken`, the tool reports no progress, and
-            // the client that explicitly asked to be told waits for updates
-            // from a server that believed nobody had asked.
-            // Owned: the envelope borrows the request body, and the body is
-            // dropped once this function returns — which happens while a
-            // handler is still running on this session.
-            let progress: Option<ProgressToken> = progress_token_of(&envelope);
             // Where the session's event stream stands *before* this request
             // runs. Everything the handler publishes from here on is this
             // request's answer; everything before it is a previous exchange's,
@@ -503,9 +565,32 @@ impl RequestHandler<HttpSession> for HttpHandler {
 
             let params = params_of(&envelope)?;
             let method = envelope.method_str().unwrap_or_default();
+
+            // SEP-2575: a stateless request is served from its own `_meta`, by
+            // a path that shares nothing with a session — see `stateless`.
+            if let Some(headers) = stateless_headers {
+                return self
+                    .serve_stateless(StatelessRequest {
+                        id,
+                        method: method.to_owned(),
+                        params,
+                        headers,
+                        auth,
+                        streaming,
+                    })
+                    .await;
+            }
+
+            // The progress token lives in `params._meta.progressToken`, which
+            // is where the specification puts it and not beside the request id.
+            // Not reading it is a quiet failure: `report_progress` answers
+            // `NoProgressToken` and the client that asked to be told waits for
+            // updates from a server that believed nobody had asked.
+            let progress: Option<ProgressToken> =
+                crate::application::mcp::request_meta::progress_token(&params);
+            let peer_for_now = peer;
             // Held only as long as this body. The task below builds its own
             // from the stored session, because it outlives both of them.
-            let peer_for_now = peer;
             let context = RequestContext::for_request_with_state(
                 &peer_for_now,
                 RequestId::from_wire(id.as_ref()),
@@ -529,14 +614,27 @@ impl RequestHandler<HttpSession> for HttpHandler {
                 // A sessioned request is answered beside an already-open
                 // stream, which is the only shape that survives a handler that
                 // publishes *and waits* — see [`Self::respond_beside_stream`].
-                return self.respond_beside_stream(
-                    &peer_for_now,
-                    session,
-                    id.as_ref(),
-                    progress,
-                    method,
-                    &params,
-                );
+                //
+                // Only when this server was configured to frame a stream at
+                // all. Under `Streaming::Json` the documented default, the
+                // reply is one JSON document: the stream is built and drained
+                // into it before the response exists, which is why a tool that
+                // elicits cannot work here and says so rather than hanging —
+                // see [`ExchangeTable::is_readable`].
+                if streaming == Streaming::EventStream {
+                    return self.respond_beside_stream(
+                        &peer_for_now,
+                        session,
+                        id.as_ref(),
+                        progress,
+                        method,
+                        &params,
+                    );
+                }
+                match self.dispatcher.dispatch(&context, method, &params).await {
+                    Ok(result) => (result_document(id.as_ref(), &result)?, None),
+                    Err(error) => (refusal_document(id.as_ref(), &error), None),
+                }
             } else {
                 match self.dispatcher.dispatch(&context, method, &params).await {
                     Ok(result) => (result_document(id.as_ref(), &result)?, None),
@@ -557,66 +655,119 @@ impl RequestHandler<HttpSession> for HttpHandler {
             }
 
             if opening {
-                // `handshake` narrows the context it was handed, so the peer it
-                // returns carries the *establishing request's* principal. Every
-                // request resolves its own principal above, so nothing
-                // downstream reads this one — which is exactly why it is worth
-                // dropping rather than storing: session state outlives the
-                // credential that produced it, and a principal recorded there
-                // has the wrong lifetime for a token that can be refreshed,
-                // replaced, or withdrawn mid-session.
-                let peer = negotiated
-                    .ok_or_else(|| {
-                        Refusal::Handler("a session was opened without a handshake".to_owned())
-                    })?
-                    .without_auth();
-                // The tail the router streams to the client, and the sink the
-                // handler writes through, are the same ring. Binding the peer
-                // to a *different* one is the quiet failure this shape invites:
-                // the session's own tail stays empty forever while the peer
-                // dutifully publishes into a ring no reader ever drains, so a
-                // tool that logs looks like a tool that logs nothing.
-                let (tail, exchange) = stored.map_or_else(
-                    || (Tail::new(TAIL_CAPACITY), ExchangeTable::new()),
-                    |session| (session.tail.clone(), session.exchange.clone()),
-                );
-                // The store allocates the id below, so it is read back from the
-                // minted handle rather than allocated twice — and the peer is
-                // bound to it before anything can key on it.
-                let peer = peer
-                    .with_sink(Arc::new(TailSink { tail: tail.clone() }))
-                    // Bound to *this* session's table, for the same reason the
-                    // sink is bound to this session's tail: the peer outlives
-                    // the seed it was built from, and an exchange on the wrong
-                    // table publishes a request nobody on this session is
-                    // waiting to answer.
-                    .with_exchange(Arc::new(HttpExchange::new(exchange.clone(), tail.clone())));
-                let id_source = self.sessions.next_id();
-                let peer = peer.with_session(id_source);
-                let minted = self
-                    .sessions
-                    .open_with_id(
-                        Arc::new(HttpSession {
-                            peer,
-                            tail,
-                            exchange,
-                        }),
-                        id_source,
-                    )
-                    .map_err(|error| Refusal::Handler(format!("no session: {error}")))?;
-                return Self::response(&document, Some(&minted), None);
+                return self.open_session(negotiated, stored.as_deref(), streaming, &document);
             }
 
+            // The tail is handed over only when this server was configured to
+            // frame a stream. Under `Streaming::Json` the reply is one
+            // document with nothing to drain into, and passing the tail would
+            // answer with an event stream regardless — which is exactly how the
+            // default came to mean a bare document on `initialize` and a stream
+            // on everything after it.
             Self::response(
                 &document,
                 None,
-                stored.map(|session| (session.tail.clone(), cursor)),
+                if streaming == Streaming::EventStream {
+                    stored.map(|session| (session.tail.clone(), cursor))
+                } else {
+                    None
+                },
             )
         }
     }
 }
 
 impl HttpHandler {
+    /// Mints the session an `initialize` establishes, and answers with its id.
+    ///
+    /// Split out of [`RequestHandler::dispatch`] because opening a session is
+    /// one concern with one rule in it — what this session may be asked, and
+    /// what may be published to it — and inlining that into the request loop
+    /// left the rule sitting behind forty lines of session bookkeeping.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Handler`] if `initialize` succeeded without producing a peer
+    /// to store, if the store refuses the session, or if the answer will not
+    /// serialise.
+    fn open_session(
+        &self,
+        negotiated: Option<PeerSession>,
+        stored: Option<&HttpSession>,
+        streaming: Streaming,
+        document: &Value,
+    ) -> Result<axum::response::Response, Refusal> {
+        // `handshake` narrows the context it was handed, so the peer it
+        // returns carries the *establishing request's* principal. Every
+        // request resolves its own principal above, so nothing downstream
+        // reads this one — which is exactly why it is worth dropping rather
+        // than storing: session state outlives the credential that produced
+        // it, and a principal recorded there has the wrong lifetime for a
+        // token that can be refreshed, replaced, or withdrawn mid-session.
+        let peer = negotiated
+            .ok_or_else(|| Refusal::Handler("a session was opened without a handshake".to_owned()))?
+            .without_auth();
+        // The tail the router streams to the client, and the sink the handler
+        // writes through, are the same ring. Binding the peer to a *different*
+        // one is the quiet failure this shape invites: the session's own tail
+        // stays empty forever while the peer dutifully publishes into a ring
+        // no reader ever drains, so a tool that logs looks like a tool that
+        // logs nothing.
+        //
+        // Whether anything drains that ring is the framing decision, so it is
+        // recorded on the table here rather than left for a tool to discover by
+        // hanging. A session opened under `Streaming::Json` is never drained,
+        // because every reply it gives is one document.
+        let readable = streaming == Streaming::EventStream;
+        let (tail, exchange) = stored.map_or_else(
+            || {
+                let exchange = if readable {
+                    ExchangeTable::readable()
+                } else {
+                    ExchangeTable::new()
+                };
+                (Tail::new(TAIL_CAPACITY), exchange)
+            },
+            |session| (session.tail.clone(), session.exchange.clone()),
+        );
+        // The store allocates the id below, so it is read back from the minted
+        // handle rather than allocated twice — and the peer is bound to it
+        // before anything can key on it.
+        let sink: Arc<dyn crate::application::session::DynFrameSink> =
+            Arc::new(TailSink { tail: tail.clone() });
+        // Every list notification the negotiated profile allows. A session
+        // that did not negotiate `listChanged` for a kind is filtered by the
+        // fan-out's own gate, so subscribing to all three is not a promise.
+        let lists = self.dispatcher.server().handle().subscribe(
+            &sink,
+            peer.profile(),
+            &ListKind::ALL,
+            None,
+        );
+        let peer = peer
+            .with_sink(sink)
+            // Bound to *this* session's table, for the same reason the sink is
+            // bound to this session's tail: the peer outlives the seed it was
+            // built from, and an exchange on the wrong table publishes a
+            // request nobody on this session is waiting to answer.
+            .with_exchange(Arc::new(HttpExchange::new(exchange.clone(), tail.clone())));
+        let id_source = self.sessions.next_id();
+        let peer = peer.with_session(id_source);
+        let minted = self
+            .sessions
+            .open_with_id(
+                Arc::new(HttpSession {
+                    peer,
+                    tail,
+                    exchange,
+                    _lists: Some(lists),
+                }),
+                id_source,
+            )
+            .map_err(|error| Refusal::Handler(format!("no session: {error}")))?;
+        Self::response(document, Some(&minted), None)
+    }
+
     /// The answer document, with the session header when one was minted.
     ///
     /// # Errors
@@ -674,52 +825,6 @@ impl HttpHandler {
     }
 }
 
-/// The `id` a reply must be written under, borrowed from the body it answers.
-type Id<'a> = WireId<'a>;
-
-/// The JSON-RPC success document for `result`.
-///
-/// A result with no wire form is this server's own bug rather than anything a
-/// peer did, so it becomes a refusal rather than a frame that decodes to
-/// something else.
-fn result_document(id: Option<&Id<'_>>, result: &JsonObject) -> Result<Value, Refusal> {
-    let id = id.ok_or_else(|| {
-        Refusal::Handler("a result was produced for a request that asked no question".to_owned())
-    })?;
-    reply::result_reply(id, result).map_err(|error| match error {
-        ReplyError::UnreadableResult => {
-            Refusal::Handler("the dispatcher's result has no JSON form".to_owned())
-        }
-    })
-}
-
-/// The JSON-RPC error document for a refused request.
-///
-/// Every refusal gets an answer. The alternative is to drop it, which leaves
-/// the peer waiting on a response that is never coming — and a server that
-/// hangs is worse than one that says no. The code is the one the error carries,
-/// not one this module picked: the message is never the method name the peer
-/// chose, because a method name is a JSON string a peer controls and JSON
-/// permits a newline inside one.
-/// A refusal rendered as the JSON-RPC error a peer will read.
-fn refusal_document_from_refusal(id: Option<&WireId<'_>>, refusal: &Refusal) -> Value {
-    id.map_or_else(
-        || reply::unidentified_error_reply(IrErrorCode::InternalError, &refusal.to_string()),
-        |id| reply::error_reply(id, IrErrorCode::InternalError, &refusal.to_string()),
-    )
-}
-
-fn refusal_document(
-    id: Option<&WireId<'_>>,
-    error: &crate::application::server::DispatchError,
-) -> Value {
-    let (code, message) = error.as_wire();
-    id.map_or_else(
-        || reply::unidentified_error_reply(code, &message),
-        |id| reply::error_reply(id, code, &message),
-    )
-}
-
 /// Checks the `MCP-Protocol-Version` header against what the session agreed.
 ///
 /// Only after a handshake, because before one the session has agreed to nothing
@@ -736,35 +841,26 @@ fn check_header(
     })
 }
 
-/// The method name in a body, if it is a single routable request.
+/// Whether a body is a SEP-2575 stateless request.
 ///
-/// Owned rather than borrowed: the envelope borrows from the buffer `decode`
-/// parsed, and that buffer is dropped when this returns. A body that is a
-/// batch or a reply shape reads as `None` here and takes the same arm, because
-/// neither is something this handler should open a session from.
-fn method_of(body: &[u8]) -> Option<String> {
-    let decoded = decode(body).ok()?;
-    let Frame::Single(envelope) = decoded else {
-        return None;
+/// The test is the presence of the version key in `params._meta`, which is
+/// what makes a request carry its own revision rather than borrow a session's.
+/// A batch, a reply, or a body that will not decode has no params to look in
+/// and is not a stateless request; the caller's own decode will say why.
+fn declares_own_version(body: &[u8]) -> bool {
+    let Ok(decoded) = decode(body) else {
+        return false;
     };
-    envelope.method_str().map(str::to_owned)
-}
-
-/// The params object a request carries, or an empty one.
-///
-/// A request with no `params` is a request for a method that takes none, so
-/// the empty object is right rather than a guess. Valid JSON that is not an
-/// object is a well-formed request with a bad argument, which is `-32602`
-/// rather than a parse failure.
-fn params_of(envelope: &Envelope<'_>) -> Result<JsonObject, Refusal> {
-    envelope.params().map_or_else(
-        || Ok(JsonObject::default()),
-        |raw| {
-            JsonObject::new(raw.get()).map_err(|_| Refusal::MalformedBody {
-                reason: "params is not a JSON object".to_owned(),
-            })
-        },
-    )
+    let Frame::Single(envelope) = decoded else {
+        return false;
+    };
+    let Some(params) = envelope.params() else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(params.get()) else {
+        return false;
+    };
+    declares_version(&parsed)
 }
 
 /// The sink a session's handler-initiated messages go out on.
@@ -779,8 +875,23 @@ fn params_of(envelope: &Envelope<'_>) -> Result<JsonObject, Refusal> {
 /// waiting for three log records sees zero and reports the server as broken
 /// rather than as unwired.
 #[derive(Debug, Clone)]
-struct TailSink {
-    tail: Tail,
+pub(super) struct TailSink {
+    pub(super) tail: Tail,
+}
+
+impl TailSink {
+    /// Publishes one encoded frame, synchronously.
+    ///
+    /// # Errors
+    ///
+    /// [`SinkError`] when the frame is not JSON.
+    pub(super) fn push(&self, frame: &str) -> Result<(), SinkError> {
+        serde_json::from_str::<Value>(frame)
+            .map(|value| {
+                self.tail.push(value);
+            })
+            .map_err(|_| SinkError)
+    }
 }
 
 impl FrameSink for TailSink {
@@ -797,10 +908,7 @@ impl FrameSink for TailSink {
         &self,
         frame: &str,
     ) -> impl core::future::Future<Output = Result<(), SinkError>> + Send {
-        let pushed = serde_json::from_str::<Value>(frame)
-            .map(|value| self.tail.push(value))
-            .map_err(|_| SinkError);
-        core::future::ready(pushed.map(|_| ()))
+        core::future::ready(self.push(frame))
     }
 }
 
@@ -839,6 +947,17 @@ pub struct HttpBuilder {
     origin_policy: Option<OriginPolicy>,
     /// The per-subject request allowance.
     rate_limiter: Option<RateLimiter>,
+    /// Where the `2024-11-05` HTTP+SSE routes are mounted, when they are.
+    #[cfg(feature = "legacy-sse")]
+    legacy_sse: Option<LegacySsePaths>,
+}
+
+/// The two paths the legacy transport is mounted on.
+#[cfg(feature = "legacy-sse")]
+#[derive(Debug, Clone)]
+struct LegacySsePaths {
+    stream: String,
+    message: String,
 }
 
 impl core::fmt::Debug for HttpBuilder {
@@ -878,7 +997,40 @@ impl HttpBuilder {
             policy: None,
             origin_policy: None,
             rate_limiter: None,
+            #[cfg(feature = "legacy-sse")]
+            legacy_sse: None,
         }
+    }
+
+    /// Also serves the `2024-11-05` HTTP+SSE transport, beside Streamable HTTP.
+    ///
+    /// A client opens a stream with `GET /sse`, is told where to `POST` by the
+    /// `endpoint` event, and speaks `2024-11-05` over the pair. The same
+    /// tools, resources and prompts answer on both transports, and the
+    /// authenticator, `Origin` policy and rate limit set on this builder apply
+    /// to both. Use [`legacy_sse_at`](Self::legacy_sse_at) to move the paths.
+    #[cfg(feature = "legacy-sse")]
+    #[must_use]
+    pub fn legacy_sse(self) -> Self {
+        self.legacy_sse_at(
+            crate::adapters::primary::transport::legacy_sse::DEFAULT_STREAM_PATH,
+            crate::adapters::primary::transport::legacy_sse::DEFAULT_MESSAGE_PATH,
+        )
+    }
+
+    /// [`legacy_sse`](Self::legacy_sse), on `stream` and `message` rather than
+    /// `/sse` and `/messages`.
+    ///
+    /// Both must be absolute paths with no query; [`serve`](Self::serve)
+    /// refuses to start otherwise.
+    #[cfg(feature = "legacy-sse")]
+    #[must_use]
+    pub fn legacy_sse_at(mut self, stream: impl Into<String>, message: impl Into<String>) -> Self {
+        self.legacy_sse = Some(LegacySsePaths {
+            stream: stream.into(),
+            message: message.into(),
+        });
+        self
     }
 
     /// The address to bind. Defaults to `127.0.0.1:3000`.
@@ -1070,21 +1222,54 @@ fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
         policy,
         origin_policy,
         rate_limiter,
+        #[cfg(feature = "legacy-sse")]
+        legacy_sse,
     } = builder;
     let ids = match ids {
         Some(ids) => ids,
         None => default_ids()?,
     };
+    #[cfg(feature = "random-ids")]
+    let server = {
+        let mut server = server;
+        server.ensure_request_state_key(crate::adapters::secondary::id_source::random_state_key);
+        server
+    };
     let config = match config {
         Some(config) => config,
         None => ServerConfig::new()?,
     };
-    let sessions = Arc::new(SessionStore::<HttpSession>::new(ids));
-    let handler = HttpHandler::new(
-        Arc::new(Dispatcher::new(Arc::new(server))),
-        Arc::clone(&sessions),
-        ceiling,
-    );
+    let dispatcher = Arc::new(Dispatcher::new(Arc::new(server)));
+    let sessions = Arc::new(SessionStore::<HttpSession>::new(Arc::clone(&ids)));
+    let handler = HttpHandler::new(Arc::clone(&dispatcher), Arc::clone(&sessions), ceiling);
+    #[cfg(feature = "legacy-sse")]
+    let legacy = legacy_sse
+        .map(|paths| {
+            let mut router = crate::adapters::primary::transport::legacy_sse::LegacyRouter::new(
+                config.clone(),
+                Arc::new(SessionStore::new(ids)),
+                // The transport belongs to `2024-11-05`; a client offering a
+                // later revision is answered with this one and decides for
+                // itself whether to continue.
+                crate::adapters::primary::transport::legacy_sse::ServerDispatcher::new(
+                    Arc::clone(&dispatcher),
+                    ProtocolVersion::V2024_11_05,
+                ),
+            )
+            .with_stream_path(paths.stream)
+            .with_message_path(paths.message);
+            if let Some(origin) = origin_policy.clone() {
+                router = router.with_origins(origin);
+            }
+            if let Some(limiter) = rate_limiter.clone() {
+                router = router.with_rate_limiter(limiter);
+            }
+            if let (Some(policy), Some(authenticator)) = (policy, authenticator.clone()) {
+                router = router.with_auth(policy, authenticator);
+            }
+            router.into_router()
+        })
+        .transpose()?;
     let mut router = McpRouter::new(config, sessions, handler);
     if let Some(authenticator) = authenticator {
         router = router.with_authenticator(authenticator);
@@ -1098,8 +1283,14 @@ fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> {
     if let Some(limiter) = rate_limiter {
         router = router.with_rate_limiter(limiter);
     }
+    let router = router.into_router().map_err(ServeError::from)?;
+    #[cfg(feature = "legacy-sse")]
+    let router = match legacy {
+        Some(legacy) => router.merge(legacy),
+        None => router,
+    };
     Ok(BuilderOutput {
-        router: router.into_router().map_err(ServeError::from)?,
+        router,
         addr,
         ceiling,
     })
@@ -1134,6 +1325,8 @@ pub(crate) fn test_routes(
         policy: None,
         origin_policy: None,
         rate_limiter: None,
+        #[cfg(feature = "legacy-sse")]
+        legacy_sse: None,
     })
     .map(|parts| parts.router)
 }
@@ -1161,57 +1354,6 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
 /// is a guessable session. Failing is the honest answer for a lean build, and
 /// it fails once at startup rather than per request.
 #[cfg(feature = "random-ids")]
-/// The `params._meta.progressToken` a request carried, if any.
-///
-/// `None` for a request with no `_meta`, a `_meta` without the member, or a
-/// member that is not a string or a number — the three shapes the vendored
-/// schema excludes. All three mean the same thing to a handler: nobody asked
-/// for progress, so there is nothing to report against.
-/// The numeric id a wire id carries, if it is one.
-///
-/// `None` for a string id or an absent one. A server-initiated request's id is
-/// minted as a number, so a string id on an inbound frame is the peer answering
-/// something this server did not ask — which is a message to discard, not one
-/// to guess a correlation for.
-const fn id_as_i64(id: &WireId<'_>) -> Option<i64> {
-    match id {
-        WireId::Number(value) => Some(*value),
-        WireId::Text(_) => None,
-    }
-}
-
-/// What a peer said in answer to a server-initiated request.
-///
-/// A JSON-RPC `error` member becomes the refusal it is — the peer's own words,
-/// not a re-phrasing — because a tool asked a question and the answer "the
-/// client declined" is different from the answer "the server broke", and
-/// collapsing them costs the caller the one distinction it could act on.
-fn answer_of(body: &[u8]) -> Answer {
-    let Ok(document) = serde_json::from_slice::<Value>(body) else {
-        return Err(ExchangeError::new("the answer was not JSON"));
-    };
-    if let Some(failure) = document.get("error") {
-        return Err(ExchangeError::new(failure.to_string()));
-    }
-    document.get("result").map_or_else(
-        || {
-            Err(ExchangeError::new(
-                "the answer carried neither a result nor an error",
-            ))
-        },
-        |result| {
-            JsonObject::from_value(result.clone())
-                .map_err(|error| ExchangeError::new(error.to_string()))
-        },
-    )
-}
-
-fn progress_token_of(envelope: &Envelope<'_>) -> Option<ProgressToken> {
-    let params: serde_json::Value = serde_json::from_str(envelope.params()?.get()).ok()?;
-    let token = params.get("_meta")?.get("progressToken")?;
-    ProgressToken::from_json(token)
-}
-
 fn default_ids() -> Result<Ids, ServeError> {
     use crate::adapters::secondary::id_source::RandomIds;
     RandomIds::new()
@@ -1256,9 +1398,10 @@ mod tests {
     use super::{HttpBuilder, ServeError, default_ceiling, routes};
     use crate::adapters::primary::transport::http::router::RouterError;
     use crate::adapters::primary::transport::http::{
-        Anonymous, AuthPolicy, Authenticator, Credentials,
+        Anonymous, AuthPolicy, Authenticator, Credentials, ServerConfig, Streaming,
     };
     use crate::application::server::{Server, ToolHandler};
+    use crate::domain::ir::JsonObject;
     use crate::domain::registry::auth::ScopeSet;
     use crate::domain::registry::{AuthContext, Primitive, Registered, Scope, Tool};
 
@@ -1268,6 +1411,14 @@ mod tests {
     enum Failure {
         /// A test assumption about the crate's own defaults did not hold.
         Expectation(&'static str),
+        /// Two values that should have matched and did not.
+        ///
+        /// Separate from [`Self::Expectation`] because "the media type was
+        /// this, the media type should have been that" is the assertion this
+        /// module could not previously make at all — the two values are the
+        /// whole point of the test, and folding them into one message would
+        /// mean printing only half of it.
+        Mismatch(String, String),
         /// The transport refused something a test did not expect it to.
         Serve(ServeError),
         /// A request never produced a response.
@@ -1278,6 +1429,9 @@ mod tests {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             match self {
                 Self::Expectation(what) => write!(formatter, "expected {what}"),
+                Self::Mismatch(found, wanted) => {
+                    write!(formatter, "expected {wanted}, got {found}")
+                }
                 Self::Serve(error) => write!(formatter, "the transport refused: {error}"),
                 Self::NoResponse => formatter.write_str("the request produced no response"),
             }
@@ -1457,6 +1611,130 @@ mod tests {
         }
     }
 
+    /// `Streaming::Json` — the default — has to mean `application/json` on a
+    /// *sessioned* POST, and it did not.
+    ///
+    /// Issue #20: `initialize` answered a bare document while every request
+    /// after it answered an event stream, because the framing was decided by
+    /// whether a session existed rather than by how the server was configured.
+    /// `streaming()` was read in exactly one place, a log field. A consumer
+    /// that never touched `Streaming` got `text/event-stream` and an
+    /// `id: N\ndata: {...}` body where it expected a document.
+    ///
+    /// Both modes are asserted here rather than only the default, because the
+    /// previous test (`the_streaming_mode_never_changes_the_get_route`) covers
+    /// the GET route and would not have caught this: `Streaming` has never
+    /// changed what the GET route does.
+    #[tokio::test]
+    async fn the_streaming_mode_decides_how_a_sessioned_post_is_framed() -> Result<(), Failure> {
+        for (streaming, expected) in [
+            (Streaming::Json, "application/json"),
+            (Streaming::EventStream, "text/event-stream"),
+        ] {
+            let config = ServerConfig::new()
+                .map_err(|_| Failure::Expectation("the config did not parse"))?
+                .with_streaming(streaming);
+            let router = crate::adapters::primary::transport::http::serve::test_routes(
+                server(),
+                default_ceiling(),
+                Some(config),
+                Some(test_ids()),
+            )?;
+
+            let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+            let (status, minted, _) = post(&router, initialize, None, None).await?;
+            if status != StatusCode::OK {
+                return Err(Failure::Expectation("initialize was refused"));
+            }
+            let Some(session) = minted else {
+                return Err(Failure::Expectation("no session was minted"));
+            };
+
+            let (status, _, _) = post(
+                &router,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+                None,
+                Some(&session),
+            )
+            .await?;
+            if status != StatusCode::OK {
+                return Err(Failure::Expectation("a sessioned tools/list was refused"));
+            }
+
+            let response = raw_post(
+                &router,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+                Some(&session),
+            )
+            .await?;
+            let media = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            if !media.starts_with(expected) {
+                return Err(Failure::Mismatch(media, expected.to_owned()));
+            }
+        }
+        Ok(())
+    }
+
+    /// A tool that asks the peer a question cannot do it on a server that
+    /// answers with one document, and it has to find out rather than hang.
+    ///
+    /// The property under test is that the call *returns*. Before this change
+    /// a `Streaming::Json` server pushed the tool's question into a ring no one
+    /// drains and waited on a channel that only the end of the session could
+    /// close: a hang with no error and no timeout. Whatever the refusal turns
+    /// out to be, the assertion is that there is one.
+    ///
+    /// The refusal's wording is pinned by `an_unreadable_exchange_names_the_setting`
+    /// in the `exchange` module, which can reach the exchange directly. Here
+    /// the capability gate answers first — this server declares no elicitation
+    /// capability — so what arrives here is that gate's refusal, not the
+    /// exchange's.
+    #[tokio::test]
+    async fn a_tool_that_asks_the_peer_is_answered_rather_than_left_waiting() -> Result<(), Failure>
+    {
+        let config = ServerConfig::new()
+            .map_err(|_| Failure::Expectation("the config did not parse"))?
+            .with_streaming(Streaming::Json);
+        let router = crate::adapters::primary::transport::http::serve::test_routes(
+            eliciting_server()?,
+            default_ceiling(),
+            Some(config),
+            Some(test_ids()),
+        )?;
+
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+        let (status, minted, _) = post(&router, initialize, None, None).await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("initialize was refused"));
+        }
+        let Some(session) = minted else {
+            return Err(Failure::Expectation("no session was minted"));
+        };
+
+        let (status, _, document) = post(
+            &router,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"elicit","arguments":{}}}"#,
+            None,
+            Some(&session),
+        )
+        .await?;
+        if status != StatusCode::OK {
+            return Err(Failure::Expectation("the call was refused outright"));
+        }
+        if document.to_string().contains("reason") {
+            return Ok(());
+        }
+        Err(Failure::Mismatch(
+            document.to_string(),
+            "an answer naming why the question could not be asked".to_owned(),
+        ))
+    }
+
     /// `initialize` is answered, and mints a session the client can name.
     ///
     /// The assertion that matters most is the header. Without it a client that
@@ -1477,9 +1755,10 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .body(Body::from(body.as_slice().to_vec()))
+                    .body(Body::from(body.to_vec()))
                     .map_err(|_| Failure::Expectation("the request built"))?,
             )
             .await
@@ -1517,15 +1796,16 @@ mod tests {
             None,
             Some(test_ids()),
         )?;
-        let body = br#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let body = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
         let response = router
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .body(Body::from(body.as_slice().to_vec()))
+                    .body(Body::from(body.as_bytes().to_vec()))
                     .map_err(|_| Failure::Expectation("the request built"))?,
             )
             .await
@@ -1557,6 +1837,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
                     .body(Body::from("{not json"))
@@ -1632,6 +1913,45 @@ mod tests {
     /// The one tool the servers in this section publish.
     const GATED: &str = "gated";
 
+    /// A server whose only tool tries to elicit from the peer.
+    ///
+    /// The tool is the point: without a handler that asks a question and
+    /// waits, there is nothing for the unreadable-exchange refusal to refuse,
+    /// and the test could not tell "the exchange was refused" from "no tool
+    /// was called".
+    fn eliciting_server() -> Result<Server, Failure> {
+        const ELICIT: &str = "elicit";
+        let tool = Tool::new(ELICIT, r#"{"type":"object"}"#)
+            .map_err(|_| Failure::Expectation("a tool schema the crate accepts"))?;
+        // The refusal is carried back as the tool's text rather than raised as
+        // a JSON-RPC error, because a tool that could not ask its question is
+        // still a tool that ran and answered — and the point of the test is
+        // that the caller finds out, with a reason, rather than hanging.
+        // `"{}"` is the one string `JsonObject::new` cannot refuse, so the empty
+        // object is built once here and cloned per call rather than being an
+        // `unwrap` on a fact about the type.
+        let empty =
+            JsonObject::new("{}").map_err(|_| Failure::Expectation("an empty object parses"))?;
+        let handler: ToolHandler = Arc::new(move |context, _arguments| {
+            let empty = empty.clone();
+            Box::pin(async move {
+                match context.elicit(&empty).await {
+                    Ok(answer) => answer,
+                    // Carried back as the tool's own result rather than raised
+                    // as a JSON-RPC error: a tool that could not ask its
+                    // question still ran and still answered, and what is under
+                    // test is that the caller finds out with a reason instead
+                    // of hanging.
+                    Err(error) => JsonObject::new(format!("{{\"reason\":\"{error:?}\"}}"))
+                        .unwrap_or_else(|_| empty.clone()),
+                }
+            })
+        });
+        Ok(Server::builder("elicitation-on-json")
+            .restricted_tool(Registered::from(Primitive::from(tool)), handler)
+            .build())
+    }
+
     /// A server whose only tool is invisible without the `Read` scope.
     ///
     /// The scope is the assertion's teeth. An ungated tool is visible to
@@ -1702,6 +2022,37 @@ mod tests {
     /// Reports the status, the minted session id if one was minted, and the
     /// decoded reply — all read off the response rather than off a value both
     /// sides already agreed on.
+    /// One POST, returned undecoded.
+    ///
+    /// [`post`] reads the body into a document, which is the right shape for
+    /// every assertion except the one this file could not make: a
+    /// `text/event-stream` body is not a document, so a helper that decoded
+    /// it would fail before the media type was ever read, and the test that
+    /// needs to see the header needs the response untouched.
+    async fn raw_post(
+        router: &axum::Router,
+        body: &str,
+        session: Option<&str>,
+    ) -> Result<axum::response::Response, Failure> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream");
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        let built = request
+            .body(Body::from(body.as_bytes().to_vec()))
+            .map_err(|_| Failure::Expectation("the request built"))?;
+        router
+            .clone()
+            .oneshot(built)
+            .await
+            .map_err(|_| Failure::NoResponse)
+    }
+
     async fn post(
         router: &axum::Router,
         body: &str,
@@ -1711,6 +2062,7 @@ mod tests {
         let mut request = Request::builder()
             .method("POST")
             .uri("/mcp")
+            .header("host", "localhost")
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream");
         if let Some(credential) = credential {
@@ -1720,7 +2072,7 @@ mod tests {
             request = request.header("mcp-session-id", session);
         }
         let built = request
-            .body(Body::from(body.to_owned()))
+            .body(Body::from(body.as_bytes().to_vec()))
             .map_err(|_| Failure::Expectation("the request built"))?;
         let response = router
             .clone()

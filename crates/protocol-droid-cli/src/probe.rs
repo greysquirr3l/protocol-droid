@@ -124,11 +124,15 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("--server is not a usable spec: {}", args.server))?;
     let versions = resolve_versions(&args.versions)?;
 
-    let (transport, kind) = open_transport(&spec)
-        .await
-        .with_context(|| format!("could not open transport for {spec}"))?;
+    let report = probe_spec(&spec, &versions).await?;
 
-    let report = matrix_report(transport.as_ref(), &versions, kind, spec.to_string()).await;
+    // The backward-compatibility rule from the 2025-03-26 transport page: a
+    // server that refuses a `POST` with a 4xx may still be the old HTTP+SSE
+    // transport, which is recognised by opening a stream and finding an
+    // `endpoint` event on it. Only tried when the endpoint was refused
+    // outright, and only reported if it works.
+    #[cfg(feature = "bridge")]
+    let report = legacy_instead(&spec, &versions, report).await;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -140,6 +144,55 @@ pub async fn run(args: &ProbeArgs) -> anyhow::Result<()> {
         anyhow::bail!("no revision was accepted by {spec}");
     }
     Ok(())
+}
+
+/// Opens `spec` and runs the matrix against it.
+async fn probe_spec(
+    spec: &TransportSpec,
+    versions: &[ProtocolVersion],
+) -> anyhow::Result<ProbeReport> {
+    let (transport, kind) = open_transport(spec)
+        .await
+        .with_context(|| format!("could not open transport for {spec}"))?;
+    let stateless = stateless_transport(spec, kind)?;
+    Ok(matrix_report_with(
+        transport.as_ref(),
+        stateless.as_deref(),
+        versions,
+        kind,
+        spec.to_string(),
+    )
+    .await)
+}
+
+/// `report`, or the same server probed as legacy HTTP+SSE when every `POST` was
+/// refused and that probe finds a revision it accepts.
+#[cfg(feature = "bridge")]
+async fn legacy_instead(
+    spec: &TransportSpec,
+    versions: &[ProtocolVersion],
+    report: ProbeReport,
+) -> ProbeReport {
+    if spec.kind() == TransportKind::StreamableHttp
+        && refused_by_every_post(&report)
+        && let Ok(legacy) = TransportSpec::new(TransportKind::LegacySse, spec.target())
+        && let Ok(found) = probe_spec(&legacy, versions).await
+        && found.rows.iter().any(|row| row.accepted)
+    {
+        eprintln!("{spec} refuses POST but serves an HTTP+SSE stream; probed it as {legacy}");
+        return found;
+    }
+    report
+}
+
+/// Whether every row was refused with a client-error status on the `POST`.
+#[cfg(feature = "bridge")]
+fn refused_by_every_post(report: &ProbeReport) -> bool {
+    !report.rows.is_empty()
+        && report
+            .rows
+            .iter()
+            .all(|row| !row.accepted && row.note.contains("refused the POST with 4"))
 }
 
 /// Fingerprints an A2A agent and reports the result.
@@ -214,6 +267,35 @@ async fn open_transport(
     }
 }
 
+/// The client a `2026-07-28` row is probed with, for a Streamable HTTP target.
+///
+/// A revision with no handshake is spoken statelessly: every request carries
+/// its own `_meta` and request-metadata headers, and a conforming server
+/// refuses a `server/discover` without them. Probing that revision through the
+/// session client would report a refusal the server never made.
+fn stateless_transport(
+    spec: &TransportSpec,
+    kind: TransportKind,
+) -> anyhow::Result<Option<Arc<dyn ClientTransport>>> {
+    #[cfg(feature = "bridge")]
+    if kind == TransportKind::StreamableHttp {
+        use protocol_droid::adapters::secondary::transport::http::{
+            HttpClientConfig, StatelessHttpClient,
+        };
+        let config = HttpClientConfig::new(spec.target())
+            .with_context(|| "the Streamable HTTP URL is not usable")?;
+        let client = StatelessHttpClient::new(
+            config,
+            ProtocolVersion::V2026_07_28,
+            serde_json::Value::Object(serde_json::Map::new()),
+        )
+        .with_context(|| "the stateless HTTP client could not be built")?;
+        return Ok(Some(Arc::new(client)));
+    }
+    let _ = (spec, kind);
+    Ok(None)
+}
+
 /// Builds the matrix: one handshake per `versions` entry, on `transport`.
 pub async fn matrix_report(
     transport: &dyn ClientTransport,
@@ -221,9 +303,27 @@ pub async fn matrix_report(
     kind: TransportKind,
     server_spelling: String,
 ) -> ProbeReport {
+    matrix_report_with(transport, None, versions, kind, server_spelling).await
+}
+
+/// [`matrix_report`], probing revisions with no handshake on `stateless` when
+/// one is given.
+pub async fn matrix_report_with(
+    transport: &dyn ClientTransport,
+    stateless: Option<&dyn ClientTransport>,
+    versions: &[ProtocolVersion],
+    kind: TransportKind,
+    server_spelling: String,
+) -> ProbeReport {
     let mut rows = Vec::with_capacity(versions.len());
     for &offered in versions {
-        rows.push(one_row(transport, offered, kind).await);
+        let row = match stateless {
+            Some(stateless) if !protocol_droid::domain::handshake_defined_in(offered) => {
+                one_row(stateless, offered, TransportKind::StatelessHttp).await
+            }
+            _ => one_row(transport, offered, kind).await,
+        };
+        rows.push(row);
     }
     ProbeReport {
         server: server_spelling,
@@ -279,6 +379,9 @@ fn describe(error: &HandshakeError) -> String {
         }) => format!("the server answered {answered}, which is not in the offer"),
         HandshakeError::Negotiation(_) => "the server and the client share no revision".to_owned(),
         HandshakeError::Transport(TransportError::Unavailable(reason)) => reason.clone(),
+        HandshakeError::Transport(TransportError::Refused { code, message, .. }) => {
+            format!("the server refused with {code}: {message}")
+        }
         HandshakeError::Assembling { method, .. } => {
             format!("the {method} request could not be built")
         }

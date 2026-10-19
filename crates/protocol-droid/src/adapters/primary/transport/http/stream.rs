@@ -1113,7 +1113,7 @@ where
 /// # Errors
 ///
 /// [`StreamError::Response`] if the response headers cannot be assembled.
-fn stream_response<S>(stream: S) -> Result<Response, StreamError>
+pub(super) fn stream_response<S>(stream: S) -> Result<Response, StreamError>
 where
     S: Stream<Item = Result<Bytes, StreamError>> + Send + 'static,
 {
