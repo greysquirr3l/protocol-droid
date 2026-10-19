@@ -312,3 +312,9 @@ required-features = ["a2a", "http"]
 [[example]]
 name = "a2a_typed_client"
 required-features = ["a2a", "http"]
+
+# The RFC 9728 discovery document. `http` only — the document is served over
+# any axum app and needs neither an OAuth token source nor the A2A module.
+[[example]]
+name = "protected_resource_server"
+required-features = ["http"]

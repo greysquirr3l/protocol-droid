@@ -86,6 +86,7 @@ pub mod hardening;
 pub mod limits;
 mod listen;
 pub mod precondition;
+pub mod protected_resource;
 mod refusal;
 mod resume;
 pub mod router;

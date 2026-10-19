@@ -22,6 +22,8 @@ use std::sync::Arc;
 use core::fmt;
 use core::str::FromStr;
 
+use serde::{Serialize, Serializer};
+
 /// The well-known path an MCP server publishes its metadata at.
 ///
 /// RFC 9728 §3.1: the metadata for a resource at the origin root is
@@ -39,7 +41,8 @@ pub const WELL_KNOWN: &str = "/.well-known/oauth-protected-resource";
 /// only one this crate reads a token from — the alternative in the spec's
 /// discussion is the `Authorization` request body parameter, which MCP's
 /// transports have no place for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BearerMethod {
     /// RFC 6750 §2.1, the `Authorization: Bearer` header.
     ///
@@ -112,6 +115,19 @@ impl BearerMethod {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceUri(Arc<str>);
+
+impl Serialize for ResourceUri {
+    /// Serialises as the canonical string, which is the RFC 9728 `resource`
+    /// value verbatim.
+    ///
+    /// Hand-written rather than derived because the inner `Arc<str>` is a
+    /// newtype's implementation detail — a derived impl would make the
+    /// canonical form load-bearing in a second place, and the whole point of
+    /// the type is that there is exactly one spelling of a resource.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 impl ResourceUri {
     /// Canonicalises a resource identifier.
@@ -417,7 +433,16 @@ pub enum ResourceUriError {
 ///
 /// What an MCP server publishes to tell a client which authorization servers can
 /// issue tokens for it, and which scopes those tokens should carry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Wire form
+///
+/// Field names are the `snake_case` ones RFC 9728 §2 defines — unlike the rest of
+/// MCP's wire types, so this one derives `Serialize` rather than renaming to
+/// camelCase. `skip_serializing_if` is not an optimisation: §3.2 says a
+/// parameter with zero values MUST be omitted, so an empty
+/// `authorization_servers` is absent rather than `[]`. `resource` is the one
+/// field that is always present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResourceMetadata {
     /// This server's canonical resource identifier. Required by RFC 9728 §2.
     resource: ResourceUri,
@@ -430,15 +455,19 @@ pub struct ResourceMetadata {
     /// decision — publishing the same issuer twice is odd rather than wrong,
     /// and refusing to publish it would be this type being clever with
     /// somebody's configuration.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     authorization_servers: Vec<Arc<str>>,
 
     /// Scopes a token for this resource should carry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     scopes_supported: Vec<Arc<str>>,
 
     /// How a bearer token may be presented. Always [`BearerMethod::Header`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     bearer_methods_supported: Vec<BearerMethod>,
 
     /// Human-readable name for the resource, from RFC 9728 §2.
+    #[serde(skip_serializing_if = "Option::is_none")]
     resource_name: Option<Arc<str>>,
 }
 
@@ -546,3 +575,98 @@ impl ResourceMetadata {
 #[cfg(test)]
 #[path = "resource_metadata/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod wire_tests {
+    use super::{ResourceMetadata, ResourceUri, ResourceUriError};
+
+    /// The fallible calls in this module answer unrelated error types, so the
+    /// test returns a `Result` over this rather than unwrapping. Each variant
+    /// says what went wrong, because a bare "test failed" hides which of the
+    /// two steps it was.
+    /// The first element of a JSON array parameter, or `None` when the value is
+    /// absent or is not an array. Keeps the assertions from indexing.
+    fn first_element(value: &serde_json::Value) -> Option<serde_json::Value> {
+        value.as_array().and_then(|values| values.first().cloned())
+    }
+
+    impl core::fmt::Display for Failure {
+        /// Reads both payloads, so a failure says *which* step broke rather
+        /// than only that something did.
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::Uri(e) => write!(f, "not a legal resource identifier: {e}"),
+                Self::Json(e) => write!(f, "document did not serialise: {e}"),
+            }
+        }
+    }
+
+    impl std::error::Error for Failure {}
+
+    #[derive(Debug)]
+    enum Failure {
+        /// A literal in the test was not a legal resource identifier.
+        Uri(ResourceUriError),
+        /// The document did not serialise, which would be a bug in the derive.
+        Json(serde_json::Error),
+    }
+
+    #[test]
+    fn emits_rfc_9728_field_names_and_omits_empty_parameters() -> Result<(), Failure> {
+        let full = ResourceMetadata::new(
+            ResourceUri::new("https://example.com/mcp").map_err(Failure::Uri)?,
+        )
+        .with_authorization_server("https://auth.example.com")
+        .with_scope("files:read")
+        .with_name("Example");
+        let full_json: serde_json::Value = serde_json::to_value(&full).map_err(Failure::Json)?;
+        // `get` rather than indexing throughout: a wrong shape then fails an
+        // assertion instead of panicking inside the test.
+        let first = |key: &str| full_json.get(key).and_then(first_element);
+        assert_eq!(
+            full_json.get("resource"),
+            Some(&serde_json::json!("https://example.com/mcp"))
+        );
+        assert_eq!(
+            first("authorization_servers"),
+            Some(serde_json::json!("https://auth.example.com"))
+        );
+        assert_eq!(
+            first("scopes_supported"),
+            Some(serde_json::json!("files:read"))
+        );
+        assert_eq!(
+            first("bearer_methods_supported"),
+            Some(serde_json::json!("header"))
+        );
+        assert_eq!(
+            full_json.get("resource_name"),
+            Some(&serde_json::json!("Example"))
+        );
+
+        let bare =
+            ResourceMetadata::new(ResourceUri::new("https://example.com").map_err(Failure::Uri)?);
+        let bare_json: serde_json::Value = serde_json::to_value(&bare).map_err(Failure::Json)?;
+        assert_eq!(
+            bare_json.get("resource"),
+            Some(&serde_json::json!("https://example.com"))
+        );
+        for absent in ["authorization_servers", "scopes_supported", "resource_name"] {
+            assert!(
+                bare_json.get(absent).is_none(),
+                "RFC 9728 3.2 requires {absent} be omitted when empty, got {bare_json}"
+            );
+        }
+        // `bearer_methods_supported` is the exception: `new` defaults it to
+        // `["header"]` because this crate reads the token from the
+        // `Authorization` header and nowhere else, so it is never empty and
+        // always published.
+        assert_eq!(
+            bare_json
+                .get("bearer_methods_supported")
+                .and_then(first_element),
+            Some(serde_json::json!("header"))
+        );
+        Ok(())
+    }
+}
