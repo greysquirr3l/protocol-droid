@@ -48,7 +48,10 @@ exclude = [
 # which breaks source for anyone who registered a listing-only resource. Under
 # semver a breaking change from 0.1.x is 0.2.x. Every member inherits this, so
 # the four crates always ship at the same version.
-version = "0.2.0"
+#
+# 0.3.0 for the same reason: `LegacyDispatcher` gained an associated type and an
+# `open` method, which breaks anyone who implemented it.
+version = "0.3.0"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -79,9 +82,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.2.0" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.2.0" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.2.0" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.3.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.3.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.3.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

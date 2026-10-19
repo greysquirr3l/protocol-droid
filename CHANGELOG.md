@@ -9,6 +9,8 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-19
+
 Conformance is now green on every revision the pinned suite covers, on both
 sides. The server matrix is 3/3, 55/55, 81/81 and 151/151 on `2025-03-26`,
 `2025-06-18`, `2025-11-25` and `2026-07-28` (`2026-07-28` was 81/119). The
