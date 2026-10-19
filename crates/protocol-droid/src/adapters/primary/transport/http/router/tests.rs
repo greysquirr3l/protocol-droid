@@ -29,6 +29,7 @@ use super::{
     Inbound, McpRouter, RequestHandler, SessionHandle, Unsessioned, authenticate, resolve_session,
 };
 use crate::adapters::primary::transport::http::limits::RateLimiter;
+use crate::adapters::primary::transport::http::protected_resource::serve_protected_resource;
 use crate::adapters::primary::transport::http::{
     AuthPolicy, Authenticator, Credentials, EventTail, Refusal, SecurityHeaders, ServerConfig,
     SessionStore, Streaming,
@@ -1308,8 +1309,14 @@ const RESOURCE: &str = "https://mcp.example/mcp";
 
 /// A config that publishes RFC 9728 metadata for [`RESOURCE`].
 fn publishing() -> Result<ServerConfig, TestError> {
-    let metadata = ResourceMetadata::new(ResourceUri::new(RESOURCE)?);
-    Ok(ServerConfig::new()?.with_resource_metadata(metadata))
+    Ok(ServerConfig::new()?.with_resource_metadata(document()?))
+}
+
+/// The document [`publishing`] publishes, so a test wiring both halves uses
+/// the same value for the challenge and for the route rather than two that
+/// merely look alike.
+fn document() -> Result<ResourceMetadata, TestError> {
+    Ok(ResourceMetadata::new(ResourceUri::new(RESOURCE)?))
 }
 
 /// The `WWW-Authenticate` header on a response, if it carries one.
@@ -1647,5 +1654,103 @@ async fn an_oversized_body_is_still_a_413() -> Result<(), TestError> {
         .await?;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
+// The discovery chain, end to end.
+//
+// Every other test in this module checks one end: that a `401` carries a
+// challenge, or that the well-known router serves a document. Nothing checked
+// that the URL in the challenge is the URL the document is served at. A
+// mismatch there passes both sets of tests and leaves a client following a
+// `WWW-Authenticate` header into a `404`, which is the entire failure mode
+// RFC 9728 exists to prevent.
+// -------------------------------------------------------------------------
+
+/// The path a client extracts from the challenge URL and requests.
+///
+/// The challenge carries an absolute URL, because the server has to name a
+/// location it cannot know the client's origin for. A test cannot bind that
+/// host, so it takes the path out of the challenge and requests it against the
+/// same router — which is what a client does after resolving it, and is the
+/// part that actually has to agree.
+fn challenged_path(challenge: &str) -> Result<String, TestError> {
+    let url = challenge
+        .rsplit_once("resource_metadata=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(url, _)| url)
+        .ok_or_else(|| {
+            fail(format!(
+                "challenge carried no resource_metadata: {challenge}"
+            ))
+        })?;
+
+    let path = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..]))
+        .ok_or_else(|| fail(format!("challenge URL {url} has no path")))?;
+    Ok(path.to_owned())
+}
+
+/// A `401`'s challenge resolves to a document this same server serves.
+///
+/// Walks the path a client walks, in order: request the protected resource
+/// anonymously, read where the challenge says the document lives, fetch that,
+/// and check the `resource` inside it is the resource that was protected. The
+/// last part is the one that catches a real misconfiguration — a document
+/// served at the right URL naming the wrong audience is worse than a `404`,
+/// because the client proceeds and then holds a token for the wrong resource.
+#[tokio::test]
+async fn the_challenge_resolves_to_a_document_this_server_serves() -> Result<(), TestError> {
+    let harness = Harness::from_parts(
+        publishing()?,
+        Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
+        true,
+        AuthPolicy::Require(ScopeSet::all()),
+        Some(Arc::new(OneToken)),
+    )?;
+    let id = harness.open()?;
+
+    // 1. The protected resource refuses an anonymous caller.
+    let refused = harness.send(with_session(post("{}")?, id)?).await?;
+    require(&refused.status(), &StatusCode::UNAUTHORIZED, "status")?;
+
+    // 2. The refusal names where the document is.
+    let challenge = challenge_of(&refused)
+        .ok_or_else(|| fail("a 401 carried no WWW-Authenticate challenge"))?;
+    let path = challenged_path(&challenge)?;
+
+    // 3. That path is served, unauthenticated, as JSON.
+    let app = harness
+        .router
+        .clone()
+        .merge(serve_protected_resource(&document()?));
+    let served = Request::builder()
+        .uri(&path)
+        .body(Body::empty())
+        .map_err(|e| fail(format!("building GET {path}: {e}")))?;
+    let response = app.oneshot(served).await?;
+    require(&response.status(), &StatusCode::OK, "metadata status")?;
+
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    require(
+        &content_type,
+        &Some("application/json".to_owned()),
+        "metadata content type",
+    )?;
+
+    // 4. And it describes the resource that was just refused.
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await?;
+    let document: Value = serde_json::from_slice(&body)?;
+    require(
+        &document.get("resource").cloned(),
+        &Some(json!(RESOURCE)),
+        "document resource",
+    )?;
     Ok(())
 }
