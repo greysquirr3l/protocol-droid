@@ -9,6 +9,23 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `0.3.0` binaries job could not produce a release.** (`ce3ed1d`) Three
+  separate faults, each fatal on its own: the job had no `contents: write`, so
+  it could not create the draft release it was uploading to; the musl targets
+  had no C compiler for `ring`; and the Windows build ran under PowerShell,
+  which cannot parse `set -euo pipefail`. `cargo --bin` was also given the
+  target name with its `.exe`.
+- **Two test assertions printed the very secrets they police.** (`6011212`) A
+  panic message is a log line, and one test interpolated a full session id into
+  its failure message while another named the offending credential in the
+  assertion that exists to stop credentials reaching an error string — so the
+  one circumstance in which the value reached a CI log was the one where the
+  test caught it leaking. The second now reports which of the three went wrong
+  without reprinting it; the first names the delta, which was the whole
+  diagnosis anyway.
+
 ## [0.3.0] — 2026-10-19
 
 Conformance is now green on every revision the pinned suite covers, on both
