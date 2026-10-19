@@ -9,7 +9,63 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-19
+
+A server can now require OAuth from public API alone, and publish the document
+a client needs to find out how. Closes
+[#33](https://github.com/greysquirr3l/protocol-droid/issues/33).
+
+### Added
+
+- **The RFC 9728 protected-resource metadata document is served.**
+  (`e1767c9`) A client that receives a `401` reads the `WWW-Authenticate`
+  challenge, follows it to the metadata document, and learns where to get a
+  token. Until now the challenge could name a URL nothing was serving.
+  `ResourceMetadata` gained the `Serialize` impl RFC 9728 §2 defines, with
+  §3.2's omit-when-empty rule; `serve_protected_resource` returns a
+  `GET`-only router for deployments that need the document on a different
+  origin than the MCP endpoint.
+- **The metadata document mounts itself.** (`31d82af`)
+  `with_resource_metadata` mounts the route on the MCP router and points the
+  `401` challenge at the same URL, both read from one value, so the two cannot
+  drift apart. The route deliberately skips the authenticator — an escape route
+  cannot require the credential it explains how to obtain — and still passes
+  the same `Host` and rate-limit checks as every other route.
+
 ### Fixed
+
+- **The default build did not compile.** (`0fd17f1`)
+  `cargo check --workspace --all-targets` failed on default features because
+  the `a2a_serving` bench imported `adapters::secondary::a2a` without
+  `required-features = ["a2a"]`. CI missed it because it ran
+  `cargo test --workspace`, which skips benches. The matrix now checks
+  `--all-targets` per feature set.
+- **Intra-doc links were broken and rustdoc was ungated.** (`ad7ce31`) Six
+  unresolved links under lean features, and nothing in CI ran `cargo doc`, so
+  they could not reach `main`. CI now gates on `--all-features`.
+- **The `auth` module doc described T16 as future work.** (`7d8902d`) It had
+  shipped; the doc still said it had not, which is how a reader concludes the
+  resource-server half does not exist.
+
+### Documented
+
+- **Requiring a credential on a server.** (`db69cdc`, `2752b01`) The security
+  guide documented the client OAuth flow in detail and the resource-server half
+  not at all. It now covers `with_authenticator`, `with_policy`, the
+  auto-mounted document, and the fail-closed contract that refuses to build a
+  route table when an authenticator is wired without a policy. The snippet is
+  compiled, not hand-written — an earlier draft cited four import paths that
+  did not exist.
+- **A chain test ties the `401` challenge to the served route.** (`db69cdc`)
+  Both halves existed; nothing proved they named the same URL. The test fails
+  on a wrong resource, a wrong path, and on config that names a document it
+  does not serve.
+- **An assembly test answers [#33](https://github.com/greysquirr3l/protocol-droid/issues/33)'s
+  question.** (`2752b01`) The issue claimed a server could not require OAuth
+  without assembling internals. It could, and can still — the test builds one
+  from public API alone, which is what the claim needed.
+
+### Previously unreleased fixes from `0.3.0`
 
 - **The `0.3.0` binaries job could not produce a release.** (`ce3ed1d`) Three
   separate faults, each fatal on its own: the job had no `contents: write`, so
@@ -25,6 +81,11 @@ checked against the code rather than taken on the changelog's word.
   test caught it leaking. The second now reports which of the three went wrong
   without reprinting it; the first names the delta, which was the whole
   diagnosis anyway.
+- **The docs site could not install.** (`9c79168`) pnpm 11 refuses to install
+  while a dependency's build script is neither allowed nor denied, and both
+  `esbuild` and `sharp` still held the placeholder value, which broke
+  `pnpm build` and the deploy script. Both genuinely need their install step:
+  `esbuild` fetches its platform binary, `sharp` its native module.
 
 ## [0.3.0] — 2026-10-19
 

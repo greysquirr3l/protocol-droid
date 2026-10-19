@@ -30,6 +30,82 @@ limit before authenticating, and put the same security headers on every
 response, including the ones no handler wrote. A request with no
 `Host` is refused.
 
+### Requiring a credential on a server
+
+Requiring OAuth is two builders, and the second one is the part that
+is easy to leave off. An authenticator answers "is this token valid?";
+a policy answers "does this endpoint need one?". The library treats an
+authenticator without a policy as the silent fail-open it is, and
+`into_router` refuses to build the route table rather than serve the
+endpoint unprotected:
+
+```rust
+use std::sync::Arc;
+
+use jsonwebtoken::Algorithm;
+use protocol_droid::adapters::primary::transport::http::{
+    AuthPolicy, HttpBuilder, OAuthAuthenticator, ServerConfig, SystemClock,
+};
+use protocol_droid::adapters::secondary::oauth::jwt::JwtSource;
+use protocol_droid::application::oauth::NoScopes;
+use protocol_droid::domain::mcp::{ResourceMetadata, ResourceUri};
+use protocol_droid::domain::registry::auth::{Scope, ScopeSet};
+use protocol_droid::domain::ProtocolVersion;
+
+let source = JwtSource::new(
+    Arc::from("https://login.example.com/.well-known/jwks.json"),
+    vec![Algorithm::RS256],
+);
+
+let metadata = ResourceMetadata::new(ResourceUri::new("https://mcp.example/mcp")?)
+    .with_authorization_server("https://login.example.com")
+    .with_scope("mcp:read");
+
+// What validates a token presented *to* this server.
+let authenticator = Arc::new(OAuthAuthenticator::new(
+    source,
+    metadata.clone(),
+    ProtocolVersion::V2025_06_18,
+    NoScopes,
+    SystemClock,
+));
+
+// What says the endpoint needs one. Without this, the server does not start.
+let policy = AuthPolicy::Require(ScopeSet::empty().with(Scope::Read));
+
+// The document that tells a client where to get a token.
+let config = ServerConfig::new()?.with_resource_metadata(metadata);
+
+let report = HttpBuilder::new(server)
+    .config(config)
+    .with_authenticator(authenticator)
+    .with_policy(policy)
+    .serve()
+    .await?;
+```
+
+Two details in that snippet are easy to trip over. `metadata` is cloned
+rather than moved, because the authenticator needs the audience and the
+config needs the publication URL, and it is deliberately not `Copy` — it
+owns an `Arc<str>`. And `Algorithm` comes from `jsonwebtoken`, which is
+a dependency of the OAuth feature rather than a type this crate
+re-exports.
+
+`with_resource_metadata` mounts the document on the MCP router and
+points the `401` challenge at that same URL, both read from one value, so
+the challenge cannot name a document that is not being served. The
+document route deliberately skips the authenticator — the escape route
+cannot require the credential it explains how to obtain — but it still
+passes the same `Host` and rate-limit checks as every other route.
+
+A single-issuer deployment should also name the issuer, which is off by
+default because RFC 9728 publishes a *list* of trusted authorization
+servers:
+
+```rust
+let authenticator = authenticator.with_expected_issuer("https://login.example.com");
+```
+
 On the client side, the OAuth flow:
 
 - refuses a server whose metadata describes a different resource,
