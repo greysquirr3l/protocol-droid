@@ -63,15 +63,39 @@ fn the_key_is_never_printed() {
     assert_eq!(format!("{:?}", key()), "StateKey(<redacted>)");
 }
 
-/// RFC 4231 test case 2, through the same construction `seal` uses.
+/// `seal` produces HMAC-SHA256 over the raw key bytes.
+///
+/// Spelled out here rather than asserted against a published vector, because
+/// the interesting claim is about *this* code: that `seal` is HMAC-SHA256 and
+/// not a plain SHA-256 over the key concatenated with the state. That
+/// difference is the whole security property — a plain hash would let anyone
+/// who can read one sealed value forge another, because the key would not be
+/// mixed in the way a MAC requires.
+///
+/// Asserting against an RFC vector instead would prove something weaker and
+/// untrue about this function: it would exercise a `new_from_slice` written
+/// here, and pass unchanged if `seal` were rewritten to use a different
+/// construction entirely. The expected MAC below is computed through the same
+/// primitive but not through `seal`, so the two sides can disagree.
 #[test]
 fn the_mac_is_hmac_sha256() -> TestResult {
     use hmac::{Hmac, KeyInit, Mac};
-    let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(b"Jefe")?;
-    mac.update(b"what do ya want for nothing?");
+    let key = random_bytes();
+    let state = "what do ya want for nothing?";
+    let sealed = StateKey::from_bytes(key)
+        .seal(state)
+        .ok_or("HMAC-SHA256 refused a 32-byte key")?;
+    let (mac, carried) = sealed
+        .split_once('.')
+        .ok_or("the sealed value carried no separator")?;
+    assert_eq!(carried, state, "the state did not survive the round trip");
+
+    let mut expected = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(&key)?;
+    expected.update(state.as_bytes());
     assert_eq!(
-        super::hex(&mac.finalize().into_bytes()),
-        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        mac,
+        super::hex(&expected.finalize().into_bytes()),
+        "seal is not HMAC-SHA256 over the key bytes",
     );
     Ok(())
 }
