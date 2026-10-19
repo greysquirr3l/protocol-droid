@@ -281,7 +281,7 @@ impl PeerSession {
     /// The transport this session runs over.
     ///
     /// Part of the session rather than of the caller because a profile is not
-    /// resolvable without one: [`resolve`] consults `transport_allowed` for
+    /// resolvable without one: [`resolve`](crate::domain::feature::resolve) consults `transport_allowed` for
     /// every transport-gated feature row, so a handshake that needed the
     /// negotiated profile had nowhere to get the transport from until this
     /// carried it.
@@ -662,11 +662,11 @@ impl RequestContext {
 
     /// Asks the peer to run a model on the server's behalf.
     ///
-    /// Gated on [`Feature::Sampling`], on the same terms as [`elicit`].
+    /// Gated on [`Feature::Sampling`], on the same terms as `InputRequired::elicit`.
     ///
     /// # Errors
     ///
-    /// As [`elicit`](Self::elicit).
+    /// As [`InputRequired::elicit`](crate::application::mcp::input_required::InputRequired::elicit).
     pub async fn sample(&self, params: &JsonObject) -> Result<JsonObject, GatedError> {
         self.peer.require(Feature::Sampling)?;
         self.round_trip("sampling/createMessage", params).await
@@ -681,7 +681,7 @@ impl RequestContext {
     ///
     /// # Errors
     ///
-    /// As [`elicit`](Self::elicit).
+    /// As [`InputRequired::elicit`](crate::application::mcp::input_required::InputRequired::elicit).
     pub async fn create_task(&self, params: &JsonObject) -> Result<JsonObject, GatedError> {
         self.peer.require(Feature::Tasks)?;
         self.round_trip("tasks/create", params).await

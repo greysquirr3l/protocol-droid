@@ -90,7 +90,7 @@ impl Level {
     ///
     /// # Errors
     ///
-    /// Returns [`LevelError::Unknown`] for any other string, including the
+    /// Returns [`LevelError`] for any other string, including the
     /// right one in the wrong case. A level is a closed set the spec enumerates,
     /// and accepting `"Info"` would mean emitting something no conforming peer
     /// has agreed to recognise.

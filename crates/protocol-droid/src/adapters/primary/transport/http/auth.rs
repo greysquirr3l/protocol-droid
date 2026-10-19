@@ -233,7 +233,7 @@ pub enum AuthPolicy {
     /// Every request must hold these scopes.
     ///
     /// Note what an *empty* `ScopeSet` does here: it requires nothing, so
-    /// [`refuse`](Self::refuse) answers `None` and the policy behaves exactly
+    /// `refuse` answers `None` and the policy behaves exactly
     /// like [`Public`](Self::Public). That is a footgun — "I require
     /// authentication" followed by nothing to require is a configuration
     /// mistake — and it is the kind that is best made visible by a test rather

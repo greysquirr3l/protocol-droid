@@ -1,6 +1,6 @@
 //! `AcpProtocolVersion` — the wire-level protocol version.
 //!
-//! # Why a separate type from [`AcpVersion`]
+//! # Why a separate type from [`AcpVersion`](crate::domain::acp::version::AcpVersion)
 //!
 //! The ACP `meta.json` file and the schema's `MANIFEST.toml`
 //! entry pin a *release* (`schema-v1.25.0`). The wire's
@@ -46,7 +46,7 @@ pub struct AcpProtocolVersion(
 impl AcpProtocolVersion {
     /// The current protocol version. `1` is the wire value
     /// every `schema-v1.x.y` release advertises. The
-    /// release tag in [`AcpVersion`] is a different
+    /// release tag in [`AcpVersion`](crate::domain::acp::version::AcpVersion) is a different
     /// number (the schema's release tag is a `Major.Minor.Patch`
     /// tuple, the wire value is the *protocol* major).
     pub const CURRENT: Self = Self(1);

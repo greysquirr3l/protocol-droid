@@ -2,9 +2,9 @@
 //!
 //! # Why this is not a codec
 //!
-//! [`Codec`](crate::adapters::secondary::codec) lifts and lowers a
+//! [`Codec`](crate::domain::ir::Codec) lifts and lowers a
 //! [`ToolResult`](crate::domain::ir::ToolResult) and nothing else, so nothing
-//! in the crate yet turns a [`Dispatcher`] result plus a request id into the
+//! in the crate yet turns a `Dispatcher` result plus a request id into the
 //! document a peer reads. Rather than reach past it, this module writes that
 //! document and says so where a reader will find it. A request-side codec
 //! landing later replaces these four functions and nothing else, because the

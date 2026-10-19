@@ -18,7 +18,7 @@
 //! `list_visible` returns the visible primitives and the total. Computing the
 //! total separately would be a second filter, and a second filter can disagree
 //! with the first if a primitive's metadata were ever anything but a pure
-//! function of its payload — which is why [`PrimitiveMeta`] is derived and
+//! function of its payload — which is why `PrimitiveMeta` is derived and
 //! never stored. One pass, one answer, no way for the two numbers to come from
 //! different worlds.
 

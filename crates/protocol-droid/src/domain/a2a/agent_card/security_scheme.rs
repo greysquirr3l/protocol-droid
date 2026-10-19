@@ -60,7 +60,7 @@ pub enum SecurityScheme {
     #[serde(rename = "http")]
     Http(HTTPAuthSecurityScheme),
     /// OAuth 2.0 authentication (RFC 6749). The variant
-    /// carries the [`OAuth2SecurityScheme`] payload
+    /// carries the [`OAuth2SecurityScheme`](crate::domain::a2a::agent_card::oauth_flow::OAuth2SecurityScheme) payload
     /// (flows + RFC 8414 metadata URL) boxed to keep the
     /// enum's total size down — the OAuth 2 sub-types
     /// are several hundred bytes, and the `ApiKey` /

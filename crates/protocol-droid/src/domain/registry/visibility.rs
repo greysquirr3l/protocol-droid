@@ -39,7 +39,7 @@
 //!
 //! This module names [`FeatureProfile`], which is MCP's profile, so it is
 //! MCP-specific by construction. It lives here rather than under a `mcp/`
-//! subdirectory for the same reason [`crate::domain::ir::tool`] does: the
+//! subdirectory for the same reason `crate::domain::ir::tool` does: the
 //! `domain/ir/` layer established the precedent of a domain module naming
 //! [`Feature`](crate::domain::Feature) directly, and splitting the IR from the
 //! registry into separate `mcp/` folders would be one nesting level for no

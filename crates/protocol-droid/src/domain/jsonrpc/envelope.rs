@@ -7,11 +7,11 @@
 //! numeric id is an `i64` copied out of the buffer, so routing a frame costs no
 //! allocation at all — which is what "the envelope path must not allocate for a
 //! numeric id" means in practice. A string id borrows the buffer rather than
-//! building an `Arc<str>`; the owned [`RequestId`] is built later, at the point
+//! building an `Arc<str>`; the owned [`RequestId`](crate::domain::request_id::RequestId) is built later, at the point
 //! where a value has to outlive the buffer (the in-flight map, a log line, a
 //! record/replay file).
 //!
-//! Splitting the two is not a micro-optimisation. The IR's [`RequestId`] is
+//! Splitting the two is not a micro-optimisation. The IR's [`RequestId`](crate::domain::request_id::RequestId) is
 //! deliberately non-`Copy` and allocates its `Arc<str>` at construction, which
 //! is right for a stored value and wrong for a value that is about to be
 //! matched against a method and dropped.

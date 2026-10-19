@@ -1,7 +1,7 @@
 //! HTTP serving for the A2A agent-card well-known path.
 //!
 //! The A2A spec's §8 "Agent Discovery" rule is: a server
-//! publishes its [`AgentCard`](crate::domain::a2a::AgentCard)
+//! publishes its [`AgentCard`]
 //! at `https://{host}/.well-known/agent-card.json` as a
 //! `GET` request returning the card's JSON. This module
 //! is the adapter that owns the rule — the route, the

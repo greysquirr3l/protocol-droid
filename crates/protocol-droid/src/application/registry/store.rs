@@ -146,7 +146,7 @@ impl RegistryStore {
     /// by an add: a subscriber that hears about it twice has been told the tool
     /// went away and came back, which is a lie that costs a re-list.
     ///
-    /// The primitive is captured behind an `Arc` because [`Self::publish`] may
+    /// The primitive is captured behind an `Arc` because `Self::publish` may
     /// run its closure more than once, and a retry must be able to install the
     /// *same* primitive without taking the first attempt's copy of it. The
     /// alternative is a clone per attempt, which on a contended registry means

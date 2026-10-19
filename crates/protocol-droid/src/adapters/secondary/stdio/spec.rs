@@ -260,7 +260,7 @@ impl ChildSpec {
     /// something the spec has no field for — a process group, a uid — and
     /// there is no reason for it to have to rebuild the spec to do it. The
     /// pipes and the kill-on-drop flag are *not* set here; they belong to
-    /// [`child::spawn`](super::child::spawn), which is the only thing in the
+    /// `child::spawn`, which is the only thing in the
     /// crate that may claim to have set them.
     #[must_use]
     pub fn to_command(&self) -> Command {

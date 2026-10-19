@@ -18,6 +18,13 @@ categories = [
     "web-programming::http-server",
     "web-programming::http-client",
 ]
+# docs.rs builds with the crate's DEFAULT features, which are serde + stdio —
+# so the HTTP server and client, the OAuth client and resource server, and the
+# A2A and ACP modules are all absent from the published documentation.
+# `all-features` is what makes the crate's actual API visible, and it is what
+# the `rustdoc` CI job checks so the two cannot disagree.
+[package.metadata.docs.rs]
+all-features = true
 
 # No `[features]` table yet. The feature gates for each transport, the legacy
 # SSE path, and OAuth are introduced by the tasks that implement them (T13-T16),

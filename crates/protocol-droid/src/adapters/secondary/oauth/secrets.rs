@@ -1,6 +1,6 @@
 //! An [`AuthorizationSecrets`] that asks the operating system.
 //!
-//! [`AuthorizationSecrets`](crate::application::oauth::client::AuthorizationSecrets)
+//! [`AuthorizationSecrets`]
 //! is a port with no production implementation in this crate, on purpose: the
 //! right source depends on where the client runs, and a wrong default is a
 //! predictable token rather than a compile error. This is the implementation to
@@ -40,7 +40,7 @@
 //!
 //! # Errors
 //!
-//! [`getrandom`](getrandom::getrandom) is a runtime facility, not a link-time
+//! `getrandom::getrandom` is a runtime facility, not a link-time
 //! constant, and it can fail — the operating system's entropy pool is not
 //! always available, least of all early in boot. Both trait methods return the
 //! failure rather than falling back to something weaker, because the fallback is

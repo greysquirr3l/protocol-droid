@@ -18,8 +18,8 @@
 //! Choosing a revision is not in this module. Reading an offer is a wire
 //! format question; agreeing on a version is a negotiation question, and the
 //! two answer to different inputs — see
-//! [`agree`](crate::domain::negotiation::negotiate_server) for the server and
-//! [`crate::application::bridge::downstream`] for the bridge.
+//! [`agree`](crate::domain::negotiate_server) for the server and
+//! the bridge's downstream handler for the bridge.
 
 use crate::domain::feature::FeatureProfile;
 use crate::domain::ir::JsonObject;
@@ -211,9 +211,9 @@ fn insert_path(root: &mut serde_json::Map<String, serde_json::Value>, path: &[&s
 ///
 /// A capability in the derived set with no row in [`SERVER_CAPABILITY_WIRE`]
 /// is not emitted. Two are in that position and neither is reachable from a
-/// server: the client-side ones, which [`advertised_by_server`] cannot produce
+/// server: the client-side ones, which [`advertised_by_server`](crate::domain::feature::FeatureProfile::advertised_by_server) cannot produce
 /// because their feature rows are `Side::Client`, and
-/// [`Capability::Extensions`], which only `2026-07-28` defines — a revision a
+/// `Capability::Extensions`, which only `2026-07-28` defines — a revision a
 /// caller has already refused before getting here, because that revision has
 /// no `InitializeResult` to put it in.
 #[must_use]

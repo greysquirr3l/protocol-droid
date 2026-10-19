@@ -2,7 +2,7 @@
 //!
 //! # Why this trait exists
 //!
-//! [`FrameSink`] already covers the outbound half, and it lives in
+//! [`FrameSink`](crate::application::session::frame_sink::FrameSink) already covers the outbound half, and it lives in
 //! [`crate::application::session`] because the session engine is what consumes
 //! it. The inbound half has a different consumer — the loop that reads a frame
 //! and routes it — and by the project's rule that a port trait belongs to the
@@ -13,7 +13,7 @@
 //! It is deliberately not a `Transport` trait. A trait that both read and wrote
 //! would force every implementor to answer for both, which is exactly the
 //! "three adapters wearing one name" objection that
-//! [`FrameSink`](crate::application::session::FrameSink) is documented against.
+//! [`FrameSink`](crate::application::session::frame_sink::FrameSink) is documented against.
 //! The stdio server writes to a child it spawned and reads from the same pipe;
 //! the bridge reads from an HTTP body and writes to stdio; a replay source only
 //! reads at all.
@@ -122,7 +122,7 @@ use crate::domain::FramingError;
 /// layer's job and the next layer is the one that knows the protocol.
 ///
 /// Implemented by a transport. Consumed by the loop that routes. One method, for
-/// the same reason [`FrameSink`](crate::application::session::FrameSink) has
+/// the same reason [`FrameSink`](crate::application::session::frame_sink::FrameSink) has
 /// one.
 ///
 /// # Examples

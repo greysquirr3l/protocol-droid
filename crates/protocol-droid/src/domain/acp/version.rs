@@ -7,7 +7,7 @@
 //! is what crosses the dispatcher's API boundary. A `u16`-per-field
 //! representation is decimal-clean, the same shape the wire never
 //! carries (the wire does not pass a version) but the same shape
-//! a comparable type like [`crate::domain::mcp::ProtocolVersion`]
+//! a comparable type like [`crate::domain::protocol_version::ProtocolVersion`]
 //! uses.
 //!
 //! # The `Unknown` variant

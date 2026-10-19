@@ -33,7 +33,7 @@
 //!
 //! # Lowering makes no decisions of its own
 //!
-//! Every codec asks [`lower_tool_result`] and reports what came back. Whether
+//! Every codec asks [`lower_tool_result`](crate::domain::ir::lower::lower_tool_result) and reports what came back. Whether
 //! a value is expressible is the gate's answer and a downgrade is a
 //! `DegradeRule`'s. A codec that formed a second opinion is how two revisions
 //! start disagreeing about what they support.

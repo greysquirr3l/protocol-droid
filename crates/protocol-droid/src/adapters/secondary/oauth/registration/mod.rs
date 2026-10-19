@@ -8,7 +8,7 @@
 //! the server reads, and it establishes no secret at all.
 //!
 //! Both implement
-//! [`ClientRegistrar`](crate::application::oauth::registration::ClientRegistrar).
+//! the registrar port.
 //! Which one a client actually uses is decided by
 //! [`plan_registration`](crate::application::oauth::registration::plan_registration),
 //! in `application/` — not here. An adapter that chose for itself would make

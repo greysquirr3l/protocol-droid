@@ -2,7 +2,7 @@
 //!
 //! Fetches the agent card at
 //! `server + /.well-known/agent-card.json`, parses it as
-//! [`AgentCard`](protocol_droid::domain::a2a::agent_card::AgentCard),
+//! [`AgentCard`],
 //! and reports the name, version, declared skills, and
 //! security schemes. The output is one of two shapes:
 //! the `A2aProbeReport` when the card is reachable, or

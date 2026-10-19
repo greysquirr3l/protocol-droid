@@ -13,9 +13,9 @@
 //! the session header, and it is named in exactly one constant so a revision
 //! that spells it differently is a one-line change rather than a search.
 //!
-//! Three files, one concern each: [`client`] holds the request/response
-//! conversation and the resume state machine, [`frames`] turns bytes into
-//! frames, and [`error`] is the one enum a caller above this layer matches on.
+//! Three files, one concern each: `client` holds the request/response
+//! conversation and the resume state machine, `frames` turns bytes into
+//! frames, and `error` is the one enum a caller above this layer matches on.
 //! The frame *grammar* is not re-implemented here — it is shared with the
 //! server's codec, because a client with its own grammar is a client that
 //! disagrees with the server about where an event ends.

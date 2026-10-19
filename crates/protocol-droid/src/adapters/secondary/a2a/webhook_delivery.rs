@@ -4,7 +4,7 @@
 //! # What this is
 //!
 //! The production implementation of
-//! [`PushNotificationDelivery`](crate::application::a2a::PushNotificationDelivery).
+//! [`PushNotificationDelivery`].
 //! It resolves the URL's host to an IP, runs
 //! [`check_at_delivery`](crate::application::a2a::UrlFilter::check_at_delivery)
 //! against the resolved IP, and POSTs the body. A redirect to a denied

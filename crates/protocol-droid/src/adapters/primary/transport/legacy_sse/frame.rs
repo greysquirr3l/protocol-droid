@@ -74,7 +74,7 @@ impl LegacyFrame {
 impl FramePayload for LegacyFrame {
     /// # Errors
     ///
-    /// [`SseError::Unserialisable`] for a [`Message`] whose value has no JSON
+    /// [`SseError::Unserialisable`] for a [`Message`](crate::domain::a2a::message::Message) whose value has no JSON
     /// form — a non-string map key. A [`Endpoint`](Self::Endpoint) cannot
     /// fail: the URI is already parsed, and `MessageEndpoint` refused every
     /// value that could terminate a line.

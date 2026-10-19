@@ -2,7 +2,7 @@
 //!
 //! Everything here delegates. The point is that a consumer does not have to
 //! know that a [`Dispatcher`] exists, that a [`PeerSession`] needs a
-//! [`FeatureProfile`] resolved before the loop starts, or that
+//! [`FeatureProfile`](crate::domain::feature::FeatureProfile) resolved before the loop starts, or that
 //! [`ServeLoop::new`] takes seven arguments — none of which is a decision a
 //! consumer of this crate should have to make.
 //!
@@ -86,7 +86,7 @@ impl StdioBuilder {
     ///
     /// Needed because the alternative is unreachable rather than merely
     /// inconvenient: a scope-gated tool is invisible to an anonymous session
-    /// ([`RegistryServer::call`] and the listing paths both read
+    /// (`RegistryServer::call` and the listing paths both read
     /// `ctx.peer().auth()`), so a stdio server that registers a `Write`-scoped
     /// tool could never serve it, and no setting existed that could change that.
     /// This method is that setting.
@@ -109,7 +109,6 @@ impl StdioBuilder {
     /// # let _ = trusted;
     /// ```
     ///
-    /// [`RegistryServer::call`]: crate::application::server::builder::RegistryServer::call
     #[must_use]
     pub fn auth(mut self, auth: AuthContext) -> Self {
         self.auth = auth;

@@ -2,7 +2,7 @@
 //!
 //! # What this is
 //!
-//! The production implementation of [`UrlFilter`](crate::application::a2a::UrlFilter).
+//! The production implementation of [`UrlFilter`].
 //! It refuses every URL the OWASP API Security Top 10 (2023) API7
 //! guidance names as a known SSRF primitive, in the order the spec names
 //! them. A private-network deployment that needs to deliver to

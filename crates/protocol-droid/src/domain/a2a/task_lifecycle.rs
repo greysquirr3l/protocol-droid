@@ -18,7 +18,7 @@
 //!
 //! Both methods return a [`Task`] on success —
 //! `CancelTask` returns the task in
-//! [`Cancelled`](TaskState::Cancelled) state
+//! `Cancelled` state
 //! (or the state it was in, if the task had
 //! already completed), and `GetTask` returns
 //! the task in whatever state it is currently
@@ -148,7 +148,7 @@ impl CancelTaskRequest {
 ///
 /// The task is whatever state it was in at the
 /// moment of cancellation — typically
-/// [`Cancelled`](super::task::TaskState::Cancelled),
+/// `Cancelled`,
 /// but possibly a terminal state if the task
 /// had already completed. The handler is
 /// responsible for setting the right state.

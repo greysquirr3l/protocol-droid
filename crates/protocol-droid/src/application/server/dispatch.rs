@@ -91,7 +91,7 @@ impl Dispatcher {
     }
 
     /// The server's state map, for a transport handler that needs to
-    /// hand it to a [`RequestContext`](crate::application::server::context::RequestContext).
+    /// hand it to a [`RequestContext`].
     ///
     /// Cloning the `Arc` is one bump; the contents of the map are not
     /// touched on the read path.

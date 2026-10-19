@@ -42,7 +42,7 @@ use thiserror::Error;
 /// because there is nothing here to keep — the whole value is a counter, so
 /// every digit of it is either the value itself or a leading zero.
 ///
-/// [`McpSessionId`](crate::domain::mcp::session_id::McpSessionId) derives its
+/// [`McpSessionId`](crate::domain::mcp::McpSessionId) derives its
 /// `Debug` from this one, so it inherits the redaction rather than needing an
 /// impl of its own.
 ///

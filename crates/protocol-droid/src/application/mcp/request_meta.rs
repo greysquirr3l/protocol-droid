@@ -22,7 +22,7 @@
 //!
 //! # Why the parser lives beside `initialize`
 //!
-//! [`initialize::read_offer`] reads the same two facts off a different member
+//! `initialize::read_offer` reads the same two facts off a different member
 //! of a different message, and both go through the same
 //! [`client_capabilities`] table. A second copy of that table would be a
 //! second definition of what a client is allowed to say.

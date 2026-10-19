@@ -7,7 +7,7 @@
 //! a global clock, a test could not set up a request that started 90 seconds
 //! ago without sleeping for 90 seconds, and a deterministic domain would stop
 //! being one. Everything else follows from this: the clock is injected, the
-//! reading is a [`Duration`] from an origin the adapter chose, and no session
+//! reading is a [`std::time::Duration`] from an origin the adapter chose, and no session
 //! code calls a clock function at all.
 //!
 //! # Why the origin is the adapter's business

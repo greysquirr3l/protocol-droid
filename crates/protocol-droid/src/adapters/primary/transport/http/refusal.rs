@@ -301,7 +301,7 @@ impl Refusal {
     ///   client switches on.
     /// - `error.message` is the human text, which is this type's `Display` —
     ///   the same text the log line carries, so the two can never disagree.
-    /// - `error.data.error` is the stable slug from [`slug`], the member a
+    /// - `error.data.error` is the stable slug from `slug`, the member a
     ///   client branches on when it wants a name rather than a number, and
     ///   where the resume watermarks live.
     ///
@@ -490,7 +490,7 @@ mod tests {
     /// Every variant the adapter can refuse, paired with the status it is
     /// answered with.
     ///
-    /// Written out rather than derived, for the reason [`slug`] is: a new
+    /// Written out rather than derived, for the reason `slug` is: a new
     /// variant that quietly inherited a neighbouring code would be a
     /// client-visible regression, and a table makes that a compile error here.
     /// Every case is iterated, never indexed, because the position in the table

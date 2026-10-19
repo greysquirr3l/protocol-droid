@@ -217,7 +217,7 @@ impl IrNotification {
     ///
     /// Never: the method is supplied by the caller and a non-notification
     /// method is a caller mistake that surfaces as a test failure, not a
-    /// production panic. Use [`Self::try_new`] to get a `Result` instead.
+    /// production panic. Use `Self::try_new` to get a `Result` instead.
     #[must_use]
     pub fn new(method: MethodName) -> Self {
         debug_assert!(

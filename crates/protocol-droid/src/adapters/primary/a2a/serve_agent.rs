@@ -4,9 +4,9 @@
 //! well-known card, the JSON-RPC endpoint, and the
 //! streaming SSE endpoint on one path prefix calls
 //! [`serve_a2a_agent`]. The function is a façade over
-//! [`serve_well_known`](super::well_known_serve::serve_well_known),
-//! [`serve_jsonrpc`](super::jsonrpc_serve::serve_jsonrpc),
-//! and [`serve_streaming`](super::streaming_serve::serve_streaming);
+//! [`serve_well_known`],
+//! [`serve_jsonrpc`],
+//! and [`serve_streaming`];
 //! the three layers are still public for a consumer
 //! who wants to compose them with extra routes or
 //! different paths.

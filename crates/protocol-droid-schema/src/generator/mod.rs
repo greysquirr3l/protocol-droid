@@ -3,11 +3,11 @@
 //! Split into two modules because the two halves fail differently and cost
 //! differently:
 //!
-//! - [`schema_model`] parses `schema.json` into a typed model and rejects any
+//! - [`schema_model`](crate::generator::schema_model) parses `schema.json` into a typed model and rejects any
 //!   keyword it does not understand. It is the part that must be *complete* —
 //!   a keyword it silently drops becomes a wire type that quietly disagrees
 //!   with the spec.
-//! - [`emit`] turns that model into Rust source. It is a pure function of the
+//! - [`emit`](crate::generator::emit) turns that model into Rust source. It is a pure function of the
 //!   model, which is what makes the generated output testable without touching
 //!   the filesystem.
 //!

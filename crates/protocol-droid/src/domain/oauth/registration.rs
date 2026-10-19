@@ -78,7 +78,7 @@ impl ClientId {
     /// Check that a metadata document vouches for this `client_id`.
     ///
     /// The draft requires the document's `client_id` property to "match the URL
-    /// of the document using simple string comparison as defined in [RFC3986]
+    /// of the document using simple string comparison as defined in RFC 3986
     /// Section 6.2.1" — the same discipline
     /// [`check_response_issuer`](crate::domain::oauth::check_response_issuer)
     /// applies to RFC 9207's `iss`, and for the same reason. Normalising here
@@ -313,7 +313,7 @@ pub enum RegistrationDecision {
 ///
 /// Takes the revision's model rather than a bare boolean so the caller cannot
 /// forget which revision it is negotiating, and so the decision is testable
-/// against [`authorization_model`] rather than against a hand-written list.
+/// against `authorization_model` rather than against a hand-written list.
 #[must_use]
 pub fn decide_registration(
     model: &AuthorizationModel,

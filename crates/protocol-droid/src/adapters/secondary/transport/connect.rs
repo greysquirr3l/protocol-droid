@@ -15,7 +15,7 @@
 //! If the peer answers `4xx`, the probe was never processed — it was a request
 //! to a path that does not take requests — and the legacy client that comes
 //! back has not been sent anything at all. So that path runs the full
-//! [`handshake`] over the connected stream.
+//! the handshake over the connected stream.
 //!
 //! Both paths end in the same place. What differs between them is not the
 //! negotiation but whether the request already happened.

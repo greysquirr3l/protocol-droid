@@ -247,7 +247,7 @@ impl<D: LegacyDispatcher> LegacyRouter<D> {
     /// when the router is assembled, and a path that does not match produces a
     /// router serving nothing — a loud failure. The *message* path, the one
     /// that reaches a client as an instruction, is checked by
-    /// [`LegacyState::message_endpoint`] where the value is built, because a
+    /// `LegacyState::message_endpoint` where the value is built, because a
     /// message path that does not match produces a client posting into the
     /// void, which is not loud at all.
     #[must_use]

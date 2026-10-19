@@ -361,7 +361,7 @@ pub struct Forwarded {
 /// `downstream` to `upstream`". It never did: [`forward`](Self::forward) takes
 /// the envelope as an argument and returns the answer, which is what a call
 /// from a loop that already reads the client wants. The peer was reachable only
-/// through [`client`](Self::client) — which nothing called — and `close`, so
+/// through `client` — which nothing called — and `close`, so
 /// every caller passed a second handle on the client's connection that was
 /// never used to talk to the client and closed at the end on a guess.
 ///
@@ -418,7 +418,7 @@ impl<U: BridgePeer, C: ToolResultCodec> Bridge<U, C> {
     /// back, and only if the client's revision cannot read what the server
     /// said. Every other reply, and every reply that needs no translation, comes
     /// back as the upstream wrote it — see
-    /// [`content`](crate::application::bridge::content) for why rebuilding a
+    /// `content` for why rebuilding a
     /// reply that was not asking to be rebuilt is a bug.
     ///
     /// # Errors

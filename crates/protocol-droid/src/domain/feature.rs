@@ -27,7 +27,7 @@
 //!
 //! The doc comment on each variant names the revision and changelog entry that
 //! introduced or removed it. A row without a citation is a failing task, and
-//! [`tests::every_row_is_cited_and_ordered`] enforces the ordering half of that
+//! `every_row_is_cited_and_ordered` enforces the ordering half of that
 //! mechanically: a removal must be attributed to a revision strictly after the
 //! one that added it.
 //!
@@ -298,7 +298,7 @@ impl FeatureSpec {
     /// transport.
     ///
     /// An unknown revision defines nothing, matching
-    /// [`transport_allowed`](crate::domain::transport_allowed): there are no
+    /// [`transport_allowed`]: there are no
     /// wire types to lower to.
     #[must_use]
     pub fn defined_in(&self, version: ProtocolVersion) -> bool {
@@ -853,7 +853,7 @@ impl FeatureProfile {
     ///
     /// This is the answer to "what does this server advertise", read back out
     /// of the same profile every feature gate consults. It is a fold over
-    /// [`FEATURES`] — the same table [`resolve`](crate::domain::resolve) is a
+    /// [`FEATURES`] — the same table [`resolve`] is a
     /// fold over — taking the `server_cap` of every server-side row the profile
     /// allows.
     ///

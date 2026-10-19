@@ -36,10 +36,10 @@
 //! Two independent things make an unconfigured deployment fail-secure rather
 //! than fail-open, and they are worth separating because they fail differently:
 //!
-//! - **Structure.** Every stateful path resolves an [`AuthContext`] before it
+//! - **Structure.** Every stateful path resolves an [`AuthContext`](crate::domain::registry::auth::AuthContext) before it
 //!   looks at a session, a body, or a stream. There is no route that skips it,
 //!   because a session is reachable only through the context it was handed.
-//! - **Policy.** [`AuthContext::anonymous`] holds no scopes, and
+//! - **Policy.** [`AuthContext::anonymous`](crate::domain::registry::auth::AuthContext::anonymous) holds no scopes, and
 //!   [`AuthPolicy::refuse`] compares the caller's scopes against
 //!   [`ServerConfig::required_scopes`] *before* anything else happens. Name a
 //!   scope and every anonymous caller is refused `401`; a caller with a
@@ -101,7 +101,7 @@ mod stream;
 /// One name, shared by the two places that write it — the refusal path and the
 /// router's stamping of a handler's answer — so a client cannot be told one
 /// thing about how this header is spelled and another about how it is used.
-/// [`text/event-stream`](sse::KEEP_ALIVE_FRAME) is the other shape, and the
+/// `text/event-stream` is the other shape, and the
 /// two are what `HttpReply` tells apart on the way back.
 pub const JSON_MEDIA_TYPE: &str = "application/json";
 

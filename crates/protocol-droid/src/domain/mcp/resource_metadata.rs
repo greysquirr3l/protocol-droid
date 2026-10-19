@@ -15,7 +15,7 @@
 //!
 //! `domain/`, because the canonicalisation rules are the security-relevant
 //! part and an adapter should not get to choose them. Which *revisions* require
-//! any of this is [`authorization_model`](super::authorization::authorization_model).
+//! any of this is `authorization_model`.
 
 use std::sync::Arc;
 
@@ -152,7 +152,7 @@ impl ResourceUri {
     /// The join is done here rather than by the caller because the two halves
     /// each arrive from somewhere that gets slash handling wrong: a config file
     /// writes a trailing slash on the origin, and the mount point is an
-    /// [`Endpoint`] that already requires a leading one.
+    /// [`Endpoint`](crate::adapters::primary::transport::http::Endpoint) that already requires a leading one.
     ///
     /// # Errors
     ///

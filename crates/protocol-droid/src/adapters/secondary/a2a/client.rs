@@ -1,11 +1,11 @@
 //! A typed A2A client over HTTP + JSON-RPC + SSE.
 //!
 //! Drives an A2A peer end-to-end: discovers the
-//! [`AgentCard`](crate::domain::a2a::agent_card::AgentCard) at
+//! [`AgentCard`] at
 //! `/.well-known/agent-card.json`, sends request/response
 //! JSON-RPC envelopes to the JSON-RPC method table, and
 //! reads streaming SSE responses into typed
-//! [`StreamingEvent`](crate::domain::a2a::streaming_events::StreamingEvent)
+//! [`StreamingEvent`]
 //! values.
 //!
 //! # Why this exists
@@ -43,29 +43,29 @@
 //!    calls it once; a consumer who wants it for
 //!    every request calls it for every request.
 //! 3. The four request/response methods
-//!    ([`send_message`](Self::send_message),
-//!    [`get_task`](Self::get_task),
-//!    [`list_tasks`](Self::list_tasks),
-//!    [`cancel_task`](Self::cancel_task)) POST a
+//!    ([`send_message`](A2aClient::send_message),
+//!    [`get_task`](A2aClient::get_task),
+//!    [`list_tasks`](A2aClient::list_tasks),
+//!    [`cancel_task`](A2aClient::cancel_task)) POST a
 //!    JSON-RPC envelope and parse the typed
 //!    response. Each method takes the library's
 //!    request type and returns the library's
 //!    response type, so a consumer is matching on
 //!    real A2A types, not on `serde_json::Value`.
 //! 4. The two streaming methods
-//!    ([`send_streaming_message`](Self::send_streaming_message),
-//!    [`subscribe_to_task`](Self::subscribe_to_task))
+//!    ([`send_streaming_message`](A2aClient::send_streaming_message),
+//!    [`subscribe_to_task`](A2aClient::subscribe_to_task))
 //!    POST a JSON-RPC envelope with
 //!    `accept: text/event-stream` and collect the
 //!    SSE data lines into a `Vec<StreamingEvent>`.
 //! 5. The four push-notification-config methods
-//!    ([`create_push_notification_config`](Self::create_push_notification_config),
-//!    [`get_push_notification_config`](Self::get_push_notification_config),
-//!    [`list_push_notification_configs`](Self::list_push_notification_configs),
-//!    [`delete_push_notification_config`](Self::delete_push_notification_config))
+//!    ([`create_push_notification_config`](A2aClient::create_push_notification_config),
+//!    [`get_push_notification_config`](A2aClient::get_push_notification_config),
+//!    [`list_push_notification_configs`](A2aClient::list_push_notification_configs),
+//!    [`delete_push_notification_config`](A2aClient::delete_push_notification_config))
 //!    round-trip a `TaskPushNotificationConfig`
 //!    through the same JSON-RPC envelope.
-//! 6. [`get_extended_agent_card`](Self::get_extended_agent_card)
+//! 6. [`get_extended_agent_card`](A2aClient::get_extended_agent_card)
 //!    fetches the authenticated extended agent
 //!    card. The A2A spec splits the card into a
 //!    public read (the well-known path, no
@@ -190,7 +190,7 @@ pub enum A2aClientError {
 /// conventional paths. A consumer whose peer uses a
 /// non-conventional layout — e.g. the card at
 /// `/card` and the JSON-RPC at `/rpc` — uses
-/// [`A2aClient::with_paths`] to point the client at
+/// [`A2aClient::with_paths`](A2aClient::with_paths) to point the client at
 /// non-default paths.
 ///
 #[derive(Debug)]
@@ -273,8 +273,8 @@ impl A2aClient {
     /// is sent to, relative to `peer`
     /// (e.g. `/custom/rpc`). `streaming_path` is
     /// the URI the streaming methods
-    /// ([`send_streaming_message`](Self::send_streaming_message)
-    /// and [`subscribe_to_task`](Self::subscribe_to_task))
+    /// ([`send_streaming_message`](A2aClient::send_streaming_message)
+    /// and [`subscribe_to_task`](A2aClient::subscribe_to_task))
     /// POST to, relative to `peer`.
     ///
     /// # Errors

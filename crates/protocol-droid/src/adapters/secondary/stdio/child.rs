@@ -12,7 +12,7 @@
 //! orphan holding a pipe, holding whatever the user asked it to do, for as
 //! long as the machine stays up.
 //!
-//! So [`spawn`] sets `kill_on_drop(true)` before the `Command` is ever
+//! So `spawn` sets `kill_on_drop(true)` before the `Command` is ever
 //! executed, and it is the only function in the crate that spawns a child. One
 //! place to look, one flag to audit.
 //!
@@ -28,8 +28,8 @@
 //! A server logs to stderr because stdout is the conversation, and a client
 //! that discarded that stream would deadlock: a child writing more than a pipe
 //! buffer's worth of log output blocks on a full pipe and stops answering. So
-//! [`forward_stderr`] drains it continuously and hands it to
-//! [`Diagnostics`](crate::adapters::primary::stdio::Diagnostics), one line at
+//! `forward_stderr` drains it continuously and hands it to
+//! [`Diagnostics`], one line at
 //! a time.
 //!
 //! One line at a time is the part worth arguing. A read from a pipe returns

@@ -19,16 +19,16 @@
 //! # Why three files
 //!
 //! The proto has fifteen fields. Splitting the value objects, the
-//! error type, and the builder across [`types`], [`error`], and
-//! [`builder`] keeps each file focused on a single concern:
+//! error type, and the builder across `types`, `error`, and
+//! `builder` keeps each file focused on a single concern:
 //!
-//! - [`types`] holds the wire-shape value objects and the
+//! - `types` holds the wire-shape value objects and the
 //!   `LazyLock` constants for the three spec-named protocol
 //!   bindings.
-//! - [`error`] holds the typed `AgentCardError` enum — a single
+//! - `error` holds the typed `AgentCardError` enum — a single
 //!   enum in its own file so a `match` is greppable and a
 //!   new variant does not touch the value-object file.
-//! - [`builder`] holds `AgentCardBuilder`, the only way to get an
+//! - `builder` holds `AgentCardBuilder`, the only way to get an
 //!   `AgentCard` once the optional fields land.
 //!
 //! # Required fields, by spec

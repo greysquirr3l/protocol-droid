@@ -3,7 +3,7 @@
 //! ## What this is
 //!
 //! A thin adapter over [`@modelcontextprotocol/conformance`] at the version
-//! pinned in [`conformance/PINNED_VERSION`]. The suite is a TypeScript
+//! pinned in `conformance/PINNED_VERSION`. The suite is a TypeScript
 //! package distributed through npm, and the wrapper exists for two reasons:
 //!
 //! 1. The pinned version is one file in this crate, not a `npx @latest` that

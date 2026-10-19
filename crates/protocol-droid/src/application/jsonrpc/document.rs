@@ -16,7 +16,7 @@
 //! # The id is re-escaped, not debug-printed
 //!
 //! [`RequestId::to_json`] is the wrong one-liner here for the same reason
-//! [`reply`] says so: `Debug` for a string is `escape_debug`, which writes DEL
+//! [`reply`](crate::domain::jsonrpc::reply) says so: `Debug` for a string is `escape_debug`, which writes DEL
 //! as `\u{7f}` — Rust syntax, and not a legal JSON escape. So the id is handed
 //! to `serde_json` as a [`Value`], which escapes it the way
 //! [`WireId::to_json`](crate::domain::jsonrpc::WireId::to_json) does, for the
@@ -32,7 +32,7 @@
 //! automatically that request's answer — and a client that assumed it was
 //! would hand its caller somebody else's result.
 //!
-//! A frame that is not a reply at all is [`RequestError::NotAnObject`] or
+//! A frame that is not a reply at all is `RequestError::NotAnObject` or
 //! [`RequestError::MissingResult`], not a silent skip. On stdio, stdout is
 //! the protocol; a peer that puts anything else there has broken it, and the
 //! useful thing to do with that is say so.

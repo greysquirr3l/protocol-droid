@@ -7,11 +7,11 @@
 //!   agent's well-known JSON-RPC method table and returns
 //!   raw envelopes back. The bridge treats the agent as a
 //!   wire-level peer, not a typed `A2aClient`.
-//! - [`A2aMcpCodec`](protocol_droid::application::bridge::A2aMcpCodec)
+//! - [`A2aMcpCodec`]
 //!   lifts `tools/call` envelopes to `SendMessage` and lowers
 //!   the agent's `Message` / `Task` reply back to a
 //!   `CallToolResult`.
-//! - [`CrossBridgePeer`](protocol_droid::application::bridge::CrossBridgePeer)
+//! - [`CrossBridgePeer`]
 //!   is the `BridgePeer` that runs every envelope through the
 //!   codec, with the loop untouched underneath.
 //!

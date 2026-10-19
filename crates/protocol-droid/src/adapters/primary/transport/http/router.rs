@@ -29,7 +29,7 @@
 //!
 //! **A refusal is never a `200`.** [`Refusal::status`] and [`Refusal::body`]
 //! are the only mapping in the adapter, and every failure path in every
-//! handler ends in [`refuse`]. There is no error arm a handler can turn into a
+//! handler ends in `refuse`. There is no error arm a handler can turn into a
 //! successful-looking response.
 //!
 //! **Every response carries the security headers, including the ones no handler
@@ -50,7 +50,7 @@
 //! caller that has proved nothing.
 //!
 //! The same reasoning fixes where
-//! [`RequestHandler::establishes_session`] is asked: only when the header is
+//! `RequestHandler::establishes_session` is asked: only when the header is
 //! *absent*, and therefore before the store is consulted at all. A handler that
 //! answered from session state would reintroduce the oracle one layer in.
 //!
@@ -68,7 +68,7 @@
 //! - **The `405` the specification allows for `GET`.** [`Refusal`] carries it
 //!   for a server with no server-initiated stream. This server always has a
 //!   tail to serve, so the arm is never raised here.
-//! - **A `DELETE` tombstone.** See [`terminate_session`].
+//! - **A `DELETE` tombstone.** See `terminate_session`.
 
 use std::sync::Arc;
 
@@ -247,7 +247,7 @@ pub enum SessionHandle<S> {
     ///
     /// The **2026-07-28** lifecycle, and the reason this enum has three arms
     /// rather than two. A stateless request never becomes a session, so
-    /// modelling it as [`Establishing`] would have the router hand the
+    /// modelling it as `Establishing` would have the router hand the
     /// protocol layer an id to issue, and modelling it as
     /// [`SessionHandle::Live`] would mean inventing a session that does not
     /// exist. Either way the `_meta` version the request carries — the only
@@ -435,8 +435,8 @@ pub trait RequestHandler<S>: Send + Sync + 'static {
 /// ([`UnprotectedAuthenticator`](Self::UnprotectedAuthenticator)). The
 /// router was previously typed `Result<_, InvalidHeaderValue>` and the
 /// new variant widens it; callers that used `?` continue to work because
-/// the existing [`ServeError::Routes`] wraps `InvalidHeaderValue` and
-/// [`BridgeServeError::Router`] does the same.
+/// the existing `ServeError::Routes` wraps `InvalidHeaderValue` and
+/// `BridgeServeError::Router` does the same.
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
     /// A configured security header is not a legal HTTP header value.

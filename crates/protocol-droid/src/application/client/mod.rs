@@ -413,7 +413,7 @@ impl Client {
     /// Binds a transport to a session that has already negotiated.
     ///
     /// The one to reach for. [`connect`](Self::connect) takes the four inputs
-    /// [`resolve`] needs and re-derives a profile from them — but a
+    /// [`resolve`](crate::domain::feature::resolve) needs and re-derives a profile from them — but a
     /// [`NegotiatedSession`] has _already_ resolved one, from those same four
     /// fields, so a caller going through `connect` rebuilds a struct literal
     /// and re-runs a pure function to arrive back where it started.

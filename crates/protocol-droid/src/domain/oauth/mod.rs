@@ -1,12 +1,12 @@
 //! OAuth machinery that is not MCP-specific.
 //!
 //! The version gating — which revision requires what — lives in
-//! [`domain::mcp::authorization`](crate::domain::mcp::authorization), because
+//! `domain::mcp::authorization`, because
 //! that is MCP's half. What follows from the gate is OAuth's own vocabulary,
 //! and it is protocol-neutral: a PKCE verifier is described by RFC 7636 and
 //! knows nothing about a tool call.
 //!
-//! Gated on `oauth` even though [`domain::mcp::authorization`] is not. The
+//! Gated on `oauth` even though `domain::mcp::authorization` is not. The
 //! authorization *model* is pure data and costs a lean build nothing, so
 //! gating it would take away the thing every consumer needs to read a
 //! revision's requirements. This module pulls a SHA-256 implementation and a

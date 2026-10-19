@@ -32,8 +32,8 @@
 //!   [`serve_jsonrpc`](super::jsonrpc_serve::serve_jsonrpc)).
 //! - The JSON-RPC envelope decode (jsonrpc, id,
 //!   method, params).
-//! - The method name → [`A2aMethod`] lookup via
-//!   [`A2aMethodTable`](crate::adapters::secondary::a2a::A2aMethodTable).
+//! - The method name → [`A2aMethod`](crate::adapters::secondary::a2a::A2aMethod) lookup via
+//!   [`A2aMethodTable`].
 //! - The SSE response shape: each event is
 //!   `data: <json-rpc-response>\n\n`.
 //!

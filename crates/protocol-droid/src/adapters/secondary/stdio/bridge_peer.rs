@@ -12,7 +12,7 @@
 //! So the wrapper owns that decision, and it owns it for the same reason the
 //! `2024-11-05` peer does: the crate promises that an unmodelled directive
 //! reaches the other side byte-for-byte, and a notification that landed mid-call
-//! is real traffic. It goes to [`take_pending`](Self::take_pending).
+//! is real traffic. It goes to `take_pending`.
 //!
 //! ## Why the client sits behind a lock
 //!

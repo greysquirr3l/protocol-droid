@@ -190,7 +190,7 @@ impl Stream {
 ///
 /// The stream is open from the moment this exists and stays open for its life:
 /// this transport has no session header and no reconnection story, so closing
-/// the `GET` is the only way to end the conversation. That is why [`send`] takes
+/// the `GET` is the only way to end the conversation. That is why the send path takes
 /// `&self` but [`next`](Self::next) takes `&mut self` — a `POST` is a write on a
 /// different request and does not consume the reader.
 #[derive(Debug)]
@@ -524,7 +524,8 @@ impl ClientTransport for LegacySseClient {
 
     /// POSTs a notification frame and returns without reading.
     ///
-    /// No read, and that is the whole difference from [`send`]. A notification
+    /// No read, and that is the whole difference from
+    /// [`FrameSink::send`](crate::application::session::frame_sink::FrameSink::send). A notification
     /// has no id, so there is nothing to match a frame against, and reading one
     /// anyway would consume a frame that belongs to whatever asked next — which
     /// on this transport is every reply that arrives in between.

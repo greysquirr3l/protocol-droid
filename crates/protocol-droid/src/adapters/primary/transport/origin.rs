@@ -12,7 +12,7 @@
 //!
 //! Cited: <https://modelcontextprotocol.io/specification/2024-11-05/basic/transports>
 //!
-//! This module is (1). (2) is a bind address and (3) is [`AuthPolicy`] in the
+//! This module is (1). (2) is a bind address and (3) is [`AuthPolicy`](crate::adapters::primary::transport::http::AuthPolicy) in the
 //! sibling `auth` module. Of the three, (1) is the only `MUST`, and it is the
 //! one that is easiest to implement wrongly in a way that looks correct.
 //!
@@ -60,7 +60,7 @@
 //! That `Origin` is genuinely not the server's own, it is genuinely
 //! cross-origin, and it is legitimate. A policy that refused it would make
 //! every front-end developer conclude the `MUST` was unusable and disable it —
-//! so [`OriginPolicy::allow`] takes an explicit list, and refusing everything
+//! so `OriginPolicy::allow` takes an explicit list, and refusing everything
 //! by default is the *safe* direction to fail in when the operator has not
 //! configured it.
 //!

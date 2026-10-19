@@ -133,7 +133,7 @@ impl fmt::Display for TransportKind {
 /// transport the peer had deleted.
 ///
 /// A peer that offers only unknown revisions is not left hanging, either:
-/// [`SupportedVersions::best_match`] picks the newest revision both sides
+/// [`SupportedVersions::best_match`](crate::domain::SupportedVersions::best_match) picks the newest revision both sides
 /// actually share, and JSON-RPC has an error code for there being none.
 ///
 /// # Examples

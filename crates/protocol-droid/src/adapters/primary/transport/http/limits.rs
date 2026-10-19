@@ -53,7 +53,7 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    /// A limiter applying `policy`, holding [`DEFAULT_CAPACITY`] subjects.
+    /// A limiter applying `policy`, holding `DEFAULT_CAPACITY` subjects.
     #[must_use]
     pub fn new(policy: RateLimit) -> Self {
         Self::with_capacity(policy, DEFAULT_CAPACITY)

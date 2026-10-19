@@ -34,7 +34,7 @@ const MAX_BLOCK: usize = 8 * 1024;
 /// a different number.
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
-    /// The peer sent more than [`MAX_BLOCK`] bytes without a block terminator.
+    /// The peer sent more than `MAX_BLOCK` bytes without a block terminator.
     #[error("the peer sent {limit} bytes with no block terminator")]
     BlockTooLong {
         /// The bound that was exceeded.
@@ -88,7 +88,7 @@ impl FrameReader {
     /// # Errors
     ///
     /// [`FrameError::BlockTooLong`] if the buffered block grows past
-    /// [`MAX_BLOCK`] before a terminator arrives, or [`FrameError::Grammar`] if
+    /// `MAX_BLOCK` before a terminator arrives, or [`FrameError::Grammar`] if
     /// a completed block does not parse.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, FrameError> {
         self.buffer.extend_from_slice(chunk);
