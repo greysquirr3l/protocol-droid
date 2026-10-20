@@ -9,6 +9,41 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-19
+
+Documentation only. No library behaviour changes, which is why this is a patch.
+
+### Fixed
+
+- **The README's install instructions named 0.2.0.** Both dependency
+  snippets — the default build and the lean one — said `protocol-droid = "0.2"`
+  while 0.4.0 was the current release, so a reader who followed them installed
+  a crate that predates the RFC 9728 document and the OAuth resource server.
+- **The security guide's resource-server snippet was never compiled.** It was
+  hand-written markdown that no CI job built. Writing it surfaced four import
+  paths that do not exist; committing it as prose would have shipped all four.
+
+### Added
+
+- **`http` is named as a requirement in the README.** The default build is
+  `serde` + `stdio`, so reaching for `ServerConfig` fails with
+  ``cannot find `transport` in `primary` ``. The README now says so, with the
+  error text quoted from a build against the published crate rather than
+  recalled.
+- **`examples/oauth_resource_server.rs`.** The resource-server assembly is now a
+  compiled example, built by the existing `--all-targets --all-features` matrix,
+  and the security guide is spliced from it.
+- **`tests/published_docs_consistency.rs`.** Three checks on the documents a
+  reader actually receives: every README install snippet names the current
+  minor, every manifest feature has a row in the README's feature table
+  (`serde` did not), and the site's security snippet still matches the example
+  it was copied from. Each was verified to fail when the underlying drift is
+  reintroduced.
+
+`docs/guide/` is untouched and untested here: it is an mdBook tree that no
+workflow builds, no deploy script publishes, and nothing links to, and it has
+already drifted from the site by dozens of lines.
+
 ## [0.4.0] — 2026-10-19
 
 A server can now require OAuth from public API alone, and publish the document

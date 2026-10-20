@@ -42,49 +42,83 @@ authenticator without a policy as the silent fail-open it is, and
 `into_router` refuses to build the route table rather than serve the
 endpoint unprotected:
 
-```rust
-use std::sync::Arc;
+<!--
+Mirrored from `crates/protocol-droid/examples/oauth_resource_server.rs`, which
+is compiled by CI on every commit. Starlight does not expand mdbook's
+`{{#include}}`, so this copy is duplicated — if the snippet and the example ever
+disagree, the example is the one that is correct.
+-->
 
+```rust
 use jsonwebtoken::Algorithm;
 use protocol_droid::adapters::primary::transport::http::{
     AuthPolicy, HttpBuilder, OAuthAuthenticator, ServerConfig, SystemClock,
 };
 use protocol_droid::adapters::secondary::oauth::jwt::JwtSource;
 use protocol_droid::application::oauth::NoScopes;
+use protocol_droid::application::server::Server;
+use protocol_droid::domain::ProtocolVersion;
 use protocol_droid::domain::mcp::{ResourceMetadata, ResourceUri};
 use protocol_droid::domain::registry::auth::{Scope, ScopeSet};
-use protocol_droid::domain::ProtocolVersion;
 
-let source = JwtSource::new(
-    Arc::from("https://login.example.com/.well-known/jwks.json"),
-    vec![Algorithm::RS256],
-);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Where tokens presented to this server are verified against. A real
+    // deployment points this at its own JWKS; `IntrospectionSource` is the
+    // opaque-token alternative.
+    let source = JwtSource::new(
+        Arc::from("https://login.example.com/.well-known/jwks.json"),
+        vec![Algorithm::RS256],
+    );
 
-let metadata = ResourceMetadata::new(ResourceUri::new("https://mcp.example/mcp")?)
-    .with_authorization_server("https://login.example.com")
-    .with_scope("mcp:read");
+    // RFC 9728's protected-resource metadata: which resource this is, and who
+    // may issue tokens for it. One value serves both purposes below, so the
+    // document that is served and the challenge that points at it cannot name
+    // different URLs.
+    let metadata = ResourceMetadata::new(ResourceUri::new("https://mcp.example/mcp")?)
+        .with_authorization_server("https://login.example.com")
+        .with_scope("mcp:read");
 
-// What validates a token presented *to* this server.
-let authenticator = Arc::new(OAuthAuthenticator::new(
-    source,
-    metadata.clone(),
-    ProtocolVersion::V2025_06_18,
-    NoScopes,
-    SystemClock,
-));
+    // Read before the metadata moves into the config. This is the exact string
+    // a `401` carries in `WWW-Authenticate`, verbatim.
+    match metadata.challenge() {
+        Ok(challenge) => println!("a 401 would carry: {challenge}"),
+        Err(error) => println!("no challenge: {error}"),
+    }
 
-// What says the endpoint needs one. Without this, the server does not start.
-let policy = AuthPolicy::Require(ScopeSet::empty().with(Scope::Read));
+    // Half one: what validates a token presented *to* this server. The audience
+    // is bound to `metadata`, which is what stops a token minted for a
+    // different resource being replayed here.
+    let authenticator = Arc::new(OAuthAuthenticator::new(
+        source,
+        metadata.clone(),
+        ProtocolVersion::V2025_06_18,
+        NoScopes,
+        SystemClock,
+    ));
 
-// The document that tells a client where to get a token.
-let config = ServerConfig::new()?.with_resource_metadata(metadata);
+    // Half two: what says the endpoint needs one at all. These are separate
+    // because "nothing is configured yet" and "this endpoint is deliberately
+    // public" are different states, and conflating them is how a default
+    // becomes a decision nobody made.
+    //
+    // Wiring an authenticator without a policy is the silent fail-open it looks
+    // like, so `into_router` refuses to build the route table instead of
+    // serving the endpoint unprotected.
+    let policy = AuthPolicy::Require(ScopeSet::empty().with(Scope::Read));
 
-let report = HttpBuilder::new(server)
-    .config(config)
-    .with_authenticator(authenticator)
-    .with_policy(policy)
-    .serve()
-    .await?;
+    let config = ServerConfig::new()?.with_resource_metadata(metadata);
+
+    // `Server` is what a `#[server]` declaration produces through
+    // `.into_server()`; building one directly here keeps the example runnable
+    // without a full tool declaration.
+    let server = Server::builder("mcp").build();
+
+    // `.serve().await` binds the address and starts listening. This example
+    // stops short of that so it exits and prints instead of hanging.
+    let _builder = HttpBuilder::new(server)
+        .config(config)
+        .with_authenticator(authenticator)
+        .with_policy(policy);
 ```
 
 Two details in that snippet are easy to trip over. `metadata` is cloned
