@@ -218,7 +218,7 @@ pub enum Refusal {
 
     /// The token parsed, but its signature could not be established as genuine.
     ///
-    /// Distinct from [`Malformed`] and from every rule in `verify`, and both
+    /// Distinct from `Malformed` and from every rule in `verify`, and both
     /// distinctions are load-bearing. A malformed token is the caller's bug and
     /// can be reported as one; an unverifiable one is either a token this
     /// server should not accept or a key it could not fetch, and a log that
@@ -284,7 +284,7 @@ pub struct TokenPolicy<'a> {
     resource: &'a ResourceUri,
 
     /// The revision's authorization model, from
-    /// [`authorization_model`](crate::domain::authorization_model).
+    /// `authorization_model`.
     model: AuthorizationModel,
 
     /// The one issuer this server accepts, if it has been configured with one.

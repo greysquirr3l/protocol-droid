@@ -35,7 +35,7 @@
 //!
 //! The three adapters above are a byte layer and stay one. The loop that reads
 //! a frame, routes it and answers it is [`serve::ServeLoop`], and the reply
-//! document it writes is [`reply`]. Both sit in this module because they are
+//! document it writes is [`reply`](crate::domain::jsonrpc::reply). Both sit in this module because they are
 //! still stdio: the loop's central rule is that this transport's stdout carries
 //! MCP messages and nothing else, and that rule is about this process's
 //! streams rather than about MCP.
@@ -110,7 +110,7 @@ pub struct StdioConfig {
 
 impl StdioConfig {
     /// The default configuration: a [`MaxFrameSize::DEFAULT`] ceiling and a
-    /// [`DEFAULT_READ_CHUNK`] read buffer.
+    /// `DEFAULT_READ_CHUNK` read buffer.
     #[must_use]
     pub const fn new(limit: MaxFrameSize) -> Self {
         Self {

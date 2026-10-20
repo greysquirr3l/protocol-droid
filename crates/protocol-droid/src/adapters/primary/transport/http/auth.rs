@@ -4,17 +4,25 @@
 //! # Why this is a port and not a function
 //!
 //! Because the port belongs to the consumer, and the consumer is the router.
-//! T16 implements OAuth; this module does not and does not pretend to. What it
-//! does is fix the shape of the seam so that adding an implementation is a
-//! constructor argument rather than a change to the router's signature — and
-//! so that the *default* is a decision someone made rather than an absence.
+//! The seam is fixed so that an implementation is a constructor argument
+//! rather than a change to the router's signature — and so that the *default*
+//! is a decision someone made rather than an absence.
+//!
+//! Two implementations ship: [`Anonymous`], which is the default, and
+//! [`OAuthAuthenticator`] behind the `oauth` feature, which validates a token
+//! presented to this server against an external authorization server. This
+//! module is the port and the anonymous default; the OAuth half lives in the
+//! [`oauth`] submodule.
 //!
 //! # Why the default is anonymous and that is still fail-secure
 //!
 //! [`Anonymous`] returns [`AuthContext::anonymous`], which holds no scopes.
 //! That looks like "no authentication by default", and the honest framing is
-//! that this adapter does not authenticate and T16 will. What makes it
-//! fail-secure rather than fail-open is structural:
+//! that authentication is opt-in — a consumer wanting it passes
+//! [`OAuthAuthenticator`] or its own [`Authenticator`] to
+//! [`HttpBuilder::with_authenticator`](super::HttpBuilder::with_authenticator)
+//! and a policy to `with_policy`. What makes the default fail-secure rather
+//! than fail-open is structural:
 //!
 //! - Every stateful route resolves an `AuthContext` before it looks at the
 //!   session, the body, or the stream. There is no path that skips it, because
@@ -233,7 +241,7 @@ pub enum AuthPolicy {
     /// Every request must hold these scopes.
     ///
     /// Note what an *empty* `ScopeSet` does here: it requires nothing, so
-    /// [`refuse`](Self::refuse) answers `None` and the policy behaves exactly
+    /// `refuse` answers `None` and the policy behaves exactly
     /// like [`Public`](Self::Public). That is a footgun — "I require
     /// authentication" followed by nothing to require is a configuration
     /// mistake — and it is the kind that is best made visible by a test rather

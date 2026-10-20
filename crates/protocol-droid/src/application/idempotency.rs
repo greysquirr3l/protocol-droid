@@ -180,7 +180,7 @@ pub trait IdempotencyStore: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`StaleClaim`] when the token no longer holds its key, which happens
+    /// [`StaleClaim`](crate::domain::idempotency::StaleClaim) when the token no longer holds its key, which happens
     /// when the attempt was abandoned and a later one re-claimed it. The caller
     /// should discard its result in that case: the later attempt's is the one
     /// the peer is entitled to. Also
@@ -194,7 +194,7 @@ pub trait IdempotencyStore: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`StaleClaim`] when the token no longer holds its key. Also
+    /// [`StaleClaim`](crate::domain::idempotency::StaleClaim) when the token no longer holds its key. Also
     /// [`IdempotencyError::Unavailable`] when the store itself could not answer.
     fn abandon(&self, token: &ClaimToken) -> Result<(), IdempotencyError>;
 }

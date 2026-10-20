@@ -51,7 +51,7 @@ use crate::domain::registry::auth::{Scope, ScopeSet};
 /// being added must not make a session's prompt list appear to have changed.
 ///
 /// `Ord` and `PartialOrd` are derived from the same declaration order, and
-/// [`PrimitiveKind::ORDERING_AGREES`] is the test that says so. The
+/// `PrimitiveKind::ORDERING_AGREES` is the test that says so. The
 /// declaration order is a display order chosen once — tools, then resources,
 /// then templates, then prompts, matching the order the specification
 /// introduces them — and it is not the order any peer observes, because

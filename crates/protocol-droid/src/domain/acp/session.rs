@@ -467,7 +467,7 @@ pub struct SessionModeState {
 pub struct SessionMode {
     /// The unique id of the mode. The consumer
     /// references this id in
-    /// [`SetSessionModeRequest`] and
+    /// `SetSessionModeRequest` and
     /// [`CurrentModeUpdate`][super::notification::CurrentModeUpdate].
     pub id: SessionModeId,
     /// Human-readable name.

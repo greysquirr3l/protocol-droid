@@ -1,14 +1,14 @@
 //! The A2A v1.0 `BridgePeer` adapter.
 //!
 //! Posts raw JSON-RPC envelopes to an A2A agent's
-//! [`jsonrpc_path`](A2aClient::with_paths) and returns raw
+//! the `jsonrpc_path` argument to [`with_paths`](crate::adapters::secondary::a2a::A2aClient::with_paths) and returns raw
 //! JSON-RPC envelopes back, so the cross-protocol bridge
 //! can drive the agent through the codec without first
 //! deserialising every call into a typed A2A request.
 //!
 //! # Why this is a wrapper, not a `BridgePeer` impl on `A2aClient`
 //!
-//! [`A2aClient`] is the typed client: it deserialises every
+//! [`A2aClient`](crate::adapters::secondary::a2a::client::A2aClient) is the typed client: it deserialises every
 //! reply into a library-defined A2A response type and refuses
 //! methods the library does not model. A bridge peer is the
 //! *untyped* shape the bridge's IR works with, and a bridge
@@ -110,7 +110,7 @@ impl A2aJsonRpcPeer {
 
     /// A peer with a non-default JSON-RPC path.
     ///
-    /// See [`A2aClient::with_paths`] for the convention
+    /// See [`with_paths`](crate::adapters::secondary::a2a::A2aClient::with_paths) for the convention
     /// `jsonrpc_path` follows.
     #[must_use]
     pub fn with_jsonrpc_path(mut self, path: impl Into<String>) -> Self {

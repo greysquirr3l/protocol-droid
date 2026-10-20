@@ -216,7 +216,7 @@ impl HttpSession {
 
     /// This session's peer.
     ///
-    /// The same state as [`Self::peer_of`] and for the same reason: a task
+    /// The same state as `Self::peer_of` and for the same reason: a task
     /// that outlives the request it was spawned for has to keep reading the
     /// *session's* profile rather than a borrow of a body that is gone.
     pub fn peer(&self) -> PeerSession {
@@ -912,7 +912,7 @@ impl FrameSink for TailSink {
     }
 }
 
-/// The builder behind [`serve_http`].
+/// The builder behind the server transport.
 ///
 /// Every method is optional and every default is safe. The one decision this
 /// builder does not make for the caller is which address to bind, and it
@@ -1171,7 +1171,7 @@ impl HttpBuilder {
     ///
     /// # Errors
     ///
-    /// [`ServeError::Routes`] when the route table cannot be built, and
+    /// `ServeError::Routes` when the route table cannot be built, and
     /// [`ServeError::Accept`] when the loop does.
     pub async fn serve_on(
         self,

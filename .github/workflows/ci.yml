@@ -63,6 +63,33 @@ jobs:
       - name: Lint
         run: cargo l
 
+  docs:
+    # Rustdoc's intra-doc link checker runs only under `cargo doc`, so neither
+    # `cargo l` nor `cargo test` sees it. Without this job a link to a renamed
+    # or deleted item survives to publish, and docs.rs — which builds with
+    # `-D warnings` — fails the whole crate's documentation on it.
+    #
+    # `--all-features` because that is what docs.rs is configured to build: a
+    # doc that silently omits the `http`, `oauth` and `a2a` surfaces is worse
+    # than one that is broken loudly.
+    name: rustdoc
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Verify lockfile is current
+        run: cargo fetch --locked
+      - name: Build documentation
+        run: cargo doc --workspace --all-features --no-deps
+
   test:
     # The matrix key is `features`, not `feature-set`: a hyphen in a property
     # name is parsed by the expression language as a subtraction.
@@ -91,6 +118,14 @@ jobs:
         with:
           workspaces: . -> target
           key: ${{ matrix.features.name }}
+      # `cargo test` does not build benches, and it does not build examples
+      # unless one is a test target. A bench or example that imports a
+      # feature-gated module without declaring `required-features` therefore
+      # fails only for a consumer who opts into that feature — or for
+      # `cargo check --all-targets`, which nobody ran. `a2a_serving` shipped
+      # exactly this way and broke the plain default build.
+      - name: Check every target builds
+        run: cargo check --workspace --all-targets ${{ matrix.features.args }}
       - name: Test
         # 30 min is generous — the slowest cell (Linux all-features)
         # finishes in ~12 min locally. The ceiling exists because a

@@ -355,9 +355,9 @@ unmergeable on a context that will never report.
 
 ## Project status
 
-The crates are at **0.3.0** and not yet on crates.io. All four version
-together, so `protocol-droid = "0.3"` pulls matching `protocol-droid-schema`,
-`protocol-droid-macros` and `protocol-droid-cli`.
+The crates are at **0.4.0** and are published on crates.io. All four are
+versioned together, so `protocol-droid = "0.4"` pulls matching
+`protocol-droid-schema`, `protocol-droid-macros` and `protocol-droid-cli`.
 
 **Conformance is green on every revision the pinned suite covers** — 3/3 on
 `2025-03-26`, 55/55 on `2025-06-18`, 81/81 on `2025-11-25` and 151/151 on

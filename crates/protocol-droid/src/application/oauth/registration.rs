@@ -6,7 +6,7 @@
 //! "in favor of" documents while keeping it for servers that implement nothing
 //! else. Which of those a client must do is a pure function of the negotiated
 //! revision, and it lives in
-//! [`ClientRegistration`](crate::domain::mcp::authorization::ClientRegistration).
+//! [`ClientRegistration`].
 //! This module is what acts on it.
 //!
 //! # Why planning is separate from doing

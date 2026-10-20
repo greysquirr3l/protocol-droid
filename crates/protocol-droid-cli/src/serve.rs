@@ -11,17 +11,19 @@
 //! A bridge does not know which revision a client will speak until that client
 //! arrives, but it knows which one the server speaks as soon as it connects. So
 //! the connection is opened here, [`handshake`] runs against it *by reference*,
-//! and the resulting [`Leg`] goes into [`Wiring`].
+//! and the resulting [`Leg`] goes into
+//! [`Wiring`](protocol_droid::application::bridge::Wiring).
 //!
 //! By reference is the load-bearing part. A handshake made over one connection
-//! and forwarding done over another would produce an [`Agreement`] describing a
+//! and forwarding done over another would produce an
+//! [`Agreement`](protocol_droid::domain::bridge::Agreement) describing a
 //! server the bridge is not talking to — and the whole point of that type is
 //! that it is the truth about two real peers.
 //!
 //! ## The peer is `dyn`
 //!
-//! [`BridgeLoop`] is generic over its peer, so a library caller picks one at
-//! compile time. This caller picks from `--upstream` at run time, and the two
+//! [`BridgeLoop`](protocol_droid::application::bridge::BridgeLoop) is generic
+//! over its peer, so a library caller picks one at compile time. This caller picks from `--upstream` at run time, and the two
 //! transports with a peer adapter are unrelated types. `Arc<dyn BridgePeer>`
 //! reconciles the two, and the crate already supplies the blanket impl that
 //! makes an `Arc` a peer.
@@ -156,7 +158,7 @@ impl Upstream for ConfiguredUpstream {
 
 /// Serves a bridge on a socket, one upstream per client.
 ///
-/// The HTTP listen side, and the reason [`ConfiguredUpstream`] is a factory
+/// The HTTP listen side, and the reason `ConfiguredUpstream` is a factory
 /// rather than a connection: a server outlives the clients that connect to it,
 /// so `Upstream::open` is called once per session and each client gets an
 /// upstream of its own. The `stdio` path below opens once because there is one

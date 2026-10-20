@@ -3,7 +3,7 @@
 //!
 //! # Why this file exists at all
 //!
-//! [`MethodTable`](crate::application::jsonrpc::MethodTable) is
+//! [`MethodTable`] is
 //! protocol-neutral so that MCP, A2A, and ACP can each add themselves without
 //! touching it. The cost of that neutrality is that some module has to hold
 //! the actual A2A method names, and this is it. It is deliberately small and

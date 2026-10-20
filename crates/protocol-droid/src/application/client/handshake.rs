@@ -1,6 +1,6 @@
 //! Establishing a session with a server, over whatever transport.
 //!
-//! Split from [`Client`](super::Client) because a client and a session are not
+//! Split from [`Client`](crate::application::client::Client) because a client and a session are not
 //! the same thing: the client is what a caller holds, and it cannot be built
 //! until this has run. The crate had both halves and nothing joining them, so
 //! every caller that wanted a connected client either took a transport on trust
@@ -111,7 +111,7 @@ pub enum HandshakeError {
 
 /// Establishes a session over `transport`.
 ///
-/// `?Sized` because [`Client`] holds an `Arc<dyn ClientTransport>`, and a
+/// `?Sized` because [`Client`](crate::application::client::Client) holds an `Arc<dyn ClientTransport>`, and a
 /// caller who has one of those could not otherwise use the handshake that
 /// produces the session the `Client` wants. Requiring a concrete transport
 /// here would mean the caller keeps the concrete type alive solely to call

@@ -25,8 +25,8 @@
 //! # The process dies with the client
 //!
 //! Nothing here implements `Drop` to do it. [`StdioClient`] owns a
-//! [`Child`](tokio::process::Child) that was spawned with `kill_on_drop(true)`
-//! by [`child::spawn`], so dropping the client kills the server — including
+//! [`Child`] that was spawned with `kill_on_drop(true)`
+//! by `child::spawn`, so dropping the client kills the server — including
 //! on the path where a request failed and the caller gave up, which is the path
 //! that would otherwise leave an orphan.
 //!
@@ -234,7 +234,7 @@ where
     /// is.
     ///
     /// Dropping the returned client kills the child. That is the
-    /// `kill_on_drop(true)` set in [`child::spawn`], and it is the reason this
+    /// `kill_on_drop(true)` set in `child::spawn`, and it is the reason this
     /// function is the only way to get a client.
     ///
     /// # Errors
@@ -306,7 +306,7 @@ where
 
     /// The child's stderr channel.
     ///
-    /// The child does not write to this — [`child::forward_stderr`] does, one
+    /// The child does not write to this — `child::forward_stderr` does, one
     /// line at a time — and neither does anything else this crate knows of.
     /// It is here so a caller can add its own, the same way the server's
     /// diagnostics channel is.

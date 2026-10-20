@@ -66,7 +66,7 @@ pub enum HttpClientError {
         status: reqwest::StatusCode,
         /// The `Content-Type`, absent when the peer sent none.
         content_type: Option<String>,
-        /// The first [`REFUSAL_PREVIEW`] characters of the body, decoded lossily.
+        /// The first `REFUSAL_PREVIEW` characters of the body, decoded lossily.
         preview: String,
     },
 

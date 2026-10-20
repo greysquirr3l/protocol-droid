@@ -17,7 +17,7 @@
 //! ## Two sinks, one serialiser
 //!
 //! `--json` is the presence or absence of the stderr writer, never a second
-//! code path. [`Plan`] is serialised once; the human form is a `Display` over
+//! code path. `Plan` is serialised once; the human form is a `Display` over
 //! the same value. A `--json` flag that built a different string would drift
 //! from the human form the first time one of them changed.
 //!
@@ -155,7 +155,7 @@ struct SpecFailure {
 ///
 /// # Errors
 ///
-/// [`SpecFailure`] when either transport spec cannot be parsed, and a plain
+/// `SpecFailure` when either transport spec cannot be parsed, and a plain
 /// `anyhow` error when the pair is well-formed but not servable by this build.
 /// Both name the argument or the transport at fault, so the caller knows which
 /// one to change.

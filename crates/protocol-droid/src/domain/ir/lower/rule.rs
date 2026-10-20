@@ -109,8 +109,9 @@ impl DegradeRule {
     /// list honest: a rule in this list is reachable by `rule_for`, and a rule
     /// that is *not* in it is not reachable by a policy at all.
     ///
-    /// The three that are not listed — [`AudioToTextPlaceholder`],
-    /// [`DropImage`] and [`DropResource`] — are opt-in reductions rather than
+    /// The three that are not listed — [`AudioToTextPlaceholder`](Self::AudioToTextPlaceholder),
+    /// [`DropImage`](Self::DropImage) and [`DropResource`](Self::DropResource) — are opt-in
+    /// reductions rather than
     /// fallbacks. The placeholder because the specification does not sanction it
     /// and dropping the block is the only policy-selectable response to audio;
     /// the other two because images and embedded resources are expressible at
@@ -147,8 +148,8 @@ impl DegradeRule {
 
     /// How much this rule gives up.
     ///
-    /// Only [`DropAnnotations`] is [`Loss::Flagged`]. Every rule that removes a
-    /// *content block* is [`Loss::Destructive`], because a block the tool
+    /// Only [`DropAnnotations`](Self::DropAnnotations) is [`Loss::Flagged`]. Every rule that
+    /// removes a *content block* is [`Loss::Destructive`], because a block the tool
     /// produced is the tool's answer: dropping it does not degrade the message,
     /// it makes it say something the tool did not. Calling that "flagged" would
     /// let a bridge promise "lossless or flagged" and quietly remove content.

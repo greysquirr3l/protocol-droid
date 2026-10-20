@@ -144,7 +144,7 @@ pub struct RevisionSpec {
     /// place that cannot afford one.
     pub schema_prefix: String,
     /// Upstream path of the changelog. `None` when the changelog is authored
-    /// rather than vendored (see [`RevisionSpec::is_digest_locked`]).
+    /// rather than vendored.
     #[serde(default)]
     pub changelog: Option<String>,
     /// True when upstream's changelog is a placeholder rather than real content.

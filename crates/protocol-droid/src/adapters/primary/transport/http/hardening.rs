@@ -46,7 +46,7 @@
 //!
 //! ## What is deliberately absent
 //!
-//! No body limit. [`RouterState`] already refuses an oversized body with
+//! No body limit. `RouterState` already refuses an oversized body with
 //! [`Refusal::BodyTooLarge`] before reading it, and a second `DefaultBodyLimit`
 //! here would be a second `413` path with its own idea of the ceiling — two
 //! limits that agree today and will not after the first one is reconfigured.
@@ -182,7 +182,7 @@ where
 ///
 /// Applied as one stack so the order is stated once and cannot drift between
 /// the transports that mount it. The body limit is deliberately not here, and
-/// neither is the deadline — see the module docs and [`enforce_deadline`].
+/// neither is the deadline — see the module docs and `enforce_deadline`.
 ///
 /// No type parameters: by the time this runs the router's state has already
 /// been applied, so there is nothing here to infer `S` or `H` from.

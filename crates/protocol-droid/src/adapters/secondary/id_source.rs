@@ -1,6 +1,6 @@
 //! A session id source that does not enumerate.
 //!
-//! [`IdSource`](crate::application::session::IdSource) is a port with no
+//! [`IdSource`] is a port with no
 //! production implementation in this crate: every test that opens a session
 //! writes its own `fetch_add`, which is fine for a test and the obvious thing
 //! for a consumer to copy into production by accident. This is the

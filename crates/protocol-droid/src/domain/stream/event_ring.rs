@@ -228,7 +228,7 @@ impl From<RecommendedCapacity> for NonZeroUsize {
 /// adapter streaming large bodies should pass a smaller number of its own
 /// choosing. Nothing in the specification requires any particular bound.
 ///
-/// [`recommended_capacity_covers_a_reconnect`](self::tests::recommended_capacity_covers_a_reconnect)
+/// `recommended_capacity_covers_a_reconnect`
 /// is the test that holds this reasoning to the number.
 pub const RECOMMENDED_CAPACITY: RecommendedCapacity =
     RecommendedCapacity(match NonZeroUsize::new(1024) {

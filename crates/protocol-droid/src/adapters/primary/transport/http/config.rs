@@ -513,16 +513,44 @@ impl ServerConfig {
 
     /// The RFC 9728 metadata this server publishes, if it publishes one.
     ///
-    /// Only used to build the `WWW-Authenticate` challenge a `401` carries, and
-    /// `None` by default because publishing a document this crate does not
-    /// serve would be a lie. A deployment that wants the challenge points this
-    /// at the document its authorization server setup actually exposes.
+    /// `None` by default, because a server that names no authorization servers
+    /// has nothing to publish and an empty document is not the same as no
+    /// document.
+    ///
+    /// Setting this does both halves of RFC 9728 at once: the router serves the
+    /// document at [`ResourceUri::metadata_path`](crate::domain::mcp::ResourceUri::metadata_path),
+    /// and a `401` carries the [`WWW-Authenticate`](Self::challenge) challenge
+    /// naming that same URL. One value, so the two cannot name different
+    /// places.
     #[must_use]
     pub fn resource_metadata(&self) -> Option<&ResourceMetadata> {
         self.resource_metadata.as_deref()
     }
 
-    /// Publishes `metadata`, enabling the `WWW-Authenticate` challenge.
+    /// Publishes `metadata`, enabling both the `WWW-Authenticate` challenge and
+    /// the well-known route that serves it.
+    ///
+    /// [`McpRouter::into_router`](super::router::McpRouter::into_router)
+    /// mounts the document at the path its resource identifier implies. A
+    /// consumer does not merge anything.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::adapters::primary::transport::http::ServerConfig;
+    /// use protocol_droid::domain::mcp::{ResourceMetadata, ResourceUri};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let metadata = ResourceMetadata::new(ResourceUri::new("https://example.com/mcp")?)
+    ///     .with_authorization_server("https://login.example.com");
+    ///
+    /// // The route is mounted at /.well-known/oauth-protected-resource/mcp.
+    /// let config = ServerConfig::new()?.with_resource_metadata(metadata);
+    /// assert!(config.challenge().is_some());
+    /// # let _ = config;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn with_resource_metadata(mut self, metadata: ResourceMetadata) -> Self {
         self.resource_metadata = Some(Arc::new(metadata));

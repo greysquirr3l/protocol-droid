@@ -78,7 +78,7 @@ impl ReleaseDate {
         self.day
     }
 
-    /// Whether this date is [`V2024_11_05`] or later.
+    /// Whether this date is [`ReleaseDate::V2024_11_05`] or later.
     ///
     /// The comparison is on the date, not the enum: a date this build has not
     /// heard of can still be after the first revision, and forward

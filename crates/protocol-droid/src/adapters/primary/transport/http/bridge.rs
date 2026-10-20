@@ -427,7 +427,7 @@ where
     /// the issue #11 fail-open combination of a wired authenticator and
     /// the default `AuthPolicy::Public` policy. The same errors the MCP
     /// server's own builder reports, surfaced through
-    /// [`BridgeServeError::Router`] on the bind path.
+    /// `BridgeServeError::Router` on the bind path.
     pub fn into_router(
         self,
     ) -> Result<axum::Router, crate::adapters::primary::transport::http::router::RouterError> {
@@ -444,7 +444,7 @@ where
     /// # Errors
     ///
     /// [`BridgeServeError::Bind`] when the address is taken or unusable, and
-    /// [`BridgeServeError::Router`] for an illegal configured header.
+    /// `BridgeServeError::Router` for an illegal configured header.
     pub async fn bind(self, addr: SocketAddr) -> Result<(Bound, SocketAddr), BridgeServeError> {
         let router = self.into_router()?;
         let listener = tokio::net::TcpListener::bind(addr)

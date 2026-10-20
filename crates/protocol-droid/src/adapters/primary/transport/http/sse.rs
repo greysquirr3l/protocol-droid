@@ -203,7 +203,7 @@ impl SseEvent {
     /// line per line of the payload, then the blank line that dispatches the
     /// event. A payload with no newline in it is therefore exactly one `data:`
     /// line, and one with *k* newlines is *k + 1* — which is the claim
-    /// [`a_newline_in_the_payload_becomes_another_data_line`](Self::tests::a_newline_in_the_payload_becomes_another_data_line)
+    /// `a_newline_in_the_payload_becomes_another_data_line`
     /// exists to hold.
     ///
     /// Field order is not load-bearing: the standard dispatches on field

@@ -12,7 +12,7 @@
 //!
 //! So the table is hardcoded — it has to be, it is the domain's own model — but
 //! it is **checked against the vendored `schema.json` at test time**. See
-//! [`tests::the_table_matches_every_vendored_schema`], which walks the real
+//! `the_table_matches_every_vendored_schema`, which walks the real
 //! capability tree of all six revisions and fails if the two disagree in either
 //! direction. That makes the table self-verifying: a future revision that adds
 //! or drops a capability fails the build rather than quietly getting a
@@ -244,7 +244,7 @@ impl Capability {
     /// The index is the position in [`Capability::ALL`], found by name rather
     /// than written by hand, so adding a variant cannot leave a stale
     /// hand-assigned bit behind. Asserted to be a distinct in-range power of
-    /// two by [`tests::every_capability_fits_in_the_bitset`].
+    /// two by `every_capability_fits_in_the_bitset`.
     ///
     /// Not `const`: the `indexing_slicing` lint is denied workspace-wide, and
     /// `slice::get` — the non-panicking form it demands — is not a
@@ -278,7 +278,7 @@ impl Capability {
 /// A capability and the revisions whose schemas define it.
 ///
 /// The table is the domain's model; the test
-/// [`tests::the_table_matches_every_vendored_schema`] is what keeps it honest
+/// `the_table_matches_every_vendored_schema` is what keeps it honest
 /// against the vendored bytes. Citations are to the changelog of the revision
 /// that introduced the capability, which is the only place the fact is written
 /// down.
@@ -662,10 +662,9 @@ fn str_eq(left: &str, right: &str) -> bool {
 ///
 /// Data rather than a `match` for the same reason [`FEATURES`] is data: a
 /// capability added to the domain without a row here would be dropped
-/// silently, and [`capability_wire_is_total`] is what keeps the two in step.
+/// silently, and `capability_wire_is_total` is what keeps the two in step.
 ///
 /// [`FEATURES`]: crate::domain::FEATURES
-/// [`capability_wire_is_total`]: crate::domain::capability
 pub const SERVER_CAPABILITY_WIRE: &[(Capability, &[&str])] = &[
     (Capability::Experimental, &["experimental"]),
     (Capability::Tools, &["tools"]),

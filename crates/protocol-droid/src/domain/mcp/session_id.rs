@@ -116,7 +116,7 @@ impl McpSessionId {
         // which renders decimal: the header is sixteen hex digits, zero-padded,
         // and a decimal rendering of the same number is a different value to
         // whatever parses it back. The width is fixed by the loop, so it cannot
-        // drift from [`DIGITS`], and every digit it writes is a hex letter or
+        // drift from `DIGITS`, and every digit it writes is a hex letter or
         // an arabic numeral — inside [`VISIBLE_ASCII_RANGE`] by construction.
         const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut remaining = self.0.get();
@@ -198,7 +198,7 @@ pub enum McpSessionIdError {
     /// The value was not sixteen characters.
     #[error("Mcp-Session-Id must be {expected} hexadecimal digits, found {found}")]
     WrongLength {
-        /// The fixed width, [`DIGITS`].
+        /// The fixed width, `DIGITS`.
         expected: usize,
         /// What arrived.
         found: usize,

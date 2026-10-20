@@ -412,7 +412,7 @@ impl Server {
     /// The state map handlers read through
     /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
     ///
-    /// A transport hands this to every [`RequestContext`](crate::application::server::context::RequestContext)
+    /// A transport hands this to every [`RequestContext`]
     /// it builds. A handler that never calls `with_state` on the
     /// builder gets an empty map here, and `state::<T>()` returns
     /// `None` for every `T`.
@@ -587,7 +587,7 @@ pub enum DispatchError {
     /// Distinct from a refused *method* ([`UnknownMethod`](Self::UnknownMethod))
     /// because nothing about the request was wrong: the method exists, the
     /// params parse, and the answer cannot be built because the revision the
-    /// session settled on is one [`negotiate_server`] would have to counter-
+    /// session settled on is one [`negotiate_server`](crate::domain::negotiate_server) would have to counter-
     /// offer. The session should never be in this state — it is reported
     /// rather than papered over, because the alternative is emitting a result
     /// whose shape the revision cannot express.
@@ -896,7 +896,7 @@ impl ServerBuilder {
     /// Registers a value handlers can read through
     /// [`RequestContext::state`](crate::application::server::context::RequestContext::state).
     ///
-    /// `T` is keyed by [`TypeId`], so two `with_state` calls with the same
+    /// `T` is keyed by `TypeId`, so two `with_state` calls with the same
     /// `T` keep the later value (the registry is a `HashMap`, and the
     /// later write is the one the lookup will see). The `Send + Sync`
     /// bounds are the same every other port in this crate asks for; a

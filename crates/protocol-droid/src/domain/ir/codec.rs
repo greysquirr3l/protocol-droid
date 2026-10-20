@@ -169,7 +169,7 @@ use crate::domain::{DegradePolicy, FeatureProfile, ProtocolVersion};
 
 /// Translates between one revision's wire type and the canonical IR.
 ///
-/// See the [module docs](self) for the contract. The short version: [`lift`](Self::lift)
+/// See the module docs at the top of this file for the contract. The short version: [`lift`](Self::lift)
 /// is total, [`lower`](Self::lower) is gated.
 pub trait Codec {
     /// The generated wire type for this revision.
@@ -199,7 +199,8 @@ pub trait Codec {
     ///
     /// Infallible by design: a message the peer sent always has an IR form. Use
     /// [`UnknownContent`](crate::domain::ir::UnknownContent) for a block this
-    /// build does not recognise, and [`Extensions`] for fields it does not
+    /// build does not recognise, and [`Extensions`](crate::domain::ir::Extensions) for fields
+    /// it does not
     /// name, so nothing is lost in the crossing.
     fn lift(&self, wire: &Self::Wire) -> ToolResult;
 

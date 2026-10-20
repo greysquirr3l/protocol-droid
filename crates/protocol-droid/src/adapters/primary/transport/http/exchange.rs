@@ -201,7 +201,7 @@ impl ExchangeTable {
     }
 }
 
-/// The exchange handed to a session's [`PeerSession`].
+/// The exchange handed to a session's [`PeerSession`](crate::application::server::context::PeerSession).
 ///
 /// Holds the table it records into and the stream it writes to. Two handles to
 /// one session, kept together so a request and the answer that completes it

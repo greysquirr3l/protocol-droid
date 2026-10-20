@@ -22,7 +22,7 @@
 //! - A list of [`Artifact`]s — the work's
 //!   output. An artifact is a named bundle of
 //!   [`Part`](super::message::Part)s.
-//! - A list of [`Message`](super::message::Message)s
+//! - A list of [`Message`]s
 //!   — the conversation history that produced
 //!   the task.
 //!
@@ -196,7 +196,7 @@ pub struct TaskStatus {
 /// [`Working`](Self::Working) → either
 /// [`Completed`](Self::Completed),
 /// [`Failed`](Self::Failed),
-/// [`Cancelled`](Self::Cancelled), or
+/// `Cancelled`, or
 /// [`InputRequired`](Self::InputRequired)
 /// progression. The wire form is
 /// `snake_case` to match the spec's

@@ -10,7 +10,16 @@
 #   * `build.warnings` is MSRV-gated; bumping rust-toolchain.toml below
 #     1.97 silently turns off this gate.
 [build]
+# Applies to `cargo doc` as well as `cargo build`, which is what makes a broken
+# intra-doc link a local build failure rather than a docs.rs-only surprise.
 warnings = "deny"
+
+# docs.rs sets `-D warnings` for itself and builds with the crate's default
+# feature set, so a link that only resolves under a non-default feature fails
+# there and nowhere else. `[package.metadata.docs.rs]` says all-features, and
+# this says the same, so the local command and the published build agree.
+[rustdoc]
+all-features = true
 
 # Convenience alias matching AGENTS.md so that `cargo l` reproduces the exact
 # preflight profile documented in the task files. Keep this in sync with

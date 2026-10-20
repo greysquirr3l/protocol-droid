@@ -20,8 +20,8 @@
 //!   are not part of the A2A wire contract).
 //! - The JSON-RPC envelope decode (jsonrpc, id,
 //!   method, params).
-//! - The method name → [`A2aMethod`] lookup via
-//!   [`A2aMethodTable`](crate::adapters::secondary::a2a::A2aMethodTable).
+//! - The method name → [`A2aMethod`](crate::adapters::secondary::a2a::A2aMethod) lookup via
+//!   [`A2aMethodTable`].
 //! - The JSON-RPC response shape (result on
 //!   success, error with the right code on
 //!   failure).

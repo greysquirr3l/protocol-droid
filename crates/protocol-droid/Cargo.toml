@@ -18,6 +18,13 @@ categories = [
     "web-programming::http-server",
     "web-programming::http-client",
 ]
+# docs.rs builds with the crate's DEFAULT features, which are serde + stdio —
+# so the HTTP server and client, the OAuth client and resource server, and the
+# A2A and ACP modules are all absent from the published documentation.
+# `all-features` is what makes the crate's actual API visible, and it is what
+# the `rustdoc` CI job checks so the two cannot disagree.
+[package.metadata.docs.rs]
+all-features = true
 
 # No `[features]` table yet. The feature gates for each transport, the legacy
 # SSE path, and OAuth are introduced by the tasks that implement them (T13-T16),
@@ -251,12 +258,17 @@ harness = false
 [[bench]]
 name = "a2a_serving"
 harness = false
+# Same reason as the `examples/` below: this bench imports
+# `adapters::secondary::a2a`, which is gated on `a2a`. Without this the default
+# build — `cargo check --all-targets` with no features — fails to compile it.
+required-features = ["a2a"]
 
-# Cargo builds every file in `examples/` for every feature configuration, so an
-# example that speaks a gated transport must declare what it needs or
-# `cargo test --workspace --no-default-features` — a CI matrix entry, not a
-# hypothetical — fails to compile it. The example is skipped rather than built
-# lean; a stripped-down stdio server would demonstrate nothing.
+# Cargo builds every file in `examples/` and `benches/` for every feature
+# configuration, so one that speaks a gated transport must declare what it
+# needs or `cargo check --all-targets` with no features at all — the plain
+# default build — fails to compile it. The target is skipped rather than built
+# lean; a stripped-down stdio server would demonstrate nothing, and a bench
+# measuring the A2A table without the A2A table would measure nothing.
 [[example]]
 name = "stdio_server"
 required-features = ["stdio"]
@@ -300,3 +312,9 @@ required-features = ["a2a", "http"]
 [[example]]
 name = "a2a_typed_client"
 required-features = ["a2a", "http"]
+
+# The RFC 9728 discovery document. `http` only — the document is served over
+# any axum app and needs neither an OAuth token source nor the A2A module.
+[[example]]
+name = "protected_resource_server"
+required-features = ["http"]

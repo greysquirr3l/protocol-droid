@@ -88,7 +88,7 @@ pub enum LegacySseError {
     /// The `endpoint` event's payload is not a usable target.
     ///
     /// The only variant here that is a **security** outcome, and the reason
-    /// [`MessageEndpoint`] is a domain type rather than a `String`. The server
+    /// [`MessageEndpoint`](crate::domain::MessageEndpoint) is a domain type rather than a `String`. The server
     /// chooses where the client posts, so a value of
     /// `https://elsewhere.example/steal` is a server directing every
     /// subsequent request — including whatever the client authenticates with —

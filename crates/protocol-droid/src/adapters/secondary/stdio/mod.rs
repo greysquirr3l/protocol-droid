@@ -4,7 +4,7 @@
 //!
 //! [`primary::stdio`](crate::adapters::primary::stdio) is the byte layer of a
 //! stdio conversation, and it is deliberately agnostic about where the bytes
-//! come from: [`StdioSource<R>`] and [`StdioSink<W>`] are generic over
+//! come from: [`StdioSource<R>`](crate::adapters::primary::stdio::StdioSource) and [`StdioSink<W>`](crate::adapters::primary::stdio::StdioSink) are generic over
 //! `AsyncRead` and `AsyncWrite` precisely so that a process's pipes can be
 //! dropped into them. This module supplies what the byte layer was missing —
 //! the other end of the conversation. [`StdioClient`] starts a child server,
@@ -17,7 +17,7 @@
 //! ceiling, the single delimiter, the decision that a frame the peer wrote and
 //! did not terminate is dropped rather than reported — and a second
 //! implementation would be a second set of those properties to get right. The
-//! request and reply *documents* in [`request`] are the exception, and they are
+//! request and reply *documents* in `engine::request` are the exception, and they are
 //! documents rather than framing: the shapes [`reply`](crate::domain::jsonrpc::reply)
 //! writes and this reads are one wire format with one serialiser, not two.
 //!
@@ -27,20 +27,20 @@
 //! process it is dropped with. Without an explicit `kill_on_drop(true)`, a
 //! client that returns an error half way through a handshake leaves a server
 //! running with nobody reading its stdout — an orphan holding a pipe, holding
-//! whatever the user asked it to do. [`child::spawn`] is where the flag is set,
+//! whatever the user asked it to do. `child::spawn` is where the flag is set,
 //! and it is set on the one path that can spawn a child.
 //!
-//! **The child's stderr is not the protocol.** [`Diagnostics`] is bound to
+//! **The child's stderr is not the protocol.** [`Diagnostics`](crate::adapters::primary::stdio::Diagnostics) is bound to
 //! stderr and has no constructor that can be pointed at stdout, for the same
 //! reason the server's does not: on stdio, stdout is the conversation. The
-//! forwarder in [`child::forward_stderr`] moves those bytes across one line at
+//! forwarder in `child::forward_stderr` moves those bytes across one line at
 //! a time and nowhere else, so a server that logs to stderr cannot corrupt a
 //! frame — and, just as importantly, a log line cannot be mistaken for a
 //! frame the peer failed to parse.
 //!
 //! # The two `None`s
 //!
-//! [`StdioSource::next_frame`] answers `Ok(None)` when the peer has closed, and
+//! [`StdioSource::next_frame`](crate::adapters::primary::stdio::StdioSource::next_frame) answers `Ok(None)` when the peer has closed, and
 //! the decoder underneath it answers `Ok(None)` when a line has no terminator
 //! *yet* — opposites, and forwarding the second up would turn "keep reading"
 //! into "the child died" and "the child died" into "read again". The source
@@ -54,7 +54,7 @@
 //! The bytes stay in the byte layer. What this module adds is the lifecycle —
 //! [`spec::ChildSpec`] for the program, [`child`] for the process, and
 //! [`client::StdioClient`] for the exchange — plus the request documents in
-//! [`request`], which are the client's mirror of the server's
+//! `engine::request`, which are the client's mirror of the server's
 //! [`reply`](crate::domain::jsonrpc::reply) module.
 
 pub mod bridge_peer;

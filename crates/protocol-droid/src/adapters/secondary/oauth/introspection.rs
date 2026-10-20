@@ -12,7 +12,7 @@
 //! carry other information, and the obvious abuse is a server that returns
 //! `active: false` alongside a plausible `aud`, `exp` and `scope` — an answer
 //! shaped for a client that reads fields before reading `active`. So
-//! [`claims_from`] returns at the first `active: false` and never looks at
+//! `claims_from` returns at the first `active: false` and never looks at
 //! anything after it.
 //!
 //! A *missing* `active` is a third case, and neither of the obvious ones. It is
@@ -139,13 +139,13 @@ impl TokenSource for IntrospectionSource {
 ///
 /// Kept private and separate from [`TokenClaims`] because it is a wire shape:
 /// `active` is required, `aud` is string-or-array, and the times are unix
-/// seconds. It is turned into claims exactly once, by [`claims_from`].
+/// seconds. It is turned into claims exactly once, by `claims_from`.
 #[derive(Debug, Deserialize)]
 struct IntrospectionResponse {
     /// Whether the token is currently valid.
     ///
     /// `Option` rather than `bool` only so a *missing* field can be told apart
-    /// from a malformed one in [`claims_from`]. RFC 7662 §2.2 makes it
+    /// from a malformed one in `claims_from`. RFC 7662 §2.2 makes it
     /// required, and the absence is handled as a malfunction rather than as a
     /// serde error, because the two deserve different log lines.
     active: Option<bool>,

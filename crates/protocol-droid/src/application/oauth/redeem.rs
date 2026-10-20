@@ -24,7 +24,7 @@
 //! honoured — therefore cannot silently spend the same code again.
 //!
 //! That is the whole of the guarantee, and it is narrower than "a code is used
-//! once". A caller that runs [`authorize_callback`] twice against the same
+//! once". A caller that runs [`authorize_callback`](crate::application::oauth::callback::authorize_callback) twice against the same
 //! [`PendingAuthorization`](super::client::PendingAuthorization) holds two
 //! values and may try both; RFC 6749 §4.1.2 requires the authorization server
 //! to deny the second. The type closes the accident, the server closes the

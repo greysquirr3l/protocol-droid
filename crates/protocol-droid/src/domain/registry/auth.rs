@@ -17,7 +17,7 @@
 //! introspection endpoint, or decide *why* a principal holds a scope — every one
 //! of those is T16's OAuth work, and every one of them belongs in an adapter
 //! that produces this value rather than here. The split is the same one the
-//! project already draws for [`Clock`](crate::application::Clock): the
+//! project already draws for [`Clock`](crate::application::session::clock::Clock): the
 //! decision consumes the reading, it never takes it.
 //!
 //! # Default deny

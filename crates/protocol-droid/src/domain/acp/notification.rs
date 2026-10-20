@@ -17,8 +17,8 @@
 //!     `agent_thought_chunk` — `ContentChunk` shapes
 //!     for streaming text
 //!   - `tool_call`, `tool_call_update` —
-//!     [`ToolCall`][super::tool_call::ToolCall] and
-//!     [`ToolCallUpdate`][super::tool_call::ToolCallUpdate]
+//!     [`ToolCall`] and
+//!     [`ToolCallUpdate`]
 //!   - `plan` — the agent's execution plan
 //!   - `available_commands_update` — slash commands
 //!   - `current_mode_update` — mode change

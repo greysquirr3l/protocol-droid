@@ -30,7 +30,7 @@ use crate::domain::registry::AuthContext;
 /// to get the ordering wrong, and the ordering is a security property.
 ///
 /// Awaited, because establishing authenticity is network I/O — see
-/// [`Authenticator`](crate::adapters::primary::transport::http::Authenticator).
+/// [`Authenticator`].
 ///
 /// # Errors
 ///

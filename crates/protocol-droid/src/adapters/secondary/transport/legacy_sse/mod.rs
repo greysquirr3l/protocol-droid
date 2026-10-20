@@ -2,7 +2,7 @@
 //!
 //! Gated by `legacy-sse`, which implies `http` — the client speaks HTTP either
 //! way, and the two differ in *when* the server tells the client where to send,
-//! not in what it speaks. See [`client`] for the client and
+//! not in what it speaks. See `client` for the client and
 //! [`crate::adapters::secondary::transport::detect`] for the rule that decides
 //! whether to use it.
 

@@ -1308,8 +1308,14 @@ const RESOURCE: &str = "https://mcp.example/mcp";
 
 /// A config that publishes RFC 9728 metadata for [`RESOURCE`].
 fn publishing() -> Result<ServerConfig, TestError> {
-    let metadata = ResourceMetadata::new(ResourceUri::new(RESOURCE)?);
-    Ok(ServerConfig::new()?.with_resource_metadata(metadata))
+    Ok(ServerConfig::new()?.with_resource_metadata(document()?))
+}
+
+/// The document [`publishing`] publishes, so a test wiring both halves uses
+/// the same value for the challenge and for the route rather than two that
+/// merely look alike.
+fn document() -> Result<ResourceMetadata, TestError> {
+    Ok(ResourceMetadata::new(ResourceUri::new(RESOURCE)?))
 }
 
 /// The `WWW-Authenticate` header on a response, if it carries one.
@@ -1647,5 +1653,164 @@ async fn an_oversized_body_is_still_a_413() -> Result<(), TestError> {
         .await?;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
+// The discovery chain, end to end.
+//
+// Every other test in this module checks one end: that a `401` carries a
+// challenge, or that the well-known router serves a document. Nothing checked
+// that the URL in the challenge is the URL the document is served at. A
+// mismatch there passes both sets of tests and leaves a client following a
+// `WWW-Authenticate` header into a `404`, which is the entire failure mode
+// RFC 9728 exists to prevent.
+// -------------------------------------------------------------------------
+
+/// The path a client extracts from the challenge URL and requests.
+///
+/// The challenge carries an absolute URL, because the server has to name a
+/// location it cannot know the client's origin for. A test cannot bind that
+/// host, so it takes the path out of the challenge and requests it against the
+/// same router — which is what a client does after resolving it, and is the
+/// part that actually has to agree.
+fn challenged_path(challenge: &str) -> Result<String, TestError> {
+    let url = challenge
+        .rsplit_once("resource_metadata=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(url, _)| url)
+        .ok_or_else(|| {
+            fail(format!(
+                "challenge carried no resource_metadata: {challenge}"
+            ))
+        })?;
+
+    let path = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..]))
+        .ok_or_else(|| fail(format!("challenge URL {url} has no path")))?;
+    Ok(path.to_owned())
+}
+
+/// A `401`'s challenge resolves to a document this same server serves.
+///
+/// Walks the path a client walks, in order: request the protected resource
+/// anonymously, read where the challenge says the document lives, fetch that,
+/// and check the `resource` inside it is the resource that was protected. The
+/// last part is the one that catches a real misconfiguration — a document
+/// served at the right URL naming the wrong audience is worse than a `404`,
+/// because the client proceeds and then holds a token for the wrong resource.
+#[tokio::test]
+async fn the_challenge_resolves_to_a_document_this_server_serves() -> Result<(), TestError> {
+    let harness = Harness::from_parts(
+        publishing()?,
+        Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
+        true,
+        AuthPolicy::Require(ScopeSet::all()),
+        Some(Arc::new(OneToken)),
+    )?;
+    let id = harness.open()?;
+
+    // 1. The protected resource refuses an anonymous caller.
+    let refused = harness.send(with_session(post("{}")?, id)?).await?;
+    require(&refused.status(), &StatusCode::UNAUTHORIZED, "status")?;
+
+    // 2. The refusal names where the document is.
+    let challenge = challenge_of(&refused)
+        .ok_or_else(|| fail("a 401 carried no WWW-Authenticate challenge"))?;
+    let path = challenged_path(&challenge)?;
+
+    // 3. That path is served by this router alone, with no `Authorization`
+    // header and no merge call anywhere — `with_resource_metadata` is the only
+    // setup, and the route is unreachable otherwise.
+    let served = Request::builder()
+        .uri(&path)
+        .header(header::HOST, HOST)
+        .body(Body::empty())
+        .map_err(|e| fail(format!("building GET {path}: {e}")))?;
+    let response = harness.router.clone().oneshot(served).await?;
+    require(&response.status(), &StatusCode::OK, "metadata status")?;
+
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    require(
+        &content_type,
+        &Some("application/json".to_owned()),
+        "metadata content type",
+    )?;
+
+    // 4. And it describes the resource that was just refused.
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await?;
+    let document: Value = serde_json::from_slice(&body)?;
+    require(
+        &document.get("resource").cloned(),
+        &Some(json!(RESOURCE)),
+        "document resource",
+    )?;
+    Ok(())
+}
+
+/// The discovery document is reachable without a credential, and refuses a
+/// `POST`.
+///
+/// Both halves matter. Reachable-because-absent is what stops the mount from
+/// deadlocking the OAuth flow — the client fetches this document precisely
+/// because it has nothing to present — and the `405` keeps it read-only, which
+/// RFC 9728 §3.1 specifies and which a document describing this server has no
+/// business mutating.
+#[tokio::test]
+async fn the_discovery_document_needs_no_credential_and_is_read_only() -> Result<(), TestError> {
+    let harness = Harness::from_parts(
+        publishing()?,
+        Arc::new(SessionStore::new(Arc::new(Counting(AtomicU64::new(0))))),
+        true,
+        AuthPolicy::Require(ScopeSet::all()),
+        Some(Arc::new(OneToken)),
+    )?;
+    let path = document()?.resource().metadata_path();
+
+    let get = || -> Result<Request<Body>, TestError> {
+        Request::builder()
+            .uri(&path)
+            .header(header::HOST, HOST)
+            .body(Body::empty())
+            .map_err(|e| fail(format!("building GET {path}: {e}")))
+    };
+
+    // No `Authorization` header, under a policy that refuses anonymous callers.
+    // The MCP endpoint is 401 for this very request; the document is not.
+    let served = harness.router.clone().oneshot(get()?).await?;
+    require(&served.status(), &StatusCode::OK, "anonymous GET status")?;
+
+    let mut post = get()?;
+    *post.method_mut() = axum::http::Method::POST;
+    let refused = harness.router.clone().oneshot(post).await?;
+    require(
+        &refused.status(),
+        &StatusCode::METHOD_NOT_ALLOWED,
+        "POST status",
+    )?;
+    Ok(())
+}
+
+/// A server that publishes no document serves no well-known route.
+///
+/// The absence is the contract: an operator who has not configured metadata
+/// gets a `404` rather than a document describing a resource with no
+/// authorization servers, which a client would treat as an offer of zero
+/// issuers rather than as nothing there.
+#[tokio::test]
+async fn no_configured_document_means_no_well_known_route() -> Result<(), TestError> {
+    let harness = Harness::build(true)?;
+    let request = Request::builder()
+        .uri("/.well-known/oauth-protected-resource/mcp")
+        .header(header::HOST, HOST)
+        .body(Body::empty())
+        .map_err(|e| fail(format!("building GET: {e}")))?;
+    let response = harness.router.clone().oneshot(request).await?;
+    require(&response.status(), &StatusCode::NOT_FOUND, "status")?;
     Ok(())
 }

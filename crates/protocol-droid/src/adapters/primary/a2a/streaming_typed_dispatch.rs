@@ -1,6 +1,6 @@
 //! Per-method typed wrappers around the
 //! streaming
-//! [`A2aStreamingRequestHandler`](super::A2aStreamingRequestHandler)
+//! [`A2aStreamingRequestHandler`]
 //! trait.
 //!
 //! # What this is
@@ -11,7 +11,7 @@
 //! and
 //! [`subscribe_to_task`](A2aStreamingRequestHandlerExt::subscribe_to_task))
 //! implements
-//! [`A2aStreamingRequestHandler`](super::A2aStreamingRequestHandler)
+//! [`A2aStreamingRequestHandler`]
 //! and gets the typed methods for free
 //! through this extension trait.
 //!
@@ -19,7 +19,7 @@
 //! 1. Serialises the typed request to
 //!    [`serde_json::Value`].
 //! 2. Calls
-//!    [`dispatch_stream`](super::A2aStreamingRequestHandler::dispatch_stream).
+//!    [`dispatch_stream`](super::streaming_serve::A2aStreamingRequestHandler::dispatch_stream).
 //! 3. Returns the stream (no decode —
 //!    the streaming dispatch already
 //!    returns a typed stream).
@@ -31,7 +31,7 @@
 //! consumer who only streams
 //! (`SendStreamingMessage` and
 //! `SubscribeToTask`) implements
-//! [`A2aStreamingRequestHandler`](super::A2aStreamingRequestHandler)
+//! [`A2aStreamingRequestHandler`]
 //! and uses this extension. A consumer
 //! who only does request/response
 //! implements
@@ -47,7 +47,7 @@
 //! The request body for the streaming
 //! and non-streaming `SendMessage`
 //! methods is the same
-//! [`SendMessageRequest`](crate::domain::a2a::send_message::SendMessageRequest).
+//! [`SendMessageRequest`].
 //! The two methods differ only in the
 //! response shape (a single value vs
 //! a stream of events). Reusing the
@@ -63,7 +63,7 @@
 //! `SubscribeToTask` and the
 //! request/response `GetTask` is the
 //! same
-//! [`GetTaskRequest`](crate::domain::a2a::task_lifecycle::GetTaskRequest).
+//! [`GetTaskRequest`].
 //! The streaming method adds a
 //! `historyLength` field that
 //! `GetTaskRequest` does not have
@@ -88,7 +88,7 @@ use crate::domain::a2a::task_lifecycle::GetTaskRequest;
 
 /// The per-method typed wrappers for
 /// streaming. A blanket impl means every
-/// [`A2aStreamingRequestHandler`](super::A2aStreamingRequestHandler)
+/// [`A2aStreamingRequestHandler`]
 /// gets the typed methods for free.
 pub trait A2aStreamingRequestHandlerExt: A2aStreamingRequestHandler {
     /// Sends a message and receives a
