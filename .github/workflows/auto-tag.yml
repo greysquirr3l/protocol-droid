@@ -65,6 +65,19 @@ jobs:
           # something to force.
           if git rev-parse -q --verify "refs/tags/${tag}" > /dev/null; then
             echo "tag ${tag} already exists; nothing to do"
+            echo "::notice title=No new tag::Expected. ${tag} is already tagged on an earlier commit, so this push does not release. To cut a release, bump [workspace.package] version in Cargo.toml and merge."
+            {
+              echo "## No new tag — expected"
+              echo
+              echo "\`${tag}\` already exists, on an earlier commit."
+              echo
+              echo "Auto Tag creates \`v<workspace version>\` only when that tag does not"
+              echo "already exist, so a green push to \`main\` that is not a release"
+              echo "tags nothing. This is the common case, and it is not a failure."
+              echo
+              echo "**To cut a release:** bump \`[workspace.package] version\` in"
+              echo "\`Cargo.toml\` and merge — that is the only trigger."
+            } >> "${GITHUB_STEP_SUMMARY}"
             echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
             echo "created=false" >> "${GITHUB_OUTPUT}"
             exit 0
@@ -72,5 +85,14 @@ jobs:
 
           git tag -a "${tag}" -m "Release ${tag}"
           git push origin "refs/tags/${tag}"
+          {
+            echo "## Tagged ${tag}"
+            echo
+            echo "Created \`${tag}\` on \`${GITHUB_SHA}\`."
+            echo
+            echo "The Release workflow will start from this run and will stop at the"
+            echo "\`release\` environment gate, which needs one approval from a required"
+            echo "reviewer. It publishes nothing until that happens."
+          } >> "${GITHUB_STEP_SUMMARY}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "created=true" >> "${GITHUB_OUTPUT}"

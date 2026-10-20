@@ -91,11 +91,31 @@ jobs:
               # case, not a failure: most green pushes to main are not
               # releases. Report it and let every downstream job skip.
               echo "No tag points at ${HEAD_SHA}; nothing to release."
+              echo "::notice title=No release for this push::Expected. The workspace version already has a tag on an earlier commit, so Auto Tag deliberately tagged nothing and this run has nothing to publish. To cut a release, bump [workspace.package] version in Cargo.toml and merge."
+              {
+                echo "## No release for this push — expected"
+                echo
+                echo "No tag points at \`${HEAD_SHA}\`. This run is **green and correct**:"
+                echo "there is nothing to publish."
+                echo
+                echo "Auto Tag creates \`v<workspace version>\` only when that tag does not"
+                echo "already exist. Most green pushes to \`main\` are not releases, so"
+                echo "the common case is a green push that tags nothing."
+                echo
+                echo "**To cut a release:** bump \`[workspace.package] version\` in"
+                echo "\`Cargo.toml\` and merge. That is the only trigger — re-tagging will not"
+                echo "produce one, and re-running this workflow will not either."
+              } >> "${GITHUB_STEP_SUMMARY}"
               echo "tag=" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
           fi
           echo "Resolved release tag: ${tag}"
+          {
+            echo "## Releasing ${tag}"
+            echo
+            echo "Tag \`${tag}\` resolves to \`${HEAD_SHA}\`."
+          } >> "${GITHUB_STEP_SUMMARY}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
   # Always runs, needs no secrets, and is the job that actually proves the
