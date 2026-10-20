@@ -35,10 +35,16 @@
 
 use std::fmt::Write as _;
 
-/// The path to the feature-support doc, relative to the
-/// workspace root. Resolved from `CARGO_MANIFEST_DIR`
-/// (the protocol-droid crate root) at test time.
-const DOC_PATH: &str = "../../docs/guide/src/feature-profile.md";
+/// The path to the feature-support doc, relative to the workspace
+/// root. Resolved from `CARGO_MANIFEST_DIR` (the protocol-droid crate
+/// root) at test time.
+///
+/// This points at the site, which is the only documentation tree the
+/// deploy script publishes and the only one that is maintained. It
+/// previously pointed at `docs/guide/`, an mdBook tree that no workflow
+/// built, nothing linked to, and that had drifted from this page by
+/// dozens of lines; see `published_docs_consistency.rs`.
+const DOC_PATH: &str = "../../site/src/content/docs/guides/feature-profile.md";
 
 #[test]
 fn doc_has_an_introductory_section() -> Result<(), String> {
@@ -47,13 +53,15 @@ fn doc_has_an_introductory_section() -> Result<(), String> {
     let doc = std::fs::read_to_string(&doc_path)
         .map_err(|error| format!("failed to read {}: {error}", doc_path.display()))?;
 
-    // The doc starts with the chapter's H1 heading; a
-    // future rename of the chapter in the SUMMARY
-    // without a corresponding doc update is the kind
-    // of bug this catches.
+    // The page's title lives in the frontmatter, because Starlight
+    // renders that as the H1 and the markdown body starts straight at
+    // the prose. A rename that touches one and not the other is the
+    // kind of bug this catches.
     assert!(
-        doc.starts_with("# FeatureProfile and gating"),
-        "doc does not start with the expected H1; the chapter's title changed"
+        doc.lines()
+            .any(|line| line.trim() == "title: FeatureProfile and gating"),
+        "the page's frontmatter title is no longer `FeatureProfile and gating`; \
+         the rendered H1 changed without a corresponding update here"
     );
 
     // The four inputs to the `FeatureProfile`

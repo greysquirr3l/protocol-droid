@@ -16,10 +16,11 @@
 //! build — so the remaining risk is the splice going stale, which is what these
 //! tests are for.
 //!
-//! Note the deliberate absence of `docs/guide/`. It is an mdBook tree that no
-//! workflow builds, no deploy script publishes, and nothing links to, and it
-//! has already drifted from the site by dozens of lines. Testing it would
-//! certify a document no one sees.
+//! Note the absence of `docs/guide/`. It was an mdBook tree that no workflow
+//! built, no deploy script published, and nothing linked to, and it had already
+//! drifted from the site by dozens of lines. It is deleted, and
+//! `site_is_the_only_document_tree` below fails if it returns — a second tree
+//! is not a redundancy, it is a second thing to forget to update.
 
 use std::path::{Path, PathBuf};
 
@@ -263,6 +264,36 @@ fn the_site_security_snippet_matches_the_compiled_example() -> Result<(), String
                      the guide."
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// The site is the only maintained document tree.
+///
+/// `docs/guide/` was an mdBook tree beside the site: not built by any workflow,
+/// not published by the deploy script, linked from nothing, and already
+/// carrying prose that disagreed with the site. It was deleted rather than
+/// reconciled, because reconciling it would have meant maintaining both.
+///
+/// This asserts the deletion holds. A second tree is worse than a missing one:
+/// it looks maintained, so nobody re-checks whether it is, and it drifts while
+/// appearing authoritative. The root `book.toml` goes with it — it existed only
+/// to describe that build.
+#[test]
+fn site_is_the_only_document_tree() -> Result<(), String> {
+    let root = repo_root()?;
+
+    for relative in ["docs/guide", "book.toml"] {
+        let path = root.join(relative);
+        if path.exists() {
+            return Err(format!(
+                "{} exists again. The site under `site/` is the only maintained document tree: \
+                 no workflow builds this, the deploy script does not publish it, and it drifts \
+                 from the site without failing anything. Either delete it or move its content \
+                 into the site — do not leave two.",
+                path.display()
+            ));
         }
     }
     Ok(())
