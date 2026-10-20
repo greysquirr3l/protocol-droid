@@ -70,6 +70,32 @@ The chain is:
 CI (on main, green) → auto-tag.yml → tag → release.yml → crates.io
 ```
 
+### What each run state means
+
+Most green pushes to `main` are **not** releases, so the states below come up
+often. None of the first three is a failure.
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| Auto Tag: `tag v0.4.2 already exists; nothing to do` | The workspace version is `0.4.2` and `v0.4.2` is already tagged on an earlier commit. Correct — this push is not a release. | Nothing. To release, bump the version. |
+| Release: `No tag points at <sha>; nothing to release` | The consequence of the above, one workflow later. Correct, and the run is green. | Nothing. |
+| Release: `Resolved release tag: v0.4.2` | A tag was found and the release is starting. | Wait, then approve the gate. |
+| Release: `publish` sitting in **waiting** | Binaries and packaging verification are done. This is the approval gate, and it is the only place a human is required. | **Approve and deploy** on the run page. |
+| crates.io shows the version, but no GitHub Release yet | `release.yml` creates the Release after the upload. A published crate is the real signal. | Nothing. |
+
+**The only trigger is a version bump.** Auto Tag creates `v<workspace version>`
+only when that tag does not already exist, so re-tagging cannot produce a
+release, and re-running `release.yml` cannot either — a tag already on an
+earlier commit means the version has to change.
+
+```bash
+# the one edit that starts a release
+grep -n '^version' Cargo.toml
+```
+
+Then: bump → open a PR → merge → CI green → Auto Tag tags → Release runs →
+approve once.
+
 `auto-tag.yml` tags `v<workspace version>` when CI is green on a push to
 `main` and that tag does not exist yet. `release.yml` runs on Auto Tag's
 completion and resolves the tag from the commit; a green push that did not
@@ -112,6 +138,18 @@ A tag is created with `GITHUB_TOKEN`, which deliberately does **not** trigger
 other workflows' `on: push` filters — which is why `release.yml` listens for
 `workflow_run` rather than `push: tags`. A manual `workflow_dispatch` naming a
 tag re-runs a release the trigger missed.
+
+### When CI is red for no code reason
+
+Check the annotation before reading any logs:
+
+> The job was not started because recent account payments have failed or your
+> spending limit needs to be increased
+
+That is an Actions **billing** refusal. Every job dies, the run reports failure,
+and nothing was ever compiled — so it reads as a wall of breakage when it is
+one billing page. Six PRs sat red this way for eight days. The fix is the
+billing page, not the code; a closed-and-reopened PR re-runs it.
 
 ## The docs site
 

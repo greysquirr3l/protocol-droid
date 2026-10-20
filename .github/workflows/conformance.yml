@@ -66,7 +66,7 @@ jobs:
           - 2025-11-25
           - 2026-07-28
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -103,7 +103,7 @@ jobs:
           done
       - name: Upload suite results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: conformance-${{ matrix.spec-version }}
           path: |
