@@ -84,14 +84,29 @@ gate — check it before trusting a green run:
 gh api repos/greysquirr3l/protocol-droid/environments/release --jq '.protection_rules'
 ```
 
-Approving that gate from the CLI needs the **`deployments`** scope, which a
-default `gh auth login` does not grant — `repo` is not enough, the scopes are
-separate. Without it every approval route answers `404 Not Found` even from an
-admin, which reads like a permissions problem rather than a missing scope:
+Approve it from the run's page — **Approve and deploy**. Do not expect `gh` to
+do it. A default `gh auth login` yields an OAuth App token (`gho_`), and every
+deployment-review route answers `404 Not Found` with one, on both accounts,
+including as a repository admin. That is not a permissions problem and no scope
+fixes it:
 
-```bash
-gh auth refresh -h github.com -s deployments
+```console
+$ gh auth refresh -h github.com -s deployments
+The scopes requested are invalid: deployments. (invalid_scope)
 ```
+
+`gh auth refresh` can only add scopes the gh OAuth App is registered for, and
+`deployments` is not one of them. Two accounts, admin and not, all four
+approval routes (`POST`/`GET /deployments/{id}/reviews`,
+`GET`/`POST /actions/runs/{id}/pending_deployment_reviews`) — every one 404. An
+earlier version of this note claimed `repo` was insufficient and pointed at
+`gh auth refresh -s deployments`. Both halves of that were wrong: the scopes
+are not the lever, and that command does not exist.
+
+Driving the approval from a script would mean authenticating with a token that
+has Deployments write access — a classic PAT (`gh auth login --with-token`) or
+a fine-grained PAT with `Deployments: write` (`GH_TOKEN`). That is untested
+here; the UI path is one click and it works.
 
 A tag is created with `GITHUB_TOKEN`, which deliberately does **not** trigger
 other workflows' `on: push` filters — which is why `release.yml` listens for
