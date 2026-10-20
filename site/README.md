@@ -27,14 +27,18 @@ The deploy script lives in [scripts/deploy-docs.sh](./scripts/deploy-docs.sh).
 It reads its config from the `deploy-docs` field of `package.json` (so the
 same script works across projects), builds the site, rsyncs `dist/` into the
 configured subdirectory of the working gh-pages clone, commits, pushes, and
-then polls the live URL until it returns 200.
+then polls the live URL until it serves the content just pushed — not merely
+until it answers `200`, since a CDN still carrying the previous deploy answers
+`200` immediately and would report success on a stale site.
 
 Useful flags:
 
 | flag             | purpose                                             |
 | ---------------- | --------------------------------------------------- |
 | `--rebuild`      | force a fresh build even if `dist/` is current      |
-| `--no-push`      | commit but don't push (good for review first)       |
+| `--no-push`      | preview: stage but neither commit nor push, so a later real run still deploys them |
+| `--skip-build`   | deploy the existing `dist/` without rebuilding      |
+| `--no-poll`      | skip the live-URL check after pushing               |
 | `--message MSG`  | override the auto-generated commit message          |
 | `--subdir NAME`  | override the target subdir in the pages repo        |
 | `--pages-repo PATH` | override the path to the gh-pages clone          |
