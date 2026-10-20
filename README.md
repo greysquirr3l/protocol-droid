@@ -366,24 +366,6 @@ test (windows-latest, all-features)         test (windows-latest, no-default-fea
 Renaming a CI job means updating this file in the same commit, or `main` becomes
 unmergeable on a context that will never report.
 
-## Project status
-
-The crates are at **0.4.0** and are published on crates.io. All four are
-versioned together, so `protocol-droid = "0.4"` pulls matching
-`protocol-droid-schema`, `protocol-droid-macros` and `protocol-droid-cli`.
-
-**Conformance is green on every revision the pinned suite covers** — 3/3 on
-`2025-03-26`, 55/55 on `2025-06-18`, 81/81 on `2025-11-25` and 151/151 on
-`2026-07-28`, including the scenarios the suite does not yet score. The
-`2026-07-28` stateless lifecycle is served in full over HTTP: per-request
-`_meta`, `server/discover`, `subscriptions/listen`, SEP-2322 multi round-trip
-requests, and the request-metadata headers. The measurements, what closed them,
-and the known limitations are in
-[`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
-
-Preflight — `cargo build`, `cargo test --workspace --all-features`, `cargo l`
-and `cargo deny --all-features check` — is the gate on every commit.
-
 ## Releasing
 
 The chain is:
