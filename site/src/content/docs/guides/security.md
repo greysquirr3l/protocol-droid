@@ -42,6 +42,13 @@ authenticator without a policy as the silent fail-open it is, and
 `into_router` refuses to build the route table rather than serve the
 endpoint unprotected:
 
+<!--
+Mirrored from `crates/protocol-droid/examples/oauth_resource_server.rs`, which
+is compiled by CI on every commit. Starlight does not expand mdbook's
+`{{#include}}`, so this copy is duplicated — if the snippet and the example ever
+disagree, the example is the one that is correct.
+-->
+
 ```rust
 use std::sync::Arc;
 

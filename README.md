@@ -50,7 +50,7 @@ Three ideas set it apart:
 
 ```toml
 [dependencies]
-protocol-droid = "0.2"
+protocol-droid = "0.4"
 ```
 
 The default build is `serde` + `stdio`, which is enough to *serve* over stdio
@@ -72,10 +72,22 @@ A `simd` envelope parser is described in the manifest but is not yet wired to a
 feature — it exists so the two decoders can be benchmarked rather than argued
 about, and it will not appear here until it does.
 
+Serving over HTTP needs `http` named explicitly, because the default build is
+stdio-only. Reaching for `ServerConfig` or `HttpBuilder` without it fails with
+``cannot find `transport` in `primary` `` and a `found an item that was
+configured out` note — the module is behind the feature, not missing:
+
+```toml
+protocol-droid = { version = "0.4", features = ["http"] }
+```
+
+Add `oauth` for the resource-server and PKCE client halves (it implies `http`),
+and `random-ids` if you want CSPRNG session ids rather than a counter.
+
 A lean build — the IR, every codec, every wire type, and no executor at all:
 
 ```toml
-protocol-droid = { version = "0.2", default-features = false, features = ["serde"] }
+protocol-droid = { version = "0.4", default-features = false, features = ["serde"] }
 ```
 
 `default-features = false` drops the executor, the transport adapters, and the

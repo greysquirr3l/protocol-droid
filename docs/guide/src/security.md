@@ -40,48 +40,7 @@ authenticator without a policy as the silent fail-open it is, and
 endpoint unprotected:
 
 ```rust
-use std::sync::Arc;
-
-use jsonwebtoken::Algorithm;
-use protocol_droid::adapters::primary::transport::http::{
-    AuthPolicy, HttpBuilder, OAuthAuthenticator, ServerConfig, SystemClock,
-};
-use protocol_droid::adapters::secondary::oauth::jwt::JwtSource;
-use protocol_droid::application::oauth::NoScopes;
-use protocol_droid::domain::mcp::{ResourceMetadata, ResourceUri};
-use protocol_droid::domain::registry::auth::{Scope, ScopeSet};
-use protocol_droid::domain::ProtocolVersion;
-
-let source = JwtSource::new(
-    Arc::from("https://login.example.com/.well-known/jwks.json"),
-    vec![Algorithm::RS256],
-);
-
-let metadata = ResourceMetadata::new(ResourceUri::new("https://mcp.example/mcp")?)
-    .with_authorization_server("https://login.example.com")
-    .with_scope("mcp:read");
-
-// What validates a token presented *to* this server.
-let authenticator = Arc::new(OAuthAuthenticator::new(
-    source,
-    metadata.clone(),
-    ProtocolVersion::V2025_06_18,
-    NoScopes,
-    SystemClock,
-));
-
-// What says the endpoint needs one. Without this, the server does not start.
-let policy = AuthPolicy::Require(ScopeSet::empty().with(Scope::Read));
-
-// The document that tells a client where to get a token.
-let config = ServerConfig::new()?.with_resource_metadata(metadata);
-
-let report = HttpBuilder::new(server)
-    .config(config)
-    .with_authenticator(authenticator)
-    .with_policy(policy)
-    .serve()
-    .await?;
+{{#include ../../../crates/protocol-droid/examples/oauth_resource_server.rs:assembly}}
 ```
 
 Two details in that snippet are easy to trip over. `metadata` is cloned

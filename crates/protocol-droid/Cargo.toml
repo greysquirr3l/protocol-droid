@@ -297,6 +297,12 @@ required-features = ["http", "random-ids"]
 name = "conformance_reference_client"
 required-features = ["http", "oauth", "random-ids"]
 
+# The single source for the resource-server assembly in the security guide.
+# `oauth` for the authenticator, `http` for the router and `ServerConfig`.
+[[example]]
+name = "oauth_resource_server"
+required-features = ["http", "oauth"]
+
 [[example]]
 name = "a2a_client"
 required-features = ["a2a", "http"]
