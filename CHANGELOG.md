@@ -9,6 +9,56 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-20
+
+A token's `aud` can now be bound independently of the RFC 9728 resource
+identifier, and `aud` is no longer modelled as one. Closes
+[#46](https://github.com/greysquirr3l/protocol-droid/issues/46).
+
+### Fixed
+
+- **Every token from Microsoft Entra was refused.** (`deb220d`) `verify`
+  compared a token's `aud` only against `policy.resource`, with no way to
+  configure anything else. Entra's v2.0 tokens carry the web API's *client ID* —
+  a bare GUID — in `aud`, while RFC 9728 §3.1 requires the resource to be the
+  HTTPS URL because the metadata path is derived from it. A server fronted by
+  Entra therefore refused every valid token with `AudienceMismatch`, silently,
+  until its first real request.
+- **An `aud` that is not a URI was dropped before it could be compared.**
+  (`deb220d`) `aud` was modelled as `ResourceUri`, which requires an http(s)
+  scheme, so it could hold neither Entra form — not the bare GUID, and not
+  `api://<guid>` either. `with_audience_string` then discarded any entry that
+  did not parse, so such a token reached `verify` with an *empty* audience and
+  was refused however the policy was configured, reporting a mismatch that
+  blamed the token for a decode which had thrown the answer away. RFC 7519 §4.1.3
+  defines `aud` as a `StringOrURI` and puts no URI requirement on it.
+
+### Added
+
+- **`TokenPolicy::with_expected_audience` / `with_expected_audiences`,** and the
+  matching `OAuthAuthenticator` builders, naming audiences to accept *in
+  addition to* the resource. Comparison stays exact equality per identifier — no
+  host, prefix or case folding — so a sibling path and a second web API's GUID
+  both still fail, and the resource stays accepted so configuring an audience
+  never withdraws the RFC 8707 binding. Defaults to `None`, leaving existing
+  deployments unchanged.
+- **`Audience`** (`deb220d`) — one `aud` entry, held verbatim and never
+  canonicalised. Exported from `application::oauth`.
+
+### Changed
+
+- **`TokenClaims::audience` returns `&[Audience]`,** not `&[ResourceUri]`, and
+  `with_audience` accepts `impl Into<Audience>`. **This is a breaking change**
+  and the reason for the minor bump: RFC 7519 §4.1.3 places no URI requirement
+  on `aud`, so `ResourceUri` was the wrong type for it — it could not represent
+  the identifiers authorization servers actually mint. `impl Into<Audience>`
+  still accepts a `ResourceUri` through the `From` impl, so a caller that was
+  passing one keeps compiling.
+- **`with_audience_string` retains every entry,** including one that is not an
+  absolute URI, rather than dropping it. Two tests asserted the old
+  drop-behaviour and now assert retention; they are the ones that would have
+  caught this.
+
 ## [0.4.3] — 2026-10-20
 
 Documentation, release tooling and dev-dependencies. No library behaviour

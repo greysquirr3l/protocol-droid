@@ -58,7 +58,10 @@ fn an_active_token_becomes_claims() -> Result<(), Failure> {
     assert_eq!(claims.scopes().len(), 2);
     assert_eq!(claims.audience().len(), 1);
     assert_eq!(
-        claims.audience().first().map(crate::application::oauth::Audience::as_str),
+        claims
+            .audience()
+            .first()
+            .map(crate::application::oauth::Audience::as_str),
         Some("https://example.com/mcp"),
     );
     Ok(())
@@ -135,7 +138,8 @@ fn an_audience_may_be_one_string_or_many() -> Result<(), Failure> {
 }
 
 #[test]
-fn an_audience_that_is_not_an_absolute_uri_is_retained_rather_than_dropped() -> Result<(), Failure> {
+fn an_audience_that_is_not_an_absolute_uri_is_retained_rather_than_dropped() -> Result<(), Failure>
+{
     // Retained, for the same reason as the JWT path: an `aud` that is not a URI
     // is still an identifier the authorization server minted, and a deployment
     // may have configured exactly it. See issue #46, and
@@ -145,7 +149,10 @@ fn an_audience_that_is_not_an_absolute_uri_is_retained_rather_than_dropped() -> 
 
     assert_eq!(claims.audience().len(), 2);
     assert_eq!(
-        claims.audience().first().map(crate::application::oauth::Audience::as_str),
+        claims
+            .audience()
+            .first()
+            .map(crate::application::oauth::Audience::as_str),
         Some("not-a-uri"),
     );
     Ok(())

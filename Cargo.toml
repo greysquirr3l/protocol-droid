@@ -64,10 +64,16 @@ exclude = [
 # move off Node 20, and the release chain learns to say "nothing to release"
 # out loud instead of reading like a failure. No library behaviour changes.
 #
-# 0.4.2 was tagged but never published, so this release carries everything
+# 0.4.2 was tagged but never published, so the 0.4.3 release carried everything
 # since 0.4.1 in one entry. There is no 0.4.2 on crates.io and never will be;
 # the version was skipped rather than backfilled.
-version = "0.4.3"
+#
+# 0.5.0 is a minor because `TokenClaims::audience` returns `&[Audience]` rather
+# than `&[ResourceUri]`, and `with_audience_string` now retains an `aud` entry
+# it cannot parse instead of dropping it. Both follow from `aud` no longer
+# being modelled as an RFC 9728 resource identifier — see #46, where an `aud`
+# that is not an absolute URI had nowhere to go and was silently lost.
+version = "0.5.0"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -98,9 +104,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.4.1" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.4.1" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.4.1" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.5.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

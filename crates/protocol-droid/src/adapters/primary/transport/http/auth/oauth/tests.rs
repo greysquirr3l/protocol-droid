@@ -450,7 +450,8 @@ fn the_debug_formation_carries_no_credentials() -> Result<(), Failure> {
 const ENTRA_CLIENT_ID: &str = "8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f";
 
 #[tokio::test]
-async fn an_entra_client_id_token_authenticates_when_the_audience_is_configured() -> Result<(), Failure> {
+async fn an_entra_client_id_token_authenticates_when_the_audience_is_configured()
+-> Result<(), Failure> {
     // The end-to-end version of #46, at the layer a deployment actually
     // configures. The chain test exercises `TokenPolicy` directly; this one
     // exists because the defect was a *wiring* gap as much as a missing field:
@@ -467,12 +468,16 @@ async fn an_entra_client_id_token_authenticates_when_the_audience_is_configured(
             .with_expiry(now() + Duration::from_secs(60))
             .with_scope("mcp:tools"),
     );
-    let authenticator = authenticator(source, Fixed(now()))?
-        .with_expected_audience(ENTRA_CLIENT_ID);
+    let authenticator =
+        authenticator(source, Fixed(now()))?.with_expected_audience(ENTRA_CLIENT_ID);
 
     let context = context_for(&authenticator, Some("Bearer good")).await;
 
-    assert_eq!(context.principal(), "alice", "an Entra-shaped token must authenticate");
+    assert_eq!(
+        context.principal(),
+        "alice",
+        "an Entra-shaped token must authenticate"
+    );
     assert!(context.holds(ScopeSet::empty().with(Scope::Read)));
     Ok(())
 }
@@ -499,10 +504,10 @@ async fn the_same_token_is_anonymous_without_the_configured_audience() -> Result
 }
 
 #[tokio::test]
-async fn the_resource_token_still_authenticates_when_another_audience_is_configured() -> Result<(), Failure> {
+async fn the_resource_token_still_authenticates_when_another_audience_is_configured()
+-> Result<(), Failure> {
     // Adding an audience must not withdraw the RFC 8707 resource binding.
-    let authenticator = accepting()?
-        .with_expected_audience(ENTRA_CLIENT_ID);
+    let authenticator = accepting()?.with_expected_audience(ENTRA_CLIENT_ID);
 
     let context = context_for(&authenticator, Some("Bearer good")).await;
 
@@ -516,8 +521,7 @@ fn the_debug_formation_names_the_configured_audiences() -> Result<(), Failure> {
     // audience that is silently absent from this output is the one they would
     // otherwise be blind to, since a misconfigured GUID looks exactly like a
     // server that rejects valid tokens.
-    let authenticator = accepting()?
-        .with_expected_audience(ENTRA_CLIENT_ID);
+    let authenticator = accepting()?.with_expected_audience(ENTRA_CLIENT_ID);
     let rendered = format!("{authenticator:?}");
 
     assert!(rendered.contains(ENTRA_CLIENT_ID), "{rendered}");

@@ -245,7 +245,9 @@ impl TokenClaims {
     /// through.
     #[must_use]
     pub fn is_audience(&self, audience: &ResourceUri) -> bool {
-        self.audience.iter().any(|entry| entry.as_str() == audience.as_str())
+        self.audience
+            .iter()
+            .any(|entry| entry.as_str() == audience.as_str())
     }
 
     /// Whether the token is bound to the audience `audience` names.
