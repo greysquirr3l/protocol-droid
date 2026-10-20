@@ -59,7 +59,7 @@ jobs:
       # The tag is derived from the event rather than assumed from `github.ref`:
       # a `workflow_run` carries no ref pointing at the tag, so the commit it
       # reported is the only place the tag can be read from.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -130,7 +130,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -192,7 +192,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -319,7 +319,7 @@ jobs:
             label: windows-x86_64
             binary: protocol-droid.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install toolchain
@@ -395,7 +395,7 @@ jobs:
         # already pushed the tag, and the first upload auto-creates the
         # GitHub Release that goes with it. Subsequent uploads edit the
         # same release, so the per-OS jobs do not race on creation.
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           files: dist/*
