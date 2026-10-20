@@ -4,15 +4,17 @@ How to maintain this repository: what protects `main`, how a release gets made
 and published, and how the documentation site is deployed.
 
 None of this belongs in the [README](../../README.md), which is for people
-*consuming* the crates. It lives here because it is about running the
+_consuming_ the crates. It lives here because it is about running the
 repository, not using the library, and it was the larger half of a README that
 had grown into a maintainer's manual.
 
 Contents:
 
-- [Branch protection](#branch-protection)
-- [Releasing](#releasing)
-- [The docs site](#the-docs-site)
+- [Repository operations](#repository-operations)
+  - [Branch protection](#branch-protection)
+    - [The nine status checks](#the-nine-status-checks)
+  - [Releasing](#releasing)
+  - [The docs site](#the-docs-site)
 
 ## Branch protection
 
@@ -105,4 +107,3 @@ and is described in [`site/README.md`](../../site/README.md)). The deploy script
 verifies the live URL after pushing, and prints a fix-it line if the source
 repo's Pages config is shadowing the user-pages URL — the trap that bit
 the first deploy.
-
