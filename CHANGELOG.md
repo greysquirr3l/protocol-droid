@@ -9,6 +9,54 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-10-20
+
+Documentation and release tooling. No library behaviour changes, which is why
+this is a patch. Everything since 0.4.1 landed after that tag was cut, so
+0.4.1 never shipped these.
+
+### Fixed
+
+- **The docs-site deploy script could report success while deploying nothing.**
+  `rsync` compares size and mtime by default, so a rebuilt page of unchanged
+  byte length whose mtime landed in the same second was judged identical,
+  skipped, committed, pushed, and reported live — while the served tree still
+  held the previous deploy. Now compared by content.
+- **Previewing a deploy stopped the deploy.** `--no-push` committed and skipped
+  only the push, leaving the pages clone ahead of its remote. The next real run
+  saw a clean index, reported "nothing to deploy", and exited without pushing.
+- **Live verification proved reachability, not freshness.** It polled for HTTP
+  `200`, which a CDN still serving the previous deploy answers immediately, so
+  it passed on the first attempt against a stale site. It now compares the
+  served body against the local build.
+- **A missing `package.json` aborted the deploy script silently.** `jq` exits 2
+  on an unreadable file and `set -e` took the process with it before the
+  validation errors could print.
+
+### Changed
+
+- **The README no longer carries a "Project status" section.** Every claim in
+  it changed on a release rather than on a change to what it described, so it
+  was on a guaranteed-rotted schedule — it was already claiming 0.4.0 while
+  0.4.1 shipped. The durable facts (current version, conformance, preflight)
+  are covered by the install instructions, the CI status checks, and
+  `docs/CONFORMANCE-GAPS.md`.
+- **`Branch protection`, `Releasing` and `The docs site` moved to
+  `docs/dev/repo-operations.md`.** They describe running the repository rather
+  than using the crates, and had grown the README into a maintainer's manual.
+- **Deleted `docs/guide/` and the root `book.toml`.** A second copy of the
+  guide, built by no workflow, published by nothing, linked from nowhere, and
+  already drifted from the site by dozens of lines. The site is now the only
+  maintained document tree, and a test fails if a second one reappears.
+
+### Added
+
+- **`site/scripts/deploy-docs.test.sh`** — ten assertions covering the first
+  two deploy fixes, against a throwaway git origin and a local HTTP server
+  standing in for the CDN. The `rsync` case forces the size-and-mtime
+  collision deliberately, so it fails deterministically if `--checksum` is
+  removed rather than passing by luck.
+
 ## [0.4.1] — 2026-10-19
 
 Documentation only. No library behaviour changes, which is why this is a patch.

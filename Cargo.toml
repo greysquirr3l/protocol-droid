@@ -58,11 +58,12 @@ exclude = [
 # same document on its own route now has both, so the behaviour change is on a
 # path that was previously inert rather than on a live one.
 #
-# 0.4.1 is a patch: it corrects the install instructions, which still named
-# 0.2.0 and so sent every reader to a crate that predates the 0.4.0 feature
-# set, and it turns the security guide's hand-written snippet into a compiled
-# example. No library behaviour changes.
-version = "0.4.1"
+# 0.4.2 is a patch: everything since 0.4.1 is documentation and release
+# tooling. The README drops a status section that went stale on every release,
+# the maintainer-facing half moves out of it, and the docs-site deploy script
+# gets four fixes — one of which let it report success while deploying nothing.
+# No library behaviour changes.
+version = "0.4.2"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
