@@ -183,21 +183,38 @@ fn an_audience_array_is_kept_element_by_element() -> Result<(), Failure> {
 }
 
 #[test]
-fn an_unparseable_audience_is_dropped_and_the_rest_survives() -> Result<(), Failure> {
-    // A token naming this server alongside one it cannot parse is still usable.
+fn an_audience_that_is_not_a_uri_is_kept_rather_than_dropped() -> Result<(), Failure> {
+    // This asserts the opposite of what it used to, and the reason is issue #46.
+    //
+    // Entries that did not parse as an RFC 9728 resource identifier were
+    // dropped here, on the reasoning that an `aud` entry that is not an
+    // absolute URI cannot equal this server's resource. That reasoning assumed
+    // `aud` is always a URI, and it is not: RFC 7519 §4.1.3 defines it as a
+    // "StringOrURI", and Microsoft Entra's v2.0 tokens carry a bare client-ID
+    // GUID. Dropping the entry left such a token with *no* audience, so it was
+    // refused whatever the policy said — and refusing for a mismatched
+    // audience is a claim about the token, not about the decode that discarded
+    // the answer.
     let claims: JwtClaims = serde_json::from_value(json!({
         "sub": "alice",
         "aud": ["not a uri", "https://mcp.example/mcp"],
     }))?;
-    assert_eq!(claims.into_token_claims().audience().len(), 1);
+    assert_eq!(claims.into_token_claims().audience().len(), 2);
 
-    // And the opposite, which is the one that matters: a token whose only
-    // audience is nonsense must end up with *no* audience, because an empty
-    // audience and a matching one are not the same answer.
+    // And the one that matters: a token whose only audience is a bare GUID
+    // carries it through, so a deployment can configure and match it.
+    let guid = "8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f";
     let claims: JwtClaims = serde_json::from_value(json!({
         "sub": "alice",
-        "aud": ["not a uri"],
+        "aud": guid,
     }))?;
+    let mapped = claims.into_token_claims();
+    assert_eq!(mapped.audience().len(), 1);
+    assert!(mapped.is_audience_str(guid));
+
+    // An empty audience is still empty — this is about retention, not about
+    // inventing an entry for a token that named none.
+    let claims: JwtClaims = serde_json::from_value(json!({ "sub": "alice" }))?;
     assert!(claims.into_token_claims().audience().is_empty());
     Ok(())
 }

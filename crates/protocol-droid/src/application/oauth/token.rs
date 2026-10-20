@@ -15,6 +15,13 @@
 //! for "contains" rather than equality would defeat the whole mechanism: a token
 //! with a two-element `aud` naming a malicious server and ours would pass.
 //!
+//! The rule is equality against a *set of named servers*, not equality against
+//! one. A deployment can add audiences the authorization server actually mints
+//! into [`TokenPolicy::with_expected_audiences`]; the resource identifier
+//! remains accepted throughout, and an identifier nobody configured is still a
+//! mismatch. See that method for why the resource identifier and `aud` are
+//! frequently two different strings.
+//!
 //! **No token means no context.** [`Refusal`] has no variant that means "let it
 //! through unprivileged", because the route's only way to reach a session is
 //! through the `&AuthContext` it was handed, and a context nobody can widen is
@@ -38,6 +45,80 @@ use crate::domain::mcp::ResourceUri;
 use crate::domain::mcp::authorization::AuthorizationModel;
 use crate::domain::registry::{AuthContext, Scope, ScopeSet};
 
+/// One entry of a token's `aud` claim.
+///
+/// Deliberately *not* a [`ResourceUri`]. RFC 9728 §2 requires a protected-
+/// resource identifier to be an absolute URI, and [`ResourceUri`] enforces
+/// that, but RFC 7519 §4.1.3 puts no such requirement on `aud`: it is defined
+/// as a `StringOrURI`, and an authorization server is entitled to mint any
+/// string it likes. Microsoft Entra's v2.0 tokens carry the web API's client ID
+/// — a bare GUID with no scheme at all — which `ResourceUri::new` refuses.
+///
+/// Modelling `aud` as `ResourceUri` therefore loses two things at once. A
+/// policy cannot name a GUID, so there is nowhere to say "this server accepts
+/// this client ID"; and [`TokenClaims::with_audience_string`] drops every entry
+/// that does not parse, so such a token arrives with an empty audience and is
+/// refused no matter how the policy is configured. One type that holds the
+/// string fixes both.
+///
+/// Comparison is exact, case-sensitive, and never canonicalised — RFC 7519
+/// §4.1.3 defines `aud` as case-sensitive strings, and a value that canonicalises
+/// to something else would be a different identifier to the server that minted
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Audience(Arc<str>);
+
+impl Audience {
+    /// An audience entry from `value`, kept verbatim apart from trimming
+    /// surrounding whitespace.
+    ///
+    /// Never fails. Anything that is not empty is a legal `aud`, and refusing a
+    /// value the authorization server chose to mint is this type's whole reason
+    /// for existing.
+    #[must_use]
+    pub fn new(value: impl AsRef<str>) -> Self {
+        Self(Arc::from(value.as_ref().trim()))
+    }
+
+    /// The entry as the authorization server wrote it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for Audience {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for Audience {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&ResourceUri> for Audience {
+    /// The canonical form, so a resource identifier and the audience a token
+    /// carries for it compare equal however the token spelled it.
+    fn from(value: &ResourceUri) -> Self {
+        Self::new(value.as_str())
+    }
+}
+
+impl From<ResourceUri> for Audience {
+    fn from(value: ResourceUri) -> Self {
+        Self::new(value.as_str())
+    }
+}
+
+impl std::fmt::Display for Audience {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// What an adapter established about a presented token, before this crate's
 /// own rules ran.
 ///
@@ -50,7 +131,7 @@ use crate::domain::registry::{AuthContext, Scope, ScopeSet};
 pub struct TokenClaims {
     subject: Option<Arc<str>>,
     issuer: Option<Arc<str>>,
-    audience: Vec<ResourceUri>,
+    audience: Vec<Audience>,
     expires_at: Option<SystemTime>,
     not_before: Option<SystemTime>,
     scopes: Vec<Arc<str>>,
@@ -83,24 +164,29 @@ impl TokenClaims {
     /// be either a single string or an array, and both have to land in the same
     /// place.
     #[must_use]
-    pub fn with_audience(mut self, audience: ResourceUri) -> Self {
-        self.audience.push(audience);
+    pub fn with_audience(mut self, audience: impl Into<Audience>) -> Self {
+        self.audience.push(audience.into());
         self
     }
 
     /// Adds an audience entry that arrives as a string.
     ///
-    /// Skipped rather than fatal when it does not parse. An `aud` entry that is
-    /// not an absolute URI cannot equal this server's resource, so ignoring it
-    /// and letting the audience check decide is the same answer as refusing —
-    /// and a server that names one malformed audience *alongside* a valid one
-    /// has still issued a usable token, which refusing outright would throw
-    /// away.
+    /// Retains every value, including one that is not an absolute URI. That is
+    /// the change from the behaviour this replaced: an entry that could not
+    /// parse as a [`ResourceUri`] was dropped on the floor, which silently
+    /// emptied the audience of every token whose `aud` is a bare identifier.
+    /// Microsoft Entra v2.0 does exactly that
+    /// ([per Microsoft](https://learn.microsoft.com/entra/identity-platform/claims-validation#validate-the-audience)),
+    /// so such a token arrived here with nothing to compare against and was
+    /// refused however the policy was configured — and the refusal named a
+    /// mismatch rather than a decode that had thrown the answer away.
+    ///
+    /// Nothing is lost by keeping it: the audience check is exact equality
+    /// against values the deployment named, so an entry nobody configured
+    /// cannot make a token verify.
     #[must_use]
     pub fn with_audience_string(mut self, audience: impl AsRef<str>) -> Self {
-        if let Ok(parsed) = ResourceUri::new(audience.as_ref()) {
-            self.audience.push(parsed);
-        }
+        self.audience.push(Audience::new(audience));
         self
     }
 
@@ -137,9 +223,9 @@ impl TokenClaims {
         self.issuer.as_deref()
     }
 
-    /// Every audience entry, already canonicalised.
+    /// Every audience entry, as the authorization server wrote it.
     #[must_use]
-    pub fn audience(&self) -> &[ResourceUri] {
+    pub fn audience(&self) -> &[Audience] {
         &self.audience
     }
 
@@ -149,16 +235,28 @@ impl TokenClaims {
         &self.scopes
     }
 
-    /// Whether the token is bound to `resource`.
+    /// Whether the token is bound to `audience`.
     ///
-    /// Exact equality against a canonicalised [`ResourceUri`], and equality
-    /// against *any* element of `aud` — which is what RFC 7519 §4.1.3 means by
-    /// an array audience. "Contains the resource" is the same predicate; what it
-    /// is *not* is "contains the resource's host", which is the check that would
-    /// let a sibling server's token through.
+    /// Exact, case-sensitive equality against a canonicalised
+    /// [`ResourceUri`], and equality against *any* element of `aud` — which is
+    /// what RFC 7519 §4.1.3 means by an array audience. "Contains the audience"
+    /// is the same predicate; what it is *not* is "contains the audience's
+    /// host", which is the check that would let a sibling server's token
+    /// through.
     #[must_use]
-    pub fn is_audience(&self, resource: &ResourceUri) -> bool {
-        self.audience.iter().any(|audience| audience == resource)
+    pub fn is_audience(&self, audience: &ResourceUri) -> bool {
+        self.audience.iter().any(|entry| entry.as_str() == audience.as_str())
+    }
+
+    /// Whether the token is bound to the audience `audience` names.
+    ///
+    /// The string form, for an `aud` that is not an absolute URI — a bare
+    /// GUID, which is what a Microsoft Entra v2.0 token carries. Same exact
+    /// equality as [`Self::is_audience`]; there is deliberately no prefix or
+    /// host matching anywhere in this check.
+    #[must_use]
+    pub fn is_audience_str(&self, audience: &str) -> bool {
+        self.audience.iter().any(|entry| entry.as_str() == audience)
     }
 }
 
@@ -281,6 +379,10 @@ impl ScopePolicy for NoScopes {
 #[derive(Debug, Clone)]
 pub struct TokenPolicy<'a> {
     /// The resource identifier a token must be bound to.
+    ///
+    /// Always accepted, whether or not [`Self::expected_audiences`] names
+    /// anything else, because it is the identifier RFC 9728 derives the
+    /// metadata path from.
     resource: &'a ResourceUri,
 
     /// The revision's authorization model, from
@@ -289,6 +391,9 @@ pub struct TokenPolicy<'a> {
 
     /// The one issuer this server accepts, if it has been configured with one.
     expected_issuer: Option<Arc<str>>,
+
+    /// Audiences accepted *in addition to* [`Self::resource`], if any.
+    expected_audiences: Option<Arc<[Audience]>>,
 }
 
 impl<'a> TokenPolicy<'a> {
@@ -312,6 +417,7 @@ impl<'a> TokenPolicy<'a> {
             resource,
             model,
             expected_issuer: None,
+            expected_audiences: None,
         }
     }
 
@@ -320,6 +426,124 @@ impl<'a> TokenPolicy<'a> {
     pub fn with_expected_issuer(mut self, issuer: impl Into<Arc<str>>) -> Self {
         self.expected_issuer = Some(issuer.into());
         self
+    }
+
+    /// Accepts tokens bound to `audience` as well as to the resource.
+    ///
+    /// The single-audience form of [`Self::with_expected_audiences`]; see that
+    /// method for what this is for and why the resource stays accepted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::application::oauth::TokenPolicy;
+    /// use protocol_droid::domain::mcp::ResourceUri;
+    /// use protocol_droid::domain::{ProtocolVersion, authorization_model};
+    ///
+    /// let resource = ResourceUri::new("https://example.com/mcp")?;
+    /// // A Microsoft Entra v2.0 token carries the web API's client ID in `aud`.
+    /// let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+    ///     .with_expected_audience("8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f");
+    ///
+    /// assert_eq!(policy.expected_audiences().map(<[Audience]>::len), Some(1));
+    /// # use protocol_droid::application::oauth::Audience;
+    /// # Ok::<(), protocol_droid::domain::mcp::ResourceUriError>(())
+    /// ```
+    #[must_use]
+    pub fn with_expected_audience(mut self, audience: impl Into<Audience>) -> Self {
+        self.expected_audiences = Some(Arc::from([audience.into()]));
+        self
+    }
+
+    /// Accepts tokens bound to any of `audiences`, as well as to the resource.
+    ///
+    /// # Why this exists
+    ///
+    /// The resource identifier and the `aud` claim are frequently two different
+    /// strings, and binding them together refuses valid tokens. RFC 9728 §3.1
+    /// derives the metadata URL *from* the resource identifier, so the resource
+    /// must be the HTTPS URL this server answers on — but that URL need not be
+    /// what the authorization server writes into `aud`.
+    ///
+    /// Microsoft Entra is the case that forced it.
+    /// [Validate the audience](https://learn.microsoft.com/entra/identity-platform/claims-validation#validate-the-audience)
+    /// states that for **v2.0** tokens the audience is the **client ID** of the
+    /// web API — a bare GUID — while for v1.0 tokens it is one of the app ID
+    /// URIs, such as `api://{ApplicationID}`. So three identifiers are in play,
+    /// and conflating any two of them breaks:
+    ///
+    /// | identifier | example | role |
+    /// | --- | --- | --- |
+    /// | Application ID URI | `api://<guid>` | what a client asks for as `scope` |
+    /// | client ID | `<guid>` | `aud` in a v2.0 token |
+    /// | RFC 9728 resource | `https://host/mcp` | derives the metadata path; RFC 8707 indicator |
+    ///
+    /// A deployment fronted by Entra therefore configures the GUID here and keeps
+    /// the HTTPS URL as the resource, and both verify.
+    ///
+    /// # What this does not change
+    ///
+    /// Comparison is still exact equality against each canonicalised
+    /// [`ResourceUri`], never "contains" and never a host or path prefix, so a
+    /// sibling server's token still fails. The resource identifier stays
+    /// accepted, so adding audiences can only widen what this deployment already
+    /// trusted — it never withdraws the RFC 8707 binding. Accepting an audience
+    /// is a deliberate act by whoever holds the configuration; the default is
+    /// `None`, which leaves behaviour exactly as it was.
+    ///
+    /// A repeated call replaces the set rather than extending it, so the
+    /// configured audiences are always the ones the last call named.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::application::oauth::TokenPolicy;
+    /// use protocol_droid::domain::mcp::ResourceUri;
+    /// use protocol_droid::domain::{ProtocolVersion, authorization_model};
+    ///
+    /// let resource = ResourceUri::new("https://mcp.example.com/mcp")?;
+    /// let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+    ///     .with_expected_audiences([
+    ///         // A v2.0 client ID, and a v1.0 app ID URI.
+    ///         "8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f",
+    ///         "api://8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f",
+    ///     ]);
+    ///
+    /// assert_eq!(policy.expected_audiences().map(<[Audience]>::len), Some(2));
+    /// # use protocol_droid::application::oauth::Audience;
+    /// # Ok::<(), protocol_droid::domain::mcp::ResourceUriError>(())
+    /// ```
+    #[must_use]
+    pub fn with_expected_audiences<I, T>(mut self, audiences: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Audience>,
+    {
+        self.expected_audiences = Some(Arc::from(
+            audiences.into_iter().map(Into::into).collect::<Vec<_>>(),
+        ));
+        self
+    }
+
+    /// The audiences accepted in addition to the resource, if any were set.
+    #[must_use]
+    pub fn expected_audiences(&self) -> Option<&[Audience]> {
+        self.expected_audiences.as_deref()
+    }
+
+    /// Whether this policy accepts a token naming the resource, or — when the
+    /// deployment configured any — one of those audiences instead.
+    ///
+    /// The resource is checked first so the common case costs one comparison
+    /// and never walks the additional set.
+    #[must_use]
+    fn accepts_audience(&self, claims: &TokenClaims) -> bool {
+        if claims.is_audience(self.resource) {
+            return true;
+        }
+        self.expected_audiences
+            .as_deref()
+            .is_some_and(|audiences| audiences.iter().any(|a| claims.is_audience_str(a.as_str())))
     }
 
     /// Whether an issuer check will be made.
@@ -400,7 +624,7 @@ pub fn verify(
     if claims.not_before.is_some_and(|start| start > now) {
         return Err(Refusal::NotYetValid);
     }
-    if !claims.is_audience(policy.resource) {
+    if !policy.accepts_audience(claims) {
         return Err(Refusal::AudienceMismatch);
     }
     if let Some(expected) = &policy.expected_issuer

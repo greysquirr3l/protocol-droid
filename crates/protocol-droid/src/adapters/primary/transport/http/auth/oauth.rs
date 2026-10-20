@@ -32,11 +32,24 @@
 //! # The resource identifier comes from the metadata document
 //!
 //! The audience a token must carry and the `resource_metadata` URL in the
-//! challenge are the *same* fact about the server, so this takes one
+//! challenge are *nearly* the same fact about the server, so this takes one
 //! [`ResourceMetadata`] rather than a resource and a metadata URL separately.
 //! Configuring them twice is how a deployment ends up checking tokens against
 //! one audience while telling clients to fetch metadata for another, which
 //! fails only in production and only for clients that follow the link.
+//!
+//! *Nearly*, because the two can legitimately differ, and where they do the
+//! audience check was wrong rather than the metadata path. RFC 9728 §3.1
+//! derives the metadata URL from the resource identifier, so the resource has
+//! to be the HTTPS URL this server answers on — but the authorization server
+//! need not write that URL into `aud`. Microsoft Entra
+//! [does not](https://learn.microsoft.com/entra/identity-platform/claims-validation#validate-the-audience):
+//! a v2.0 token carries the web API's client ID, a bare GUID, while a v1.0
+//! token carries an app ID URI such as `api://<guid>`. Binding the two
+//! together refused every valid token at an Entra-fronted server.
+//! [`OAuthAuthenticator::with_expected_audience`] is how such a deployment
+//! states the audience it actually mints, and the resource identifier stays
+//! accepted either way.
 //!
 //! # Nothing here logs
 //!
@@ -51,7 +64,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::{AuthContext, Authenticator, Credentials};
-use crate::application::oauth::{ScopePolicy, TokenPolicy, TokenSource, authenticate};
+use crate::application::oauth::{Audience, ScopePolicy, TokenPolicy, TokenSource, authenticate};
 use crate::domain::ProtocolVersion;
 use crate::domain::authorization_model;
 use crate::domain::mcp::ResourceMetadata;
@@ -136,6 +149,9 @@ pub struct OAuthAuthenticator<A> {
     version: ProtocolVersion,
     /// Whether tokens are required to name this server as their issuer.
     expected_issuer: Option<Arc<str>>,
+    /// Audiences accepted in addition to the resource, when `aud` is not the
+    /// resource identifier itself.
+    expected_audiences: Option<Arc<[Audience]>>,
     /// The scope vocabulary this deployment recognises.
     scopes: Arc<dyn ScopePolicy>,
     /// What "now" means.
@@ -158,6 +174,7 @@ impl<A> std::fmt::Debug for OAuthAuthenticator<A> {
             .field("resource", self.metadata.resource())
             .field("version", &self.version)
             .field("expected_issuer", &self.expected_issuer)
+            .field("expected_audiences", &self.expected_audiences)
             .finish_non_exhaustive()
     }
 }
@@ -199,6 +216,7 @@ impl<A> OAuthAuthenticator<A> {
             metadata: Arc::new(metadata),
             version,
             expected_issuer: None,
+            expected_audiences: None,
             scopes: Arc::new(scopes),
             clock: Arc::new(clock),
         }
@@ -213,6 +231,65 @@ impl<A> OAuthAuthenticator<A> {
     #[must_use]
     pub fn with_expected_issuer(mut self, issuer: impl Into<Arc<str>>) -> Self {
         self.expected_issuer = Some(issuer.into());
+        self
+    }
+
+    /// Accepts a token bound to `audience`, as well as to the resource.
+    ///
+    /// For an authorization server whose `aud` is not this server's RFC 9728
+    /// resource identifier. Microsoft Entra v2.0 is the motivating case: it
+    /// writes the web API's client ID — a bare GUID — into `aud`, while the
+    /// resource has to stay the HTTPS URL because RFC 9728 §3.1 derives the
+    /// metadata path from it. Without this, every valid token is refused with
+    /// [`Refusal::AudienceMismatch`](crate::application::oauth::Refusal::AudienceMismatch).
+    ///
+    /// The resource remains accepted, and comparison stays exact equality, so
+    /// this cannot be used to widen the check to a host or a path prefix.
+    /// See [`TokenPolicy::with_expected_audiences`] for the full argument.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::adapters::primary::transport::http::{
+    ///     OAuthAuthenticator, SystemClock,
+    /// };
+    /// use protocol_droid::application::oauth::NoScopes;
+    /// use protocol_droid::domain::{ProtocolVersion, mcp::{ResourceMetadata, ResourceUri}};
+    ///
+    /// let metadata = ResourceMetadata::new(ResourceUri::new("https://mcp.example.com/mcp")?);
+    /// let authenticator = OAuthAuthenticator::new(
+    ///     (),
+    ///     metadata,
+    ///     ProtocolVersion::V2026_07_28,
+    ///     NoScopes,
+    ///     SystemClock,
+    /// )
+    /// // The Entra client ID of this web API — a bare GUID, which is not a
+    /// // URI, which is the point.
+    /// .with_expected_audience("8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f");
+    /// # Ok::<(), protocol_droid::domain::mcp::ResourceUriError>(())
+    /// ```
+    #[must_use]
+    pub fn with_expected_audience(mut self, audience: impl Into<Audience>) -> Self {
+        self.expected_audiences = Some(Arc::from([audience.into()]));
+        self
+    }
+
+    /// Accepts a token bound to any of `audiences`, as well as to the resource.
+    ///
+    /// The multi-identifier form of [`Self::with_expected_audience`], for a
+    /// deployment that answers to more than one — a proxying one, or one fronted
+    /// by an authorization server that mints v1.0 tokens (app ID URI, e.g.
+    /// `api://<guid>`) as well as v2.0 ones (bare client ID GUID).
+    #[must_use]
+    pub fn with_expected_audiences<I, T>(mut self, audiences: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Audience>,
+    {
+        self.expected_audiences = Some(Arc::from(
+            audiences.into_iter().map(Into::into).collect::<Vec<_>>(),
+        ));
         self
     }
 
@@ -232,6 +309,9 @@ impl<A> OAuthAuthenticator<A> {
             TokenPolicy::new(self.metadata.resource(), authorization_model(self.version));
         if let Some(issuer) = &self.expected_issuer {
             policy = policy.with_expected_issuer(Arc::clone(issuer));
+        }
+        if let Some(audiences) = &self.expected_audiences {
+            policy = policy.with_expected_audiences(audiences.iter().cloned());
         }
         policy
     }

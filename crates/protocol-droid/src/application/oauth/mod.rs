@@ -33,6 +33,6 @@ pub mod registration;
 mod token;
 
 pub use token::{
-    NoScopes, Refusal, ScopePolicy, SourceError, TokenClaims, TokenPolicy, TokenSource,
+    Audience, NoScopes, Refusal, ScopePolicy, SourceError, TokenClaims, TokenPolicy, TokenSource,
     authenticate, verify,
 };

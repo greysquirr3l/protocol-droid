@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, SystemTime};
 
 use super::{
-    NoScopes, Refusal, ScopePolicy, SourceError, TokenClaims, TokenPolicy, TokenSource,
+    Audience, NoScopes, Refusal, ScopePolicy, SourceError, TokenClaims, TokenPolicy, TokenSource,
     authenticate, verify,
 };
 use crate::domain::mcp::{ResourceUri, ResourceUriError};
@@ -509,5 +509,167 @@ fn an_unreachable_source_stays_unavailable_and_never_becomes_a_refusal() -> Resu
     if let Err(SourceError::Unavailable(reason)) = &outcome {
         assert!(reason.contains("503"));
     }
+    Ok(())
+}
+
+// ─── Audiences other than the resource identifier ─────────────────────────────
+
+/// The `aud` a Microsoft Entra v2.0 token carries: the web API's client ID.
+///
+/// <https://learn.microsoft.com/entra/identity-platform/claims-validation#validate-the-audience>
+/// states that for v2.0 tokens the audience is the client ID of the web API — a
+/// bare GUID — and not the app ID URI the client asked for.
+const ENTRA_CLIENT_ID: &str = "8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f";
+/// A client ID for a different web API, which must never verify here.
+const OTHER_CLIENT_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+#[test]
+fn an_entra_client_id_audience_verifies_when_configured() -> Result<(), Failure> {
+    // The deployment #46 describes: the resource stays the HTTPS URL, because
+    // RFC 9728 §3.1 derives the metadata path from it, and the audience is the
+    // GUID the authorization server actually mints. Before `expected_audiences`
+    // existed this token was refused, so every request at an Entra-fronted
+    // server failed while unit tests passed — the fixture that named `resource`
+    // in `aud` was the fixture's own assumption, not a property of Entra.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+        .with_expected_audience(ENTRA_CLIENT_ID);
+    // Built through `with_audience_string`, because `claims_for` goes through
+    // `ResourceUri` — which refuses a bare GUID, and is half of why this bug
+    // was invisible.
+    let claims = TokenClaims::new()
+        .with_subject("alice")
+        .with_audience_string(ENTRA_CLIENT_ID)
+        .with_expiry(in_future())
+        .with_scope("mcp:read");
+
+    let context = verify(&claims, &policy, &TwoScopes, now())?;
+
+    assert_eq!(context.principal(), "alice");
+    assert!(context.holds(ScopeSet::empty().with(Scope::Read)));
+    Ok(())
+}
+
+#[test]
+fn a_second_configured_audience_is_accepted_too() -> Result<(), Failure> {
+    // The multi-identifier deployment the issue asks for: one server answering
+    // to both the v2.0 client ID and the v1.0 app ID URI. A builder that only
+    // held one audience would pass the first test and fail this one.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let app_id_uri = format!("api://{ENTRA_CLIENT_ID}");
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+        .with_expected_audiences([Audience::from(ENTRA_CLIENT_ID), app_id_uri.as_str().into()]);
+
+    for audience in [ENTRA_CLIENT_ID, app_id_uri.as_str()] {
+        let claims = TokenClaims::new()
+            .with_subject("alice")
+            .with_audience_string(audience)
+            .with_expiry(in_future())
+            .with_scope("mcp:read");
+        let context = verify(&claims, &policy, &TwoScopes, now())?;
+        assert_eq!(context.principal(), "alice", "aud {audience}");
+    }
+    Ok(())
+}
+
+#[test]
+fn configuring_audiences_does_not_withdraw_the_resource() -> Result<(), Failure> {
+    // Adding audiences may only widen what the deployment already trusted. If
+    // this failed, an operator who added a GUID for Entra would have silently
+    // stopped accepting the RFC 8707 resource binding they had before.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+        .with_expected_audience(ENTRA_CLIENT_ID);
+
+    assert!(verify(&valid_claims()?, &policy, &TwoScopes, now()).is_ok());
+    Ok(())
+}
+
+#[test]
+fn an_audience_that_is_neither_the_resource_nor_configured_is_refused() -> Result<(), Failure> {
+    // The security half of the feature. Two identifiers are accepted; a third
+    // is not, which is what proves the set is compared rather than pattern-
+    // matched and that a GUID is not treated as a wildcard.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+        .with_expected_audience(ENTRA_CLIENT_ID);
+    let claims = TokenClaims::new()
+        .with_subject("alice")
+        .with_audience_string(OTHER_CLIENT_ID)
+        .with_expiry(in_future())
+        .with_scope("mcp:read");
+
+    assert_eq!(
+        verify(&claims, &policy, &TwoScopes, now()),
+        Err(Refusal::AudienceMismatch),
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unconfigured_deployment_still_refuses_a_bare_guid() -> Result<(), Failure> {
+    // `expected_audiences` is opt-in and defaults to `None`, so the fix for a
+    // deployment fronted by Entra does not weaken anyone who did not ask for it.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28));
+    assert_eq!(policy.expected_audiences(), None);
+
+    let claims = TokenClaims::new()
+        .with_subject("alice")
+        .with_audience_string(ENTRA_CLIENT_ID)
+        .with_expiry(in_future())
+        .with_scope("mcp:read");
+
+    assert_eq!(
+        verify(&claims, &policy, &TwoScopes, now()),
+        Err(Refusal::AudienceMismatch),
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sibling_path_is_still_refused_when_audiences_are_configured() -> Result<(), Failure> {
+    // The mutant-killer. Configuring audiences tempts an implementation into
+    // matching on host or prefix, which would accept this token. Equality is
+    // exact per identifier, so it does not.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+        .with_expected_audience(ENTRA_CLIENT_ID);
+
+    assert_eq!(
+        verify(
+            &claims_for(SIBLING, &["mcp:read"])?,
+            &policy,
+            &TwoScopes,
+            now(),
+        ),
+        Err(Refusal::AudienceMismatch),
+    );
+    Ok(())
+}
+
+#[test]
+fn a_repeated_call_replaces_the_configured_audiences() -> Result<(), Failure> {
+    // Documented as replacing rather than extending, so the configured set is
+    // always the one the last call named.
+    let resource = ResourceUri::new(RESOURCE)?;
+    let policy = TokenPolicy::new(&resource, authorization_model(ProtocolVersion::V2026_07_28))
+        .with_expected_audience(ENTRA_CLIENT_ID)
+        .with_expected_audience(OTHER_CLIENT_ID);
+
+    assert_eq!(policy.expected_audiences().map(<[Audience]>::len), Some(1));
+    let now_claims = |audience: &str| {
+        TokenClaims::new()
+            .with_subject("alice")
+            .with_audience_string(audience)
+            .with_expiry(in_future())
+            .with_scope("mcp:read")
+    };
+
+    assert!(verify(&now_claims(OTHER_CLIENT_ID), &policy, &TwoScopes, now()).is_ok());
+    assert_eq!(
+        verify(&now_claims(ENTRA_CLIENT_ID), &policy, &TwoScopes, now()),
+        Err(Refusal::AudienceMismatch),
+    );
     Ok(())
 }

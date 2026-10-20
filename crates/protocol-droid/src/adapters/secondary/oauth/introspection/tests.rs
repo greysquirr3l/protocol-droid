@@ -58,7 +58,7 @@ fn an_active_token_becomes_claims() -> Result<(), Failure> {
     assert_eq!(claims.scopes().len(), 2);
     assert_eq!(claims.audience().len(), 1);
     assert_eq!(
-        claims.audience().first().map(ResourceUri::as_str),
+        claims.audience().first().map(crate::application::oauth::Audience::as_str),
         Some("https://example.com/mcp"),
     );
     Ok(())
@@ -135,16 +135,18 @@ fn an_audience_may_be_one_string_or_many() -> Result<(), Failure> {
 }
 
 #[test]
-fn an_audience_that_is_not_an_absolute_uri_is_ignored_rather_than_fatal() -> Result<(), Failure> {
-    // It cannot match this server's resource, so dropping it lets the audience
-    // check give the same answer as a refusal — and a server naming one bad
-    // entry alongside a good one has still issued a usable token.
+fn an_audience_that_is_not_an_absolute_uri_is_retained_rather_than_dropped() -> Result<(), Failure> {
+    // Retained, for the same reason as the JWT path: an `aud` that is not a URI
+    // is still an identifier the authorization server minted, and a deployment
+    // may have configured exactly it. See issue #46, and
+    // `audience_that_is_not_a_uri_is_kept_rather_than_dropped` in the JWT tests
+    // for the behaviour this replaced.
     let claims = interpret(r#"{"active":true,"aud":["not-a-uri","https://example.com/mcp"]}"#)?;
 
-    assert_eq!(claims.audience().len(), 1);
+    assert_eq!(claims.audience().len(), 2);
     assert_eq!(
-        claims.audience().first().map(ResourceUri::as_str),
-        Some("https://example.com/mcp"),
+        claims.audience().first().map(crate::application::oauth::Audience::as_str),
+        Some("not-a-uri"),
     );
     Ok(())
 }

@@ -445,3 +445,81 @@ fn the_debug_formation_carries_no_credentials() -> Result<(), Failure> {
     assert!(rendered.contains("auth.example"), "{rendered}");
     Ok(())
 }
+
+/// The `aud` a Microsoft Entra v2.0 token carries: the web API's client ID.
+const ENTRA_CLIENT_ID: &str = "8f7c1e42-0b3a-4f5d-9c6e-1a2b3c4d5e6f";
+
+#[tokio::test]
+async fn an_entra_client_id_token_authenticates_when_the_audience_is_configured() -> Result<(), Failure> {
+    // The end-to-end version of #46, at the layer a deployment actually
+    // configures. The chain test exercises `TokenPolicy` directly; this one
+    // exists because the defect was a *wiring* gap as much as a missing field:
+    // `OAuthAuthenticator::policy` builds the policy per request, and a builder
+    // that was never threaded through it would leave every token anonymous no
+    // matter how correct the domain layer was.
+    //
+    // `Canned` hands back whatever claims it was given, so this drives the real
+    // `authenticate` → `verify` path with a token whose `aud` is a bare GUID.
+    let source = Canned::granting(
+        TokenClaims::new()
+            .with_subject("alice")
+            .with_audience_string(ENTRA_CLIENT_ID)
+            .with_expiry(now() + Duration::from_secs(60))
+            .with_scope("mcp:tools"),
+    );
+    let authenticator = authenticator(source, Fixed(now()))?
+        .with_expected_audience(ENTRA_CLIENT_ID);
+
+    let context = context_for(&authenticator, Some("Bearer good")).await;
+
+    assert_eq!(context.principal(), "alice", "an Entra-shaped token must authenticate");
+    assert!(context.holds(ScopeSet::empty().with(Scope::Read)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_same_token_is_anonymous_without_the_configured_audience() -> Result<(), Failure> {
+    // The control for the test above, and the regression guard: the token is
+    // refused when the deployment did not name the GUID. If this ever passed
+    // without configuration, `expected_audiences` would be doing nothing and
+    // the other test would be proving only that `Canned` returns its claims.
+    let source = Canned::granting(
+        TokenClaims::new()
+            .with_subject("alice")
+            .with_audience_string(ENTRA_CLIENT_ID)
+            .with_expiry(now() + Duration::from_secs(60))
+            .with_scope("mcp:tools"),
+    );
+    let authenticator = authenticator(source, Fixed(now()))?;
+
+    let context = context_for(&authenticator, Some("Bearer good")).await;
+
+    assert_eq!(context, AuthContext::anonymous());
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_resource_token_still_authenticates_when_another_audience_is_configured() -> Result<(), Failure> {
+    // Adding an audience must not withdraw the RFC 8707 resource binding.
+    let authenticator = accepting()?
+        .with_expected_audience(ENTRA_CLIENT_ID);
+
+    let context = context_for(&authenticator, Some("Bearer good")).await;
+
+    assert_eq!(context.principal(), "alice");
+    Ok(())
+}
+
+#[test]
+fn the_debug_formation_names_the_configured_audiences() -> Result<(), Failure> {
+    // An operator reading a `401` sees the configuration and not a token. An
+    // audience that is silently absent from this output is the one they would
+    // otherwise be blind to, since a misconfigured GUID looks exactly like a
+    // server that rejects valid tokens.
+    let authenticator = accepting()?
+        .with_expected_audience(ENTRA_CLIENT_ID);
+    let rendered = format!("{authenticator:?}");
+
+    assert!(rendered.contains(ENTRA_CLIENT_ID), "{rendered}");
+    Ok(())
+}
