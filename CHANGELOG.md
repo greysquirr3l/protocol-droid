@@ -9,11 +9,15 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
-## [0.4.2] — 2026-10-20
+## [0.4.3] — 2026-10-20
 
-Documentation and release tooling. No library behaviour changes, which is why
-this is a patch. Everything since 0.4.1 landed after that tag was cut, so
-0.4.1 never shipped these.
+Documentation, release tooling and dev-dependencies. No library behaviour
+changes, which is why this is a patch.
+
+This release carries **everything since 0.4.1** in one entry. `v0.4.2` was
+tagged and prepared but never published — the run sat at the approval gate and
+was abandoned rather than forced — so there is no 0.4.2 on crates.io and there
+never will be. The version was skipped, not backfilled.
 
 ### Fixed
 
@@ -32,15 +36,31 @@ this is a patch. Everything since 0.4.1 landed after that tag was cut, so
 - **A missing `package.json` aborted the deploy script silently.** `jq` exits 2
   on an unreadable file and `set -e` took the process with it before the
   validation errors could print.
+- **The release chain reported "nothing to release" in a way that read like a
+  failure.** Most green pushes to `main` are not releases, so it is the common
+  case — but the message sat in a scrollback with no summary on the run page,
+  and the obvious conclusion was that the release was broken. Both no-op paths
+  now write a job summary and a run annotation saying what happened, why it is
+  expected, and that bumping `[workspace.package] version` is the only trigger.
+  The "tag created" path also states that the run will stop at the environment
+  gate needing one approval, so the point where a human is required is visible
+  before it is reached.
 
 ### Changed
 
+- **The GitHub Actions move off Node.js 20.** `actions/checkout`,
+  `actions/setup-node` and `actions/upload-artifact` v4 → v7,
+  `github/codeql-action` v3 → v4, `softprops/action-gh-release` v2 → v3. Every
+  run in this repository carried a Node 20 deprecation notice because the
+  actions targeted a runtime GitHub now forces off. `node-version: "20"` in the
+  interop workflow is deliberately unchanged — it is the LTS line
+  `@modelcontextprotocol/sdk` targets, and pinning it is what makes a green run
+  on Monday a green run on Tuesday.
 - **The README no longer carries a "Project status" section.** Every claim in
   it changed on a release rather than on a change to what it described, so it
   was on a guaranteed-rotted schedule — it was already claiming 0.4.0 while
-  0.4.1 shipped. The durable facts (current version, conformance, preflight)
-  are covered by the install instructions, the CI status checks, and
-  `docs/CONFORMANCE-GAPS.md`.
+  0.4.1 shipped. The durable facts are covered by the install instructions, the
+  CI status checks, and `docs/CONFORMANCE-GAPS.md`.
 - **`Branch protection`, `Releasing` and `The docs site` moved to
   `docs/dev/repo-operations.md`.** They describe running the repository rather
   than using the crates, and had grown the README into a maintainer's manual.
@@ -56,6 +76,31 @@ this is a patch. Everything since 0.4.1 landed after that tag was cut, so
   standing in for the CDN. The `rsync` case forces the size-and-mtime
   collision deliberately, so it fails deterministically if `--checksum` is
   removed rather than passing by luck.
+- **`docs/dev/repo-operations.md` gained a table of what each release run state
+  means**, and a note that a CI run failing with *"the job was not started
+  because recent account payments have failed"* is an Actions billing refusal
+  rather than a code failure. Four pull requests sat red for eight days on that
+  alone, with `FAILURE` on every job while nothing had been compiled.
+
+### Dependencies
+
+- **proptest 1.11.0 → 1.12.0.** Development only, not a build or runtime
+  dependency of the published crates. It introduces a second `rand_core` line
+  (0.10 via `rand` 0.10, against the 0.6 the RustCrypto stack reaches through
+  `jsonwebtoken` still pins), which is now a documented `cargo deny` skip entry
+  alongside the other twelve.
+
+## 0.4.2 — never published
+
+`v0.4.2` was tagged and its release run built every binary and verified
+packaging, but it stopped at the `release` environment gate and was
+abandoned rather than forced. No 0.4.2 was ever uploaded, so crates.io
+goes 0.4.1 → 0.4.3 with nothing at 0.4.2. The tag is still on the commit
+it marked, because that commit is real history; only the publish never
+happened.
+
+Its contents are folded into 0.4.3 above. Nothing that was written for
+0.4.2 was lost — it was superseded, not abandoned mid-flight.
 
 ## [0.4.1] — 2026-10-19
 
