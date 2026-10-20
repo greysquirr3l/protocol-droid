@@ -58,12 +58,16 @@ exclude = [
 # same document on its own route now has both, so the behaviour change is on a
 # path that was previously inert rather than on a live one.
 #
-# 0.4.2 is a patch: everything since 0.4.1 is documentation and release
-# tooling. The README drops a status section that went stale on every release,
-# the maintainer-facing half moves out of it, and the docs-site deploy script
-# gets four fixes — one of which let it report success while deploying nothing.
-# No library behaviour changes.
-version = "0.4.2"
+# 0.4.3 is a patch: everything since 0.4.1 is documentation, release tooling
+# and dev-dependencies. The docs-site deploy script gets four fixes — one of
+# which let it report success while deploying nothing — the GitHub Actions
+# move off Node 20, and the release chain learns to say "nothing to release"
+# out loud instead of reading like a failure. No library behaviour changes.
+#
+# 0.4.2 was tagged but never published, so this release carries everything
+# since 0.4.1 in one entry. There is no 0.4.2 on crates.io and never will be;
+# the version was skipped rather than backfilled.
+version = "0.4.3"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
