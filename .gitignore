@@ -92,4 +92,3 @@ crates/protocol-droid/fuzz/fuzz/
 target/book/
 .papertowel/
 assets/img/protocol-droid.jpeg
-docs/dev/repo-operations.md
