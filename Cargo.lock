@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "assert_matches",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid-cli"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid-macros"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1629,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid-schema"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "assert_matches",
  "jsonschema",
@@ -2935,7 +2935,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert_matches",

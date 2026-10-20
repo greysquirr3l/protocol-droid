@@ -50,7 +50,7 @@ Three ideas set it apart:
 
 ```toml
 [dependencies]
-protocol-droid = "0.4"
+protocol-droid = "0.5"
 ```
 
 The default build is `serde` + `stdio`, which is enough to *serve* over stdio
@@ -79,7 +79,7 @@ stdio-only. Reaching for `ServerConfig` or `HttpBuilder` without it fails with
 configured out` note — the module is behind the feature, not missing:
 
 ```toml
-protocol-droid = { version = "0.4", features = ["http"] }
+protocol-droid = { version = "0.5", features = ["http"] }
 ```
 
 Add `oauth` for the resource-server and PKCE client halves (it implies `http`),
@@ -88,7 +88,7 @@ and `random-ids` if you want CSPRNG session ids rather than a counter.
 A lean build — the IR, every codec, every wire type, and no executor at all:
 
 ```toml
-protocol-droid = { version = "0.4", default-features = false, features = ["serde"] }
+protocol-droid = { version = "0.5", default-features = false, features = ["serde"] }
 ```
 
 `default-features = false` drops the executor, the transport adapters, and the
