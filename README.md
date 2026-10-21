@@ -27,6 +27,9 @@ hosts the full guide (introduction, FeatureProfile, write-a-server,
 write-a-client, bridge, security model, spec-refresh, release). The site
 is built from `site/` in this repo and is updated on every `pnpm run deploy`.
 
+**▶️ [Watch the walkthrough](https://youtu.be/p0hU6RN5pVM)** — *"protocol-droid:
+Every MCP Spec Revision in One Rust Binary"*, a tour of the crate and the CLI.
+
 Three ideas set it apart:
 
 1. **One canonical internal model, many wire codecs.** Application code speaks a
