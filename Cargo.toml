@@ -73,7 +73,11 @@ exclude = [
 # it cannot parse instead of dropping it. Both follow from `aud` no longer
 # being modelled as an RFC 9728 resource identifier — see #46, where an `aud`
 # that is not an absolute URI had nowhere to go and was silently lost.
-version = "0.5.0"
+#
+# 0.5.1 is a patch: no public API changes. The JWT source reads the granted
+# permissions out of `scp` as well as `scope`, which is what a Microsoft Entra
+# delegated token carries and what every such token was being refused for.
+version = "0.5.1"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -104,9 +108,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.0" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.0" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.5.0" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.1" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.1" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.5.1" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

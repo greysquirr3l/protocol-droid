@@ -9,16 +9,35 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-21
+
+The other half of the Entra token fix. 0.5.0 bound `aud` correctly but still
+refused a valid delegated token for carrying no scopes, because the claim it
+carries them in is not the one being read.
+
 ### Fixed
 
-- **Every delegated token from Microsoft Entra was refused as unscoped.** The
-  JWT source read the granted permissions from the `scope` claim alone.
-  Entra's v2.0 delegated tokens carry them in `scp` — the same space-delimited
-  list under Microsoft's name — and carry no `scope` claim at all, so such a
-  token arrived with no permissions and `verify` refused it with
-  `Refusal::Unscoped`. A server fronted by Entra therefore refused every
-  valid token, silently, until its first real request. `scp` is now read
-  alongside `scope`, and an issuer that sends both has both granted.
+- **Every delegated token from Microsoft Entra was refused as unscoped.**
+  (`301df79`) The JWT source read the granted permissions from the `scope`
+  claim alone. Entra's v2.0 delegated tokens carry them in `scp` — the same
+  space-delimited list under Microsoft's name — and carry no `scope` claim at
+  all, so such a token arrived with no permissions and `verify` refused it with
+  `Refusal::Unscoped`. A server fronted by Entra therefore refused every valid
+  token, silently, until its first real request. `scp` is now read alongside
+  `scope`, and an issuer that sends both has both granted.
+
+### Security
+
+- **`webpki-roots` 1.0.9 → 1.0.10** (`24bf997`) — RUSTSEC-2026-0381. The
+  bundled root store contained a distrusted emSign intermediate; 1.0.10 removes
+  it. [`rustsec`](https://rustsec.org/advisories/RUSTSEC-2026-0381)
+- **`rustls-webpki` 0.103.15 → 0.103.16** (`24bf997`) — RUSTSEC-2026-0382.
+  Certificate verification may have accepted distrusted intermediates.
+  [`rustsec`](https://rustsec.org/advisories/RUSTSEC-2026-0382)
+
+Both are transitive, reached through `reqwest` on the server and client halves
+and `ureq` in `xtask`, so this is a lockfile change with no manifest edit. Both
+resolve within the 1.98 MSRV floor.
 
 ## [0.5.0] — 2026-10-20
 
