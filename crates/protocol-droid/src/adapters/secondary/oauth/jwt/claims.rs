@@ -20,6 +20,12 @@
 //! a detail: RFC 6749's ABNF is `1*( %x21 / %x23-5B / %x5D-7E )`, so a tab is
 //! not a separator and treating one as one would invent a scope nobody issued.
 //!
+//! **`scp`** is the same claim under the name Microsoft Entra ID issues it
+//! under. A delegated v2.0 token carries its granted permissions in `scp` and
+//! no `scope` at all, so a parser that reads only `scope` sees no permissions
+//! and refuses a perfectly good token for being unscoped. Both are read, and
+//! their contents are unioned.
+//!
 //! **`exp` and `nbf`** are `NumericDate`: seconds since the epoch, possibly
 //! fractional. They become `SystemTime` here so that the comparison in `verify`
 //! is the same comparison the introspection source's integers go through.
@@ -53,6 +59,15 @@ pub(super) struct JwtClaims {
     /// `scope` — the granted permissions.
     #[serde(default)]
     scope: Option<Scopes>,
+    /// `scp` — the granted permissions, under Microsoft's name for them.
+    ///
+    /// Microsoft Entra ID issues delegated v2.0 tokens with the permissions in
+    /// `scp` and no `scope` claim at all, so a parser that reads only `scope`
+    /// concludes the token carries nothing and refuses it for being unscoped.
+    /// `scp` is `scope` under another name: the same space-delimited list, from
+    /// the same OAuth 2.0 grant.
+    #[serde(default)]
+    scp: Option<Scopes>,
 }
 
 /// RFC 7519 §4.1.3, which is "a string or an array of strings".
@@ -103,6 +118,12 @@ impl JwtClaims {
             claims = claims.with_audience_string(audience);
         }
         for scope in self.scope.into_iter().flat_map(Scopes::into_entries) {
+            claims = claims.with_scope(scope);
+        }
+        // `scp` is unioned with `scope` rather than replacing it: an issuer
+        // that sends both has granted both, and reading only one would drop
+        // half the grant.
+        for scope in self.scp.into_iter().flat_map(Scopes::into_entries) {
             claims = claims.with_scope(scope);
         }
         if let Some(exp) = self.exp.and_then(instant) {

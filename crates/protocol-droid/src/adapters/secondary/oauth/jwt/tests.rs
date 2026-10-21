@@ -251,6 +251,62 @@ fn an_empty_scope_is_not_a_scope() -> Result<(), Failure> {
 }
 
 #[test]
+fn scopes_are_read_from_the_scp_claim() -> Result<(), Failure> {
+    // Microsoft Entra ID issues delegated v2.0 tokens with the granted
+    // permissions in `scp`, not `scope`. A token minted for
+    // `api://<guid>/Parlance.Catalog.Read` carries
+    //
+    //     "scp": "Parlance.Catalog.Read"
+    //
+    // and no `scope` claim at all, so a parser that reads only `scope` sees a
+    // token with no permissions and refuses it for being unscoped. The claim
+    // shape is Microsoft's, but the *rule* it breaks is the OAuth 2.0 one:
+    // `scp` is the `scope` claim under a different name, carrying the same
+    // space-delimited list.
+    let claims: JwtClaims = serde_json::from_value(json!({
+        "sub": "alice",
+        "scp": "Parlance.Catalog.Read Parlance.Quote.Write",
+    }))?;
+    assert_eq!(
+        scope_strings(&claims.into_token_claims()),
+        ["Parlance.Catalog.Read", "Parlance.Quote.Write"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scope_claim_and_an_scp_claim_are_both_read() -> Result<(), Failure> {
+    // Some issuers send both. Reading only one of them would drop half the
+    // grant, so the two are unioned rather than one winning.
+    let claims: JwtClaims = serde_json::from_value(json!({
+        "scope": "a",
+        "scp": "b",
+    }))?;
+    assert_eq!(scope_strings(&claims.into_token_claims()), ["a", "b"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_scp_claim_survives_the_signed_round_trip() -> Result<(), Failure> {
+    // The end-to-end path: a signed token whose payload carries only `scp`
+    // must still reach `verify` with its permissions intact. This is the
+    // shape Entra actually issues, and it is the one that has to work.
+    let source = source_over(published()?, vec![Algorithm::HS256]);
+    let claims = source
+        .claims(&signed(&json!({
+            "sub": "alice",
+            "iss": "https://auth.example",
+            "aud": "https://mcp.example/mcp",
+            "exp": 1_700_000_060,
+            "scp": "mcp:tools",
+        }))?)
+        .await?;
+
+    assert_eq!(scope_strings(&claims), ["mcp:tools"]);
+    Ok(())
+}
+
+#[test]
 fn a_numeric_date_is_read_as_seconds_since_the_epoch() {
     // RFC 7519 §3.1 permits a non-integer, and the fraction is kept: a sender
     // writing `.5` granted half a second past the whole second, and truncating
