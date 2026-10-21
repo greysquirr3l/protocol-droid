@@ -92,3 +92,6 @@ crates/protocol-droid/fuzz/fuzz/
 target/book/
 .papertowel/
 assets/img/protocol-droid.jpeg
+
+# promo video project (HyperFrames)
+/videos/
