@@ -9,6 +9,17 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every delegated token from Microsoft Entra was refused as unscoped.** The
+  JWT source read the granted permissions from the `scope` claim alone.
+  Entra's v2.0 delegated tokens carry them in `scp` — the same space-delimited
+  list under Microsoft's name — and carry no `scope` claim at all, so such a
+  token arrived with no permissions and `verify` refused it with
+  `Refusal::Unscoped`. A server fronted by Entra therefore refused every
+  valid token, silently, until its first real request. `scp` is now read
+  alongside `scope`, and an issuer that sends both has both granted.
+
 ## [0.5.0] — 2026-10-20
 
 A token's `aud` can now be bound independently of the RFC 9728 resource
