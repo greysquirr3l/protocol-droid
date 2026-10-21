@@ -199,13 +199,37 @@ echo "==> polling $LIVE_URL"
 # page the live URL points at, and require the served body to match it.
 REL_PATH="${LIVE_URL#*://*/}"
 REL_PATH="${REL_PATH%/}"
+
+# `REL_PATH` is the *URL* path, so it carries the gh-pages subdirectory — for
+# this project `protocol-droid`. The build, though, emits the site at the root
+# of `dist/`; the subdirectory is applied when `dist/` is synced into the pages
+# clone, not at build time. Looking for `dist/${REL_PATH}` therefore matches
+# nothing whenever the site does not sit at the pages root, and the check
+# degrades to the reachability-only poll it was written to replace — which is
+# the exact failure it exists to catch, arriving through a different door.
+#
+# 0.4.3 added this body comparison and the changelog claimed it closed the
+# stale-deploy hole. It had never run: the local page was never found, so
+# `WANT_DIGEST` was empty and every run took the fallback branch.
+DIST_REL="$REL_PATH"
+case "$DIST_REL" in
+    "$SUBDIR")   DIST_REL="" ;;
+    "$SUBDIR"/*) DIST_REL="${DIST_REL#"$SUBDIR"/}" ;;
+esac
+
+if [ -n "$DIST_REL" ]; then
+    CANDIDATES=(
+        "$SITE_DIR/dist/$DIST_REL/index.html"
+        "$SITE_DIR/dist/$DIST_REL.html"
+        "$SITE_DIR/dist/$DIST_REL"
+    )
+else
+    CANDIDATES=("$SITE_DIR/dist/index.html")
+fi
+
 LOCAL_PAGE=""
-for candidate in \
-  "$SITE_DIR/dist/${REL_PATH}/index.html" \
-  "$SITE_DIR/dist/${REL_PATH}.html" \
-  "$SITE_DIR/dist/${REL_PATH}"
-do
-  [ -f "$candidate" ] && { LOCAL_PAGE="$candidate"; break; }
+for candidate in "${CANDIDATES[@]}"; do
+    [ -f "$candidate" ] && { LOCAL_PAGE="$candidate"; break; }
 done
 
 # cksum is in POSIX and on both macOS and Linux; md5sum/shasum differ by
