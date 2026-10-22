@@ -9,6 +9,39 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Security
+
+- **`enforce_admins` is on.** (`.github/branch-protection.json`) It was
+  `false`, which meant a repository admin could push straight to `main` and
+  bypass the pull-request requirement. Enabling Dependabot's alerts made this
+  worth closing: an advisory is now reported against the repository, and the
+  person who would fix it could also skip the review saying the fix is right.
+
+  The release chain is unaffected — Auto Tag pushes a tag, and branch
+  protection applies to branches, not tags. Applying it needs the `admin`
+  permission, so this may still be pending on GitHub even though the file says
+  otherwise; `./scripts/apply-branch-protection.sh` is what makes the two agree.
+
+- **Dependabot was churning a pinned interop fixture.** (#55, closed) It
+  proposed `ip-address 10.7.3 → 10.7.4` inside
+  `crates/protocol-droid/tests/interop_ts_sdk/fixtures/`, a checked-in manifest
+  that pins `@modelcontextprotocol/sdk` at exactly one version so the interop
+  test tests that version. The directory was never declared in
+  `dependabot.yml`, and an undeclared directory receives security updates but
+  not ignore rules — so there was nowhere to say "not this one". `ip-address`
+  is now ignored at `<= 10.7.3`, the exact vulnerable range, so a later
+  advisory affecting 10.7.4 would still be reported.
+
+  Declaring the directory is what makes the ignore possible. The SDK is an
+  exact pin with no range, so this does not opt the fixture into update churn.
+
+### Changed
+
+- **Dependency advisories on the repository are down from 28 to 2.** The
+  remaining two — `postcss-selector-parser` (medium) and `esbuild` (low) — are
+  transitive build-time tooling with no fix at the versions astro resolves, and
+  neither is reachable from a build of a static site.
+
 ## [0.5.2] — 2026-10-22
 
 A patch in name only for #50: fifty-seven files moved and not one line of the
