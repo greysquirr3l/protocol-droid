@@ -1,16 +1,20 @@
 //! The MCP client: the wire shapes, and the peer that carries them.
 //!
-//! Two files, because they are two things. [`types`] is the vocabulary —
-//! the `initialize` request, the capability blocks, the tool call shapes —
+//! Two files, because they are two things. `types` is the vocabulary — the
+//! `initialize` request, the capability blocks, the tool call shapes —
 //! transcribed from the vendored schema and saying nothing about transport.
-//! [`peer`] is the transport: a child process, the reader and writer tasks,
+//! `peer` is the transport: a child process, the reader and writer tasks,
 //! and the pending-reply table that matches a reply to its request.
+//!
+//! Both are private, and everything they hold is re-exported flat below. The
+//! split was a change of file, not a change of surface: `mcp::client::X` meant
+//! the same thing before it and means the same thing now.
 //!
 //! The peer speaks newline-delimited JSON-RPC 2.0 in both directions, owns
 //! the child process, and kills it on drop.
 
-pub mod peer;
-pub mod types;
+mod peer;
+mod types;
 
 // Re-exported flat so that every path that resolved before the split still
 // resolves. The seven capability blocks in particular are only used inside

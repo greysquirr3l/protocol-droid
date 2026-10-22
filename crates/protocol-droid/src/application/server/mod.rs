@@ -34,7 +34,7 @@
 
 pub mod builder;
 pub mod context;
-pub mod exchange;
+mod exchange;
 pub mod dispatch;
 pub mod error;
 pub mod live;
