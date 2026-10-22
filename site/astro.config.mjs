@@ -17,9 +17,9 @@ export default defineConfig({
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/brand.css', './src/styles/custom.css'],
-      social: {
-        github: 'https://github.com/greysquirr3l/protocol-droid',
-      },
+      social: [
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/greysquirr3l/protocol-droid' },
+      ],
       // Force light mode on first paint. The theme toggle still works
       // (Starlight reads this attribute on switch); this just sets the
       // default for new visitors so the page doesn't flash dark.
@@ -33,23 +33,23 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Getting started',
-          autogenerate: { directory: 'getting-started' },
+          items: [{ autogenerate: { directory: 'getting-started' } }],
         },
         {
           label: 'Guides',
-          autogenerate: { directory: 'guides' },
+          items: [{ autogenerate: { directory: 'guides' } }],
         },
         {
           label: 'Architecture',
-          autogenerate: { directory: 'architecture' },
+          items: [{ autogenerate: { directory: 'architecture' } }],
         },
         {
           label: 'Reference',
-          autogenerate: { directory: 'reference' },
+          items: [{ autogenerate: { directory: 'reference' } }],
         },
         {
           label: 'Contributing',
-          autogenerate: { directory: 'contributing' },
+          items: [{ autogenerate: { directory: 'contributing' } }],
         },
       ],
     }),
