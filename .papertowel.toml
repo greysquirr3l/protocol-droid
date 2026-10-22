@@ -39,7 +39,7 @@ paths = [
 
 # ── Findings that survive the exclusions, and what to do with them ────────────
 #
-# **"harness" — 267 findings, and not one is actionable.** The word is on the
+# **"harness" — 341 findings, and not one is actionable.** The word is on the
 # built-in slop-vocabulary recipe, and AGENTS.md lists it as banned. But in
 # this codebase it is the ordinary technical noun: a test harness, a polling
 # harness, a conformance harness. `Failure::Harness` in the interop tests is a
@@ -47,10 +47,13 @@ paths = [
 # against `Failure::Rmcp` and `Failure::ProtocolDroid`, which mean the thing
 # under test misbehaved. Rewriting the word would erase that distinction, and
 # `exclude_terms` cannot suppress it: the recipes are compiled into the binary
-# and `exclude_terms` only applies to terms added through this file. So the
-# conflict is real, and it is settled the same way parlance settled it: by
-# amending the guide, not by muting the detector. Until then, read the count,
-# not the grade.
+# and `exclude_terms` only applies to terms added through this file.
+#
+# The conflict is real and it is left standing. The guide says banned; the code
+# says technical noun; both are right about their own domain, and the code is
+# what a maintainer reads. So nothing is renamed and the guide is not amended —
+# the word earns its place in 203 places and the count is simply wrong about
+# them. Read the count, not the grade.
 #
 # **`realm` — 2 findings, and it is an HTTP keyword.** `Basic realm="x"` in
 # crates/protocol-droid/src/domain/oauth/challenge.rs is RFC 7235's
@@ -120,8 +123,10 @@ paths = [
 #
 # **ARCH003 — 43 findings.** "God file detected (>800 lines)". The largest are
 # examples/a2a_server.rs at 2790 lines and cli/src/replay.rs at 2401; 31 files
-# are over 1000. This is a decomposition effort, not a cleanup pass, and it
-# belongs to the god-is-dead workflow on its own branch. Not addressed here.
+# are over 1000. AGENTS.md already forbids God files, so this is a standing
+# violation rather than a new one — but splitting 43 files is a decomposition
+# effort, not a cleanup pass, and papertowel ships a dedicated god-is-dead
+# workflow for it. Deferred to its own branch; not attempted here.
 #
 # Read the comment and structure findings before believing them: the two
 # `structure.uniform` highs in the production tree are a file of small
