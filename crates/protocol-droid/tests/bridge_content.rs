@@ -132,7 +132,7 @@ fn bridge_over(
 /// receives still carried a member its revision cannot parse.
 ///
 /// The upstream is `2025-06-18` — the revision that introduced the field — and
-/// not `2026-07-28`, which additionally *requires* `resultType`. That would have
+/// not `2026-07-28`, which *requires* `resultType` as well. That would have
 /// put a second downgrade on the path and proved the two at once, which is worth
 /// having and is not what this test is for.
 #[tokio::test]

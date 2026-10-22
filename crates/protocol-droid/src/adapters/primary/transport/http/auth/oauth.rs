@@ -303,7 +303,7 @@ impl<A> OAuthAuthenticator<A> {
     ///
     /// Rebuilt per request rather than stored because [`TokenPolicy`] borrows
     /// the resource and holds an `Option<Arc<str>>`, so a stored one would pin
-    /// a lifetime onto the struct for the sake of two field copies.
+    /// a lifetime onto the struct to save two field copies.
     fn policy(&self) -> TokenPolicy<'_> {
         let mut policy =
             TokenPolicy::new(self.metadata.resource(), authorization_model(self.version));

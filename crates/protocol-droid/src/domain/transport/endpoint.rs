@@ -9,9 +9,9 @@
 //!
 //! Cited: <https://modelcontextprotocol.io/specification/2024-11-05/basic/transports>
 //!
-//! That is the whole of it. Notably **absent** are the two things every
-//! implementation actually does — there is no `sessionId` query parameter and
-//! no `202 Accepted` in the specification. Those are SDK conventions, and a
+//! That is the whole of it. What is **absent** matters more than what is
+//! present — there is no `sessionId` query parameter and no `202 Accepted`
+//! in the specification. Those are SDK conventions, and a
 //! crate that cites the spec has to say so rather than quietly encode a
 //! convention and attribute it to the standard.
 //!

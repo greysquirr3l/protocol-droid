@@ -335,7 +335,7 @@ mod tests {
     /// because what is being claimed is that the id survives as valid JSON, not
     /// that this crate picks a particular escape spelling. DEL is a legal raw
     /// byte inside a JSON string — only U+0000–U+001F, `"` and `\` must be
-    /// escaped — and `serde_json` accordingly passes it through, so a test
+    /// escaped — and `serde_json` passes it through, so a test
     /// demanding `\u007f` would be testing that crate's escape table rather
     /// than this module. The quote in the fixture is the member that genuinely
     /// has to be escaped, and the round trip is what proves it was.

@@ -204,7 +204,7 @@ pub fn run(
     Ok(value)
 }
 
-/// Explains a refusal in terms of what to change.
+/// Explains a refusal by what to change.
 ///
 /// The two `LowerError`s that reach here mean different things to whoever has
 /// to act on them, so they are told apart rather than both printed as an error
