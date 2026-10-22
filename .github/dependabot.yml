@@ -57,19 +57,22 @@ updates:
     prefix: "chore(site)"
 
 # The interop fixture is a checked-in `package.json` that `cargo test` spawns
-# with `npm install`. Dependabot's security updates reach it without this
-# entry existing, which is how GHSA-rxp7-6hxx-x8q5 (ip-address, medium)
-# arrived as PR #55.
+# with `npm install`. It was never declared here, but Dependabot's security
+# updates reach it anyway, which is how GHSA-rxp7-6hxx-x8q5 (ip-address,
+# medium) arrived as PR #55.
 #
-# `ip-address` is ignored rather than bumped. It is a transitive dependency of
-# the pinned SDK, not something this repository chose, and the advisory is
-# quadratic matching on an IPv6 zone identifier — a field no MCP peer sends.
-# Bumping it would churn a lockfile that exists to pin `@modelcontextprotocol/sdk`
-# at one known version so the interop test tests that version.
+# The entry exists so that the fixture's transitive dependencies get the same
+# attention as the workspace's, not to suppress them. `ip-address` was ignored
+# here first, on the reasoning that a transitive bump churns a lockfile whose
+# job is to hold the SDK at one version. That was wrong: the SDK's own
+# declared range for ip-address is `^10.2.0`, so 10.7.4 was always
+# permitted, and the bump moved three lines and left the SDK at 1.32.1.
 #
-# The SDK itself is an exact pin with no range, so the default versioning
-# strategy leaves it alone. Declaring the directory is what lets the ignore
-# apply; it does not opt the fixture into update churn.
+# `npm install` does not do this on its own -- it honours the lockfile, so
+# 10.7.3 stayed installed until the lockfile was updated deliberately. That
+# is the whole argument for keeping the entry: a lockfile that is never
+# updated by hand is a lockfile that silently keeps a known-vulnerable
+# transitive version.
 - package-ecosystem: npm_and_yarn
   directory: "/crates/protocol-droid/tests/interop_ts_sdk/fixtures"
   schedule:
@@ -78,11 +81,5 @@ updates:
     time: "05:00"
     timezone: Etc/UTC
   open-pull-requests-limit: 5
-  ignore:
-    # GHSA-rxp7-6hxx-x8q5 affects <= 10.7.3; the range covers exactly the
-    # vulnerable versions and no others, so a future advisory that 10.7.4 is
-    # also subject to would still be reported.
-    - dependency-name: "ip-address"
-      versions: ["<= 10.7.3"]
   commit-message:
     prefix: "chore(interop-fixture)"

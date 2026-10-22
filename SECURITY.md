@@ -120,8 +120,10 @@ hook covers them locally. That is a mitigation, not equivalent coverage.
 
 The `interop_ts_sdk` fixture is the one case where a manifest *is* watched:
 Dependabot's security updates reach it, and it is declared in
-`dependabot.yml` so that an ignore rule can apply to it. The other two are
-Rust and are covered by the hook alone.
+`dependabot.yml` so a transitive advisory gets a bump proposal rather than
+sitting unnoticed. Note that `npm install` honours the committed lockfile,
+so it will not self-heal — the lockfile has to be updated on purpose. The
+other two are Rust and are covered by the hook alone.
 
 **Nothing builds `site/`.** A dependency change under `site/` that does not
 build — a framework major with an unsatisfied peer range, for instance —
