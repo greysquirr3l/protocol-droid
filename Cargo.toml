@@ -77,7 +77,17 @@ exclude = [
 # 0.5.1 is a patch: no public API changes. The JWT source reads the granted
 # permissions out of `scp` as well as `scope`, which is what a Microsoft Entra
 # delegated token carries and what every such token was being refused for.
-version = "0.5.1"
+#
+# 0.5.2 is a patch for the same reason, and the reason is worth recording
+# because 57 files moved. #50 broke seven oversized files into smaller ones and
+# #53 moved the documentation site's dependencies. Not one line of the public
+# API changed: the new submodules were made private in cc579cfc, and the one
+# type that genuinely moved (`DispatchError`, from `server::builder` to
+# `server::error`) is still re-exported from where it was. That was checked by
+# diffing the generated rustdoc for `main` against this branch and by
+# compiling a probe that imports all 25 previously-public paths from both their
+# old and new sites. None of it touches a consumer's code.
+version = "0.5.2"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -108,9 +118,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.1" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.1" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.5.1" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.2" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.2" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.5.2" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.
