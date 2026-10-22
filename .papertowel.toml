@@ -27,6 +27,10 @@ paths = [
     # memories. Tool state, not authored source, and `.coraline/.gitignore`
     # already excludes it from git.
     ".coraline/",
+    # The promo-video project. Gitignored (.gitignore:97) and not tracked at
+    # all — 164 files of storyboards, beats and captures that belong to a
+    # different piece of work.
+    "videos/",
     # This file. It quotes the banned words in order to explain why they are
     # not actionable, so the scanner reads its own commentary as findings —
     # papertowel excludes its recipe definitions for the same reason.
