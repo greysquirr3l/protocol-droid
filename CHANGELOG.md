@@ -18,29 +18,31 @@ checked against the code rather than taken on the changelog's word.
   person who would fix it could also skip the review saying the fix is right.
 
   The release chain is unaffected — Auto Tag pushes a tag, and branch
-  protection applies to branches, not tags. Applying it needs the `admin`
-  permission, so this may still be pending on GitHub even though the file says
-  otherwise; `./scripts/apply-branch-protection.sh` is what makes the two agree.
+  protection applies to branches, not tags.
 
-- **Dependabot was churning a pinned interop fixture.** (#55, closed) It
-  proposed `ip-address 10.7.3 → 10.7.4` inside
-  `crates/protocol-droid/tests/interop_ts_sdk/fixtures/`, a checked-in manifest
-  that pins `@modelcontextprotocol/sdk` at exactly one version so the interop
-  test tests that version. The directory was never declared in
-  `dependabot.yml`, and an undeclared directory receives security updates but
-  not ignore rules — so there was nowhere to say "not this one". `ip-address`
-  is now ignored at `<= 10.7.3`, the exact vulnerable range, so a later
-  advisory affecting 10.7.4 would still be reported.
+- **`ip-address` in the interop fixture is fixed rather than suppressed.**
+  (`GHSA-rxp7-6hxx-x8q5`, medium) Dependabot proposed this as #55 and it was
+  closed in favour of an ignore rule, on the reasoning that a transitive bump
+  churns a lockfile whose job is to hold the SDK at one version. That
+  reasoning was wrong: the SDK's own declared range is `^10.2.0`, so 10.7.4
+  was always permitted. The bump moves three lines, leaves
+  `@modelcontextprotocol/sdk` at `1.32.1`, and takes the fixture's
+  `npm audit` from one moderate to zero. The ignore rule is removed.
 
-  Declaring the directory is what makes the ignore possible. The SDK is an
-  exact pin with no range, so this does not opt the fixture into update churn.
+  `npm install` does not do this on its own — it honours the lockfile, so
+  10.7.3 stayed installed until the lockfile was updated deliberately. The
+  `dependabot.yml` entry for that directory is kept for exactly this
+  reason: without it there is no schedule watching a lockfile that only
+  changes by hand.
 
 ### Changed
 
-- **Dependency advisories on the repository are down from 28 to 2.** The
-  remaining two — `postcss-selector-parser` (medium) and `esbuild` (low) — are
-  transitive build-time tooling with no fix at the versions astro resolves, and
-  neither is reachable from a build of a static site.
+- **Dependency advisories on the repository are down from 28 to 1.** The
+  remaining one is `esbuild` (low, `GHSA-g7r4-m6w7-qqqr`) in
+  `site/pnpm-lock.yaml`: latest resolvable is `0.27.7`, lowest
+  non-vulnerable is `0.28.1`, and no version satisfies both. It is
+  build-time tooling for the Astro dev server and is not reachable from a
+  build of a static site.
 
 ## [0.5.2] — 2026-10-22
 
