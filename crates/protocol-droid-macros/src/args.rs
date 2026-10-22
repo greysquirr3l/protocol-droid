@@ -84,7 +84,7 @@ fn is_context(arg: &FnArg) -> bool {
 /// otherwise arrive as a wall of type errors about the `Future` bound rather
 /// than as the one edit that fixes it; a `self` parameter, because a tool is
 /// called by name and a receiver would have nothing to receive from; and a
-/// second context parameter, which is almost certainly a typo and which would
+/// second context parameter, which is almost always a typo and which would
 /// otherwise generate two fields named the same thing.
 ///
 /// A context that is not the first parameter is also refused. The generated

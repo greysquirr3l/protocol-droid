@@ -382,9 +382,10 @@ async fn a_token_carrying_only_unrecognised_scopes_is_refused() -> Result<(), Fa
     // `verify` answers `Unscoped` when a token's scopes resolve to nothing, and
     // the authenticator collapses that into anonymous like every other refusal.
     //
-    // Worth pinning because it is the one case where "anonymous" is arguably a
-    // loss. RFC 6750 would have a server answer 403 here, not 401. It is still
-    // refused rather than half-admitted, and the argument is that a token whose
+    // Worth pinning because it is the one case where "anonymous" is close
+    // enough to a loss to be worth arguing about. RFC 6750 would have a server
+    // answer 403 here, not 401. It is still refused rather than half-admitted,
+    // and the argument is that a token whose
     // every scope this deployment cannot map is one it has no vocabulary to
     // reason about — admitting the principal while granting nothing would mean
     // trusting a credential we could not read. Nothing is granted either way;

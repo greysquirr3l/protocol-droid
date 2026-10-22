@@ -211,14 +211,19 @@ impl ListTaskPushNotificationConfigsRequest {
         }
     }
 
-    /// Sets the page size.
+    /// Sets `pageSize`.
+    ///
+    /// Absent from the request unless this method is called.
     #[must_use]
     pub const fn with_page_size(mut self, page_size: u32) -> Self {
         self.page_size = Some(page_size);
         self
     }
 
-    /// Sets the page token.
+    /// Sets `pageToken`.
+    ///
+    /// Absent from the request unless this method is called, which is the
+    /// first page.
     #[must_use]
     pub fn with_page_token(mut self, page_token: impl Into<String>) -> Self {
         self.page_token = Some(page_token.into());

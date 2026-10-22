@@ -1129,7 +1129,7 @@ fn read_protocol(headers: &HeaderMap) -> Result<Option<ProtocolVersion>, Refusal
 /// `StatusCode::OK` because it was in a hurry, on a path no test walks.
 /// Renders a refusal as the response it is.
 ///
-/// A `401` additionally carries the `WWW-Authenticate` challenge, because a
+/// A `401` also carries the `WWW-Authenticate` challenge, because a
 /// `401` without one is a dead end for the client: it knows it needs a
 /// credential but not where the authorization server is, which is the one thing
 /// a client that has just been handed an expired token cannot work out for

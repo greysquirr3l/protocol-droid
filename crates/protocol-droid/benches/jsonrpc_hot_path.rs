@@ -35,8 +35,8 @@
 // divan's `#[bench]` macro matches its argument against a fn pointer written
 // with an elided `Bencher`, and it does that before this crate's lints are
 // resolved. Spelling the two lifetimes out is what the macro rejects, so the
-// lint and the macro cannot both be satisfied at the signature — hence the
-// expectation, scoped to this file rather than repeated on every benchmark.
+// lint and the macro cannot both be satisfied at the signature, which is why
+// the expectation is scoped to this file rather than repeated on every benchmark.
 #![expect(
     elided_lifetimes_in_paths,
     reason = "divan's `#[bench]` macro only matches a `Bencher` with the lifetimes elided; spelling them out makes the signature invisible to it"

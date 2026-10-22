@@ -96,7 +96,9 @@ impl SendMessageRequest {
         }
     }
 
-    /// Sets the configuration.
+    /// The configuration to send.
+    ///
+    /// Absent from the request unless this method is called.
     #[must_use]
     pub fn with_configuration(mut self, configuration: MessageSendConfiguration) -> Self {
         self.configuration = Some(configuration);
@@ -173,7 +175,10 @@ impl MessageSendConfiguration {
         }
     }
 
-    /// Sets the history length.
+    /// How much history to carry.
+    ///
+    /// Absent from the request unless this method is called, in which case
+    /// the agent keeps the history it has.
     #[must_use]
     pub const fn with_history_length(mut self, length: u32) -> Self {
         self.history_length = Some(length);

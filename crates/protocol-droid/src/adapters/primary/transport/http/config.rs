@@ -435,7 +435,9 @@ impl ServerConfig {
         self.streaming
     }
 
-    /// Sets the streaming policy.
+    /// Whether a POST is answered inline or over SSE.
+    ///
+    /// Inline unless this method says otherwise.
     #[must_use]
     pub const fn with_streaming(mut self, streaming: Streaming) -> Self {
         self.streaming = streaming;

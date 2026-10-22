@@ -79,10 +79,10 @@ impl Table {
     ///
     /// A replace keeps the original's position in the listing order. That is a
     /// choice, and the other one is defensible: a tool whose *schema* changed is
-    /// arguably a different tool and belongs at the end. Keeping the position
-    /// is better because a page cursor stays valid across a replacement, and a
-    /// client that fetched page one and then sees a new tool does not silently
-    /// skip a page boundary.
+    /// close enough to a different tool to belong at the end. Keeping the
+    /// position is better because a page cursor stays valid across a
+    /// replacement, and a client that fetched page one and then sees a new tool
+    /// does not silently skip a page boundary.
     ///
     /// The common case — a name that is not in the set — is O(1). A replace
     /// walks the listing to find the slot, which is paid only on the rarer

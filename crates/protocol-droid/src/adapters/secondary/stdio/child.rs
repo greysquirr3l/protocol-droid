@@ -46,7 +46,7 @@
 //! # Examples
 //!
 //! The whole lifecycle, which is what a caller of
-//! [`StdioClient::spawn`](super::StdioClient::spawn) is doing under the hood:
+//! [`StdioClient::spawn`](super::StdioClient::spawn) does behind the scenes:
 //!
 //! ```no_run
 //! use protocol_droid::adapters::secondary::stdio::{ChildSpec, ClientConfig, StdioClient};

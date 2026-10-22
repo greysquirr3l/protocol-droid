@@ -64,7 +64,7 @@
 //! how to authenticate. It also cannot live on the MCP endpoint, which is
 //! POST-only.
 //!
-//! The route is nevertheless mounted on the MCP router rather than left to a
+//! The route is still mounted on the MCP router rather than left to a
 //! separate one, because the layers it then passes through are exactly the ones
 //! it already faces as an MCP endpoint — and keeping the document beside its
 //! challenge is what stops the two naming different URLs.

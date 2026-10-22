@@ -436,14 +436,18 @@ impl StatelessRequest {
         }
     }
 
-    /// Sets the version.
+    /// The version the request advertised in its `_meta`.
+    ///
+    /// A request whose `_meta` carried no version leaves this unset, and
+    /// the server picks the revision to answer on.
     #[must_use]
     pub const fn with_version(mut self, version: ProtocolVersion) -> Self {
         self.version = Some(version);
         self
     }
 
-    /// Sets the client capabilities.
+    /// Replaces the advertised capability set rather than merging into it. A
+    /// request that advertised none carries an empty set.
     #[must_use]
     pub const fn with_client_caps(mut self, caps: CapabilitySet) -> Self {
         self.client_caps = caps;

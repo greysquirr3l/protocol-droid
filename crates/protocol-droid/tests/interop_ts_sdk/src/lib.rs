@@ -6,7 +6,7 @@
 //! The rmcp interop crate (T22's other leg) cross-tests against the
 //! Rust SDK most consumer projects will reach for; this one cross-tests
 //! against the SDK the official `conformance` suite itself uses
-//! under the hood, and which every consumer integrating through
+//! behind the scenes, and which every consumer integrating through
 //! Node or a browser is the SDK they will reach for. A wire bug
 //! between `protocol-droid` and the TypeScript SDK is a bug a
 //! consumer hits in the first hour.

@@ -11,10 +11,66 @@ had grown into a maintainer's manual.
 Contents:
 
 - [Repository operations](#repository-operations)
+  - [Git hooks](#git-hooks)
   - [Branch protection](#branch-protection)
     - [The nine status checks](#the-nine-status-checks)
   - [Releasing](#releasing)
   - [The docs site](#the-docs-site)
+
+## Git hooks
+
+Install them once per clone:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+The hooks are tracked in [`scripts/`](../../scripts), so every machine runs the
+same checks. The installer copies them into `.git/hooks/` and leaves any hook
+that is not in that directory alone.
+
+### pre-push
+
+Runs the two CI checks that are cheap enough to run on every push:
+
+- `cargo fmt --all --check` — the same command the [`fmt`](#the-nine-status-checks) job runs.
+- `cargo audit` — over every committed `Cargo.lock`.
+
+It takes about four seconds. The rest of CI takes minutes, and a hook that
+takes ten minutes is a hook people disable.
+
+Two decisions worth knowing about:
+
+**Waivers come from [`deny.toml`](../../deny.toml).** `cargo audit` has no
+config file, so the hook reads the `id` fields out of `[advisories].ignore` in
+`deny.toml` and passes them as `--ignore`. There is one list, not two. If you
+add a waiver to `deny.toml`, the hook honours it immediately; if you only added
+it to a copy somewhere, CI and your pre-push would disagree.
+
+**It audits all four lockfiles, not just the workspace one.** The interop and
+fuzz crates are excluded from the workspace, so the `supply chain` job's
+`cargo deny` never sees their dependency graphs. A committed `Cargo.lock` is a
+dependency graph someone will build, so it gets the same scan.
+
+A failed advisory scan is a hard block, including the case where the scan could
+not run at all. `cargo audit` exits 1 for a vulnerability *and* for a failure to
+fetch the advisory database, and the hook tells the two apart by whether the
+report is empty on stdout — a finding prints its report, a fetch failure prints
+nothing. A scan that did not run is not a scan that passed.
+
+If `cargo-audit` is not installed the hook says so and skips that half rather
+than failing; CI still catches it. Install it with
+`cargo install cargo-audit --locked`.
+
+`--no-verify` bypasses the hook. That is a guard against a habit, not a
+security boundary — CI runs the same checks and does not honour it.
+
+### Why pre-push and not pre-commit
+
+Pre-commit runs before the commit exists, so a `cargo fmt` that rewrites files
+cannot run there without silently amending what the author staged. Pre-push
+runs after the commit exists, so the check reports rather than rewrites, and
+fixing it is an explicit `cargo fmt --all && git commit --amend`.
 
 ## Branch protection
 

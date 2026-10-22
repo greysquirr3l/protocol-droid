@@ -119,14 +119,18 @@ impl TaskPushNotificationConfig {
         }
     }
 
-    /// Sets the token.
+    /// The token to send.
+    ///
+    /// Absent on the wire unless this method is called.
     #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
         self
     }
 
-    /// Sets the authentication info.
+    /// The authentication info to send.
+    ///
+    /// Absent on the wire unless this method is called.
     #[must_use]
     pub fn with_authentication(
         mut self,
@@ -188,7 +192,9 @@ impl PushNotificationAuthenticationInfo {
         }
     }
 
-    /// Sets the credentials.
+    /// The credentials to send.
+    ///
+    /// Absent on the wire unless this method is called.
     #[must_use]
     pub fn with_credentials(mut self, credentials: impl Into<String>) -> Self {
         self.credentials = Some(credentials.into());

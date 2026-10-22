@@ -35,7 +35,7 @@
 //! reason the server's does not: on stdio, stdout is the conversation. The
 //! forwarder in `child::forward_stderr` moves those bytes across one line at
 //! a time and nowhere else, so a server that logs to stderr cannot corrupt a
-//! frame — and, just as importantly, a log line cannot be mistaken for a
+//! frame — and, just as important, a log line cannot be mistaken for a
 //! frame the peer failed to parse.
 //!
 //! # The two `None`s
