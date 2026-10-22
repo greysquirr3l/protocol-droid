@@ -11,8 +11,6 @@ use std::io::{BufRead, Write};
 use anyhow::Context as _;
 use serde_json::{Map, Value, json};
 
-
-
 /// Opens a session file (or stdin for `-`).
 pub(super) fn open_session(
     path: &str,
@@ -266,4 +264,3 @@ pub(super) fn looks_like_response(frame: &Map<String, Value>) -> bool {
 // The recorded session is the contract; the as-client engine
 // re-issues the requests and verifies the responses.
 // ============================================================================
-

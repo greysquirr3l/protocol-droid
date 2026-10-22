@@ -98,9 +98,9 @@ mod tests;
 pub use client::{CapturedTurn, ClientReport, drive_session};
 pub use diff::{DiffSummary, LineDiff, LineDiffOutcome, diff_with_io};
 pub use report::{FrameVerdict, RunSummary, VerdictOutcome, run, run_with_io};
-pub use serve::{ServeReport, serve_with_io};
 use serde::Deserialize;
 use serde_json::{Map, Value};
+pub use serve::{ServeReport, serve_with_io};
 
 /// What the operator asked `replay` to do.
 #[derive(Debug, Args)]

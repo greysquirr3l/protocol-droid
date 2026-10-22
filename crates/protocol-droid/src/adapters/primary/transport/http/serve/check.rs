@@ -28,7 +28,6 @@ pub(super) fn check_header(
     })
 }
 
-
 /// Whether a body is a SEP-2575 stateless request.
 ///
 /// The test is the presence of the version key in `params._meta`, which is
@@ -50,4 +49,3 @@ pub(super) fn declares_own_version(body: &[u8]) -> bool {
     };
     declares_version(&parsed)
 }
-

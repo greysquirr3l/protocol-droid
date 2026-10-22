@@ -759,9 +759,6 @@ impl Dispatcher {
     }
 }
 
-
-
-
 /// Wraps a listing's visible entries under `key`.
 ///
 /// The document is assembled from values this module built, so the only way it
@@ -780,7 +777,6 @@ enum Cacheable {
     No,
 }
 
-
 /// Whether `method` may answer with a SEP-2322 `InputRequiredResult`.
 ///
 /// `tasks/result` is the fourth the SEP names; it belongs to the tasks
@@ -788,7 +784,6 @@ enum Cacheable {
 fn accepts_input_round(method: &str) -> bool {
     matches!(method, "tools/call" | "prompts/get" | "resources/read")
 }
-
 
 /// Whether SEP-2549's result envelope exists in this revision.
 #[must_use]

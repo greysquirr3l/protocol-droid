@@ -10,8 +10,8 @@ use std::task::{Context, Poll, Waker};
 
 use super::{
     Available, ClientIdentity, ClientMetadata, ClientMetadataError, DynamicRegistrar,
-    MetadataDocumentLoader, RegistrarError, RegistrationError, RegistrationPlan,
-    acquire_client, plan_registration,
+    MetadataDocumentLoader, RegistrarError, RegistrationError, RegistrationPlan, acquire_client,
+    plan_registration,
 };
 use crate::domain::ProtocolVersion;
 use crate::domain::mcp::authorization::{AuthorizationModel, authorization_model};
@@ -316,8 +316,7 @@ fn a_stored_credential_from_this_issuer_is_reused() -> Result<(), Failure> {
 /// one server cannot be presented to another. A stored credential from
 /// elsewhere has to be refused, not quietly reused.
 #[test]
-fn a_credential_from_another_issuer_is_refused_where_binding_is_required() -> Result<(), Failure>
-{
+fn a_credential_from_another_issuer_is_refused_where_binding_is_required() -> Result<(), Failure> {
     let stored = RegisteredClient::dynamic(OTHER_AS, ClientId::opaque("stored"), None)?;
 
     assert_matches!(
@@ -337,8 +336,8 @@ fn a_credential_from_another_issuer_is_refused_where_binding_is_required() -> Re
 /// is reused. It still carries the issuer it was issued by, so nothing
 /// downstream can mistake it for the current server's.
 #[test]
-fn a_credential_from_another_issuer_is_reused_where_binding_is_not_required()
--> Result<(), Failure> {
+fn a_credential_from_another_issuer_is_reused_where_binding_is_not_required() -> Result<(), Failure>
+{
     let stored = RegisteredClient::dynamic(OTHER_AS, ClientId::opaque("stored"), None)?;
 
     let plan = plan_registration(

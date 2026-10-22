@@ -3,16 +3,16 @@
 //! Out of the command so that reading `replay` means reading the four modes
 //! rather than the tests that sit underneath all of them.
 
-use std::collections::VecDeque;
-use protocol_droid::adapters::secondary::codec::result::WireToolResults;
-use protocol_droid::application::bridge::Translator;
 use super::client::diff_turn;
 use super::client::pair_recorded_turns;
 use super::report::leg_for;
 use super::report::replay_one;
+use super::*;
+use protocol_droid::adapters::secondary::codec::result::WireToolResults;
+use protocol_droid::application::bridge::Translator;
 use protocol_droid::domain::{DegradePolicy, ProtocolVersion};
 use serde_json::json;
-use super::*;
+use std::collections::VecDeque;
 
 fn policy() -> DegradePolicy {
     DegradePolicy::permissive()
@@ -199,7 +199,8 @@ fn error_envelope_is_forwarded() -> anyhow::Result<()> {
 /// A request envelope (no `result`, no `error`) is forwarded.
 #[test]
 fn request_envelope_is_forwarded() -> anyhow::Result<()> {
-    let line = r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"}"#;
+    let line =
+        r#"{"version":"2024-11-05","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"}"#;
     let verdict = replay_one(
         line,
         1,
@@ -240,8 +241,7 @@ fn malformed_line_returns_err_so_caller_can_skip() {
 /// a lie the build cannot back up.
 #[test]
 fn unknown_recorded_version_is_refused_not_silently_forwarded() -> anyhow::Result<()> {
-    let line =
-        r#"{"version":"2099-01-01","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}"#;
+    let line = r#"{"version":"2099-01-01","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"}"#;
     let verdict = replay_one(
         line,
         1,

@@ -24,7 +24,7 @@ mod types;
 pub use peer::{McpPeerError, McpStdioPeer, SpawnSpec};
 pub use types::{
     CallToolRequest, CallToolResult, ClientCapabilities, ContentBlock, Implementation,
-    InitializeRequest, InitializeResult, ListToolsResult, LoggingCapability,
-    PromptsCapability, ResourcesCapability, RootsCapability, SamplingCapability, ServerCapabilities,
-    Tool, ToolsCapability, default_client_capabilities, initialize_request_template,
+    InitializeRequest, InitializeResult, ListToolsResult, LoggingCapability, PromptsCapability,
+    ResourcesCapability, RootsCapability, SamplingCapability, ServerCapabilities, Tool,
+    ToolsCapability, default_client_capabilities, initialize_request_template,
 };

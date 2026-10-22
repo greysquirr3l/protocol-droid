@@ -606,8 +606,8 @@ async fn the_result_envelope_is_stamped_only_from_2026_07_28() -> Result<(), Tes
         )
         .await
         .map_err(|error| Failure::from(error.to_string()))?;
-    let listed: serde_json::Value = serde_json::from_str(listed.as_str())
-        .map_err(|error| Failure::from(error.to_string()))?;
+    let listed: serde_json::Value =
+        serde_json::from_str(listed.as_str()).map_err(|error| Failure::from(error.to_string()))?;
     for member in ["resultType", "ttlMs", "cacheScope"] {
         assert!(
             listed.get(member).is_some(),
@@ -624,8 +624,8 @@ async fn the_result_envelope_is_stamped_only_from_2026_07_28() -> Result<(), Tes
         )
         .await
         .map_err(|error| Failure::from(error.to_string()))?;
-    let legacy: serde_json::Value = serde_json::from_str(legacy.as_str())
-        .map_err(|error| Failure::from(error.to_string()))?;
+    let legacy: serde_json::Value =
+        serde_json::from_str(legacy.as_str()).map_err(|error| Failure::from(error.to_string()))?;
     for member in ["resultType", "ttlMs", "cacheScope"] {
         assert!(
             legacy.get(member).is_none(),
@@ -664,8 +664,8 @@ async fn the_listing_hides_a_tool_the_caller_may_not_see() -> Result<(), TestErr
         .dispatch(&ctx(&peer), "tools/list", &JsonObject::default())
         .await
         .map_err(|error| Failure::from(error.to_string()))?;
-    let parsed: serde_json::Value = serde_json::from_str(listed.as_str())
-        .map_err(|error| Failure::from(error.to_string()))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(listed.as_str()).map_err(|error| Failure::from(error.to_string()))?;
     let names: Vec<&str> = parsed
         .get("tools")
         .and_then(serde_json::Value::as_array)

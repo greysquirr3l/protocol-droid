@@ -34,9 +34,9 @@
 
 pub mod builder;
 pub mod context;
-mod exchange;
 pub mod dispatch;
 pub mod error;
+mod exchange;
 pub mod live;
 pub mod log_gate;
 pub mod read;

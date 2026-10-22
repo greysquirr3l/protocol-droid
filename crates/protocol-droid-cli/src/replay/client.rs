@@ -6,15 +6,14 @@
 //! checked against a server that is running now rather than one that was
 //! running then.
 
-use super::diff::{LineDiff, LineDiffOutcome};
 use super::RecordedFrame;
+use super::diff::{LineDiff, LineDiffOutcome};
 use std::io::Write;
 
 use anyhow::Context as _;
 use serde_json::{Map, Value};
 
 use crate::record::Direction;
-
 
 /// What the client driver reports for one replayed turn.
 #[derive(Debug, Default)]
@@ -198,7 +197,10 @@ pub fn drive_session(
 /// from inside the tokio runtime it built. The integration tests
 /// (which run inside a `#[tokio::test]`) reuse the same entry
 /// without re-entering a runtime.
-pub(super) async fn run_as_client_async(session_path: &str, server: &[String]) -> anyhow::Result<()> {
+pub(super) async fn run_as_client_async(
+    session_path: &str,
+    server: &[String],
+) -> anyhow::Result<()> {
     use protocol_droid::adapters::primary::stdio::Diagnostics;
     use protocol_droid::adapters::secondary::stdio::{ChildSpec, ClientConfig, StdioClient};
 
@@ -329,4 +331,3 @@ where
         }
     }
 }
-

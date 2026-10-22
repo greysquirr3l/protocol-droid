@@ -50,7 +50,6 @@ pub(super) fn negotiate(
     Ok((version, profile))
 }
 
-
 /// The revisions this server will agree to over `transport`.
 ///
 /// HTTP+SSE belongs to `2024-11-05` alone, so a legacy session is never
@@ -71,4 +70,3 @@ pub(super) fn supported_on(transport: TransportKind) -> Result<SupportedVersions
         .collect();
     SupportedVersions::from_slice(&defining).map_err(|_| DispatchError::UnnegotiableVersion)
 }
-

@@ -29,7 +29,6 @@ use serde_json::{Map, Value};
 
 use crate::check;
 
-
 /// One line of the output JSONL stream.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FrameVerdict {
@@ -470,4 +469,3 @@ where
 // right, and a per-line pairing is what the operator running `replay
 // --diff` actually wants to see.
 // ============================================================================
-

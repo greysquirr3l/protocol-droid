@@ -122,8 +122,6 @@ pub(super) const TAIL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(64) {
     None => NonZeroUsize::MIN,
 };
 
-
-
 /// One session's state on an HTTP connection.
 ///
 /// Holds the negotiated [`PeerSession`] beside the tail its server-initiated

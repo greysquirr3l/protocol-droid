@@ -53,9 +53,7 @@ mod tests;
 pub use plan::{acquire_client, plan_registration};
 pub use ports::{Available, DynamicRegistrar, MetadataDocumentLoader};
 
-use crate::domain::oauth::registration::{
-    ClientId, ClientIdError, RegisteredClient,
-};
+use crate::domain::oauth::registration::{ClientId, ClientIdError, RegisteredClient};
 
 /// The metadata a client presents to register.
 ///

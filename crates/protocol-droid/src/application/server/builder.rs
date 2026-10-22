@@ -522,7 +522,6 @@ impl Server {
     }
 }
 
-
 /// The builder behind [`Server::builder`].
 pub struct ServerBuilder {
     name: String,

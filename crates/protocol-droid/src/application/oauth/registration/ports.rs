@@ -173,4 +173,3 @@ impl Available {
         self.metadata_document
     }
 }
-

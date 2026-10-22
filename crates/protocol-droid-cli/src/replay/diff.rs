@@ -8,15 +8,13 @@
 //! It is the "assert on the server's responses with a diff on mismatch" half
 //! of the T20 spec.
 
-use super::serve::open_session;
 use super::RecordedFrame;
+use super::serve::open_session;
 use std::io::{BufRead, Write};
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-
-
 
 /// What one diff line records.
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,4 +260,3 @@ where
     let right = open_session(right_path, "right")?;
     diff_with_io(left, right, stdout, stderr)
 }
-

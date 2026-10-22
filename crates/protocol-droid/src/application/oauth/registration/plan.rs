@@ -7,9 +7,11 @@
 //! spends an attempt.
 
 use super::ports::{Available, DynamicRegistrar, MetadataDocumentLoader};
-use super::{ClientIdentity, RegistrationError, RegistrationPlan, RegistrarError};
+use super::{ClientIdentity, RegistrarError, RegistrationError, RegistrationPlan};
 use crate::domain::mcp::authorization::{AuthorizationModel, ClientRegistration};
-use crate::domain::oauth::registration::{RegisteredClient, RegistrationDecision, decide_registration};
+use crate::domain::oauth::registration::{
+    RegisteredClient, RegistrationDecision, decide_registration,
+};
 
 /// Decide how to register, without doing it.
 ///

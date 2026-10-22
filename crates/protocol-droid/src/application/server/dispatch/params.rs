@@ -53,7 +53,9 @@ use crate::domain::ir::JsonObject;
 /// `name` is absent or is not a string, and when `arguments` is present but is
 /// not an object. `arguments` is optional — a tool taking no parameters is
 /// called with none.
-pub(super) fn split_call_params(params: &JsonObject) -> Result<(String, JsonObject), DispatchError> {
+pub(super) fn split_call_params(
+    params: &JsonObject,
+) -> Result<(String, JsonObject), DispatchError> {
     let parsed: serde_json::Value =
         serde_json::from_str(params.as_str()).map_err(|_| DispatchError::MalformedParams)?;
     let object = parsed.as_object().ok_or(DispatchError::MalformedParams)?;
@@ -74,14 +76,12 @@ pub(super) fn split_call_params(params: &JsonObject) -> Result<(String, JsonObje
     Ok((name, arguments))
 }
 
-
 /// The string member `key` of a params object.
 pub(super) fn string_param(params: &JsonObject, key: &str) -> Result<String, DispatchError> {
     parsed_param(params, key)?
         .and_then(|value| value.as_str().map(str::to_string))
         .ok_or(DispatchError::MalformedParams)
 }
-
 
 /// One member of a params object, already parsed.
 ///
@@ -97,4 +97,3 @@ pub(super) fn parsed_param(
     let object = parsed.as_object().ok_or(DispatchError::MalformedParams)?;
     Ok(object.get(key).cloned())
 }
-

@@ -61,7 +61,6 @@ pub use super::exchange::{CallbackExchange, DynExchange, ExchangeError};
 /// every other port in this crate asks for.
 pub type StateMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
-
 /// The negotiated connection a handler is serving.
 ///
 /// Cheap to clone: a `Copy` revision, a `Copy` profile, a `Copy` session id and

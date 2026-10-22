@@ -11,9 +11,9 @@
 
 use super::{Cacheable, result_envelope_defined_in};
 use crate::application::registry::listing::Listing;
+use crate::domain::ProtocolVersion;
 use crate::domain::ir::JsonObject;
 use crate::domain::registry::{Primitive, PromptArgument, Registered};
-use crate::domain::ProtocolVersion;
 
 /// Adds the members **2026-07-28** requires on a result.
 ///
@@ -35,7 +35,11 @@ use crate::domain::ProtocolVersion;
 /// it can honour is "not at all", and the answer describes a registry whose
 /// contents can change under a caller, which is not shareable across
 /// authorization contexts.
-pub(super) fn stamp_result(result: JsonObject, cacheable: Cacheable, version: ProtocolVersion) -> JsonObject {
+pub(super) fn stamp_result(
+    result: JsonObject,
+    cacheable: Cacheable,
+    version: ProtocolVersion,
+) -> JsonObject {
     if !result_envelope_defined_in(version) {
         return result;
     }
@@ -57,7 +61,6 @@ pub(super) fn stamp_result(result: JsonObject, cacheable: Cacheable, version: Pr
     JsonObject::from_value(serde_json::Value::Object(merged)).unwrap_or(result)
 }
 
-
 /// Drops members whose value is `null`.
 ///
 /// Every optional member of a listing entry is typed as a string, a boolean or
@@ -74,7 +77,6 @@ pub(super) fn without_nulls(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
-
 pub(super) fn wrap_listing(key: &str, listing: &Listing) -> JsonObject {
     let entries: Vec<serde_json::Value> = listing
         .visible()
@@ -83,7 +85,6 @@ pub(super) fn wrap_listing(key: &str, listing: &Listing) -> JsonObject {
         .collect();
     JsonObject::from_value(serde_json::json!({ key: entries })).unwrap_or_default()
 }
-
 
 /// The common-denominator JSON for one registered primitive.
 ///
@@ -133,7 +134,6 @@ pub(super) fn listing_entry(registered: &Registered) -> serde_json::Value {
     }
 }
 
-
 /// One prompt argument, as JSON.
 ///
 /// Written out rather than derived, because `PromptArgument` is a domain type
@@ -148,4 +148,3 @@ pub(super) fn prompt_argument(argument: &PromptArgument) -> serde_json::Value {
         "required": argument.required,
     }))
 }
-

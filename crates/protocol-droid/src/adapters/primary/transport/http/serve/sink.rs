@@ -31,14 +31,16 @@ pub(in crate::adapters::primary::transport::http) struct TailSink {
     pub(in crate::adapters::primary::transport::http) tail: Tail,
 }
 
-
 impl TailSink {
     /// Publishes one encoded frame, synchronously.
     ///
     /// # Errors
     ///
     /// [`SinkError`] when the frame is not JSON.
-    pub(in crate::adapters::primary::transport::http) fn push(&self, frame: &str) -> Result<(), SinkError> {
+    pub(in crate::adapters::primary::transport::http) fn push(
+        &self,
+        frame: &str,
+    ) -> Result<(), SinkError> {
         serde_json::from_str::<Value>(frame)
             .map(|value| {
                 self.tail.push(value);
@@ -46,7 +48,6 @@ impl TailSink {
             .map_err(|_| SinkError)
     }
 }
-
 
 impl FrameSink for TailSink {
     /// Publishes one frame to the session's tail.
@@ -65,4 +66,3 @@ impl FrameSink for TailSink {
         core::future::ready(self.push(frame))
     }
 }
-

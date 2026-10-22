@@ -115,8 +115,7 @@ fn document_in(body: &[u8]) -> Result<Value, Failure> {
         // than reporting no reply at all — a test that cared about the id
         // would have said so.
         for frame in text.split("\n\n") {
-            let Some(payload) = frame.lines().find_map(|line| line.strip_prefix("data: "))
-            else {
+            let Some(payload) = frame.lines().find_map(|line| line.strip_prefix("data: ")) else {
                 continue;
             };
             if let Ok(value) = serde_json::from_str::<Value>(payload) {
@@ -315,8 +314,7 @@ async fn the_streaming_mode_decides_how_a_sessioned_post_is_framed() -> Result<(
 /// capability — so what arrives here is that gate's refusal, not the
 /// exchange's.
 #[tokio::test]
-async fn a_tool_that_asks_the_peer_is_answered_rather_than_left_waiting() -> Result<(), Failure>
-{
+async fn a_tool_that_asks_the_peer_is_answered_rather_than_left_waiting() -> Result<(), Failure> {
     let config = ServerConfig::new()
         .map_err(|_| Failure::Expectation("the config did not parse"))?
         .with_streaming(Streaming::Json);
@@ -580,8 +578,7 @@ fn eliciting_server() -> Result<Server, Failure> {
 fn gated_server() -> Result<Server, Failure> {
     let tool = Tool::new(GATED, r#"{"type":"object"}"#)
         .map_err(|_| Failure::Expectation("a tool schema the crate accepts"))?;
-    let handler: ToolHandler =
-        Arc::new(|_context, arguments| Box::pin(async move { arguments }));
+    let handler: ToolHandler = Arc::new(|_context, arguments| Box::pin(async move { arguments }));
     Ok(Server::builder("auth-propagation")
         .restricted_tool(
             Registered::from(Primitive::from(tool)).requiring_scope(Scope::Read),

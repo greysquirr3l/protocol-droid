@@ -14,12 +14,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-
 use super::{HttpHandler, HttpSession, Ids};
 use crate::adapters::primary::transport::http::config::ServerConfig;
 use crate::adapters::primary::transport::http::limits::RateLimiter;
-use crate::adapters::primary::transport::http::session_store::SessionStore;
 use crate::adapters::primary::transport::http::router::McpRouter;
+use crate::adapters::primary::transport::http::session_store::SessionStore;
 use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
 use crate::application::server::Server;
@@ -66,7 +65,6 @@ pub struct HttpBuilder {
     legacy_sse: Option<LegacySsePaths>,
 }
 
-
 /// The two paths the legacy transport is mounted on.
 #[cfg(feature = "legacy-sse")]
 #[derive(Debug, Clone)]
@@ -74,7 +72,6 @@ struct LegacySsePaths {
     stream: String,
     message: String,
 }
-
 
 impl core::fmt::Debug for HttpBuilder {
     /// Prints what was configured and nothing else.
@@ -93,7 +90,6 @@ impl core::fmt::Debug for HttpBuilder {
             .finish_non_exhaustive()
     }
 }
-
 
 impl HttpBuilder {
     /// Serves `server`, on loopback unless told otherwise.
@@ -309,7 +305,6 @@ impl HttpBuilder {
     }
 }
 
-
 /// What `routes` returns: the assembled router and the two builder fields
 /// the calling method still needs after the table is built.
 #[derive(Debug)]
@@ -322,7 +317,6 @@ pub(super) struct BuilderOutput {
     /// The pre-handshake revision. Preserved for `ServeReport`.
     pub(super) ceiling: ProtocolVersion,
 }
-
 
 /// The route table this builder describes, and nothing that binds a socket.
 ///
@@ -415,7 +409,6 @@ pub(super) fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> 
     })
 }
 
-
 /// Test-only pass-through that builds a `BuilderOutput` from the four
 /// arguments the original `routes` took, so the existing tests keep their
 /// one-line call site while the production path goes through the
@@ -451,7 +444,6 @@ pub(crate) fn test_routes(
     .map(|parts| parts.router)
 }
 
-
 /// The id source a builder uses when none was supplied.
 ///
 /// [`RandomIds`] behind the `random-ids` feature, and an error without it. A
@@ -469,13 +461,11 @@ fn default_ids() -> Result<Ids, ServeError> {
         })
 }
 
-
 /// No id source is available in this build, and none was supplied.
 #[cfg(not(feature = "random-ids"))]
 fn default_ids() -> Result<Ids, ServeError> {
     Err(ServeError::NoIdSource)
 }
-
 
 /// The newest revision this build can complete a handshake on.
 ///
@@ -505,7 +495,6 @@ pub struct ServeReport {
     /// The *ceiling*, not a negotiated revision: no peer has connected yet.
     pub ceiling: ProtocolVersion,
 }
-
 
 /// Why an HTTP server could not be brought up.
 #[derive(Debug, thiserror::Error)]
@@ -562,7 +551,6 @@ pub enum ServeError {
     },
 }
 
-
 /// Listens on `addr`, and reports what the OS actually gave.
 ///
 /// Free rather than a method because [`HttpBuilder::serve`] has already moved
@@ -577,4 +565,3 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
         .map_err(|source| ServeError::Bind { addr, source })?;
     Ok((listener, bound))
 }
-

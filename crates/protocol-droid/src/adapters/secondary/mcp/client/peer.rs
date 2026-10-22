@@ -439,4 +439,3 @@ fn spawn_reader(mut reader: BufReader<ChildStdout>, pending: Arc<Mutex<HashMap<u
         }
     });
 }
-
