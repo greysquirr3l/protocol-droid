@@ -34,6 +34,7 @@
 
 pub mod builder;
 pub mod context;
+pub mod exchange;
 pub mod dispatch;
 pub mod error;
 pub mod live;
@@ -45,11 +46,10 @@ pub mod serve;
 mod watch;
 
 pub use builder::{BoxFuture, Server, ServerBuilder, ToolHandler};
-pub use context::{
-    CallbackExchange, DynExchange, ExchangeError, PeerSession, RequestContext, StateMap,
-};
+pub use context::{PeerSession, RequestContext, StateMap};
 pub use dispatch::Dispatcher;
 pub use error::{DispatchError, GatedError};
+pub use exchange::{CallbackExchange, DynExchange, ExchangeError};
 pub use live::{ListKind, ListSubscription, ServerHandle};
 pub use log_gate::LogGate;
 pub use result::OutcomeError;
