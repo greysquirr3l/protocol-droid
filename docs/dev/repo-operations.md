@@ -14,6 +14,7 @@ Contents:
   - [Git hooks](#git-hooks)
   - [Security settings](#security-settings)
     - [A dependency advisory is not the whole story](#a-dependency-advisory-is-not-the-whole-story)
+    - [The one advisory that stays open](#the-one-advisory-that-stays-open)
   - [Branch protection](#branch-protection)
     - [The nine status checks](#the-nine-status-checks)
   - [Releasing](#releasing)
@@ -130,6 +131,34 @@ The pre-push hook covers them locally, which is better than nothing but is not
 a substitute for CI. Same for `site/pnpm-lock.yaml`, which no security setting
 covered until Dependabot was pointed at it — see
 [The docs site](#the-docs-site).
+
+### The one advisory that stays open
+
+`GHSA-g7r4-m6w7-qqqr` — esbuild, low severity, arbitrary file read through
+the dev server on Windows. It is the only advisory left open on this
+repository.
+
+Dependabot's own report says the update is `security_update_not_possible`:
+latest resolvable `0.27.7`, lowest non-vulnerable `0.28.1`, and no version
+satisfies both. The lockfile resolves `esbuild@0.27.7`.
+
+**That is a resolution result, not a proof that no fix exists.** `0.28.1` is
+published, and the peer range that reaches it is wide enough — vite 8.3.5
+declares `esbuild: ^0.27.0 || ^0.28.0`. The narrower constraint is the
+`(esbuild@0.27.7)` peer suffix astro 7.4.2 carries in the lockfile, which
+pnpm resolved from the version present when the lockfile was written. A
+`pnpm.overrides` entry forcing `esbuild: 0.28.1` is the untried path, and it
+is the thing to reach for before deciding this one is acceptable.
+
+The advisory is genuinely low-impact for this repository. It is in
+`site/pnpm-lock.yaml`, and esbuild is a build-time dependency of the Astro
+dev server, not of the static output. The published site is static HTML
+built by `astro build`; the advisory describes the `astro dev` server, which
+never runs in CI or in the deploy to `greysquirr3l.github.io`. It would
+matter to a contributor running `pnpm dev` on Windows.
+
+Left open on purpose, and re-check when astro next moves — a new astro major
+may resolve esbuild to a patched version on its own.
 
 ## Branch protection
 
