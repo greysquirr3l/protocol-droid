@@ -55,3 +55,34 @@ updates:
       patterns: [ "*" ]
   commit-message:
     prefix: "chore(site)"
+
+# The interop fixture is a checked-in `package.json` that `cargo test` spawns
+# with `npm install`. Dependabot's security updates reach it without this
+# entry existing, which is how GHSA-rxp7-6hxx-x8q5 (ip-address, medium)
+# arrived as PR #55.
+#
+# `ip-address` is ignored rather than bumped. It is a transitive dependency of
+# the pinned SDK, not something this repository chose, and the advisory is
+# quadratic matching on an IPv6 zone identifier — a field no MCP peer sends.
+# Bumping it would churn a lockfile that exists to pin `@modelcontextprotocol/sdk`
+# at one known version so the interop test tests that version.
+#
+# The SDK itself is an exact pin with no range, so the default versioning
+# strategy leaves it alone. Declaring the directory is what lets the ignore
+# apply; it does not opt the fixture into update churn.
+- package-ecosystem: npm_and_yarn
+  directory: "/crates/protocol-droid/tests/interop_ts_sdk/fixtures"
+  schedule:
+    interval: weekly
+    day: monday
+    time: "05:00"
+    timezone: Etc/UTC
+  open-pull-requests-limit: 5
+  ignore:
+    # GHSA-rxp7-6hxx-x8q5 affects <= 10.7.3; the range covers exactly the
+    # vulnerable versions and no others, so a future advisory that 10.7.4 is
+    # also subject to would still be reported.
+    - dependency-name: "ip-address"
+      versions: ["<= 10.7.3"]
+  commit-message:
+    prefix: "chore(interop-fixture)"
