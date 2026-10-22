@@ -1,0 +1,122 @@
+# papertowel configuration for protocol-droid.
+#
+# Two jobs here: stop the scan reading directories that are not our code, and
+# record the findings that are real but not actionable, so the next person to
+# read the output is not misled.
+[exclude]
+# `target/` is 43 GB of dependency source and compiler output. `site/node_modules`
+# and `site/dist` are the docs site's build tree. The interop fixture's
+# `node_modules` is vendored third-party JavaScript — zod, the MCP SDK, express
+# — installed by `npm --prefix src/samples install` for the cross-language
+# tests. None of it is authored here, and all of it reads as ours to a scanner.
+paths = [
+    "target/",
+    ".git/",
+    "site/node_modules/",
+    "site/dist/",
+    "crates/protocol-droid/tests/interop_ts_sdk/fixtures/node_modules/",
+    # Vendored upstream, byte-for-byte. The RFC texts and the per-revision
+    # schema.json/schema.ts are digest-pinned in spec/MANIFEST.toml, and
+    # `spec_digest.rs` verifies them at build time and in a test — so scrubbing
+    # "best practices" out of rfc6749.txt does not make the prose better, it
+    # breaks the build. Verified: the sha256 in the manifest is the sha256 on
+    # disk.
+    "crates/protocol-droid-schema/spec/",
+    # Coraline's own scratch space — a code-graph database and its learned
+    # memories. Tool state, not authored source, and `.coraline/.gitignore`
+    # already excludes it from git.
+    ".coraline/",
+    # This file. It quotes the banned words in order to explain why they are
+    # not actionable, so the scanner reads its own commentary as findings —
+    # papertowel excludes its recipe definitions for the same reason.
+    ".papertowel.toml",
+]
+
+# ── Findings that survive the exclusions, and what to do with them ────────────
+#
+# **"harness" — 267 findings, and not one is actionable.** The word is on the
+# built-in slop-vocabulary recipe, and AGENTS.md lists it as banned. But in
+# this codebase it is the ordinary technical noun: a test harness, a polling
+# harness, a conformance harness. `Failure::Harness` in the interop tests is a
+# precise distinction — "the cross-test's own scaffolding was wrong" — set
+# against `Failure::Rmcp` and `Failure::ProtocolDroid`, which mean the thing
+# under test misbehaved. Rewriting the word would erase that distinction, and
+# `exclude_terms` cannot suppress it: the recipes are compiled into the binary
+# and `exclude_terms` only applies to terms added through this file. So the
+# conflict is real, and it is settled the same way parlance settled it: by
+# amending the guide, not by muting the detector. Until then, read the count,
+# not the grade.
+#
+# **`realm` — 2 findings, and it is an HTTP keyword.** `Basic realm="x"` in
+# crates/protocol-droid/src/domain/oauth/challenge.rs is RFC 7235's
+# WWW-Authenticate challenge syntax. The parser has to match the literal word.
+#
+# **SEC009 — 3 findings, all false positives.** One is
+# crates/protocol-droid/src/adapters/primary/transport/http/auth.rs:119, the
+# `Credentials::authorization` accessor whose own doc comment states that this
+# is the only path to the token and that nothing in the module formats it. The
+# detector matched the words "log" and "token" in the comment explaining why
+# the value is never logged. The second is an `eprintln!` inside a
+# `#[cfg(test)]` block in the proc-macro crate. The third is described below.
+#
+# **SEC001 — 3 findings, all false positives.** In the interop tests, on
+# `format!` calls that build a test failure message — not shell commands.
+#
+# **SEC009 — a third one to add to the pair above.** The finding in
+# crates/protocol-droid/src/adapters/secondary/oauth/jwt/tests.rs is on a test
+# named `no_error_this_source_produces_contains_the_token` — the test that
+# exists to prove a bearer credential cannot reach a log. The detector matched
+# the doc comment explaining that rule.
+#
+# **prompt.leakage — 2 findings, both false positives.** CLAUDE.md and
+# .vscode/orchestrator.prompt.md each contain the line "never include phrases
+# like 'as an AI', 'I cannot help with', ...". The style guide quotes the
+# phrases it bans; the detector is quoting the style guide back at itself.
+#
+# **"in the world" / "in the environment" — 3 findings, a detector bug.** The
+# recipe `weighted-todays-fast-paced-world` is
+# `in\s+(today's|the)\s+(?:(?:fast-paced|ever-evolving|digital|...)\s+)*(?:world|landscape|era|environment)`.
+# The adjective group is `*`, so the whole thing degenerates to matching the
+# bare phrase "in the world" — and "in the environment". Both hits are in
+# crates/protocol-droid/src/adapters/primary/transport/http/auth.rs, where the
+# wording is deliberate: a bearer prefix is the same four characters "on every
+# request in the world", and the point is that the prefix carries no
+# information. The adjective group should be `+`, or the determiner should be
+# constrained. Until it is, do not reword around it.
+#
+# **"comprehensive" — 2 findings, and both are quotes.** In
+# crates/protocol-droid/src/domain/feature.rs and
+# crates/protocol-droid/src/domain/mcp/authorization.rs the word appears inside
+# a quotation of the upstream MCP changelog ("Added comprehensive tool
+# annotations"). The project's own AGENTS.md bans the word; the spec quote
+# does not get to be edited. Same for the `spec/` tree.
+#
+# **"in order to" and "with respect to" — 6 findings, both load-bearing.**
+# "The features this message needs in order to be expressed" and "must be
+# individually atomic with respect to one another" are precise. The second is
+# the standard statement of atomicity with respect to a key. Neither is filler.
+#
+# **"underscores" — 1 finding, and it is the subject of the sentence.**
+# crates/protocol-droid-schema/src/generator/naming.rs is about the conversion
+# of JSON names containing `.` and `/` into Rust identifiers, which "become
+# underscores". The word names the character.
+#
+# **verbose-function-doc — 65 findings, nearly all false positives.** The
+# pattern is a doc comment beginning "This function" or "The method". This
+# codebase documents *why*, and the reason usually follows the noun: "The
+# method consumes `self`, so the name reads as what it is: ...", "The
+# function is conservative: it only rewrites `\r\n` to `\n`". The detector
+# reads the first three words and stops. Only the genuinely vacuous ones
+# ("This method does that step.") are worth changing.
+#
+# **ARCH003 — 43 findings.** "God file detected (>800 lines)". The largest are
+# examples/a2a_server.rs at 2790 lines and cli/src/replay.rs at 2401; 31 files
+# are over 1000. This is a decomposition effort, not a cleanup pass, and it
+# belongs to the god-is-dead workflow on its own branch. Not addressed here.
+#
+# Read the comment and structure findings before believing them: the two
+# `structure.uniform` highs in the production tree are a file of small
+# value types and a file of small server handlers, which is the shape they
+# should have.
+[detectors.lexical]
+enabled = true
