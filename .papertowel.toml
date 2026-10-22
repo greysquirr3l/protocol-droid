@@ -124,9 +124,17 @@ paths = [
 # **ARCH003 — 43 findings.** "God file detected (>800 lines)". The largest are
 # examples/a2a_server.rs at 2790 lines and cli/src/replay.rs at 2401; 31 files
 # are over 1000. AGENTS.md already forbids God files, so this is a standing
-# violation rather than a new one — but splitting 43 files is a decomposition
-# effort, not a cleanup pass, and papertowel ships a dedicated god-is-dead
-# workflow for it. Deferred to its own branch; not attempted here.
+# violation rather than a new one.
+#
+# Line count is a proxy, and it miscounts two ways here. 36% of the flagged
+# lines are inline `#[cfg(test)]` blocks, and three of the files are pure test
+# files (`http/router/tests.rs` is 1816 lines with no production code in it).
+# `domain/feature.rs` is 455 lines of feature-matrix table. Neither is a god
+# file in AGENTS.md's sense — "mixes multiple responsibilities" — and splitting
+# them would make the code worse to read, not better.
+#
+# The ones that genuinely mix responsibilities are being split, on their own
+# branches, one file per commit.
 #
 # Read the comment and structure findings before believing them: the two
 # `structure.uniform` highs in the production tree are a file of small
