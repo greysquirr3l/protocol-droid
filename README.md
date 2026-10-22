@@ -204,8 +204,8 @@ the suite.
 ## The generated wire types
 
 `protocol-droid-schema` turns each vendored `schema.json` into serde types
-during `build.rs`, and `src/wire.rs` re-exports the result as one module per
-revision:
+during `build.rs`, and the `wire` module that `src/lib.rs` declares re-exports
+the result as one module per revision:
 
 ```rust
 use protocol_droid_schema::wire::{v2024_11_05, v2026_07_28};
@@ -325,10 +325,20 @@ Three rules are worth knowing before reading the code:
 
 ## Maintaining this repository
 
-Branch protection, the release chain and the docs-site deploy are documented
-in [`docs/dev/repo-operations.md`](docs/dev/repo-operations.md). They are
-about running the repository rather than using the crates, and they belonged
-here only until the README had grown into a maintainer's manual.
+The git hooks, the GitHub-side security settings, branch protection, the
+release chain and the docs-site deploy are documented in
+[`docs/dev/repo-operations.md`](docs/dev/repo-operations.md). They are about
+running the repository rather than using the crates, and they belonged here
+only until the README had grown into a maintainer's manual.
+
+Two of them are easy to trip over without knowing they exist:
+
+- **Nothing in CI builds the docs site.** Every check on a PR that touches
+  `site/` runs Rust, so a green PR says nothing about the site. Run
+  `pnpm build` before merging anything under `site/`.
+- **The security settings live in GitHub's database**, not in the tree, so
+  there is no commit that turns them on and no way to see them in a diff.
+  That document records which are on and how to re-apply each one.
 
 ## Licence
 

@@ -11,12 +11,21 @@ every push; advisories against `main` only are evaluated case by case
 because the work to backport a fix is small but a backport is not
 guaranteed to be free of merge conflicts on the older minor.
 
-| Crate                            | Latest stable    | Previous minor  |
-| -------------------------------- | ---------------- | --------------- |
-| `protocol-droid-schema`          | `0.1`            | (none yet)      |
-| `protocol-droid`                 | `0.1`            | (none yet)      |
-| `protocol-droid-macros`          | `0.1`            | (none yet)      |
-| `protocol-droid-cli`             | `0.1`            | (none yet)      |
+| Crate                    | Latest stable | Previous minor |
+| ------------------------ | ------------- | -------------- |
+| `protocol-droid-schema`  | `0.5`         | `0.4`          |
+| `protocol-droid`         | `0.5`         | `0.4`          |
+| `protocol-droid-macros`  | `0.5`         | `0.4`          |
+| `protocol-droid-cli`     | `0.5`         | `0.4`          |
+
+All four share one version — every member inherits `version` from
+`[workspace.package]`, so there is no series in which the crates
+disagree. The 0.x line means the semver contract is not yet stable, not
+that the versions are unmaintained.
+
+Published on crates.io: 0.3.0, 0.4.0, 0.4.1, 0.4.3, 0.5.0, 0.5.1 and
+newer. 0.3.x and everything before it are past the 30-day window that
+follows a minor and are not maintained.
 
 The MSRV (1.98.1) and the supported Rust toolchain are pinned in
 [`rust-toolchain.toml`](https://github.com/greysquirr3l/protocol-droid/blob/main/rust-toolchain.toml)
@@ -88,6 +97,38 @@ boundary, the wire surface, or a peer of the library:
   bypasses the CI gate, a vendored schema that drifted from
   the manifest, a transitive dependency that drops a security
   patch.
+
+## How a vulnerability gets found
+
+A report is the best route and not the only one. Three things run without
+anyone looking:
+
+| Where | What it checks | Coverage |
+| --- | --- | --- |
+| `supply chain` CI job | `cargo deny` against a freshly fetched advisory database | root `Cargo.lock` |
+| Dependabot alerts | advisory database against every manifest | root and `site/` |
+| Secret scanning | credential patterns across the history and every push | whole repository |
+| `pre-push` hook | `cargo audit` over every committed lockfile | all four, including the three outside the workspace |
+
+Two gaps are worth stating plainly rather than leaving to be discovered:
+
+**Three lockfiles get no CI-side advisory watch.** `crates/protocol-droid/fuzz/`,
+`crates/protocol-droid/tests/interop_rmcp/` and
+`crates/protocol-droid/tests/interop_ts_sdk/` are excluded from the
+workspace, so `cargo deny` never sees their dependency graphs and Dependabot
+only reads manifests. The pre-push hook covers them locally. That is a
+mitigation, not equivalent coverage.
+
+**Nothing builds `site/`.** A dependency change under `site/` that does not
+build — a framework major with an unsatisfied peer range, for instance —
+still passes every CI check, because all of them are Rust. `pnpm install` does
+not enforce peer ranges, so the failure appears only at build time. Run
+`pnpm build` before merging anything under `site/`.
+
+`deny.toml` is the single list of accepted advisories, and it is the same
+list the `pre-push` hook reads. A waiver belongs there with a reason saying
+why the advisory is unreachable from this code; there is no second place to
+record one.
 
 ## What is out of scope
 
