@@ -115,9 +115,13 @@ Two gaps are worth stating plainly rather than leaving to be discovered:
 **Three lockfiles get no CI-side advisory watch.** `crates/protocol-droid/fuzz/`,
 `crates/protocol-droid/tests/interop_rmcp/` and
 `crates/protocol-droid/tests/interop_ts_sdk/` are excluded from the
-workspace, so `cargo deny` never sees their dependency graphs and Dependabot
-only reads manifests. The pre-push hook covers them locally. That is a
-mitigation, not equivalent coverage.
+workspace, so `cargo deny` never sees their dependency graphs. The pre-push
+hook covers them locally. That is a mitigation, not equivalent coverage.
+
+The `interop_ts_sdk` fixture is the one case where a manifest *is* watched:
+Dependabot's security updates reach it, and it is declared in
+`dependabot.yml` so that an ignore rule can apply to it. The other two are
+Rust and are covered by the hook alone.
 
 **Nothing builds `site/`.** A dependency change under `site/` that does not
 build — a framework major with an unsatisfied peer range, for instance —
