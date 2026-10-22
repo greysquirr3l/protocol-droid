@@ -30,3 +30,28 @@ updates:
       patterns: [ "*" ]
   commit-message:
     prefix: "chore(ci)"
+
+# The documentation site is a separate project under site/, with its own
+# pnpm lockfile. It needs an entry of its own: Dependabot reads one manifest
+# per update, so the cargo entry above cannot see it.
+#
+# The ecosystem is `npm_and_yarn` despite there being no npm or Yarn in the
+# project — that is the name GitHub gives the Node ecosystem generally, and
+# it is the one that reads pnpm-lock.yaml.
+#
+# Grouped for the same reason the action bumps are: @astrojs/starlight is
+# tightly coupled to astro's major version, so bumping one without the other
+# produces a site that does not build. One PR, tested together.
+- package-ecosystem: npm_and_yarn
+  directory: "/site"
+  schedule:
+    interval: weekly
+    day: monday
+    time: "05:00"
+    timezone: Etc/UTC
+  open-pull-requests-limit: 10
+  groups:
+    site:
+      patterns: [ "*" ]
+  commit-message:
+    prefix: "chore(site)"
