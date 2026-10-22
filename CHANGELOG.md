@@ -9,6 +9,15 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Added
+
+- **A tracked pre-push hook.** (`fe2a8dc`) Install it with
+  `./scripts/install-hooks.sh`. It runs `cargo fmt --all --check` — the same
+  command the `fmt` job runs — and `cargo audit` over every committed
+  `Cargo.lock`. The advisory waivers are read from `deny.toml`, so there is
+  one list rather than two, and it honours a waiver the moment you add it.
+  Documented in [`docs/dev/repo-operations.md`](docs/dev/repo-operations.md#git-hooks).
+
 ## [0.5.1] — 2026-10-21
 
 The other half of the Entra token fix. 0.5.0 bound `aud` correctly but still
