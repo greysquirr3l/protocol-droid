@@ -12,6 +12,8 @@ Contents:
 
 - [Repository operations](#repository-operations)
   - [Git hooks](#git-hooks)
+  - [Security settings](#security-settings)
+    - [A dependency advisory is not the whole story](#a-dependency-advisory-is-not-the-whole-story)
   - [Branch protection](#branch-protection)
     - [The nine status checks](#the-nine-status-checks)
   - [Releasing](#releasing)
@@ -71,6 +73,60 @@ Pre-commit runs before the commit exists, so a `cargo fmt` that rewrites files
 cannot run there without silently amending what the author staged. Pre-push
 runs after the commit exists, so the check reports rather than rewrites, and
 fixing it is an explicit `cargo fmt --all && git commit --amend`.
+
+## Security settings
+
+These live in GitHub's database, not in the tree. There is no apply script for
+them the way there is for branch protection, so nothing reverts them — but
+nothing records them either, which means the next person inherits four
+settings they did not set and cannot account for. This section is that record.
+
+| Setting | State | What it does |
+| ------- | ----- | ------------ |
+| Dependabot vulnerability alerts | on | Raises an alert when a published advisory hits a dependency already in the tree |
+| Dependabot security updates | on | Opens the fix PR itself, grouped and prefixed `chore(deps)` |
+| Secret scanning | on | Scans the history for credentials, public repo so free |
+| Push protection | on | **Blocks a push** containing a recognised secret |
+
+Turn one on with `PATCH /repos/{owner}/{repo}` — the documented
+`PUT /secret-scanning/secret-scanning` and `PUT /secret-scanning/push-protection`
+endpoints return 404 on this account even though the features work:
+
+```bash
+gh api --method PATCH repos/greysquirr3l/protocol-droid \
+  -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled' \
+  --jq .security_and_analysis.secret_scanning_push_protection.status
+```
+
+Two notes on the cost, since both turned out to be non-issues and both are
+worth checking rather than assuming:
+
+**These do not spend AI credits.** Dependabot resolves versions with the
+ecosystem's own solver; no model is involved. The one part of the pipeline that
+would use credits is Copilot code review on the resulting PRs, and it is not
+enabled on this repository.
+
+**Actions minutes are free here.** The repo is public, so the ~20 CI jobs that
+run on each fix PR cost nothing. On a private repo this would be the real
+expense line, and worth re-checking before enabling anything else.
+
+Still off by choice: `secret_scanning_validity_checks` (only matters for
+fine-grained PATs and SSH keys) and `secret_scanning_non_provider_patterns`
+(deprecated; it stays disabled on its own and is not worth forcing).
+
+### A dependency advisory is not the whole story
+
+These settings read manifests. CI's `supply chain` job reads the root
+`Cargo.lock`. Neither sees the three lockfiles outside the workspace:
+
+- `crates/protocol-droid/fuzz/Cargo.lock`
+- `crates/protocol-droid/tests/interop_rmcp/Cargo.lock`
+- `crates/protocol-droid/tests/interop_ts_sdk/Cargo.lock`
+
+The pre-push hook covers them locally, which is better than nothing but is not
+a substitute for CI. Same for `site/pnpm-lock.yaml`, which no security setting
+covered until Dependabot was pointed at it — see
+[The docs site](#the-docs-site).
 
 ## Branch protection
 
@@ -216,3 +272,33 @@ and is described in [`site/README.md`](../../site/README.md)). The deploy script
 verifies the live URL after pushing, and prints a fix-it line if the source
 repo's Pages config is shadowing the user-pages URL — the trap that bit
 the first deploy.
+
+### Nothing in CI builds this site
+
+Every check on a PR that touches `site/` runs Rust. `ci.yml`'s `docs` job is
+rustdoc; nothing anywhere runs `pnpm build`. A green PR on this directory means
+the Rust half is fine and says nothing about the site.
+
+This is not hypothetical: Dependabot's astro 5 → 7 PR passed fourteen green
+checks and did not build, because starlight 0.30 pins `astro: ^5.0.0` and
+`pnpm install` does not enforce peer ranges. The only reason it was caught
+before the docs site broke in production was a local `pnpm build`.
+
+So: **run `pnpm build` locally before merging anything under `site/`.** That
+is a real requirement, not a suggestion, and it is the one gap in this
+document that only a person can close.
+
+### Dependency updates
+
+[`.github/dependabot.yml`](../../.github/dependabot.yml) has three entries:
+`cargo` for the workspace, `github-actions`, and `npm_and_yarn` for `/site`.
+The Node one is declared under GitHub's name for the ecosystem generally —
+there is no npm or Yarn in this project — and it is what reads
+`site/pnpm-lock.yaml`.
+
+Site bumps are grouped into a single PR, for the same reason action bumps are:
+`@astrojs/starlight` is version-coupled to `astro`, so moving one without the
+other produces a site that does not build. **Astro, starlight and `@astrojs/mdx`
+have to move together.** A starlight major also breaks two config shapes —
+autogenerated sidebar groups were removed in 0.39, and `social` became an
+array in 0.33 — and both failures surface only at build time.
