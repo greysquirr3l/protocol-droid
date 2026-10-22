@@ -106,7 +106,8 @@ impl AgentCardBuilder {
         self
     }
 
-    /// Sets the capability set.
+    /// Replaces the whole capability set rather than merging into it, so a
+    /// caller that wants to add one capability reads the current set first.
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: AgentCapabilities) -> Self {
         self.capabilities = capabilities;

@@ -87,7 +87,9 @@ impl GetTaskRequest {
         }
     }
 
-    /// Sets the history length.
+    /// How much history to carry.
+    ///
+    /// Absent from the request unless this method is called.
     #[must_use]
     pub const fn with_history_length(mut self, length: u32) -> Self {
         self.history_length = Some(length);

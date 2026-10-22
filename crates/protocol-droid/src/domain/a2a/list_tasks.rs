@@ -131,28 +131,38 @@ impl ListTasksRequest {
         self
     }
 
-    /// Sets the status filter.
+    /// Sets `status`.
+    ///
+    /// Absent from the request unless this method is called, which is a
+    /// request across all states.
     #[must_use]
     pub const fn with_status(mut self, status: TaskState) -> Self {
         self.status = Some(status);
         self
     }
 
-    /// Sets the page size.
+    /// Sets `pageSize`.
+    ///
+    /// Absent from the request unless this method is called.
     #[must_use]
     pub const fn with_page_size(mut self, page_size: u32) -> Self {
         self.page_size = Some(page_size);
         self
     }
 
-    /// Sets the page token.
+    /// Sets `pageToken`.
+    ///
+    /// Absent from the request unless this method is called, which is the
+    /// first page.
     #[must_use]
     pub fn with_page_token(mut self, page_token: impl Into<String>) -> Self {
         self.page_token = Some(page_token.into());
         self
     }
 
-    /// Sets the history length.
+    /// Sets `historyLength`.
+    ///
+    /// Absent from the request unless this method is called.
     #[must_use]
     pub const fn with_history_length(mut self, length: u32) -> Self {
         self.history_length = Some(length);
@@ -238,14 +248,19 @@ impl ListTasksResponse {
         self
     }
 
-    /// Sets the page size.
+    /// Sets `pageSize`.
+    ///
+    /// The spec requires this field, and a value of `0` is a malformed
+    /// response because the page size is at least `1`.
     #[must_use]
     pub const fn with_page_size(mut self, page_size: u32) -> Self {
         self.page_size = page_size;
         self
     }
 
-    /// Sets the total size.
+    /// Sets `totalSize`.
+    ///
+    /// Absent from the request unless this method is called.
     #[must_use]
     pub const fn with_total_size(mut self, total_size: u32) -> Self {
         self.total_size = total_size;

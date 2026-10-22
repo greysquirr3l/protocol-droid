@@ -129,14 +129,19 @@ impl ProgressUpdate {
         }
     }
 
-    /// Sets the total.
+    /// How far along it has to be, when the handler knows.
+    ///
+    /// Left unset when the handler does not know the total, and the wire
+    /// carries no `total` at all.
     #[must_use]
     pub const fn with_total(mut self, total: f64) -> Self {
         self.total = Some(total);
         self
     }
 
-    /// Sets the message.
+    /// A description of the current step.
+    ///
+    /// Left unset when there is no description of the current step.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<Cow<'static, str>>) -> Self {
         self.message = Some(message.into());

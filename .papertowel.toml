@@ -14,6 +14,7 @@ paths = [
     ".git/",
     "site/node_modules/",
     "site/dist/",
+    "site/.astro/",
     "crates/protocol-droid/tests/interop_ts_sdk/fixtures/node_modules/",
     # Vendored upstream, byte-for-byte. The RFC texts and the per-revision
     # schema.json/schema.ts are digest-pinned in spec/MANIFEST.toml, and
@@ -101,13 +102,17 @@ paths = [
 # of JSON names containing `.` and `/` into Rust identifiers, which "become
 # underscores". The word names the character.
 #
-# **verbose-function-doc — 65 findings, nearly all false positives.** The
-# pattern is a doc comment beginning "This function" or "The method". This
-# codebase documents *why*, and the reason usually follows the noun: "The
-# method consumes `self`, so the name reads as what it is: ...", "The
-# function is conservative: it only rewrites `\r\n` to `\n`". The detector
-# reads the first three words and stops. Only the genuinely vacuous ones
-# ("This method does that step.") are worth changing.
+# **verbose-function-doc — 65 findings, and none of them is actionable.** The
+# pattern is a doc comment whose first line begins "This function" or "The
+# method". This codebase documents *why*, and the reason routinely follows the
+# noun: "The function is `pub` so the library itself names the type in non-test
+# code, which keeps the rust 1.98 `dead_code_pub_in_binary` lint from flagging
+# ...". Some are not even openers — "This method is that setting." is the
+# conclusion of a paragraph explaining a decision, and the detector reads it as
+# the opening. Some are struct-field docs in a terse local style ("When.",
+# "Which request.", "The method it named."). The rule and this codebase's own
+# convention disagree, and the codebase is right: read the whole doc, not the
+# first line. Left as they are.
 #
 # **ARCH003 — 43 findings.** "God file detected (>800 lines)". The largest are
 # examples/a2a_server.rs at 2790 lines and cli/src/replay.rs at 2401; 31 files
