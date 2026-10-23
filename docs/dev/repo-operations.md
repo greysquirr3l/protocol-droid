@@ -398,3 +398,5 @@ applied to a directory that is not declared, and a security update will not
 respect a directory that is. But an ignore is the wrong tool for a
 transitive dependency whose fix is inside its declared range — that is a
 bump, and the bump is cheaper than the argument.
+
+<!-- verification -->
