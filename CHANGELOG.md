@@ -50,6 +50,29 @@ checked against the code rather than taken on the changelog's word.
   [`docs/dev/repo-operations.md`](docs/dev/repo-operations.md#the-one-advisory-that-stays-open)
   records the analysis.
 
+- **The documentation site is built in CI.** (`.github/workflows/site.yml`)
+  Nothing built `site/` before, so a green PR on that directory said nothing
+  about the site. Dependabot's astro 5 → 7 PR passed fourteen green Rust
+  checks and did not build; the only reason it was caught before production
+  was a local `pnpm build`.
+
+  The new job installs with `--frozen-lockfile`, runs `astro check` (which
+  the build does not do on its own), builds, and asserts the output has the
+  expected shape. It is a required status check, so a broken site blocks the
+  merge.
+
+  Two details worth knowing. The workflow has no `paths:` filter, because a
+  path-filtered workflow reports no check run when the filter does not match,
+  and a required check that never reports blocks every merge; the filter is
+  applied to the build steps instead, so the job always reports. And the node
+  version is pinned to `22.23.4`, the floor astro 7 declares, rather than the
+  newest release — proving the site builds on the oldest runtime it claims to
+  support. `pnpm` is pinned the same way, through the `packageManager` field
+  in `site/package.json`.
+
+  Documented in
+  [`docs/dev/repo-operations.md`](docs/dev/repo-operations.md#ci-builds-this-site).
+
 ## [0.5.2] — 2026-10-22
 
 A patch in name only for #50: fifty-seven files moved and not one line of the

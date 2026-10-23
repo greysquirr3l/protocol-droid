@@ -10,12 +10,21 @@ pnpm install
 pnpm dev          # http://localhost:4321
 ```
 
+Node 22.23.4 or newer, and pnpm 11.18.0. The pnpm version is pinned in the
+`packageManager` field of `package.json`; corepack reads it, so `corepack
+enable` gives you the version CI uses. Astro 7 requires node 22.23.4 at the
+minimum, and that floor is what CI builds on.
+
 ## Build
 
 ```
 pnpm build        # outputs to ./dist
 pnpm preview      # serve dist locally
 ```
+
+CI builds this on every PR that touches `site/` — see
+[`../.github/workflows/site.yml`](../.github/workflows/site.yml). It also runs
+`astro check`, which the build does not do on its own.
 
 ## Deploy
 

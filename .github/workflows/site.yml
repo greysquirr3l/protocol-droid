@@ -1,0 +1,173 @@
+name: Site
+
+# The documentation site is a separate project under `site/`, with its own
+# pnpm lockfile and its own toolchain. Nothing else in CI touches it, which is
+# how PR #52 landed a broken astro bump with fourteen green Rust checks.
+#
+# This workflow is the only thing that builds the site, so it is also the only
+# thing standing between a broken `astro.config.mjs` and a broken site.
+#
+# Note there is no `paths:` filter on the trigger. A path-filtered workflow
+# does not run at all when the filter does not match, so it reports no check
+# run — and a required status check that never reports blocks the merge
+# forever. The filter is applied to the build steps instead, so the job always
+# runs and always reports a result. That is what makes this usable as a
+# required check.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The change detection below diffs against the merge base, so the
+          # base commit has to be present. Depth 0 is the only way to get it
+          # without a separate fetch step.
+          fetch-depth: 0
+
+      # The site is self-contained: nothing in `site/` is generated from the
+      # Rust crate, and the site sources do not read the workspace. So a PR
+      # that touches no site file cannot break the site build, and the
+      # expensive half of this job is skipped for it.
+      #
+      # The job still runs and still reports, so the check is present on every
+      # PR and can be required. Only the build steps are conditional.
+      - name: Detect site changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # The list of changed files is captured before it is filtered, and
+          # the filter reads it through a here-string rather than a pipe.
+          #
+          # Piping `git diff` straight into `grep -q` looks equivalent but is
+          # not. `grep -q` exits at the first match, git diff is still writing
+          # and takes SIGPIPE, and `pipefail` turns that into a failed
+          # pipeline — exit 141 — so the `if` takes the wrong branch and the
+          # site build is skipped on exactly the PRs that changed it. It only
+          # bites once the diff is larger than the 64KiB pipe buffer, so it
+          # passes on a one-file change and fails on a three-thousand-file
+          # one. A here-string has no pipe in it, so there is no writer to
+          # signal.
+          changed=false
+          case "${EVENT_NAME}" in
+            pull_request)
+              # Diff against the merge base rather than the tip of the base
+              # branch, so a PR that is behind main is judged on the changes it
+              # actually makes.
+              files=$(git diff --name-only "${BASE_SHA}...HEAD")
+              if grep -qE '^(site/|\.github/workflows/site\.yml)' <<< "${files}"; then
+                changed=true
+              fi
+              ;;
+            push)
+              # `before` is the zero SHA on a branch's first push, where there
+              # is no parent to diff against. Treat that as changed.
+              if [ "${BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+                changed=true
+              else
+                files=$(git diff --name-only "${BEFORE_SHA}...${GITHUB_SHA}")
+                if grep -qE '^(site/|\.github/workflows/site\.yml)' <<< "${files}"; then
+                  changed=true
+                fi
+              fi
+              ;;
+            *)
+              # workflow_dispatch: build unconditionally.
+              changed=true
+              ;;
+          esac
+
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
+          echo "site files changed: ${changed}"
+
+      # corepack resolves the pnpm version from the `packageManager` field in
+      # site/package.json, so the version CI uses is the version a developer
+      # gets. Without that field corepack would pick a default and the lockfile
+      # could be written by a different major than the one that reads it.
+      #
+      # This runs before setup-node on purpose: setup-node's `cache: pnpm`
+      # shells out to `pnpm store path` to find the cache directory, so pnpm
+      # has to be on PATH already. The runner ships its own node, and corepack
+      # activates against that, then setup-node swaps in the pinned runtime.
+      - name: Enable pnpm
+        if: steps.filter.outputs.changed == 'true'
+        run: corepack enable
+
+      # 22.23.4 is the floor astro 7 declares (`engines.node >= 22.23.4`),
+      # not the newest release. Pinning the floor means the site is proven to
+      # build on the oldest runtime it claims to support; a newer pin would
+      # pass here and fail for a contributor on the floor.
+      - uses: actions/setup-node@v4
+        if: steps.filter.outputs.changed == 'true'
+        with:
+          node-version: "22.23.4"
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      # --frozen-lockfile fails when package.json and pnpm-lock.yaml disagree,
+      # which is the same guarantee the `clippy` job gets from `cargo fetch
+      # --locked`. Without it a stale lockfile is silently repaired by the
+      # install, and CI builds a dependency tree nobody committed.
+      - name: Install dependencies
+        if: steps.filter.outputs.changed == 'true'
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      # Type-checks the .astro components. `astro build` does not do this, so
+      # without the separate step a bad prop type reaches the published site
+      # and only shows up at runtime in a browser.
+      - name: Type-check
+        if: steps.filter.outputs.changed == 'true'
+        working-directory: site
+        run: pnpm exec astro check
+
+      - name: Build
+        if: steps.filter.outputs.changed == 'true'
+        working-directory: site
+        run: pnpm build
+
+      # The build succeeding is not the same as the site being complete. A
+      # missing page still produces a green build — starlight only renders the
+      # pages it finds. This asserts the built output has the expected shape,
+      # so a renamed content file is caught here rather than as a 404 on the
+      # live site.
+      - name: Verify output
+        if: steps.filter.outputs.changed == 'true'
+        working-directory: site
+        run: |
+          set -euo pipefail
+          pages=$(find dist -name 'index.html' | wc -l | tr -d ' ')
+          echo "built ${pages} page(s)"
+
+          if [ "$pages" -lt 10 ]; then
+            echo "expected at least 10 pages, found ${pages}" >&2
+            exit 1
+          fi
+
+          # The site is deployed under a base path, so the built HTML must
+          # reference it. A build that drops `base` produces links that 404
+          # from the root of the GitHub Pages site.
+          if ! grep -rq '/protocol-droid/' dist/index.html; then
+            echo "built HTML does not reference the /protocol-droid/ base path" >&2
+            exit 1
+          fi

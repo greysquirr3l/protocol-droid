@@ -333,9 +333,9 @@ only until the README had grown into a maintainer's manual.
 
 Two of them are easy to trip over without knowing they exist:
 
-- **Nothing in CI builds the docs site.** Every check on a PR that touches
-  `site/` runs Rust, so a green PR says nothing about the site. Run
-  `pnpm build` before merging anything under `site/`.
+- **The docs site builds in CI, but not quickly.** `site.yml` builds it on any
+  PR that touches `site/`. Running `pnpm build` locally first is still faster
+  than waiting for the run.
 - **The security settings live in GitHub's database**, not in the tree, so
   there is no commit that turns them on and no way to see them in a diff.
   That document records which are on and how to re-apply each one.

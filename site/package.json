@@ -3,6 +3,7 @@
   "type": "module",
   "version": "0.0.1",
   "private": true,
+  "packageManager": "pnpm@11.18.0",
   "description": "Documentation site for protocol-droid, deployed to greysquirr3l.github.io",
   "scripts": {
     "dev": "npx astro dev",

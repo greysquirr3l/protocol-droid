@@ -10,7 +10,8 @@
       "test (macos-latest, all-features)",
       "test (macos-latest, no-default-features)",
       "test (windows-latest, all-features)",
-      "test (windows-latest, no-default-features)"
+      "test (windows-latest, no-default-features)",
+      "site"
     ]
   },
   "enforce_admins": true,
