@@ -39,10 +39,16 @@ checked against the code rather than taken on the changelog's word.
 
 - **Dependency advisories on the repository are down from 28 to 1.** The
   remaining one is `esbuild` (low, `GHSA-g7r4-m6w7-qqqr`) in
-  `site/pnpm-lock.yaml`: latest resolvable is `0.27.7`, lowest
-  non-vulnerable is `0.28.1`, and no version satisfies both. It is
-  build-time tooling for the Astro dev server and is not reachable from a
-  build of a static site.
+  `site/pnpm-lock.yaml`. Dependabot reports the update as
+  `security_update_not_possible` — latest resolvable `0.27.7`, lowest
+  non-vulnerable `0.28.1` — but that is a resolution result rather than a
+  proof that no fix exists, since `0.28.1` is published and vite's peer range
+  admits it. A `pnpm.overrides` entry forcing `esbuild: 0.28.1` is the untried
+  path. The advisory covers the `astro dev` server on Windows; the published
+  site is static output and never runs it.
+
+  [`docs/dev/repo-operations.md`](docs/dev/repo-operations.md#the-one-advisory-that-stays-open)
+  records the analysis.
 
 ## [0.5.2] — 2026-10-22
 
