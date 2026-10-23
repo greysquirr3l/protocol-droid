@@ -106,7 +106,7 @@ anyone looking:
 | Where | What it checks | Coverage |
 | --- | --- | --- |
 | `supply chain` CI job | `cargo deny` against a freshly fetched advisory database | root `Cargo.lock` |
-| Dependabot alerts | advisory database against every manifest | root and `site/` |
+| Dependabot alerts | advisory database against every manifest | root, `site/`, and the interop fixture |
 | Secret scanning | credential patterns across the history and every push | whole repository |
 | `pre-push` hook | `cargo audit` over every committed lockfile | all four, including the three outside the workspace |
 
@@ -125,11 +125,15 @@ sitting unnoticed. Note that `npm install` honours the committed lockfile,
 so it will not self-heal — the lockfile has to be updated on purpose. The
 other two are Rust and are covered by the hook alone.
 
-**Nothing builds `site/`.** A dependency change under `site/` that does not
-build — a framework major with an unsatisfied peer range, for instance —
-still passes every CI check, because all of them are Rust. `pnpm install` does
-not enforce peer ranges, so the failure appears only at build time. Run
-`pnpm build` before merging anything under `site/`.
+**The site is built in CI, but the peer-range gap is still worth knowing.**
+The `site` job installs with `--frozen-lockfile`, runs `astro check` and
+`astro build`, and asserts the output has the expected shape, so a change
+under `site/` that does not build fails the PR rather than passing every
+check. It was not always so: Dependabot's astro 5 → 7 PR passed fourteen green
+Rust checks without building, because starlight 0.30 pins `astro: ^5.0.0` and
+`pnpm install` does not enforce peer ranges — the failure appears only at
+build time. `pnpm install --frozen-lockfile` does not change that; it
+enforces the *lockfile*, not the peer ranges.
 
 `deny.toml` is the single list of accepted advisories, and it is the same
 list the `pre-push` hook reads. A waiver belongs there with a reason saying
