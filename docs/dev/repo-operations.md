@@ -16,10 +16,10 @@ Contents:
     - [A dependency advisory is not the whole story](#a-dependency-advisory-is-not-the-whole-story)
     - [The one advisory that stays open](#the-one-advisory-that-stays-open)
   - [Branch protection](#branch-protection)
-    - [The nine status checks](#the-nine-status-checks)
+    - [The ten status checks](#the-ten-status-checks)
   - [Releasing](#releasing)
   - [The docs site](#the-docs-site)
-    - [Nothing in CI builds this site](#nothing-in-ci-builds-this-site)
+    - [CI builds this site](#ci-builds-this-site)
     - [Dependency updates](#dependency-updates)
       - [The fixture entry exists because npm install will not fix it](#the-fixture-entry-exists-because-npm-install-will-not-fix-it)
 
@@ -39,7 +39,7 @@ that is not in that directory alone.
 
 Runs the two CI checks that are cheap enough to run on every push:
 
-- `cargo fmt --all --check` — the same command the [`fmt`](#the-nine-status-checks) job runs.
+- `cargo fmt --all --check` — the same command the [`fmt`](#the-ten-status-checks) job runs.
 - `cargo audit` — over every committed `Cargo.lock`.
 
 It takes about four seconds. The rest of CI takes minutes, and a hook that
@@ -198,7 +198,7 @@ but the next run of that script reverts it, so changes belong in the file.
 > non-admin. If the script appears to do nothing, check identity with
 > `gh api user --jq .login` before assuming it succeeded.
 
-### The nine status checks
+### The ten status checks
 
 They are the names CI actually _reports_, not the job ids in `ci.yml`. The test
 job is a 3 × 2 matrix, so it emits six separate checks; naming a single literal
@@ -206,7 +206,7 @@ job is a 3 × 2 matrix, so it emits six separate checks; naming a single literal
 protected.
 
 ```
-fmt   clippy   supply chain
+fmt   clippy   supply chain   site
 test (ubuntu-latest,  all-features)          test (ubuntu-latest,  no-default-features)
 test (macos-latest,  all-features)          test (macos-latest,  no-default-features)
 test (windows-latest, all-features)         test (windows-latest, no-default-features)
@@ -214,6 +214,10 @@ test (windows-latest, all-features)         test (windows-latest, no-default-fea
 
 Renaming a CI job means updating this file in the same commit, or `main` becomes
 unmergeable on a context that will never report.
+
+`site` comes from a separate workflow, `site.yml`, not from `ci.yml`. It is
+listed here because branch protection does not care which workflow reports a
+context — only the name.
 
 ## Releasing
 
@@ -314,20 +318,40 @@ verifies the live URL after pushing, and prints a fix-it line if the source
 repo's Pages config is shadowing the user-pages URL — the trap that bit
 the first deploy.
 
-### Nothing in CI builds this site
+### CI builds this site
 
-Every check on a PR that touches `site/` runs Rust. `ci.yml`'s `docs` job is
-rustdoc; nothing anywhere runs `pnpm build`. A green PR on this directory means
-the Rust half is fine and says nothing about the site.
+`site.yml` builds the site on every PR and on every push to `main`. It runs
+`pnpm install --frozen-lockfile`, `astro check` and `astro build`, then
+asserts the output has the expected shape.
 
-This is not hypothetical: Dependabot's astro 5 → 7 PR passed fourteen green
-checks and did not build, because starlight 0.30 pins `astro: ^5.0.0` and
-`pnpm install` does not enforce peer ranges. The only reason it was caught
-before the docs site broke in production was a local `pnpm build`.
+This was not always true, and the gap was real: Dependabot's astro 5 → 7 PR
+passed fourteen green checks and did not build, because starlight 0.30 pins
+`astro: ^5.0.0` and `pnpm install` does not enforce peer ranges. The only
+reason it was caught before the docs site broke in production was a local
+`pnpm build`.
 
-So: **run `pnpm build` locally before merging anything under `site/`.** That
-is a real requirement, not a suggestion, and it is the one gap in this
-document that only a person can close.
+Two things about how the job is put together are worth knowing before changing
+it.
+
+**The workflow has no `paths:` filter.** A path-filtered workflow does not run
+at all when the filter does not match, so it reports no check run — and a
+required status check that never reports blocks the merge forever. The filter
+is applied to the build *steps* instead, so the job always runs and always
+reports. A PR that touches no site file skips the build and goes green in
+seconds; a PR that does touch `site/` builds it.
+
+**The node version is pinned to the floor, not the latest.** `22.23.4` is what
+astro 7 declares as its minimum (`engines.node >= 22.23.4`). Pinning the
+newest release would prove the site builds on a runtime nobody is forced to
+use. The floor is the one a contributor on an older LTS will have.
+
+`pnpm` is pinned the same way, through the `packageManager` field in
+`site/package.json`, and corepack reads it. Without that field corepack picks
+a default, and the lockfile can end up written by one pnpm major and read by
+another.
+
+**Running `pnpm build` locally before merging is still worth doing.** It is
+faster than waiting for CI, and it is the only way to see the site.
 
 ### Dependency updates
 
