@@ -5,7 +5,7 @@ Astro + Starlight site for protocol-droid. Deployed to
 
 ## Develop
 
-```
+```bash
 pnpm install
 pnpm dev          # http://localhost:4321
 ```
@@ -17,7 +17,7 @@ minimum, and that floor is what CI builds on.
 
 ## Build
 
-```
+```bash
 pnpm build        # outputs to ./dist
 pnpm preview      # serve dist locally
 ```
@@ -28,7 +28,7 @@ CI builds this on every PR that touches `site/` — see
 
 ## Deploy
 
-```
+```bash
 pnpm run deploy
 ```
 
@@ -42,15 +42,15 @@ until it answers `200`, since a CDN still carrying the previous deploy answers
 
 Useful flags:
 
-| flag             | purpose                                             |
-| ---------------- | --------------------------------------------------- |
-| `--rebuild`      | force a fresh build even if `dist/` is current      |
-| `--no-push`      | preview: stage but neither commit nor push, so a later real run still deploys them |
-| `--skip-build`   | deploy the existing `dist/` without rebuilding      |
-| `--no-poll`      | skip the live-URL check after pushing               |
-| `--message MSG`  | override the auto-generated commit message          |
-| `--subdir NAME`  | override the target subdir in the pages repo        |
-| `--pages-repo PATH` | override the path to the gh-pages clone          |
+| flag                | purpose                                             |
+| -----------------   | --------------------------------------------------- |
+| `--rebuild`         | force a fresh build even if `dist/` is current      |
+| `--no-push`         | preview: stage but neither commit nor push, so a later real run still deploys them |
+| `--skip-build`      | deploy the existing `dist/` without rebuilding      |
+| `--no-poll`         | skip the live-URL check after pushing               |
+| `--message MSG`     | override the auto-generated commit message          |
+| `--subdir NAME`     | override the target subdir in the pages repo        |
+| `--pages-repo PATH` | override the path to the gh-pages clone             |
 
 ### First-time setup
 
@@ -58,7 +58,7 @@ The script expects a working clone of the gh-pages repo at the path
 configured in `package.json` (`../greysquirr3l.github.io` by default). Clone
 it if you haven't:
 
-```
+```bash
 git clone git@github.com:greysquirr3l/greysquirr3l.github.io.git ../greysquirr3l.github.io
 ```
 
@@ -79,7 +79,7 @@ and the build is "built".
 The deploy script detects this state on the fourth 404 attempt and tells
 you to run:
 
-```
+```bash
 gh api -X DELETE repos/greysquirr3l/protocol-droid/pages
 ```
 
