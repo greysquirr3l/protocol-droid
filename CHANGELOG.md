@@ -9,31 +9,21 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
-### Security
+## [0.5.3] — 2026-10-25
 
-- **`enforce_admins` is on.** (`.github/branch-protection.json`) It was
-  `false`, which meant a repository admin could push straight to `main` and
-  bypass the pull-request requirement. Enabling Dependabot's alerts made this
-  worth closing: an advisory is now reported against the repository, and the
-  person who would fix it could also skip the review saying the fix is right.
+A patch for the `#[server]` macro, and a security fix that a patch is the
+right shape for.
 
-  The release chain is unaffected — Auto Tag pushes a tag, and branch
-  protection applies to branches, not tags.
+The macro fix is the reason this release exists: a consumer using
+`#[server]` / `#[tool]` had to add `schemars` to their own `Cargo.toml` or
+the generated code would not compile. The error pointed at the `#[server]`
+attribute rather than at the macro, so the natural first reaction —
+`use schemars;` — does not help.
 
-- **`ip-address` in the interop fixture is fixed rather than suppressed.**
-  (`GHSA-rxp7-6hxx-x8q5`, medium) Dependabot proposed this as #55 and it was
-  closed in favour of an ignore rule, on the reasoning that a transitive bump
-  churns a lockfile whose job is to hold the SDK at one version. That
-  reasoning was wrong: the SDK's own declared range is `^10.2.0`, so 10.7.4
-  was always permitted. The bump moves three lines, leaves
-  `@modelcontextprotocol/sdk` at `1.32.1`, and takes the fixture's
-  `npm audit` from one moderate to zero. The ignore rule is removed.
-
-  `npm install` does not do this on its own — it honours the lockfile, so
-  10.7.3 stayed installed until the lockfile was updated deliberately. The
-  `dependabot.yml` entry for that directory is kept for exactly this
-  reason: without it there is no schedule watching a lockfile that only
-  changes by hand.
+The advisory is the reason the patch reaches the dependency graph at all.
+`ctutils 0.4.3` has a non-constant-time mask generation, and it reaches
+this crate through `hmac 0.13` → `digest 0.11.3` → `ctutils`. The fix is a
+lockfile update, not an API change, so a patch is what it is.
 
 ### Changed
 
@@ -72,6 +62,110 @@ checked against the code rather than taken on the changelog's word.
 
   Documented in
   [`docs/dev/repo-operations.md`](docs/dev/repo-operations.md#ci-builds-this-site).
+
+### Fixed
+
+- **The `#[server]` macro no longer needs the consumer to depend on
+  `schemars`.** (`dbea59a3`, #63) A consumer of `protocol-droid` that used
+  `#[server]` / `#[tool]` had to add `schemars` to its own `Cargo.toml` to
+  make the generated code compile, and the error pointed at the `#[server]`
+  attribute rather than at the macro.
+
+  The generated argument struct derives `JsonSchema` through this crate's
+  re-export, but the derive expands to unqualified `schemars::…` paths that
+  resolve against the *consuming* crate's root. `schemars` 1.x honours the
+  derive's `crate` attribute — it emits `use <path> as schemars;` inside the
+  `const _` block it wraps the expansion in, shadowing the unresolved name
+  for every path it expands to, including the `where`-clause bounds — so one
+  attribute per generated struct fixes it.
+
+  The regression test lives in `crates/protocol-droid-cli/tests/` because
+  that crate is the workspace's one consumer of `protocol-droid` that does
+  *not* depend on `schemars`. Every test inside `protocol-droid` is blind to
+  this: that crate depends on `schemars` itself, so it is in the extern
+  prelude of its own tests whatever the expansion does. The test also reads
+  the generated `inputSchema` back out of the registry, so a redirect
+  pointing at the wrong crate fails there rather than passing a compile
+  check.
+
+### Security
+
+- **`ctutils` is fixed rather than waived.** (`RUSTSEC-2026-0385`, medium)
+  `ctutils 0.4.3`'s `Choice` mask generation could compile to a branch on
+  secret values, and `ctutils`' `u128` comparisons were not constant-time on
+  32-bit targets. `ctutils 0.4.4` fixes it; this workspace takes `0.4.5`.
+
+  This one is reachable, and it is worth being precise about where. The path
+  is `protocol-droid` → `hmac 0.13` → `digest 0.11.3` → `ctutils`, and
+  `ctutils` is pulled in by `digest`'s `mac` feature rather than by
+  `hmac`'s own use of it — `digest/src/mac.rs` does `use ctutils::CtEq;` and
+  calls `ct_eq(tag)` to compare a MAC tag. Our own HMAC comparison in
+  `application/mcp/input_required.rs` is exactly that path:
+  `StateKey::open` verifies a `requestState` MAC with `verify_slice`. A
+  constant-time regression there is a real defect and not a theoretical one.
+
+  0.5.2 shipped the vulnerable version in all four crates' `Cargo.lock`, and
+  `protocol-droid-cli` publishes its lockfile, so the published binary
+  carried it. A consumer who resolves fresh gets `0.4.5` from the caret
+  requirement on `ctutils 0.4`; a consumer whose own lockfile still pins
+  `0.4.3` needs `cargo update -p ctutils`.
+
+- **All four committed lockfiles now carry the patched `ctutils` and the
+  current `protocol-droid` version.** The three excluded from the workspace
+  (`fuzz`, `interop_rmcp`, `interop_ts_sdk`) had drifted: the root lockfile
+  moved to `ctutils 0.4.5` and the interop fixture's did not, so it kept the
+  vulnerable `0.4.3` until the pre-push hook blocked the push. The other two
+  were staler still, pinning `protocol-droid 0.1.0` against a workspace at
+  0.5.2.
+
+  All four are current now, and each records `ctutils 0.4.5`. The hook scans
+  every committed lockfile, so this is the state it was already asking for;
+  the drift was that nobody had run it since the advisory landed. The CI gap
+  this exposes is recorded in `SECURITY.md` rather than closed here.
+
+- **`RUSTSEC-2026-0387` on `crypto-bigint 0.5.5` is waived, with the
+  argument written down.** (`deny.toml`) It is reached through
+  `jsonwebtoken`'s `rust_crypto` backend → `p256`/`p384` → `ecdsa` →
+  `elliptic-curve`, and there is no upgrade path: the fix sits behind
+  `p256`/`p384 0.14`, which `jsonwebtoken 11.1.0`'s caret requirements
+  (`^0.13.2` / `^0.13.0`) do not admit, and 11.1.0 is the latest release
+  whose `master` carries the same pins.
+
+  It is unreachable because the only path to `elliptic-curve` here is ECDSA
+  *verification*. `ecdsa`'s `verify_prehashed` runs on the public key, the
+  message hash and the signature's own `r` and `s` — no secret scalar
+  reaches the affected operations. The signing path (`sign_prehashed`, which
+  calls `k.invert()` on a secret scalar) is the reachable one and this crate
+  has no path to it: `jsonwebtoken`'s `EllipticCurveKeyParameters` carries
+  only `kty`, `crv`, `x` and `y`, so a JWK has no field in which to carry a
+  private scalar.
+
+  The waiver carries that argument in full, so the next person to read
+  `deny.toml` does not have to re-derive it.
+
+- **`enforce_admins` is on.** (`.github/branch-protection.json`) It was
+  `false`, which meant a repository admin could push straight to `main` and
+  bypass the pull-request requirement. Enabling Dependabot's alerts made this
+  worth closing: an advisory is now reported against the repository, and the
+  person who would fix it could also skip the review saying the fix is right.
+
+  The release chain is unaffected — Auto Tag pushes a tag, and branch
+  protection applies to branches, not tags.
+
+- **`ip-address` in the interop fixture is fixed rather than suppressed.**
+  (`GHSA-rxp7-6hxx-x8q5`, medium) Dependabot proposed this as #55 and it was
+  closed in favour of an ignore rule, on the reasoning that a transitive bump
+  churns a lockfile whose job is to hold the SDK at one version. That
+  reasoning was wrong: the SDK's own declared range is `^10.2.0`, so 10.7.4
+  was always permitted. The bump moves three lines, leaves
+  `@modelcontextprotocol/sdk` at `1.32.1`, and takes the fixture's
+  `npm audit` from one moderate to zero. The ignore rule is removed.
+
+  `npm install` does not do this on its own — it honours the lockfile, so
+  10.7.3 stayed installed until the lockfile was updated deliberately. The
+  `dependabot.yml` entry for that directory is kept for exactly this
+  reason: without it there is no schedule watching a lockfile that only
+  changes by hand.
 
 ## [0.5.2] — 2026-10-22
 

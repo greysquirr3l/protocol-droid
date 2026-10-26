@@ -118,6 +118,17 @@ Two gaps are worth stating plainly rather than leaving to be discovered:
 workspace, so `cargo deny` never sees their dependency graphs. The pre-push
 hook covers them locally. That is a mitigation, not equivalent coverage.
 
+That gap is not theoretical. When `ctutils` was bumped to 0.4.5 for
+RUSTSEC-2026-0385, the root `Cargo.lock` was updated and the interop
+fixture's was not, so the fixture kept `ctutils 0.4.3` until the pre-push
+hook blocked the push. The hook is the only thing that saw it, and the
+lockfile it caught was stale on more than the advisory: it still pinned
+`protocol-droid 0.1.0` against a workspace at 0.5.2. All four committed
+lockfiles now carry `ctutils 0.4.5` and the current `protocol-droid`
+version, so a fresh advisory against any of them is caught by the same
+scan — but a CI job that audited every committed lockfile would have
+caught it without a human being present.
+
 The `interop_ts_sdk` fixture is the one case where a manifest *is* watched:
 Dependabot's security updates reach it, and it is declared in
 `dependabot.yml` so a transitive advisory gets a bump proposal rather than
@@ -235,6 +246,66 @@ is honoured.
 None. The repository's first release was tagged after the
 SECURITY-REVIEW audit in October 2026, and no vulnerability
 has been reported against a tagged release.
+
+## Dependency advisories in the published graph
+
+A dependency advisory is not an advisory against this crate, but it is
+still something a consumer of a published version inherits, so it is
+recorded here.
+
+**RUSTSEC-2026-0385 — `ctutils` — affected every published version up
+to and including 0.5.2. Fixed in 0.5.3.**
+
+`ctutils 0.4.3`'s `Choice` mask generation could compile to a branch
+on secret values, and its `u128` comparisons were not constant-time on
+32-bit targets. Upstream fixed it in `ctutils 0.4.4`.
+
+The path into this crate is `protocol-droid` → `hmac 0.13` → `digest
+0.11.3` → `ctutils`, and `ctutils` is pulled in by `digest`'s `mac`
+feature rather than by `hmac`'s own use of it: `digest/src/mac.rs` does
+`use ctutils::CtEq;` and calls `ct_eq(tag)` to compare a MAC tag. The
+reachable path is this crate's own HMAC comparison in
+`application/mcp/input_required.rs`, where `StateKey::open` verifies a
+`requestState` MAC with `verify_slice`. That is a real comparison over a
+value derived from a server-held key, so the regression is a genuine
+defect and not a theoretical one.
+
+What a consumer needs to know:
+
+- **A library consumer** resolves their own dependency graph, so a
+  fresh resolve picks up a patched `ctutils` on its own. A consumer
+  whose own lockfile still pins `ctutils 0.4.3` should run
+  `cargo update -p ctutils`; the requirement is `^0.4`, so the patched
+  version is already permitted.
+- **A binary consumer** of `protocol-droid-cli` is the case that needs
+  attention. A binary crate publishes its `Cargo.lock`, and `cargo
+  install` honours it, so `cargo install protocol-droid-cli --version
+  0.5.2` installed a binary built against `ctutils 0.4.3`. 0.5.3 ships
+  the patched version.
+
+The advisory was published on 2026-10-23, after 0.5.2 was tagged on
+2026-10-22, so the fix could not have shipped in 0.5.2.
+
+**RUSTSEC-2026-0387 — `crypto-bigint` — waived, not fixed.**
+
+`crypto-bigint 0.5.5` has a constant-time regression in its `u128`
+operations. It is reached through `jsonwebtoken`'s `rust_crypto`
+backend → `p256`/`p384` → `ecdsa` → `elliptic-curve`, and no upgrade
+path exists: the fix sits behind `p256`/`p384 0.14`, which
+`jsonwebtoken 11.1.0`'s caret requirements do not admit.
+
+It is unreachable from this code. The only path to `elliptic-curve` is
+ECDSA *verification*, which runs on the public key, the message hash
+and the signature's own `r` and `s` — no secret scalar reaches the
+affected operations. The signing path is the reachable one and this
+crate has no path to it: `jsonwebtoken`'s `EllipticCurveKeyParameters`
+carries only `kty`, `crv`, `x` and `y`, so a JWK has no field in which
+to carry a private scalar.
+
+The waiver and its full reasoning live in
+[`deny.toml`](https://github.com/greysquirr3l/protocol-droid/blob/main/deny.toml),
+which is the single list of accepted advisories. It should be re-read
+whenever `jsonwebtoken` or `rsa` changes, not waited on a schedule.
 
 ## Acknowledgements
 

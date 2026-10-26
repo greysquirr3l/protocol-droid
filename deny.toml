@@ -64,8 +64,67 @@ unmaintained = "workspace"
 # API redesign (implicit rejection, #680, and default-path blinding, #702), so
 # this should be re-checked on every `jsonwebtoken` or `rsa` bump rather than
 # waited on a schedule.
+#
+# RUSTSEC-2026-0387 on `crypto-bigint 0.5.5`, reached the same way and for a
+# related reason. `jsonwebtoken`'s `rust_crypto` backend pulls `p256` and
+# `p384`, which pull `ecdsa` and `elliptic-curve`, which pin `crypto-bigint`
+# to the 0.5 line.
+#
+# There is no upgrade path from here. The advisory is fixed in 0.7.6, and
+# `crypto-bigint` 0.7 lives behind `elliptic-curve` 0.14, which lives behind
+# `p256`/`p384` 0.14 — and `jsonwebtoken` 11.1.0 requires `p256 ^0.13.2` and
+# `p384 ^0.13.0`, which are caret requirements that do not admit 0.14. Bumping
+# `jsonwebtoken` does not help either: 11.1.0 is the latest release, and its
+# `master` still requires the same 0.13 pins. So the graph cannot reach a
+# fixed `crypto-bigint` without an upstream release that has not happened.
+# This is the same shape as the `rsa` entry above, and the same remedy: a
+# reasoned exception, re-read on every `jsonwebtoken` bump.
+#
+# Why the vulnerable path is unreachable here. The advisory lists four affected
+# operation families — subtraction, zero counting, division, and Montgomery
+# multiplication — plus two named APIs, `UintRef` equality and
+# `BoxedMontyForm::invert`. The two named APIs do not exist in 0.5.5 at all:
+# `UintRef` there is `der::asn1::UintRef`, a DER encoding helper with nothing to
+# do with the equality this advisory is about, and 0.5.5 has no
+# `BoxedMontyForm` (its `boxed` module holds only `BoxedUint`). The four
+# operation families do exist, and upstream's fix for them is a rewrite of
+# `word::trailing_zeros`/`leading_zeros` and the borrow-carry helpers.
+#
+# That rewrite is what makes the reachability argument necessary rather than
+# sufficient on its own, so the argument is about secrets, not about code
+# shapes. `elliptic-curve` 0.13 is the ECDSA *verification* path, and ECDSA
+# verification operates on the public key, the message hash, and the signature's
+# own `r` and `s` — all of them are inputs the verifier was handed by the peer
+# that sent the token. There is no secret scalar in that computation. The
+# affected operations are reached with values an attacker already chose, so a
+# timing difference reveals nothing an attacker does not already know.
+#
+# The "public key" half is not an assumption about the peer being honest. The
+# key arrives as a JWK, and `jsonwebtoken`'s `EllipticCurveKeyParameters` has
+# exactly three fields — `kty`, `crv`, and the `x` and `y` coordinates. There
+# is no field for a private scalar, so a JWKS cannot carry one even if its
+# publisher wanted to send one, and `DecodingKey::from_jwk` has nothing to build
+# one from. The only way a secret reaches `elliptic-curve` here would be a
+# signing key, and this crate has no code path that accepts one.
+#
+# This is the same shape as the Marvin argument above, and it is worth being
+# precise about where the two differ. Marvin leaks *private key material* out of
+# an RSA private-key operation, and there is none here because the JWKS source
+# calls `DecodingKey::from_jwk` and has no path that accepts a private key. This
+# advisory is about constant-time regressions inside `crypto-bigint` itself, so
+# "the code is linked in" is true and is not the argument. The argument is that
+# the values flowing through the affected operations are public.
+#
+# What would retire this entry: a `jsonwebtoken` release that admits `p256` /
+# `p384` 0.14, at which point `crypto-bigint` 0.7.6+ enters the graph and the
+# upgrade becomes available and mandatory. Also, a signing path: if this crate
+# ever gains a way to *produce* an ECDSA signature with a private key — a
+# self-issued token, an mTLS client certificate, a client-credentials grant
+# that signs — then secret scalars reach `elliptic-curve` and this entry stops
+# being true. The same trigger retires the `rsa` entry above.
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 Marvin Attack timing leak; no upstream fix exists and this crate only ever verifies RSA signatures with public keys, never decrypts or uses a private key, so the vulnerable path is unreachable" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 constant-time leaks, reached only through elliptic-curve's ECDSA verification; no upgrade path exists while jsonwebtoken pins p256/p384 0.13, and this crate never signs with an ECDSA key, so no secret integer reaches the affected operations" },
 ]
 
 [licenses]

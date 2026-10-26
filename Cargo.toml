@@ -87,7 +87,24 @@ exclude = [
 # diffing the generated rustdoc for `main` against this branch and by
 # compiling a probe that imports all 25 previously-public paths from both their
 # old and new sites. None of it touches a consumer's code.
-version = "0.5.2"
+#
+# 0.5.3 is a patch. Two things shipped since 0.5.2, and neither changes the
+# public API. #63 fixed the `#[server]` macro, which expanded to unqualified
+# `schemars::` paths and so needed the *consumer* to depend on `schemars`
+# before the generated code would compile; the derive now names the crate
+# through this crate's re-export, and the fix is in the macro's expansion
+# rather than in any type a consumer can name. The rest is the `ctutils`
+# advisory below and the release plumbing around it.
+#
+# The `ctutils` bump is a security fix rather than a dependency chore, and
+# the reason it is a patch rather than a minor is that the consumer's remedy
+# is a lockfile update rather than an API change. RUSTSEC-2026-0385 (a
+# non-constant-time mask generation in `ctutils 0.4.3`) reaches this crate
+# through `hmac 0.13` -> `digest 0.11.3` -> `ctutils`, and `digest`'s `mac`
+# feature is what turns `ctutils` on. The reachable path is our own HMAC
+# comparison in `application/mcp/input_required.rs`, which verifies a
+# `requestState` MAC. `ctutils 0.4.4` fixes it; this workspace takes 0.4.5.
+version = "0.5.3"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -118,9 +135,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.2" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.2" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.5.2" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.3" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.3" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.5.3" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

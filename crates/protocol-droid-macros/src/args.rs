@@ -199,20 +199,26 @@ pub(crate) fn args_struct(handler: &Handler) -> TokenStream {
             // deserialises and is the never type. A braced struct with no
             // members already accepts `{}` and ignores anything else, which is
             // what a no-argument tool wants.
-            // `serde(crate = ..)` points the derived impl's own `serde::` paths
-            // at the re-export, so a user of `#[server]` needs only this crate.
+            // `serde(crate = ..)` and `schemars(crate = ..)` point the derived
+            // impls' own `serde::` and `schemars::` paths at the re-exports, so
+            // a user of `#[server]` needs only this crate.
             //
-            // There is deliberately no matching `schemars` attribute: one exists,
-            // but it redirects only the derive's helper paths and not the
-            // `schemars::` references in the impl it emits, so it would buy a
-            // dependency on `schemars` in the user's `Cargo.toml` and give the
-            // impression it had not. `schemars` is a direct dependency of every
-            // crate that uses `#[server]`, and the macro docs say so.
+            // The `schemars` half is not optional. The `JsonSchema` derive
+            // expands to `schemars::JsonSchema`, `schemars::_private::..` and
+            // `schemars::SchemaGenerator` — unqualified, so they resolve
+            // against the *consumer's* crate root, where `schemars` is not a
+            // dependency unless the consumer adds it. The derive's `crate`
+            // attribute emits `use <path> as schemars;` inside the `const _`
+            // block it wraps its expansion in, which shadows the unresolved
+            // name for every path it emits, including the `where`-clause
+            // bounds. Without it, `#[server]` fails to compile in any crate
+            // that does not depend on `schemars` directly.
             #[derive(
                 ::protocol_droid::schemars::JsonSchema,
                 ::protocol_droid::serde::Deserialize,
                 ::core::default::Default,
             )]
+            #[schemars(crate = "::protocol_droid::schemars")]
             #[serde(crate = "::protocol_droid::serde")]
             #[allow(
                 dead_code,
@@ -234,6 +240,7 @@ pub(crate) fn args_struct(handler: &Handler) -> TokenStream {
             ::protocol_droid::schemars::JsonSchema,
             ::protocol_droid::serde::Deserialize,
         )]
+        #[schemars(crate = "::protocol_droid::schemars")]
         #[serde(crate = "::protocol_droid::serde")]
         #[allow(
             dead_code,
