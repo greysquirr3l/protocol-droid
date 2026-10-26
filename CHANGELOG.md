@@ -91,6 +91,31 @@ checked against the code rather than taken on the changelog's word.
   manifests are scanned, and fails if any committed lockfile is not among
   them.
 
+### Documentation
+
+- **The "Write a server" guide described an API that does not exist.**
+  (`site/src/content/docs/guides/write-a-server.md`) It showed
+  `use protocol_droid::prelude::*`, a `#[server]` attribute on a *struct*,
+  a `Dispatcher` *trait* a consumer implements, and a `Server::new(..)` /
+  `serve(config)` pair — none of which is the crate's shape. The real API
+  is `#[protocol_droid::server]` on an *impl block*, `Dispatcher` is a
+  struct rather than a trait, and the entry points are
+  `Server::builder(name)` and `serve_stdio` / `serve_http`. A reader
+  following the guide would not have got a compiling program.
+
+  The guide now also says what the attribute has to be attached to and
+  why: an attribute macro only sees the item it is on, so a `#[server]`
+  on a struct cannot see the `impl` beside it, and every tool in that
+  `impl` would be invisible to it.
+
+- **The quickstart imported a `prelude` module and described a runtime
+  the library does not build.**
+  (`site/src/content/docs/getting-started/quickstart.md`) There is no
+  `protocol_droid::prelude`. The tip block also said `serve_stdio` builds
+  a runtime; it is `async` and runs on whatever runtime the caller
+  already has, which is what the `#[tokio::main]` in the same snippet is
+  for.
+
 ## [0.5.3] — 2026-10-25
 
 A patch for the `#[server]` macro, and a security fix that a patch is the
