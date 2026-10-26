@@ -105,36 +105,40 @@ anyone looking:
 
 | Where | What it checks | Coverage |
 | --- | --- | --- |
-| `supply chain` CI job | `cargo deny` against a freshly fetched advisory database | root `Cargo.lock` |
+| `supply chain` CI job | `cargo deny` against a freshly fetched advisory database | all four committed lockfiles |
 | Dependabot alerts | advisory database against every manifest | root, `site/`, and the interop fixture |
 | Secret scanning | credential patterns across the history and every push | whole repository |
 | `pre-push` hook | `cargo audit` over every committed lockfile | all four, including the three outside the workspace |
 
 Two gaps are worth stating plainly rather than leaving to be discovered:
 
-**Three lockfiles get no CI-side advisory watch.** `crates/protocol-droid/fuzz/`,
-`crates/protocol-droid/tests/interop_rmcp/` and
-`crates/protocol-droid/tests/interop_ts_sdk/` are excluded from the
-workspace, so `cargo deny` never sees their dependency graphs. The pre-push
-hook covers them locally. That is a mitigation, not equivalent coverage.
+**Every committed lockfile now gets a CI-side advisory watch.** Until the
+`supply chain` job was extended, it scanned the root lockfile only.
+`crates/protocol-droid/fuzz/`, `crates/protocol-droid/tests/interop_rmcp/`
+and `crates/protocol-droid/tests/interop_ts_sdk/` are excluded from the
+workspace, so `cargo deny` never saw their dependency graphs; the pre-push
+hook covered them locally, which is a mitigation, not equivalent coverage.
 
-That gap is not theoretical. When `ctutils` was bumped to 0.4.5 for
+The job now scans all four, one step per lockfile, and each of those
+steps passes `--locked`. Without `--locked`, `cargo metadata` re-resolves
+the graph and rewrites the lockfile on disk, so the scan would report on
+a dependency set nobody committed — a different check, not a stricter
+one. With `--locked`, the scan reports on the lockfile as committed, and
+fails loudly when that lockfile is stale.
+
+That gap was not theoretical. When `ctutils` was bumped to 0.4.5 for
 RUSTSEC-2026-0385, the root `Cargo.lock` was updated and the interop
 fixture's was not, so the fixture kept `ctutils 0.4.3` until the pre-push
-hook blocked the push. The hook is the only thing that saw it, and the
+hook blocked the push. The hook was the only thing that saw it, and the
 lockfile it caught was stale on more than the advisory: it still pinned
-`protocol-droid 0.1.0` against a workspace at 0.5.2. All four committed
-lockfiles now carry `ctutils 0.4.5` and the current `protocol-droid`
-version, so a fresh advisory against any of them is caught by the same
-scan — but a CI job that audited every committed lockfile would have
-caught it without a human being present.
+`protocol-droid 0.1.0` against a workspace at 0.5.2.
 
 The `interop_ts_sdk` fixture is the one case where a manifest *is* watched:
 Dependabot's security updates reach it, and it is declared in
 `dependabot.yml` so a transitive advisory gets a bump proposal rather than
 sitting unnoticed. Note that `npm install` honours the committed lockfile,
 so it will not self-heal — the lockfile has to be updated on purpose. The
-other two are Rust and are covered by the hook alone.
+other two are Rust, and are now covered by CI as well as by the hook.
 
 **The site is built in CI, but the peer-range gap is still worth knowing.**
 The `site` job installs with `--frozen-lockfile`, runs `astro check` and

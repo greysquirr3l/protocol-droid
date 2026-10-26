@@ -162,6 +162,51 @@ jobs:
       - name: cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
 
+      # The three lockfiles outside the workspace get the same scan.
+      #
+      # `fuzz`, `interop_rmcp` and `interop_ts_sdk` are each their own
+      # workspace, so the step above — which scans the root graph — never sees
+      # their dependency graphs. A committed `Cargo.lock` is a dependency graph
+      # someone will build, so it gets the same scrutiny. This is not
+      # hypothetical: when `ctutils` was bumped for RUSTSEC-2026-0385, the root
+      # lockfile was updated and the interop fixture's was not, so the fixture
+      # kept the vulnerable version until a human ran the pre-push hook.
+      #
+      # `--locked` is the point of these steps. Without it, `cargo metadata`
+      # re-resolves and *rewrites* the committed lockfile, so the scan would
+      # report on a graph nobody committed. With it, the scan reports on the
+      # lockfile as committed — and fails loudly when that lockfile is stale,
+      # which is the failure mode worth catching.
+      #
+      # The cost is that a workspace version bump invalidates these
+      # lockfiles, because each one pins `protocol-droid` by version. The
+      # release checklist refreshes them; see docs/dev/repo-operations.md.
+      #
+      # `advisories sources` rather than a full `check`: the full check also
+      # runs `bans` and `licenses`, and these three crates fail both for
+      # reasons that have nothing to do with supply chain — they carry no
+      # `license` field, and their path dependency on `protocol-droid` has no
+      # version, which `bans` reads as a wildcard. Advisories and sources are
+      # what this job is for.
+      - name: cargo-deny (fuzz)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: crates/protocol-droid/fuzz/Cargo.toml
+          arguments: --all-features --locked
+          command-arguments: advisories sources
+      - name: cargo-deny (interop_rmcp)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: crates/protocol-droid/tests/interop_rmcp/Cargo.toml
+          arguments: --all-features --locked
+          command-arguments: advisories sources
+      - name: cargo-deny (interop_ts_sdk)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: crates/protocol-droid/tests/interop_ts_sdk/Cargo.toml
+          arguments: --all-features --locked
+          command-arguments: advisories sources
+
   fuzz:
     # The fuzz job runs nightly, not on every push. libFuzzer
     # needs minutes, not seconds, to find anything; a
