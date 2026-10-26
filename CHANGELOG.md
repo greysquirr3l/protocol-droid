@@ -9,6 +9,50 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI now scans every committed lockfile, not just the root one.** The
+  `supply chain` job ran `cargo deny` against the root workspace only. Three
+  lockfiles sit outside it — `crates/protocol-droid/fuzz/`,
+  `crates/protocol-droid/tests/interop_rmcp/` and
+  `crates/protocol-droid/tests/interop_ts_sdk/`, each its own `[workspace]` —
+  so their dependency graphs were never checked by CI. A committed
+  `Cargo.lock` is a dependency graph someone will build, so the job now
+  scans all four, one step per graph.
+
+  The gap was not theoretical: when `ctutils` was bumped for
+  RUSTSEC-2026-0385, the root lockfile was updated and the interop
+  fixture's was not, so the fixture kept the vulnerable version until the
+  pre-push hook blocked the push.
+
+  Each of the three new steps passes `--locked`. Without it, `cargo metadata`
+  re-resolves and rewrites the lockfile, so the scan would report on a
+  dependency set nobody committed. The cost is that a workspace version bump
+  invalidates those lockfiles, which now fail the job instead of going
+  stale; the release procedure records how to refresh them.
+
+- **The pre-push hook no longer passes an `unsound` advisory.** `cargo audit`
+  files an `unsound` advisory under `warnings` rather than `vulnerabilities`
+  and exits zero for it by default, so the hook — which read only
+  `vulnerabilities.count` — reported a lockfile carrying a use-after-free
+  advisory as clean. The hook now passes `-D unsound -D yanked` and reads
+  all three categories out of the report, matching the set `deny.toml`
+  denies. A hook that passes where CI fails is worse than no hook.
+
+  A yanked crate is reported separately from an advisory, because the
+  remedies differ: an advisory can be waived in `deny.toml`, while a yanked
+  crate has no advisory id to ignore and can only be fixed by updating the
+  lockfile.
+
+### Added
+
+- **A test that fails if a committed lockfile stops being scanned.**
+  (`crates/protocol-droid/tests/supply_chain_coverage.rs`) The failure mode
+  is silent — a workflow edit that drops a step leaves a green CI run and a
+  lockfile nobody scans. The test reads the workflow, works out which
+  manifests are scanned, and fails if any committed lockfile is not among
+  them.
+
 ## [0.5.3] — 2026-10-25
 
 A patch for the `#[server]` macro, and a security fix that a patch is the

@@ -74,6 +74,22 @@ fi
 # in CI does not see their dependency graphs at all; a `Cargo.lock` that is
 # committed is a dependency graph someone will build, and it deserves the
 # same scrutiny as the rest.
+#
+# The categories denied here are the ones `deny.toml` denies, and they are
+# named explicitly because `cargo audit`'s default is to report `unsound`
+# advisories without failing. An `unsound` advisory is a use-after-free or
+# an I/O-safety violation in a dependency — a real defect, not a style
+# note — and `cargo deny` treats it as an error. A hook that passed where
+# CI fails is worse than no hook, because it reports a clean bill of health
+# on a graph CI would reject. So `-D unsound -D yanked` is passed, which
+# makes `cargo audit` exit non-zero for those categories too.
+#
+# `unmaintained` is deliberately *not* denied: `deny.toml` sets
+# `unmaintained = "workspace"`, which exempts everything that is not a
+# workspace member, and the fixture crates here are not workspace members.
+# The categories are read from the JSON report below as well, so a finding
+# in any of them is named even when the exit code alone would have
+# sufficed.
 
 note "cargo audit"
 
@@ -140,7 +156,10 @@ else
     # exits 1, and so does a *failure to fetch the advisory database* —
     # but the failure prints nothing on stdout. Without this, a network
     # hiccup would read as a vulnerability.
-    report="$(cargo audit --json --file "$lockfile" \
+    #
+    # `-D unsound -D yanked` are what make an `unsound` or `yanked`
+    # finding a failure rather than a note. See the comment above.
+    report="$(cargo audit -D unsound -D yanked --json --file "$lockfile" \
       ${ignore_args[@]+"${ignore_args[@]}"} 2>/dev/null)"
     status=$?
 
@@ -160,22 +179,58 @@ else
       continue
     fi
 
-    # A report that says there are vulnerabilities. The count and the ids
-    # come from the JSON so the message is exact.
+    # A report that says there are findings. The counts and the names come
+    # from the JSON so the message is exact.
+    #
+    # Two categories are read, not one. `cargo audit` puts a plain
+    # vulnerability under `vulnerabilities`, but it files `unsound` and
+    # `yanked` under `warnings`, so reading only `vulnerabilities` would
+    # report a lockfile carrying a use-after-free advisory as clean —
+    # which is exactly what this hook used to do.
+    #
+    # The two are counted separately because they have different remedies.
+    # An advisory can be waived in deny.toml. A yanked crate cannot: it
+    # has no advisory id to ignore, and the only fix is a lockfile update.
+    #
+    # The first line is a status word, so a report that could not be parsed
+    # is distinguishable from a report that parsed and found nothing. The
+    # python is single-quoted here, so it uses only double quotes inside.
     summary="$(printf '%s' "$report" | python3 -c '
 import json, sys
 
 try:
     report = json.load(sys.stdin)
 except ValueError:
-    print("could not read the report")
+    print("UNREADABLE")
+    print("0")
+    print("")
+    print("0")
+    print("")
     sys.exit(0)
 
-found = report.get("vulnerabilities", {})
-count = found.get("count", 0)
-ids = [v.get("advisory", {}).get("id", "?") for v in found.get("list", [])]
-print(count)
-print(" ".join(ids))
+warnings = report.get("warnings", {}) or {}
+
+advisories = []
+found = report.get("vulnerabilities", {}) or {}
+for entry in found.get("list", []) or []:
+    advisories.append((entry.get("advisory", {}) or {}).get("id", "?"))
+
+for entry in warnings.get("unsound", []) or []:
+    advisory = entry.get("advisory") or {}
+    advisories.append(advisory.get("id", "?"))
+
+yanked = []
+for entry in warnings.get("yanked", []) or []:
+    package = entry.get("package") or {}
+    name = package.get("name", "?")
+    version = package.get("version", "?")
+    yanked.append(name + " " + version)
+
+print("OK")
+print(len(advisories))
+print(" ".join(advisories))
+print(len(yanked))
+print(" ".join(yanked))
 ' 2>/dev/null)"
 
     if [ -z "$summary" ]; then
@@ -184,18 +239,44 @@ print(" ".join(ids))
       continue
     fi
 
-    count="$(printf '%s' "$summary" | head -n 1)"
-    ids="$(printf '%s' "$summary" | tail -n +2)"
+    status_word="$(printf '%s' "$summary" | sed -n '1p')"
+    count="$(printf '%s' "$summary" | sed -n '2p')"
+    ids="$(printf '%s' "$summary" | sed -n '3p')"
+    yanked_count="$(printf '%s' "$summary" | sed -n '4p')"
+    yanked="$(printf '%s' "$summary" | sed -n '5p')"
+
+    if [ "$status_word" != "OK" ]; then
+      bad "$lockfile — could not read the advisory report"
+      failed=1
+      continue
+    fi
+
+    # A per-lockfile flag, not the global `failed`: one lockfile's finding
+    # must not suppress the next lockfile's report.
+    lockfile_failed=0
 
     if [ "$count" != "0" ]; then
       bad "$lockfile — $count advisory(s) not waived: $ids"
       printf '    A waiver belongs in deny.toml, with a reason that says why the\n'
       printf '    advisory is not reachable from this code.\n'
+      lockfile_failed=1
+    fi
+
+    # A yanked crate is not waivable. `cargo audit --ignore` takes advisory
+    # ids, and a yanked crate has none — the only fix is to move the
+    # lockfile off the yanked version.
+    if [ "$yanked_count" != "0" ]; then
+      bad "$lockfile — $yanked_count yanked crate(s): $yanked"
+      printf '    A yanked crate cannot be waived; update the lockfile instead.\n'
+      lockfile_failed=1
+    fi
+
+    if [ "$lockfile_failed" -ne 0 ]; then
       failed=1
       continue
     fi
 
-    # A non-zero exit with a report that claims zero vulnerabilities. That
+    # A non-zero exit with a report that claims no findings. That
     # is cargo audit complaining about something other than a finding.
     bad "$lockfile — the advisory scan reported a problem (exit $status)"
     failed=1

@@ -54,9 +54,25 @@ add a waiver to `deny.toml`, the hook honours it immediately; if you only added
 it to a copy somewhere, CI and your pre-push would disagree.
 
 **It audits all four lockfiles, not just the workspace one.** The interop and
-fuzz crates are excluded from the workspace, so the `supply chain` job's
-`cargo deny` never sees their dependency graphs. A committed `Cargo.lock` is a
-dependency graph someone will build, so it gets the same scan.
+fuzz crates are excluded from the workspace, so the root `cargo deny` never
+sees their dependency graphs. A committed `Cargo.lock` is a dependency graph
+someone will build, so it gets the same scan.
+
+**It denies `unsound` and `yanked`, not just plain vulnerabilities.**
+`cargo audit` files an `unsound` advisory under `warnings` rather than
+`vulnerabilities`, and exits zero for it by default — so a hook that read
+only `vulnerabilities.count` reported a lockfile carrying a use-after-free
+advisory as clean. The hook passes `-D unsound -D yanked` and reads all
+three categories out of the report, which is the same set `deny.toml`
+denies. A hook that passes where CI fails is worse than no hook: it hands
+out a clean bill of health on a graph CI would reject. `unmaintained` is
+deliberately *not* denied, because `deny.toml` sets
+`unmaintained = "workspace"`.
+
+A yanked crate is reported separately from an advisory, because the two
+have different remedies. An advisory can be waived in `deny.toml`; a
+yanked crate has no advisory id to ignore, so the only fix is to update
+the lockfile.
 
 A failed advisory scan is a hard block, including the case where the scan could
 not run at all. `cargo audit` exits 1 for a vulnerability *and* for a failure to
@@ -252,6 +268,30 @@ grep -n '^version' Cargo.toml
 
 Then: bump → open a PR → merge → CI green → Auto Tag tags → Release runs →
 approve once.
+
+**A version bump also invalidates the three lockfiles outside the
+workspace.** `fuzz`, `interop_rmcp` and `interop_ts_sdk` are each their own
+workspace, and each pins `protocol-droid` by version. Bump the workspace and
+those lockfiles no longer match, which the `supply chain` job reports
+because its scan passes `--locked`. The fix is to refresh them:
+
+```bash
+# the root lockfile
+cargo update -p protocol-droid
+
+# and the three outside the workspace
+for crate in crates/protocol-droid/fuzz \
+             crates/protocol-droid/tests/interop_rmcp \
+             crates/protocol-droid/tests/interop_ts_sdk; do
+  cargo update --manifest-path "$crate/Cargo.toml" -p protocol-droid
+done
+```
+
+Leaving them stale is worse than an inconvenience: a stale fixture lockfile
+is a dependency graph nobody scans, which is how the fixture kept
+`ctutils 0.4.3` (RUSTSEC-2026-0385) while the root lockfile had already
+moved to 0.4.5. The `supply chain` job failing on `--locked` is the
+mechanism that keeps the four lockfiles honest.
 
 `auto-tag.yml` tags `v<workspace version>` when CI is green on a push to
 `main` and that tag does not exist yet. `release.yml` runs on Auto Tag's
