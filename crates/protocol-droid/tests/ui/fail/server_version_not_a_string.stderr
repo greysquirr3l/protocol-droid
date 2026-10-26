@@ -1,0 +1,5 @@
+error: expected a string, for example version = "1.0.0" — the version is free-form text on the wire, and a number reads as a count
+  --> tests/ui/fail/server_version_not_a_string.rs:12:51
+   |
+12 | #[protocol_droid::server(name = "docs", version = 1)]
+   |                                                   ^

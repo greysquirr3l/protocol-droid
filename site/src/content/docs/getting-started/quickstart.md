@@ -14,8 +14,6 @@ here are the front door.
 Add the crate, then drop this into `src/main.rs`:
 
 ```rust
-use protocol_droid::prelude::*;
-
 /// A greeter: one tool, no state.
 struct Greeter;
 
@@ -23,14 +21,15 @@ struct Greeter;
 impl Greeter {
     /// Greets someone by name.
     #[protocol_droid::tool]
-    async fn greet(name: String) -> String {
-        format!("hello, {name}")
+    async fn greet(name: String) -> Result<String, String> {
+        Ok(format!("hello, {name}"))
     }
 }
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
-    Greeter.into_server()?.serve_stdio().await
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Greeter.into_server()?.serve_stdio().await?;
+    Ok(())
 }
 ```
 
@@ -43,11 +42,11 @@ body is wired to the JSON-RPC router without further plumbing. A
 call the macro generates has to produce a future.
 
 :::tip
-The full `examples/stdio_server.rs` also enables the
-`rt-multi-thread` feature on the `tokio` re-export the
-crate carries, and uses `serve_stdio` to build a runtime
-that matches the stdio transport's needs. The nine-line
-form above works with a stock `#[tokio::main]`.
+`serve_stdio` is `async` and runs on whatever runtime you already have, so
+the `#[tokio::main]` above is the runtime. The full
+`examples/stdio_server.rs` builds its own current-thread runtime by hand
+instead, because the stdio transport handles one serialised conversation
+and a thread pool would buy nothing.
 :::
 
 ## Hello, client

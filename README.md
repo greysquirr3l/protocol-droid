@@ -53,7 +53,7 @@ Three ideas set it apart:
 
 ```toml
 [dependencies]
-protocol-droid = "0.5"
+protocol-droid = "0.6"
 ```
 
 The default build is `serde` + `stdio`, which is enough to *serve* over stdio
@@ -82,7 +82,7 @@ stdio-only. Reaching for `ServerConfig` or `HttpBuilder` without it fails with
 configured out` note — the module is behind the feature, not missing:
 
 ```toml
-protocol-droid = { version = "0.5", features = ["http"] }
+protocol-droid = { version = "0.6", features = ["http"] }
 ```
 
 Add `oauth` for the resource-server and PKCE client halves (it implies `http`),
@@ -91,7 +91,7 @@ and `random-ids` if you want CSPRNG session ids rather than a counter.
 A lean build — the IR, every codec, every wire type, and no executor at all:
 
 ```toml
-protocol-droid = { version = "0.5", default-features = false, features = ["serde"] }
+protocol-droid = { version = "0.6", default-features = false, features = ["serde"] }
 ```
 
 `default-features = false` drops the executor, the transport adapters, and the
@@ -136,6 +136,15 @@ that matters — `into_server`. The marks inside it (`#[tool]`, `#[resource]`,
 `inputSchema`, which is why nothing above declares a schema, and the doc comment
 becomes the `description` a peer reads. A `#[tool]` handler is `async` even when
 it awaits nothing, because the call the macro generates has to produce a future.
+
+The version a peer sees in `serverInfo` is the version of *your* crate, not of
+`protocol-droid` — a server that merely links this crate is not this crate. To
+say so explicitly, name it; the field takes an expression, so the version is
+written once and cannot drift from your manifest:
+
+```rust
+#[protocol_droid::server(name = "greeter", version = env!("CARGO_PKG_VERSION"))]
+```
 
 Two lines are missing from the snippet above because they are not the library's
 business: a `struct Greeter;` declaration, and the runtime. `serve_stdio` is

@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "arc-swap",
  "hmac",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid-macros"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "protocol-droid-schema"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",

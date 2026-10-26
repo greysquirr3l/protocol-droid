@@ -193,6 +193,47 @@ impl Demo {
 
 /// A second server in the same module, with methods `Demo` also has.
 ///
+/// A server that names its own version, so the `version = ...` field has
+/// something to say.
+///
+/// A separate type from `Demo` because the version is a property of the
+/// *server* rather than of any one of its tools, and a server with a version
+/// and a server without one are different claims about the same macro.
+struct Versioned;
+
+/// A version constant that exists only in *this* crate.
+///
+/// The name is the point. The `version` field takes an expression, and the
+/// expression is emitted into the consuming crate — so it is resolved
+/// against this crate's scope, where this constant lives. Were the macro to
+/// evaluate it anywhere else, this file would not compile at all, and the
+/// name says why the constant has to be here rather than in the macro crate.
+const CONSUMER_CRATE_VERSION: &str = "4.2.0";
+
+#[protocol_droid::server(name = "versioned-server", version = CONSUMER_CRATE_VERSION)]
+impl Versioned {
+    /// A tool, so the server is not empty.
+    #[protocol_droid::tool]
+    async fn ping() -> Result<String, DemoError> {
+        Ok("pong".to_string())
+    }
+}
+
+/// A server whose version is written as a literal.
+///
+/// A literal is the other shape the field accepts, and it is the one a
+/// consumer reaches for when the version is not in a manifest.
+struct LiteralVersioned;
+
+#[protocol_droid::server(name = "literal-versioned-server", version = "4.2.1")]
+impl LiteralVersioned {
+    /// A tool, so the server is not empty.
+    #[protocol_droid::tool]
+    async fn ping() -> Result<String, DemoError> {
+        Ok("pong".to_string())
+    }
+}
+
 /// Every generated item for a tool is named `__{Type}_{fn}_*`, and a
 /// `#[resource]` or `#[prompt]` generates no name at all — only the
 /// registration that calls the method. This type exists to hold that claim to
@@ -200,7 +241,6 @@ impl Demo {
 /// `add` and this type's `add` both declared `__add_Args` at module scope and
 /// the file would not compile at all.
 struct Other;
-
 #[protocol_droid::server(name = "other-server")]
 impl Other {
     /// The same name, the same shape, a different answer.
@@ -455,6 +495,106 @@ fn the_server_name_comes_from_the_attribute() -> Result<(), TestError> {
         return Err(Failure::from(format!(
             "the server is named {}",
             server.name()
+        )));
+    }
+    Ok(())
+}
+
+/// The server's version comes from the attribute, not from the crate that
+/// built it.
+///
+/// The point of the field: a server that merely *links* `protocol-droid` is
+/// not `protocol-droid`, and a peer asking "which version are you" is asking
+/// about the server. Without the field, every downstream server answers with
+/// whatever version the dependency happened to be pinned at, which is a fact
+/// about the dependency rather than about the server.
+#[test]
+fn the_server_version_comes_from_the_attribute() -> Result<(), TestError> {
+    let server = Versioned.into_server()?;
+    if server.version() != CONSUMER_CRATE_VERSION {
+        return Err(Failure::from(format!(
+            "the server reports version {}",
+            server.version()
+        )));
+    }
+    Ok(())
+}
+
+/// A literal is a version too.
+///
+/// The field takes an expression, and a string literal is an expression. A
+/// consumer whose version is not in a manifest — a build stamped by CI, say —
+/// has nothing to point at, and the field has to accept the plain form.
+#[test]
+fn a_literal_is_a_version() -> Result<(), TestError> {
+    let server = LiteralVersioned.into_server()?;
+    if server.version() != "4.2.1" {
+        return Err(Failure::from(format!(
+            "the server reports version {}",
+            server.version()
+        )));
+    }
+    Ok(())
+}
+
+/// The version reaches the wire, in the `serverInfo` of the handshake.
+///
+/// The accessor is not the point — the handshake reply is. A version that
+/// lives on the builder but never reaches `serverInfo` would satisfy the
+/// test above and still tell every peer the wrong thing.
+#[tokio::test]
+async fn the_server_version_reaches_the_handshake() -> Result<(), TestError> {
+    let dispatcher = dispatcher(Versioned.into_server()?);
+    let params = serde_json::json!({
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": { "name": "test", "version": "1" },
+    });
+    let params = JsonObject::from_value(params)
+        .map_err(|error| Failure::from(format!("the params are not an object: {error}")))?;
+
+    let reply = dispatcher
+        .dispatch(&context(), "initialize", &params)
+        .await
+        .map_err(|error| Failure::from(format!("the handshake was refused: {error}")))?;
+
+    let answer: serde_json::Value = serde_json::from_str(reply.as_str())
+        .map_err(|error| Failure::from(format!("the reply is not JSON: {error}")))?;
+    let reported = answer
+        .get("serverInfo")
+        .and_then(|info| info.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Failure::from("the reply has no serverInfo.version"))?;
+
+    if reported != CONSUMER_CRATE_VERSION {
+        return Err(Failure::from(format!(
+            "the handshake reports version {reported}"
+        )));
+    }
+    Ok(())
+}
+
+/// A server with no `version = ...` reports the *consuming* crate's version.
+///
+/// The default is the version of the crate that wrote the `#[server]`
+/// attribute — here, this crate — and not the version of `protocol-droid`.
+/// That is the whole point of the field: a server that merely links
+/// `protocol-droid` is not `protocol-droid`, so the version a peer is told
+/// has to be the server's own.
+///
+/// The two happen to agree in this workspace, because this crate *is*
+/// `protocol-droid`. The claim that they are read from different places is
+/// therefore not observable here, and the cross-crate proof in
+/// `crates/protocol-droid/tests/interop_rmcp` is what pins it: there the
+/// consumer's version is `0.0.0` and `protocol-droid`'s is `0.5.3`, so the
+/// two are distinguishable.
+#[test]
+fn a_server_with_no_version_reports_the_consuming_crate() -> Result<(), TestError> {
+    let server = Demo.into_server()?;
+    if server.version() != env!("CARGO_PKG_VERSION") {
+        return Err(Failure::from(format!(
+            "the server reports version {}",
+            server.version()
         )));
     }
     Ok(())
