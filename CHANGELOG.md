@@ -11,6 +11,44 @@ checked against the code rather than taken on the changelog's word.
 
 ### Fixed
 
+- **A server built by `#[server]` reports its own version, not the
+  dependency's.** The `serverInfo` version of a server built by the macro
+  was the version of `protocol-droid` — the crate that *built* the server
+  — rather than the version of the crate that *wrote* it. A consumer
+  shipping a server therefore told every peer it was whatever
+  `protocol-droid` happened to be pinned at, which is a fact about the
+  dependency rather than about the server.
+
+  The `version` field on the attribute now takes an **expression** rather
+  than a string literal, so a consumer can point at its own manifest
+  instead of restating the string:
+
+  ```rust
+  #[protocol_droid::server(name = "greeter", version = env!("CARGO_PKG_VERSION"))]
+  ```
+
+  The `env!` is expanded in the consuming crate, so it reads *that*
+  crate's `Cargo.toml`. There is no version string written twice and
+  therefore none to drift. A literal still works, for a server whose
+  version is not in a manifest.
+
+  With no `version` field at all, the default is now the consuming
+  crate's own version rather than `protocol-droid`'s — the macro emits
+  the same `env!` the explicit form would, so a server that names no
+  version no longer claims to be the dependency. A server built by hand
+  through `Server::builder` is unaffected and still defaults to
+  `protocol-droid`'s own version, which is right for a server that *is*
+  this crate.
+
+  The cross-crate proof is a trybuild pass case
+  (`crates/protocol-droid/tests/ui/pass/server_version.rs`). A trybuild
+  case is its own crate at version `0.0.0`, so the consuming crate's
+  version and `protocol-droid`'s `0.5.3` are distinguishable — a test
+  inside `protocol-droid` could not tell the two apart, because there
+  they are the same string. The case was checked against a mutation that
+  hard-codes the dependency's version, and it fails with the version
+  mismatch it is supposed to catch.
+
 - **CI now scans every committed lockfile, not just the root one.** The
   `supply chain` job ran `cargo deny` against the root workspace only. Three
   lockfiles sit outside it — `crates/protocol-droid/fuzz/`,

@@ -52,7 +52,7 @@
 //!  "capabilities":{"logging":{},"prompts":{"listChanged":true},
 //!  "resources":{"listChanged":true,"subscribe":true},
 //!  "tools":{"listChanged":true}},
-//!  "serverInfo":{"name":"stdio_server::Greeter","version":"0.1.0"}}}
+//!  "serverInfo":{"name":"stdio_server::Greeter","version":"0.5.3"}}}
 //! ```
 //!
 //! Note what is *absent*: no `completions`, no `elicitation`. Neither exists on

@@ -284,6 +284,31 @@ fn parse_or_report(item: TokenStream) -> TokenStream {
 /// The server's name is the type's own, or `name = "..."` when the name a peer
 /// sees should differ from the Rust type name, which is usually the case.
 ///
+/// The server's version is `version = ...` when given, and otherwise the
+/// version of the crate that wrote the `#[server]` attribute.
+///
+/// The value is an expression rather than a string, so a consumer can say
+/// where its own version comes from instead of restating it:
+///
+/// ```text
+/// #[server(name = "my-server", version = env!("CARGO_PKG_VERSION"))]
+/// ```
+///
+/// The `env!` is expanded in the consuming crate, so it reads *that*
+/// crate's `Cargo.toml` — there is no version string written twice and
+/// therefore none to drift. A literal works too, for a server whose version
+/// is not in a manifest:
+///
+/// ```text
+/// #[server(name = "my-server", version = "1.4.0")]
+/// ```
+///
+/// Either way the version is the consumer's own. Without the field it is
+/// still the consumer's own — the default reads the same `CARGO_PKG_VERSION`
+/// — so a downstream server never claims to be whatever version
+/// `protocol-droid` happened to be pinned at, which is a fact about the
+/// dependency rather than about the server.
+///
 /// # What is checked, and what is left to the registry
 ///
 /// Signatures. A `#[resource]` that is `async`, takes a receiver, or returns
@@ -335,8 +360,9 @@ fn expand_server(
     block: &ItemImpl,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let self_ty = &block.self_ty;
-    let fields = args::literal_fields(attribute)?;
-    let server_name = args::field(&fields, "name");
+    let fields = args::Fields::parse(attribute)?;
+    let server_name = fields.literal("name")?;
+    let server_version = fields.string_expression("version")?;
 
     // One registration per marked method, with everything it needs generated
     // beside it. The `const _` blocks are at module scope here — an attribute
@@ -426,6 +452,29 @@ fn expand_server(
         |name| quote! { #name.to_string() },
     );
 
+    // The version this server reports in `serverInfo`.
+    //
+    // With no `version = ...` the version of the crate that *wrote* the
+    // `#[server]` attribute, not the version of `protocol-droid`. The
+    // `env!` below is expanded in the consuming crate, so it reads that
+    // crate's own manifest — a server that merely links `protocol-droid` is
+    // not `protocol-droid`, and a peer asking which version a server is
+    // asking about the server. Leaving the builder's own default in place
+    // would answer with a fact about the dependency instead, and every
+    // downstream server would claim to be whatever `protocol-droid` happened
+    // to be pinned at.
+    //
+    // The alternative — reading it from an associated const on the type —
+    // was considered and not taken: it puts the version in a second place
+    // for every server that wants one, and a server whose version lives in
+    // the attribute but whose tools live in the type is no worse than the
+    // reverse. The attribute keeps the two facts about the server in one
+    // place, next to the name they sit beside on the wire.
+    let version_expression = server_version.map_or_else(
+        || quote! { ::core::env!("CARGO_PKG_VERSION") },
+        |version| quote! { #version },
+    );
+
     let __out = quote! {
         #block
         #(#generated)*
@@ -457,6 +506,7 @@ fn expand_server(
                 #[allow(unused_mut, reason = "nothing marked means nothing to build")]
                 let mut builder =
                     ::protocol_droid::application::server::Server::builder(#name_expression);
+                builder = builder.version(#version_expression);
                 #(#registrations)*
                 Ok(builder.build())
             }
