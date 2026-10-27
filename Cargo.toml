@@ -215,7 +215,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["std", "b
 # Validates generated values against the vendored schema.json. Default features
 # are off because they pull `reqwest` and a TLS stack for remote `$ref`
 # resolution; every reference in these schemas is local (`#/definitions/...`).
-jsonschema = { version = "0.58.5", default-features = false }
+jsonschema = { version = "0.60.1", default-features = false }
 # Snapshot testing for the feature matrix. Default features are off: they pull
 # `pest`, `regex`, `ron`, `yaml` and `toml` for formats this suite does not
 # snapshot, and the dependency is only here to hold the golden feature profiles
