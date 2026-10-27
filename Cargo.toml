@@ -104,7 +104,33 @@ exclude = [
 # feature is what turns `ctutils` on. The reachable path is our own HMAC
 # comparison in `application/mcp/input_required.rs`, which verifies a
 # `requestState` MAC. `ctutils 0.4.4` fixes it; this workspace takes 0.4.5.
-version = "0.5.3"
+#
+# 0.6.0 is a minor, and the reason is that the `#[server]` attribute grew a
+# field rather than a patch. #64 added `version = ...`, so a consumer can say
+# which version its server is instead of leaving the answer to be whatever
+# the dependency happened to be pinned at.
+#
+# The field takes an expression rather than a string literal, which is the
+# part worth a minor rather than a patch: `version = env!("CARGO_PKG_VERSION")`
+# reads the *consuming* crate's manifest, because a proc-macro expansion is
+# compiled in the crate that uses it. The version is written once, so there is
+# no second copy to drift. A literal still works, and a non-string literal is
+# refused with a message that names the fix.
+#
+# The default changed with it. A server built by `#[server]` that names no
+# version now reports the consuming crate's own version rather than this
+# crate's, so a downstream server no longer claims to be whatever
+# `protocol-droid` was pinned at. `Server::builder` is unchanged and still
+# defaults to this crate's version, which is right for a server that *is* this
+# crate.
+#
+# That default change is the one thing here a consumer could notice without
+# asking for it, so it is worth stating plainly: a peer that was told
+# `0.5.3` is now told the consumer's own version. The answer was wrong before
+# — it was a fact about the dependency, not about the server — but a consumer
+# who was matching on the old string will see a difference, which is why this
+# is a minor and not a patch.
+version = "0.6.0"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -135,9 +161,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.5.3" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.5.3" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.5.3" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.6.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.6.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.6.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

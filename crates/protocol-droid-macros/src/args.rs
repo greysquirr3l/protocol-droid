@@ -111,9 +111,13 @@ pub(crate) fn read_handler(
         ));
     }
 
-    let fields = literal_fields(attribute)?;
-    let tool_name = field(&fields, "name").unwrap_or_else(|| sig.ident.to_string());
-    let description = field(&fields, "description").or_else(|| description_from(attrs));
+    let fields = Fields::parse(attribute)?;
+    let tool_name = fields
+        .literal("name")?
+        .unwrap_or_else(|| sig.ident.to_string());
+    let description = fields
+        .literal("description")?
+        .or_else(|| description_from(attrs));
 
     let mut takes_context = false;
     let mut positional = Vec::new();
@@ -662,58 +666,131 @@ pub(crate) fn returns_tool_result(sig: &syn::Signature) -> bool {
     })
 }
 
-/// The `name = "..."`, `description = "..."` pairs on an attribute.
+/// The value of one `name = ...` pair on an attribute.
+///
+/// A string literal for the fields that carry text — a tool's name, a
+/// description — and any expression for the field that carries a value
+/// rather than a word, which is `version` on `#[server]`.
+enum Value {
+    /// A string literal, which is what every text field carries.
+    Literal(syn::LitStr),
+    /// Any other expression, kept as it was written.
+    Expression(syn::Expr),
+}
+
+/// The `name = ...` pairs on an attribute.
 ///
 /// Parsed from the attribute's own token stream rather than from an
 /// `Attribute` value the caller rebuilt. Round-tripping through a synthetic
 /// `#[tool(..)]` to read it back would mean the two spellings of the same
 /// argument — the one the user wrote and the one the macro invented — could
 /// parse differently, and a difference there is invisible.
-pub(crate) fn literal_fields(
-    attribute: proc_macro2::TokenStream,
-) -> syn::Result<Vec<(String, syn::LitStr)>> {
-    if attribute.is_empty() {
-        return Ok(Vec::new());
-    }
-    let nested = syn::parse::Parser::parse2(
-        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-        attribute,
-    )?;
-
-    let mut found = Vec::new();
-    for entry in nested {
-        let syn::Meta::NameValue(pair) = entry else {
-            return Err(syn::Error::new_spanned(
-                &entry,
-                "expected a named value, for example name = \"my-tool\"",
-            ));
-        };
-        let syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(text),
-            ..
-        }) = &pair.value
-        else {
-            return Err(syn::Error::new_spanned(
-                &pair.value,
-                "expected a string literal, for example name = \"my-tool\"",
-            ));
-        };
-        found.push((
-            pair.path
-                .get_ident()
-                .map_or_else(String::new, ToString::to_string),
-            text.clone(),
-        ));
-    }
-    Ok(found)
+pub(crate) struct Fields {
+    entries: Vec<(String, Value)>,
 }
 
-/// One of the parsed `name = "..."` pairs.
-pub(crate) fn field(fields: &[(String, syn::LitStr)], name: &str) -> Option<String> {
-    fields
-        .iter()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value.value())
+impl Fields {
+    /// Reads the `name = ...` pairs out of an attribute's token stream.
+    ///
+    /// A value that is not a string literal is kept as the expression it was
+    /// written as, because one field — `version` on `#[server]` — takes a
+    /// value rather than a word. A macro that refused to parse it would
+    /// refuse the only spelling that lets a consumer say where its own
+    /// version comes from.
+    pub(crate) fn parse(attribute: proc_macro2::TokenStream) -> syn::Result<Self> {
+        if attribute.is_empty() {
+            return Ok(Self {
+                entries: Vec::new(),
+            });
+        }
+        let nested = syn::parse::Parser::parse2(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            attribute,
+        )?;
+
+        let mut entries = Vec::new();
+        for entry in nested {
+            let syn::Meta::NameValue(pair) = entry else {
+                return Err(syn::Error::new_spanned(
+                    &entry,
+                    "expected a named value, for example name = \"...\"",
+                ));
+            };
+            let key = pair
+                .path
+                .get_ident()
+                .map_or_else(String::new, ToString::to_string);
+            let value = match &pair.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(text),
+                    ..
+                }) => Value::Literal(text.clone()),
+                other => Value::Expression(other.clone()),
+            };
+            entries.push((key, value));
+        }
+        Ok(Self { entries })
+    }
+
+    /// The string value of `name`, when the field was given as a string
+    /// literal.
+    ///
+    /// # Errors
+    ///
+    /// A field given as anything else — a path, a call, a number. Every
+    /// field read this way carries text rather than a value, and the message
+    /// says so here rather than letting the value fail somewhere later.
+    pub(crate) fn literal(&self, name: &str) -> syn::Result<Option<String>> {
+        let Some((_, value)) = self.entries.iter().find(|(key, _)| key == name) else {
+            return Ok(None);
+        };
+        match value {
+            Value::Literal(text) => Ok(Some(text.value())),
+            Value::Expression(expression) => Err(syn::Error::new_spanned(
+                expression,
+                format!("expected a string literal, for example {name} = \"...\""),
+            )),
+        }
+    }
+
+    /// The value of `name` as an expression that evaluates to a string.
+    ///
+    /// # Errors
+    ///
+    /// A literal that is not a string — a number, a boolean, a character.
+    /// Those are the mistakes worth catching here, because the version is
+    /// free-form text on the wire and a number is the one thing that is
+    /// certainly wrong: a peer reads `1` and cannot tell a version from a
+    /// count. The message says what to write instead, because a trait-bound
+    /// error from `impl Into<String>` names the bound rather than the fix.
+    ///
+    /// An *expression* that is not obviously a string is left alone. It may
+    /// well produce one — `env!("CARGO_PKG_VERSION")`, a `const`, a function
+    /// call — and refusing it here would refuse the spelling the field
+    /// exists to accept.
+    pub(crate) fn string_expression(&self, name: &str) -> syn::Result<Option<syn::Expr>> {
+        let Some((_, value)) = self.entries.iter().find(|(key, _)| key == name) else {
+            return Ok(None);
+        };
+        match value {
+            Value::Literal(text) => Ok(Some(syn::Expr::Lit(syn::ExprLit {
+                attrs: Vec::new(),
+                lit: syn::Lit::Str(text.clone()),
+            }))),
+            Value::Expression(expression) => {
+                if let syn::Expr::Lit(literal) = expression {
+                    return Err(syn::Error::new_spanned(
+                        literal,
+                        format!(
+                            "expected a string, for example {name} = \"1.0.0\" — the version is \
+                             free-form text on the wire, and a number reads as a count"
+                        ),
+                    ));
+                }
+                Ok(Some(expression.clone()))
+            }
+        }
+    }
 }
 
 /// The description a doc comment gives, as one line.

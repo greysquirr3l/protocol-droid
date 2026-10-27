@@ -48,11 +48,11 @@
 //!         "params":{"protocolVersion":"2024-11-05","capabilities":{},
 //!                   "clientInfo":{"name":"probe","version":"1"}}}' \
 //!   | cargo run -q -p protocol-droid --example stdio_server
-//! {"id":1,"jsonrpc":"2.0","result":{"protocolVersion":"2024-11-05",
-//!  "capabilities":{"logging":{},"prompts":{"listChanged":true},
-//!  "resources":{"listChanged":true,"subscribe":true},
-//!  "tools":{"listChanged":true}},
-//!  "serverInfo":{"name":"stdio_server::Greeter","version":"0.1.0"}}}
+//! {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"logging":{},
+//!  "prompts":{"listChanged":true},"resources":{"listChanged":true,
+//!  "subscribe":true},"tools":{"listChanged":true}},
+//!  "protocolVersion":"2024-11-05",
+//!  "serverInfo":{"name":"stdio_server::Greeter","version":"0.6.0"}}}
 //! ```
 //!
 //! Note what is *absent*: no `completions`, no `elicitation`. Neither exists on

@@ -9,18 +9,77 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-26
+
+A minor, and the reason is that the `#[server]` attribute grew a field.
+
+`#[server]`'s `into_server()` built the server with `Server::builder(name)`
+and no version, so `serverInfo.version` reported the version of the
+`protocol-droid` crate the consumer happened to be linked against — not the
+consumer's own version. The escape hatch (`ServerBuilder::version`) existed,
+but reaching it meant hand-writing the builder chain, which means giving up
+the macro's registration. A server that merely links `protocol-droid` is not
+`protocol-droid`, and a peer asking which version a server is asks about the
+server.
+
+### Added
+
+- **`version = ...` on the `#[server]` attribute.** The field takes an
+  **expression** rather than a string literal:
+
+  ```rust
+  #[protocol_droid::server(name = "greeter", version = env!("CARGO_PKG_VERSION"))]
+  ```
+
+  The `env!` is expanded in the *consuming* crate, because a proc-macro
+  expansion is compiled in the crate that uses it. The version is therefore
+  written once — there is no second copy to drift — and a consumer that
+  bumps its own manifest has nothing else to update. A literal still works,
+  for a server whose version is not in a manifest, and a non-string literal
+  is refused with a message that names the fix rather than a trait-bound
+  error about `Into<String>`.
+
+  The cross-crate proof is a trybuild pass case
+  (`crates/protocol-droid/tests/ui/pass/server_version.rs`). A test *inside*
+  `protocol-droid` cannot make the claim, because there the consuming
+  crate's version and the dependency's are the same string; a trybuild case
+  is its own crate at version `0.0.0`, so the two are distinguishable. The
+  case was checked against a mutation that hard-codes the dependency's
+  version, and fails with the mismatch it is supposed to catch.
+
+- **A test that fails if a committed lockfile stops being scanned.**
+  (`crates/protocol-droid/tests/supply_chain_coverage.rs`) The failure mode
+  is silent — a workflow edit that drops a step leaves a green CI run and a
+  lockfile nobody scans. The test reads the workflow, works out which
+  manifests are scanned, and fails if any committed lockfile is not among
+  them.
+
+### Changed
+
+- **A server built by `#[server]` reports the version of the crate that
+  wrote it.** With no `version` field, the default is now the consuming
+  crate's own version rather than `protocol-droid`'s — the macro emits the
+  same `env!` the explicit form would, so a server that names no version no
+  longer claims to be the dependency.
+
+  This is the one change here a consumer can notice without asking for it,
+  so it is worth stating plainly: a peer that was told `0.5.3` is now told
+  the consumer's own version. The old answer was wrong — it was a fact
+  about the dependency rather than about the server — but a consumer
+  matching on the old string will see a difference. That is why this is a
+  minor and not a patch.
+
+  A server built by hand through `Server::builder` is unaffected and still
+  defaults to `protocol-droid`'s own version, which is right for a server
+  that *is* this crate.
+
 ### Fixed
 
 - **CI now scans every committed lockfile, not just the root one.** The
-  `supply chain` job ran `cargo deny` against the root workspace only. Three
-  lockfiles sit outside it — `crates/protocol-droid/fuzz/`,
-  `crates/protocol-droid/tests/interop_rmcp/` and
-  `crates/protocol-droid/tests/interop_ts_sdk/`, each its own `[workspace]` —
-  so their dependency graphs were never checked by CI. A committed
-  `Cargo.lock` is a dependency graph someone will build, so the job now
-  scans all four, one step per graph.
-
-  The gap was not theoretical: when `ctutils` was bumped for
+  `supply chain` job ran `cargo deny` against the root `Cargo.lock` only,
+  while three lockfiles outside the workspace — `fuzz`, `interop_rmcp` and
+  `interop_ts_sdk` — were excluded from the workspace and so from that
+  scan. The gap was not theoretical: when `ctutils` was bumped to 0.4.5 for
   RUSTSEC-2026-0385, the root lockfile was updated and the interop
   fixture's was not, so the fixture kept the vulnerable version until the
   pre-push hook blocked the push.
@@ -44,14 +103,30 @@ checked against the code rather than taken on the changelog's word.
   crate has no advisory id to ignore and can only be fixed by updating the
   lockfile.
 
-### Added
+### Documentation
 
-- **A test that fails if a committed lockfile stops being scanned.**
-  (`crates/protocol-droid/tests/supply_chain_coverage.rs`) The failure mode
-  is silent — a workflow edit that drops a step leaves a green CI run and a
-  lockfile nobody scans. The test reads the workflow, works out which
-  manifests are scanned, and fails if any committed lockfile is not among
-  them.
+- **The "Write a server" guide described an API that does not exist.**
+  (`site/src/content/docs/guides/write-a-server.md`) It showed
+  `use protocol_droid::prelude::*`, a `#[server]` attribute on a *struct*,
+  a `Dispatcher` *trait* a consumer implements, and a `Server::new(..)` /
+  `serve(config)` pair — none of which is the crate's shape. The real API
+  is `#[protocol_droid::server]` on an *impl block*, `Dispatcher` is a
+  struct rather than a trait, and the entry points are
+  `Server::builder(name)` and `serve_stdio` / `serve_http`. A reader
+  following the guide would not have got a compiling program.
+
+  The guide now also says what the attribute has to be attached to and
+  why: an attribute macro only sees the item it is on, so a `#[server]`
+  on a struct cannot see the `impl` beside it, and every tool in that
+  `impl` would be invisible to it.
+
+- **The quickstart imported a `prelude` module and described a runtime
+  the library does not build.**
+  (`site/src/content/docs/getting-started/quickstart.md`) There is no
+  `protocol_droid::prelude`. The tip block also said `serve_stdio` builds
+  a runtime; it is `async` and runs on whatever runtime the caller
+  already has, which is what the `#[tokio::main]` in the same snippet is
+  for.
 
 ## [0.5.3] — 2026-10-25
 

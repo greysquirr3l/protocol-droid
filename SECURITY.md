@@ -13,10 +13,10 @@ guaranteed to be free of merge conflicts on the older minor.
 
 | Crate                    | Latest stable | Previous minor |
 | ------------------------ | ------------- | -------------- |
-| `protocol-droid-schema`  | `0.5`         | `0.4`          |
-| `protocol-droid`         | `0.5`         | `0.4`          |
-| `protocol-droid-macros`  | `0.5`         | `0.4`          |
-| `protocol-droid-cli`     | `0.5`         | `0.4`          |
+| `protocol-droid-schema`  | `0.6`         | `0.5`          |
+| `protocol-droid`         | `0.6`         | `0.5`          |
+| `protocol-droid-macros`  | `0.6`         | `0.5`          |
+| `protocol-droid-cli`     | `0.6`         | `0.5`          |
 
 All four share one version — every member inherits `version` from
 `[workspace.package]`, so there is no series in which the crates
@@ -285,7 +285,7 @@ What a consumer needs to know:
   attention. A binary crate publishes its `Cargo.lock`, and `cargo
   install` honours it, so `cargo install protocol-droid-cli --version
   0.5.2` installed a binary built against `ctutils 0.4.3`. 0.5.3 ships
-  the patched version.
+  the patched version, as does every release since.
 
 The advisory was published on 2026-10-23, after 0.5.2 was tagged on
 2026-10-22, so the fix could not have shipped in 0.5.2.

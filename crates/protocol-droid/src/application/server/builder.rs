@@ -585,6 +585,13 @@ impl ServerBuilder {
     /// own server should say so here rather than let the dependency's version
     /// stand in for theirs, which would have every downstream server claiming
     /// to be whatever `protocol-droid` happened to be pinned at.
+    ///
+    /// A server built by the `#[server]` macro does not use this default:
+    /// the macro sets the version from the *consuming* crate's own
+    /// `CARGO_PKG_VERSION`, so a server that merely links this crate reports
+    /// its own version rather than this crate's. This setter is the escape
+    /// hatch for a server built by hand, and the way to override the macro's
+    /// choice.
     #[must_use]
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
