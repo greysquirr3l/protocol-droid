@@ -53,11 +53,37 @@
 // "listening" line. The interop test reads that
 // line, captures the port, and starts driving
 // requests.
+//
+// `PORT` defaults to 0, which means "ask the OS
+// for a free port". The interop test relies on
+// that: the port the server ends up on is the one
+// the kernel assigned at bind time, so there is no
+// window in which another process could take it.
+// A specific `PORT` still works, for running the
+// server by hand.
 
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 
-const PORT = Number.parseInt(process.env.PORT ?? '41241', 10);
+// The port to listen on. `0` means "ask the OS for a free one", and the
+// bound port is what gets printed on the "listening" line.
+//
+// The interop test used to reserve a port itself, hand the number over in
+// `PORT`, and let the child bind it. That is a race: between the test
+// releasing the reservation and the child binding it, another process can
+// take the port, the child dies with `EADDRINUSE`, and the test reports it
+// as "the reference server closed stderr before listening" — a failure that
+// says nothing about the thing under test. Letting the kernel assign the
+// port removes the window entirely, because the bind that claims the port
+// and the bind that reports it are the same syscall.
+//
+// A specific `PORT` still works, for running the server by hand.
+const PORT = Number.parseInt(process.env.PORT ?? '0', 10);
+
+// The port the server actually bound. Zero until the listen callback
+// runs, and the request handler is not reachable before then, so a request
+// never sees it unset.
+let boundPort = PORT;
 
 // In-memory task store. Tasks live for the
 // lifetime of the server, which is the lifetime
@@ -86,35 +112,41 @@ function makeTask(text) {
   return task;
 }
 
-const AGENT_CARD = {
-  name: 'a2a-reference-server',
-  description: 'A vanilla-Node A2A v1.0 server for interop tests.',
-  version: '1.0.0',
-  // A2A v1.0 §4 requires the card to publish
-  // a non-empty list of protocol bindings. The
-  // Rust client deserialises this into
-  // `Vec<AgentInterface>`, where every entry
-  // has a `url` (parsed as a `Url`), a
-  // `protocolBinding`, and a
-  // `protocolVersion`. The JSON-RPC binding
-  // is the one this server implements, so
-  // that is the only entry.
-  supportedInterfaces: [
-    {
-      url: `http://127.0.0.1:${PORT}/a2a`,
-      protocolBinding: 'jsonrpc',
-      protocolVersion: '1.0',
+// The agent card. A function rather than a constant, because the card
+// publishes the server's own URL and that URL is only known once the OS
+// has assigned the port — which, when `PORT` is 0, is after this module
+// has finished loading.
+function agentCard(port) {
+  return {
+    name: 'a2a-reference-server',
+    description: 'A vanilla-Node A2A v1.0 server for interop tests.',
+    version: '1.0.0',
+    // A2A v1.0 §4 requires the card to publish
+    // a non-empty list of protocol bindings. The
+    // Rust client deserialises this into
+    // `Vec<AgentInterface>`, where every entry
+    // has a `url` (parsed as a `Url`), a
+    // `protocolBinding`, and a
+    // `protocolVersion`. The JSON-RPC binding
+    // is the one this server implements, so
+    // that is the only entry.
+    supportedInterfaces: [
+      {
+        url: `http://127.0.0.1:${port}/a2a`,
+        protocolBinding: 'jsonrpc',
+        protocolVersion: '1.0',
+      },
+    ],
+    capabilities: {
+      streaming: false,
+      pushNotifications: false,
+      stateTransitionHistory: false,
     },
-  ],
-  capabilities: {
-    streaming: false,
-    pushNotifications: false,
-    stateTransitionHistory: false,
-  },
-  defaultInputModes: ['text/plain'],
-  defaultOutputModes: ['text/plain'],
-  skills: [],
-};
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+    skills: [],
+  };
+}
 
 function jsonRpcError(id, code, message) {
   return {
@@ -194,7 +226,7 @@ const server = createServer((req, res) => {
   // `/.well-known/agent-card.json`.
   if (req.method === 'GET' && req.url === '/.well-known/agent-card.json') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(AGENT_CARD));
+    res.end(JSON.stringify(agentCard(boundPort)));
     return;
   }
 
@@ -246,5 +278,11 @@ server.listen(PORT, '127.0.0.1', () => {
   // the port. Keep the format stable: a single
   // line, the literal text "listening on", then
   // the port, then a newline.
-  process.stderr.write(`listening on ${PORT}\n`);
+  //
+  // The port reported is the one the OS actually assigned, not the one
+  // requested. When `PORT` is 0 the two differ, and reporting the requested
+  // one would send the test to a port nobody is listening on.
+  const address = server.address();
+  boundPort = typeof address === 'object' && address !== null ? address.port : PORT;
+  process.stderr.write(`listening on ${boundPort}\n`);
 });

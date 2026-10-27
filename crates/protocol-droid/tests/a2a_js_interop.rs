@@ -66,7 +66,6 @@
 // understood, not before.
 #![cfg(all(feature = "a2a", unix))]
 
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -136,30 +135,6 @@ fn find_node() -> Option<String> {
     None
 }
 
-/// Reserves a free TCP port by binding a
-/// `TcpListener` and asking the OS for port 0
-/// (any). The listener is dropped before the
-/// port is used, so a race is possible —
-/// Node's bind will fail immediately if the
-/// port is taken, and the test will fail
-/// cleanly. Retrying on `EADDRINUSE` would
-/// mask bugs in the reference server, so the
-/// test does not retry.
-///
-/// # Errors
-///
-/// A `reserve_port` failure means the OS is
-/// out of ports or a `TcpListener` for
-/// `127.0.0.1` cannot be created. The caller
-/// turns the error into a test failure with
-/// the underlying `io::Error`'s message.
-fn reserve_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
 /// Spawns the reference server and waits for
 /// the `listening on <port>` line on stderr.
 /// The line-based read is the cleanest way to
@@ -168,7 +143,6 @@ fn reserve_port() -> std::io::Result<u16> {
 /// the line is a contract the server
 /// documents.
 async fn spawn_reference_server(node: &str) -> Result<(String, ChildGuard), String> {
-    let port = reserve_port().map_err(|error| format!("reserving a port: {error}"))?;
     let server_path = reference_server_path();
     if !server_path.is_file() {
         return Err(format!(
@@ -179,7 +153,18 @@ async fn spawn_reference_server(node: &str) -> Result<(String, ChildGuard), Stri
     let mut command = Command::new(node);
     command
         .arg(&server_path)
-        .env("PORT", port.to_string())
+        // Port 0 means "ask the OS for a free one", and the child reports
+        // the port it actually got on its "listening" line.
+        //
+        // The test used to reserve a port itself and hand the number over,
+        // which raced: between the reservation being released and the
+        // child binding it, another process could take the port, and the
+        // child would die with `EADDRINUSE`. The symptom was a test
+        // failure that said nothing about the thing under test — "the
+        // reference server closed stderr before listening" — and it fired
+        // often enough on a busy CI runner to be worth removing rather
+        // than retrying around.
+        .env("PORT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -213,12 +198,14 @@ async fn spawn_reference_server(node: &str) -> Result<(String, ChildGuard), Stri
                 .trim()
                 .parse()
                 .map_err(|error| format!("the listening line is malformed: {error}"))?;
-            if bound_port != port {
-                return Err(format!(
-                    "the server bound to {bound_port} but the test reserved {port}"
-                ));
+            // The child asked for port 0, so the port it reports is the one
+            // the OS assigned and the one it is listening on. Port 0 would
+            // mean the fixture printed the port it was asked for rather
+            // than the one it got, which is the bug this replaced.
+            if bound_port == 0 {
+                return Err("the reference server reported port 0".to_owned());
             }
-            let base = format!("http://127.0.0.1:{port}");
+            let base = format!("http://127.0.0.1:{bound_port}");
             return Ok((base, ChildGuard { child }));
         }
     }
