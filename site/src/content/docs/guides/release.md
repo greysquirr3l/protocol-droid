@@ -62,6 +62,35 @@ missing path dep, a `rust-version` that is not the
 intended floor all surface here, before anything is
 uploaded.
 
+## When a release stalls at the gate
+
+The `publish` job sits in **waiting** until a maintainer approves
+it, and it waits indefinitely. A release that is never approved is
+not published: the tag exists, the run is on record, and crates.io
+never receives the crates.
+
+Two releases have ended that way, `v0.4.2` and `v0.6.1`. Neither was
+forced through the gate, and neither was uploaded. The consequence is
+that the version numbers on crates.io skip:
+
+```text
+0.4.1 → 0.4.3      (0.4.2 tagged, never published)
+0.5.x → 0.6.0      (0.6.1 tagged, never published)
+```
+
+The tag stays on the commit it marked, because that commit is real
+history. Only the publish never happened. A release that supersedes
+one of these folds its contents forward rather than backfilling the
+number, and the CHANGELOG carries a "never published" section saying
+so — a reader who sees `0.5.3 → 0.7.0` on crates.io should not have
+to guess whether a 0.6.1 exists somewhere.
+
+:::note
+A stalled run is not a failure to diagnose. The crates were never
+uploaded, so there is nothing to un-publish. What it needs is either
+an approval or a decision to abandon it and move to the next version.
+:::
+
 ## The binaries matrix
 
 The `binaries` job builds the CLI for six targets:

@@ -13,10 +13,10 @@ guaranteed to be free of merge conflicts on the older minor.
 
 | Crate                    | Latest stable | Previous minor |
 | ------------------------ | ------------- | -------------- |
-| `protocol-droid-schema`  | `0.6`         | `0.5`          |
-| `protocol-droid`         | `0.6`         | `0.5`          |
-| `protocol-droid-macros`  | `0.6`         | `0.5`          |
-| `protocol-droid-cli`     | `0.6`         | `0.5`          |
+| `protocol-droid-schema`  | `0.7`         | `0.6`          |
+| `protocol-droid`         | `0.7`         | `0.6`          |
+| `protocol-droid-macros`  | `0.7`         | `0.6`          |
+| `protocol-droid-cli`     | `0.7`         | `0.6`          |
 
 All four share one version — every member inherits `version` from
 `[workspace.package]`, so there is no series in which the crates
