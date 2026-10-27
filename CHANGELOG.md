@@ -9,6 +9,96 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-26
+
+A patch, and it is a patch because nothing here changes an API. The
+dependency bumps are the routine kind, and the two fixes are fixes to the
+tests themselves rather than to the library. 0.6.0 is a separate release
+because it has been published — the tag exists and the crates are on
+crates.io — so the two are not folded together.
+
+### Fixed
+
+- **The `a2a_js_interop` test could fail for a reason that had nothing to
+  do with what it measures.** (`crates/protocol-droid/tests/a2a_js_interop.rs`,
+  `crates/protocol-droid/tests/fixtures/a2a_reference_server.mjs`) The test
+  reserved a port by binding `127.0.0.1:0`, read the number, dropped the
+  listener, and handed the number to the Node reference server. Between the
+  drop and the child's bind, another process could take the port; the child
+  died with `EADDRINUSE` and the test reported it as "the reference server
+  closed stderr before listening", which says nothing about the A2A wire
+  format. It failed twice on `macos-latest` in CI, both times with correct
+  code.
+
+  The kernel now assigns the port: the child asks for port 0, and the bind
+  that claims the port and the bind that reports it are the same syscall, so
+  there is no window for anything to slip into. The reference server reports
+  the port it was actually given rather than the one it asked for, and its
+  agent card is built from that same bound port. The test is also faster —
+  3.48 s to 0.17 s — because it no longer waits on a port it has to race
+  for.
+
+- **The `bench_gate` smoke test measured the machine as much as the
+  decoder.** (`crates/protocol-droid/tests/bench_gate.rs`) It took one
+  wall-clock sample and compared it to a threshold. A wall-clock sample
+  measures the machine as much as the code: the same decoder measured
+  4 300 ns per iteration on an idle machine and 59 563 ns on a busy one, a
+  14× spread against a threshold of 15 100 ns. The failure said "the decoder
+  got slower", which was false.
+
+  The measurement is now the fastest of ten samples rather than a single
+  one — the fastest sample is the one least disturbed by the OS preempting
+  the test thread, and a real regression is present in every sample, so the
+  minimum still catches it. Measured under a load average of 20, the fastest
+  of ten samples was 4 640 ns while the median was 12 179 ns and the
+  slowest was 22 079 ns: the minimum recovers the uncontended cost, the
+  median does not.
+
+  The threshold was wrong independently of the noise. It scaled the committed
+  release-mode baseline by 15, a dev/release cost ratio guessed when the
+  test was written and never revisited; the real ratio is about 21. A
+  threshold computed from 15 is 15 100 ns, where the contract says 5× the
+  baseline — which put the threshold *below* the cost of an uncontaminated
+  decode on a loaded machine, and is why the test was tripping on noise.
+  The 100 ns padding term is gone as well: a pad on top of "5× the
+  baseline" means a decoder that is exactly 5× slower does not trip the
+  gate, which is not what a 5× gate means.
+
+  A second test now pins the contract, by asking the gate's own comparison
+  whether a synthetic 5× slower decoder trips it and whether an
+  uncontaminated one does not. Without it the constants could be loosened
+  until the gate stopped catching anything, and nothing would say so — the
+  failure mode of a gate that has quietly stopped gating is silence. The
+  gate was checked against a real regression too: a slowdown injected into
+  `decode` was caught at 25 615 ns against the 20 000 ns threshold, and
+  reverted.
+
+### Changed
+
+- **Dependency bumps.** `tokio` 1.53.3 → 1.54.1, `arc-swap` 1.9.2 → 1.9.3,
+  `jsonschema` 0.58.6 → 0.60.2 and `ureq` 3.4.2 → 3.5.0. The `jsonschema`
+  bump crosses a minor version and the crate's API did move, but it is a
+  dev-dependency — it validates generated values against the vendored
+  `schema.json` and nothing else — so the change is confined to the test
+  suite.
+
+### Documentation
+
+- **`docs/benchmarks.md` described a CI bench job that does not exist.**
+  (`docs/benchmarks.md`) The document described a job that runs the divan
+  benches and compares their medians against `baselines.json` with a 10 %
+  threshold in either direction. There is no such job, and `baselines.json`
+  is read by nothing but the documentation. The document now says what is
+  actually there: the `bench_gate` smoke test is the automated performance
+  gate, and the committed baselines are reference data for a human reading a
+  bench run.
+
+  The reason the divan benches are not in CI is the same reason the smoke
+  test now reads the fastest of ten samples: a wall-clock measurement on a
+  shared runner measures the runner. A 10 % threshold there is not a
+  stricter gate, it is a noisier one. Wiring those benches into CI needs a
+  runner that is not shared, and is its own piece of work.
+
 ## [0.6.0] — 2026-10-26
 
 A minor, and the reason is that the `#[server]` attribute grew a field.
