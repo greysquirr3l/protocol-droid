@@ -143,7 +143,22 @@ exclude = [
 # — it was a fact about the dependency, not about the server — but a consumer
 # who was matching on the old string will see a difference, which is why this
 # is a minor and not a patch.
-version = "0.6.1"
+#
+# 0.7.0 is a minor for the same kind of reason, and for the same shape of
+# change: a session now speaks the revision the peer negotiated rather than
+# the newest revision this build could speak. That is visible on the wire.
+# A `2024-11-05` peer was being sent `2025-11-25` shapes — a
+# `structuredContent` its schema has no field for, an `audio` content block
+# its schema has no type for — and a client that sent the `MCP-Protocol-Version`
+# header it had just negotiated was answered `400`. Both of those are fixed
+# now, and both were wrong in a way a peer could not work around.
+#
+# 0.6.1 was tagged and prepared but never published: its run stopped at the
+# `release` environment gate and was abandoned rather than forced, so
+# crates.io goes 0.6.0 -> 0.7.0 with nothing at 0.6.1. Its contents are
+# folded in below rather than lost. The version was skipped, not backfilled,
+# and the CHANGELOG says so in as many words.
+version = "0.7.0"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -174,9 +189,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.6.1" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.6.1" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.6.1" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.7.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.7.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.7.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.

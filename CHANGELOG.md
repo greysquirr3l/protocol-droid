@@ -9,10 +9,45 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-27
+
+A minor, and the reason is that the answer to "which revision is this
+session speaking?" was wrong in a way a peer could not work around.
+
+A session now speaks the revision the peer negotiated. Before this it
+spoke the newest revision the build could speak — the transport's ceiling —
+whatever the peer asked for. Three things followed from that, and all three
+were visible to a peer rather than to the library.
+
+**A peer could be sent a shape it cannot parse.** A tool result is lowered
+for the session's revision, and each revision has its own codec, so a
+`2024-11-05` peer was sent `2025-11-25` shapes: a `structuredContent` its
+schema has no field for, and content blocks such as `audio` that its schema
+has no type for at all. A peer that asked for an older revision could be
+sent something it could not parse.
+
+**A client could be refused for being right.** `MCP-Protocol-Version` is an
+assertion, not a fallback — a present header that disagrees with the
+negotiated revision is a protocol error — but the comparison was against the
+ceiling, so a client that sent the revision it had just negotiated was
+answered `400`, while a client that sent the ceiling was accepted.
+
+**A handler could not learn what it was speaking.** `PeerSession::negotiated`
+is documented as "the revision this session actually settled on", and it
+answered with the ceiling. A consumer that wanted to report its own version
+had to report a *range* of revisions rather than the one in use.
+
+This release carries everything since 0.6.0 in one entry. `v0.6.1` was
+tagged and prepared but never published — its run stopped at the `release`
+environment gate and was abandoned rather than forced — so there is no
+0.6.1 on crates.io and there never will be. The version was skipped, not
+backfilled.
+
 ### Fixed
 
 - **A session reported the transport's ceiling instead of the revision it
-  negotiated.** (`crates/protocol-droid/src/application/server/dispatch/mod.rs`,
+  negotiated.** (`65c3f9a7`,
+  `crates/protocol-droid/src/application/server/dispatch/mod.rs`,
   `crates/protocol-droid/src/application/server/context.rs`) `PeerSession::negotiated`
   is documented as "the revision this session actually settled on", and it
   answered with the ceiling — the newest revision the build could speak —
@@ -46,7 +81,8 @@ checked against the code rather than taken on the changelog's word.
   HTTP+SSE negotiates the one revision its transport defines.
 
 - **A client that sent the `MCP-Protocol-Version` header it had negotiated
-  was refused.** (`crates/protocol-droid/src/adapters/primary/transport/http/serve/`)
+  was refused.** (`65c3f9a7`,
+  `crates/protocol-droid/src/adapters/primary/transport/http/serve/`)
   The header is an assertion, not a fallback: a present
   `MCP-Protocol-Version` that disagrees with the negotiated revision is a
   protocol error, and it is rejected rather than reconciled. But the
@@ -55,18 +91,9 @@ checked against the code rather than taken on the changelog's word.
   `MCP-Protocol-Version: 2024-11-05` was answered `400`, while a client that
   sent the ceiling was accepted. Both follow from the same root cause.
 
-## [0.6.1] — 2026-10-26
-
-A patch, and it is a patch because nothing here changes an API. The
-dependency bumps are the routine kind, and the two fixes are fixes to the
-tests themselves rather than to the library. 0.6.0 is a separate release
-because it has been published — the tag exists and the crates are on
-crates.io — so the two are not folded together.
-
-### Fixed
-
 - **The `a2a_js_interop` test could fail for a reason that had nothing to
-  do with what it measures.** (`crates/protocol-droid/tests/a2a_js_interop.rs`,
+  do with what it measures.** (`c69b77ac`,
+  `crates/protocol-droid/tests/a2a_js_interop.rs`,
   `crates/protocol-droid/tests/fixtures/a2a_reference_server.mjs`) The test
   reserved a port by binding `127.0.0.1:0`, read the number, dropped the
   listener, and handed the number to the Node reference server. Between the
@@ -85,7 +112,7 @@ crates.io — so the two are not folded together.
   for.
 
 - **The `bench_gate` smoke test measured the machine as much as the
-  decoder.** (`crates/protocol-droid/tests/bench_gate.rs`) It took one
+  decoder.** (`c69b77ac`, `crates/protocol-droid/tests/bench_gate.rs`) It took one
   wall-clock sample and compared it to a threshold. A wall-clock sample
   measures the machine as much as the code: the same decoder measured
   4 300 ns per iteration on an idle machine and 59 563 ns on a busy one, a
@@ -121,8 +148,9 @@ crates.io — so the two are not folded together.
 
 ### Changed
 
-- **Dependency bumps.** `tokio` 1.53.3 → 1.54.1, `arc-swap` 1.9.2 → 1.9.3,
-  `jsonschema` 0.58.6 → 0.60.2 and `ureq` 3.4.2 → 3.5.0. The `jsonschema`
+- **Dependency bumps.** (`b85bcb31`, `e8d878bd`) `tokio` 1.53.3 → 1.54.1,
+  `arc-swap` 1.9.2 → 1.9.3, `jsonschema` 0.58.6 → 0.60.2 and `ureq`
+  3.4.2 → 3.5.0. The `jsonschema`
   bump crosses a minor version and the crate's API did move, but it is a
   dev-dependency — it validates generated values against the vendored
   `schema.json` and nothing else — so the change is confined to the test
@@ -131,7 +159,7 @@ crates.io — so the two are not folded together.
 ### Documentation
 
 - **`docs/benchmarks.md` described a CI bench job that does not exist.**
-  (`docs/benchmarks.md`) The document described a job that runs the divan
+  (`c69b77ac`, `docs/benchmarks.md`) The document described a job that runs the divan
   benches and compares their medians against `baselines.json` with a 10 %
   threshold in either direction. There is no such job, and `baselines.json`
   is read by nothing but the documentation. The document now says what is
@@ -144,6 +172,31 @@ crates.io — so the two are not folded together.
   shared runner measures the runner. A 10 % threshold there is not a
   stricter gate, it is a noisier one. Wiring those benches into CI needs a
   runner that is not shared, and is its own piece of work.
+
+- **The release guide did not say what a stalled release leaves behind.**
+  (`site/src/content/docs/guides/release.md`) The guide described the
+  `release` environment and the approval it needs, and stopped there. It did
+  not say what happens when the approval never comes — which is what happened
+  to `v0.4.2` and `v0.6.1`, so crates.io skips those two numbers and a reader
+  who sees `0.5.3 → 0.7.0` has no explanation for the gap.
+
+  The guide now says that a stalled run is not a failure to diagnose: the
+  crates were never uploaded, so there is nothing to un-publish, and what the
+  run needs is either an approval or a decision to abandon it and move to the
+  next version. It also says that a superseding release folds the abandoned
+  one's contents forward rather than backfilling the number.
+
+## 0.6.1 — never published
+
+`v0.6.1` was tagged and its release run built every binary and verified
+packaging, but it stopped at the `release` environment gate and was
+abandoned rather than forced. No 0.6.1 was ever uploaded, so crates.io
+goes 0.6.0 → 0.7.0 with nothing at 0.6.1. The tag is still on the commit
+it marked, because that commit is real history; only the publish never
+happened.
+
+Its contents are folded into 0.7.0 above. Nothing that was written for
+0.6.1 was lost — it was superseded, not abandoned mid-flight.
 
 ## [0.6.0] — 2026-10-26
 
