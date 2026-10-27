@@ -27,20 +27,51 @@ regression is often a compiler upgrade in disguise.
 
 ## How the gate works
 
-The CI bench job runs the same two benches this file records
-and compares the per-bench medians against the committed
-`baselines.json`. A move of more than **10 %** in either
-direction fails the run. The gate is symmetric on purpose: a
-benign compiler upgrade that makes the code 20 % faster is as
-much a sign that the bench is no longer measuring what it
-should as a regression in the other direction.
+There are two things here, and it is worth being precise
+about which of them is automated.
 
-A 10 % threshold is wide enough to absorb noise from cache
-state, CPU thermals, and the kernel's scheduling decisions,
-and tight enough that a `Vec::extend` rewritten as
-`vec![..; n]` shows up. The threshold is not negotiable per
-PR; the right response to a legitimate gain is to commit the
-new baseline, not to widen the gate.
+**The smoke test is the automated gate.** It runs in CI, on
+every push, as part of `cargo test`. It measures the decode
+path and fails if the decoder has become grossly slower. It
+is described under [Smoke test](#smoke-test) below.
+
+**The divan benches are not currently run by CI.** The three
+bench targets in `crates/protocol-droid/benches/` exist and
+are maintained, and their medians are committed in
+[`baselines.json`](../crates/protocol-droid/benches/baselines.json),
+but no CI job runs them and no tool compares a run against
+the committed numbers. The tables below are reference data
+for a human reading a bench run, not a gate.
+
+This was true of the previous revision of this document
+too, which described a CI bench job comparing per-bench
+medians against `baselines.json` with a 10 % threshold in
+either direction. That job does not exist, and the
+description of it was aspirational.
+
+Why it was never wired up is worth recording, because it is
+the reason to be careful about wiring it up naively: a 10 %
+threshold on a shared CI runner is not a reliable signal.
+The smoke test's own history is the demonstration — it
+measured the *same* code at 4 300 ns per iteration on an
+idle machine and 59 563 ns on a busy one, because a
+wall-clock sample measures the machine as much as the code.
+A 10 % gate would have been far worse. Putting the divan
+benches in CI needs a runner that is not shared, and a
+comparison that understands the difference between a
+regression and a noisy runner. That is a piece of work in
+its own right, not a wiring exercise.
+
+The threshold this project *would* use is 10 %, symmetric on
+purpose: a benign compiler upgrade that makes the code 20 %
+faster is as much a sign that the bench is no longer
+measuring what it should as a regression in the other
+direction. A 10 % threshold is wide enough to absorb noise
+from cache state, CPU thermals, and the kernel's scheduling
+decisions, and tight enough that a `Vec::extend` rewritten
+as `vec![..; n]` shows up. It is not negotiable per PR; the
+right response to a legitimate gain is to commit the new
+baseline, not to widen the gate.
 
 ## Benches
 
@@ -119,15 +150,45 @@ comparing against.
 ## Smoke test
 
 [`crates/protocol-droid/tests/bench_gate.rs`](../crates/protocol-droid/tests/bench_gate.rs)
-is the cheapest way to prove the gate is wired up at all.
-It runs the same `decode` shape the bench exercises on a
-100 000-iteration hot loop, asserts the per-iter cost is
-below 5× the committed `decode_tools_call` baseline (scaled
-for dev-mode), and would fail if a regression made the
-decoder 5× slower. The smoke test runs in < 1 s on the
-three CI runners and is what the developer's `cargo test`
-turns up; the actual regression gate lives in
-`.github/workflows/ci.yml`'s `bench` job.
+is the automated performance gate. It runs the same
+`decode` shape the bench exercises on a 100 000-iteration
+hot loop, asserts the per-iter cost is below 5× the
+committed `decode_tools_call` baseline (scaled for
+dev-mode), and fails if a regression made the decoder 5×
+slower. It runs in under a second and is what the
+developer's `cargo test` turns up.
+
+It is a 5× gate and not a 10 % one, on purpose. A tighter
+threshold on a wall-clock measurement is not a stricter
+gate, it is a noisier one: the same decoder measured 4 300
+ns per iteration on an idle machine and 59 563 ns on a
+busy one, so a 10 % threshold would fire on the machine
+rather than on the code.
+
+Two details make it reliable on a shared runner:
+
+- **The measurement is the fastest of ten samples, not the
+  mean.** The fastest sample is the one least disturbed by
+  the OS preempting the test thread. A real regression is
+  present in every sample, so the minimum still catches it.
+  Measured under a load average of 20, the fastest of ten
+  samples was 4 640 ns while the median was 12 179 ns and
+  the slowest was 22 079 ns — the minimum recovers the
+  uncontended cost, the median does not.
+- **The threshold is anchored to the committed release-mode
+  baseline**, not to the smoke test's own measurement. It
+  scales by the dev/release cost ratio (measured at ~21×),
+  so the assertion means "5× slower than the bench's
+  number" rather than "5× slower than whatever this machine
+  did today".
+
+A second test in the same file pins that contract: it asks
+the gate's own comparison whether a synthetic 5× slower
+decoder trips it, and whether an uncontaminated one does
+not. Without it the constants could be loosened until the
+gate stopped catching anything, and nothing would say so —
+the failure mode of a gate that has quietly stopped gating
+is silence.
 
 ## Comparative bench vs rmcp
 
