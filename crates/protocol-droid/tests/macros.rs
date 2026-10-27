@@ -40,7 +40,7 @@ use protocol_droid::application::server::context::{
 use protocol_droid::application::server::{Dispatcher, Server};
 use protocol_droid::application::session::{FrameSink, SinkError};
 use protocol_droid::domain::feature::{Negotiation, resolve};
-use protocol_droid::domain::ir::{Content, ImageContent, ToolResult};
+use protocol_droid::domain::ir::{AudioContent, Content, ImageContent, ToolResult};
 use protocol_droid::domain::ir::{JsonObject, PromptMessage, ResourceContents, Role, TextContent};
 use protocol_droid::domain::registry::{AuthContext, Prompt, PromptArgument, Resource};
 use protocol_droid::domain::session::{CancellationToken, SessionId};
@@ -93,6 +93,15 @@ impl Demo {
     #[protocol_droid::tool]
     async fn explode(what: String) -> Result<String, DemoError> {
         Err(DemoError::Refused(what))
+    }
+
+    /// Answers with an audio block, which `2024-11-05` cannot express.
+    #[protocol_droid::tool]
+    async fn audio() -> Result<ToolResult, DemoError> {
+        Ok(ToolResult::new(vec![Content::Audio(AudioContent::new(
+            "AAAA",
+            "audio/wav",
+        ))]))
     }
 
     /// Renamed on the wire, and described by the attribute rather than a doc
@@ -725,6 +734,91 @@ async fn a_structured_answer_reaches_both_members() -> Result<(), TestError> {
     {
         return Err(Failure::from(format!(
             "the structured answer is wrong: {parsed}"
+        )));
+    }
+    Ok(())
+}
+
+/// A peer on `2024-11-05` is not sent a content block its revision cannot
+/// express.
+///
+/// The concrete consequence of the session not knowing its revision: the
+/// result is lowered for the revision the session was *built* with, so a
+/// `2024-11-05` peer was sent an audio block — a block its schema has no
+/// type for, and one it cannot parse. The revision the peer negotiated is the
+/// one the result has to be spelled for.
+///
+/// The assertion is on the wire rather than on the parsed result, because
+/// the wire is what the peer reads.
+#[tokio::test]
+async fn a_2024_11_05_peer_is_not_sent_a_block_its_revision_cannot_express() -> Result<(), TestError>
+{
+    let dispatcher = dispatcher(Demo.into_server()?);
+
+    // The peer asks for `2024-11-05`, and the handshake narrows the session
+    // onto it.
+    let ceiling = ProtocolVersion::V2025_11_25;
+    let offered = PeerSession::new(
+        ceiling,
+        resolve(Negotiation {
+            version: ceiling,
+            client_caps: CapabilitySet::all_for(ceiling),
+            server_caps: CapabilitySet::all_for(ceiling),
+            transport: TransportKind::StreamableHttp,
+        }),
+        SessionId::new(1),
+        TransportKind::Stdio,
+        Arc::new(NoExchange),
+        Arc::new(NoSink),
+    )
+    .with_auth(AuthContext::unrestricted("tester"));
+    let offered_ctx = RequestContext::for_request(
+        &offered,
+        RequestId::text("r0"),
+        CancellationToken::new(),
+        None,
+    );
+    let params = JsonObject::from_value(serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "probe", "version": "1" },
+    }))
+    .unwrap_or_default();
+    let (_reply, negotiated) = dispatcher
+        .handshake(&offered_ctx, &params)
+        .map_err(|error| Failure::from(format!("the handshake refused: {error}")))?;
+    if negotiated.negotiated() != ProtocolVersion::V2024_11_05 {
+        return Err(Failure::from(format!(
+            "the session settled on {}",
+            negotiated.negotiated()
+        )));
+    }
+
+    let ctx = RequestContext::for_request(
+        &negotiated,
+        RequestId::text("r1"),
+        CancellationToken::new(),
+        None,
+    );
+    let answer = dispatcher
+        .dispatch(&ctx, "tools/call", &call("audio", "{}"))
+        .await
+        .map_err(|error| Failure::from(error.to_string()))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(answer.as_str())
+        .map_err(|error| Failure::from(format!("the answer is not JSON: {error}")))?;
+    if answer.as_str().contains("audio") {
+        return Err(Failure::from(format!(
+            "a 2024-11-05 peer was sent an audio block: {parsed}"
+        )));
+    }
+    // Refused rather than degraded. The strict policy says a result the
+    // revision cannot express is not sent in some other shape, and a silent
+    // substitution would be worse than the refusal: the tool ran, and the
+    // peer would have nothing to show for it.
+    if parsed.get("isError") != Some(&serde_json::Value::Bool(true)) {
+        return Err(Failure::from(format!(
+            "the call was answered rather than refused: {parsed}"
         )));
     }
     Ok(())

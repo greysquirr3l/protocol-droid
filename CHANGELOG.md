@@ -9,6 +9,52 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A session reported the transport's ceiling instead of the revision it
+  negotiated.** (`crates/protocol-droid/src/application/server/dispatch/mod.rs`,
+  `crates/protocol-droid/src/application/server/context.rs`) `PeerSession::negotiated`
+  is documented as "the revision this session actually settled on", and it
+  answered with the ceiling — the newest revision the build could speak —
+  whatever the peer asked for. The handshake narrowed the session's *profile*
+  and left its *revision* alone, so the version that `negotiate` had already
+  resolved was used to build the reply and then dropped.
+
+  A handler could not learn which revision it was speaking, so a consumer
+  that wanted to report its own version had to report a range of revisions
+  rather than the one in use. The gate's refusal named the ceiling too, and
+  the refusal exists precisely to say what was negotiated: "elicitation is
+  unavailable" is an answer nobody can act on without knowing what *was*
+  agreed.
+
+  The fix narrows the revision with the profile, in the same place the
+  profile was already narrowed. The two move together because the profile is
+  resolved *for* the revision: the profile says which features exist, and the
+  revision says how to spell them, so a session that knew one but not the
+  other refused the features the older revision does not have and still
+  answered in the newer revision's shape for everything else.
+
+  The shape is not a detail. A tool result is lowered for the session's
+  revision, and each revision has its own codec, so a `2024-11-05` peer was
+  sent results spelled for `2025-11-25` — a `structuredContent` its schema
+  has no field for, and content blocks such as `audio` that its schema has
+  no type for at all. A peer that asked for an older revision could be sent
+  something it cannot parse.
+
+  Two paths were already right and are unchanged: the stateless lifecycle
+  builds a peer per request from the revision the request names, and legacy
+  HTTP+SSE negotiates the one revision its transport defines.
+
+- **A client that sent the `MCP-Protocol-Version` header it had negotiated
+  was refused.** (`crates/protocol-droid/src/adapters/primary/transport/http/serve/`)
+  The header is an assertion, not a fallback: a present
+  `MCP-Protocol-Version` that disagrees with the negotiated revision is a
+  protocol error, and it is rejected rather than reconciled. But the
+  comparison was against the session's ceiling rather than the revision it
+  settled on, so a client that offered `2024-11-05` and sent
+  `MCP-Protocol-Version: 2024-11-05` was answered `400`, while a client that
+  sent the ceiling was accepted. Both follow from the same root cause.
+
 ## [0.6.1] — 2026-10-26
 
 A patch, and it is a patch because nothing here changes an API. The

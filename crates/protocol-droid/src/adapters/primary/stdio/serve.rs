@@ -939,11 +939,35 @@ mod tests {
         Arc::new(|_ctx, arguments| Box::pin(async move { arguments }))
     }
 
-    /// A routing table with one tool on it.
+    /// A tool that answers with the revision the session settled on.
+    ///
+    /// The shape a consumer would write: read the revision off the context
+    /// and put it in the answer. It is here rather than in the test body
+    /// because the point is that a *handler* can ask, and a handler cannot
+    /// ask unless the context answers.
+    fn revision_handler() -> ToolHandler {
+        Arc::new(|ctx, _arguments| {
+            Box::pin(async move {
+                // Built from a `serde_json::Value` so the version is escaped
+                // by the serialiser. Hand-writing the document would make it
+                // a matter of how many quotes a caller remembered.
+                let version = ctx.peer().negotiated().as_wire();
+                JsonObject::from_value(serde_json::json!({ "revision": version }))
+                    .unwrap_or_default()
+            })
+        })
+    }
+
+    /// A routing table with one tool on it, and one that reports the
+    /// revision.
     fn dispatcher() -> Result<Arc<Dispatcher>, Failure> {
         let tool = Tool::new(ECHO, r#"{"type":"object"}"#)?;
         let server = Server::builder("serve-test")
             .tool(tool, echo_handler())
+            .tool(
+                Tool::new("which_revision", r#"{"type":"object"}"#)?,
+                revision_handler(),
+            )
             .build();
         Ok(Arc::new(Dispatcher::new(Arc::new(server))))
     }
@@ -952,8 +976,14 @@ mod tests {
     ///
     /// A server advertising less would make a gate look like a routing failure
     /// in any test that tripped over it.
+    ///
+    /// The revision is the transport's ceiling — the newest one this build
+    /// could speak — because that is what a session looks like before a
+    /// handshake replaces it with whatever the peer asked for. A fixture
+    /// below the ceiling would make the narrowing untestable: a session that
+    /// started where it was going to end proves nothing.
     fn peer() -> PeerSession {
-        let version = ProtocolVersion::V2024_11_05;
+        let version = ProtocolVersion::V2025_11_25;
         PeerSession::new(
             version,
             resolve(Negotiation {
@@ -1363,6 +1393,11 @@ mod tests {
     /// not exist until `2025-03-26`. If the handshake did not narrow the
     /// session, the call would be served — a peer on a revision whose schema
     /// has nowhere to put the answer.
+    ///
+    /// The revision is narrowed with the profile, and the two are asserted
+    /// separately because they can fail separately: a session that knows its
+    /// profile but not its revision refuses the features the older revision
+    /// does not have and still answers in the newer revision's shape.
     #[tokio::test]
     async fn the_session_is_narrowed_to_the_negotiated_revision() -> Result<(), Failure> {
         let (mut server, _stdout, _stderr) = harness(&[], AllowBatching, ROOMY)?;
@@ -1380,6 +1415,50 @@ mod tests {
         assert!(
             !server.peer.profile().allows(Feature::Completions),
             "a 2024-11-05 peer must not keep a 2025-03-26 feature"
+        );
+        assert_eq!(
+            server.peer.negotiated(),
+            ProtocolVersion::V2024_11_05,
+            "the session must carry the revision the peer asked for, not the ceiling"
+        );
+        Ok(())
+    }
+
+    /// A handler can learn which revision the session settled on.
+    ///
+    /// This is the consumer-facing half of the narrowing, and it is the one
+    /// that was broken. `PeerSession::negotiated` is documented as "the
+    /// revision this session actually settled on", and a server that wants to
+    /// report its own version — or branch on the revision it is speaking —
+    /// reads it. Answering with the transport's ceiling made every session
+    /// look like the same revision, so a consumer had to report a *range* of
+    /// revisions rather than the one in use.
+    ///
+    /// The tool answers with the revision it was handed, and the assertion is
+    /// on the wire rather than on the session, because the wire is what the
+    /// consumer reads.
+    #[tokio::test]
+    async fn a_handler_can_learn_the_negotiated_revision() -> Result<(), Failure> {
+        let (mut server, stdout, _stderr) = harness(&[], AllowBatching, ROOMY)?;
+
+        let handshake = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}"#;
+        let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"which_revision","arguments":{}}}"#;
+        let mut report = ServeReport::default();
+        server
+            .serve_frame(&format!("{handshake}\n"), &mut report)
+            .await?;
+        server
+            .serve_frame(&format!("{call}\n"), &mut report)
+            .await?;
+
+        let written = stdout.contents();
+        assert!(
+            written.contains("2024-11-05"),
+            "the handler must see the revision the peer asked for: {written}"
+        );
+        assert!(
+            !written.contains("2025-11-25"),
+            "the handler must not see the ceiling: {written}"
         );
         Ok(())
     }

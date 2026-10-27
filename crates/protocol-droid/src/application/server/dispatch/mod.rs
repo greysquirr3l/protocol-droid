@@ -135,7 +135,22 @@ impl Dispatcher {
     ) -> Result<(JsonObject, PeerSession), DispatchError> {
         let (version, profile) = negotiate(ctx, params)?;
         let reply = self.initialize_result(version, profile)?;
-        Ok((reply, ctx.peer().clone().with_profile(profile)))
+        // The revision and the profile move together, and the reason is that
+        // the profile is resolved *for* the revision: a profile says which
+        // features exist, and the revision says how to spell them. Narrowing
+        // one without the other leaves a session that refuses the features it
+        // cannot use and still answers in the newer revision's shape for
+        // everything else.
+        //
+        // Both narrow the session the transport built at its ceiling, so a
+        // `2024-11-05` peer stops being served as a `2025-11-25` one.
+        Ok((
+            reply,
+            ctx.peer()
+                .clone()
+                .with_negotiated(version)
+                .with_profile(profile),
+        ))
     }
 
     /// The `InitializeResult` body for a settled negotiation.
