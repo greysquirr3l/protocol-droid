@@ -217,6 +217,72 @@ impl PeerSession {
         self
     }
 
+    /// Narrows this session onto the revision the handshake settled on.
+    ///
+    /// The peer is built at the transport's ceiling — the newest revision this
+    /// build could speak — because before `initialize` arrives there is
+    /// nothing else to go on. The handshake is what replaces the ceiling with
+    /// the revision the peer actually asked for, and it does so here.
+    ///
+    /// The two have to move together. A session that knows its profile but not
+    /// its revision is a session that answers in the wrong dialect: the
+    /// profile says which features exist, and the revision says how to spell
+    /// them. A `2024-11-05` peer served a `2025-11-25` profile is refused the
+    /// features it cannot use — and is handed the newer revision's shape for
+    /// everything it can.
+    ///
+    /// Narrowing only, for the same reason [`with_profile`](Self::with_profile)
+    /// is. The revision the handshake settles on is never newer than the
+    /// ceiling it narrows from: a revision with no handshake is refused by the
+    /// handshake itself, so a session that completed one settled on a revision
+    /// that has a handshake, and the newest such revision is the ceiling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use protocol_droid::application::server::context::{
+    ///     CallbackExchange, ExchangeError, PeerSession,
+    /// };
+    /// use protocol_droid::application::session::{FrameSink, SinkError};
+    /// use protocol_droid::domain::feature::FeatureProfile;
+    /// use protocol_droid::domain::ir::JsonObject;
+    /// use protocol_droid::domain::session::SessionId;
+    /// use protocol_droid::domain::{ProtocolVersion, TransportKind};
+    ///
+    /// struct NoExchange;
+    /// # impl CallbackExchange for NoExchange {
+    /// #     async fn exchange(&self, _: &str, _: &JsonObject) -> Result<JsonObject, ExchangeError> {
+    /// #         Err(ExchangeError::new("no peer"))
+    /// #     }
+    /// # }
+    /// # struct NullSink;
+    /// # impl FrameSink for NullSink {
+    /// #     async fn send(&self, _: &str) -> Result<(), SinkError> { Ok(()) }
+    /// # }
+    ///
+    /// // A peer built at the ceiling knows the ceiling...
+    /// let peer = PeerSession::new(
+    ///     ProtocolVersion::V2025_11_25,
+    ///     FeatureProfile::empty(),
+    ///     SessionId::new(1),
+    ///     TransportKind::Stdio,
+    ///     Arc::new(NoExchange),
+    ///     Arc::new(NullSink),
+    /// );
+    /// assert_eq!(peer.negotiated(), ProtocolVersion::V2025_11_25);
+    ///
+    /// // ...and a handshake narrows it onto what the peer asked for.
+    /// let narrowed = peer.with_negotiated(ProtocolVersion::V2024_11_05);
+    /// assert_eq!(narrowed.negotiated(), ProtocolVersion::V2024_11_05);
+    /// ```
+    #[must_use]
+    pub const fn with_negotiated(mut self, negotiated: ProtocolVersion) -> Self {
+        self.negotiated = negotiated;
+        self
+    }
+
     /// Records who the caller is.
     ///
     /// Per **request**, and the distinction is the one that goes wrong
@@ -309,6 +375,24 @@ impl PeerSession {
     }
 
     /// The revision this connection settled on.
+    ///
+    /// Before the handshake this is the transport's ceiling — the newest
+    /// revision this build could speak — because there is nothing else to
+    /// go on. The handshake replaces it with the revision the peer asked
+    /// for, so a handler reading this on a live session learns what it is
+    /// actually speaking rather than what the server could have spoken.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::application::server::context::PeerSession;
+    /// use protocol_droid::domain::ProtocolVersion;
+    ///
+    /// // A handler reports the revision it settled on.
+    /// # fn report(peer: &PeerSession) -> String {
+    /// peer.negotiated().as_wire().to_string()
+    /// # }
+    /// ```
     #[must_use]
     pub const fn negotiated(&self) -> ProtocolVersion {
         self.negotiated
@@ -932,6 +1016,55 @@ mod tests {
             exchange.clone(),
             sink.clone(),
         )
+    }
+
+    /// The gate's refusal names the revision the session settled on.
+    ///
+    /// "Elicitation is unavailable" is an answer nobody can act on without
+    /// knowing what *was* negotiated, which is why the error carries the
+    /// revision rather than leaving the caller to remember it. A refusal that
+    /// named the transport's ceiling would send the reader looking for a
+    /// capability gap on a revision the peer never agreed to.
+    ///
+    /// The session here is narrowed onto `2024-11-05` the way a handshake
+    /// narrows it, and elicitation did not exist until `2025-06-18` — so the
+    /// refusal has to name the narrower of the two.
+    #[tokio::test]
+    async fn the_gate_names_the_revision_the_session_settled_on() -> Result<(), TestError> {
+        let exchange = Arc::new(CountingExchange::answering(r#"{"action":"accept"}"#)?);
+        let sink = Arc::new(RecordingSink::default());
+        let profile = crate::domain::feature::resolve(crate::domain::feature::Negotiation::bare(
+            ProtocolVersion::V2024_11_05,
+            TransportKind::Stdio,
+        ));
+
+        let session = peer(ProtocolVersion::V2025_11_25, profile, &exchange, &sink)
+            .with_negotiated(ProtocolVersion::V2024_11_05);
+        let ctx = RequestContext::for_request(
+            &session,
+            RequestId::number(1),
+            CancellationToken::new(),
+            None,
+        );
+        let params = JsonObject::new(r#"{"message":"name?"}"#)?;
+
+        let refusal = match ctx.elicit(&params).await {
+            Ok(answer) => {
+                return Err(TestError::from(format!(
+                    "elicit unexpectedly returned {answer}"
+                )));
+            }
+            Err(refusal) => refusal,
+        };
+
+        assert_eq!(
+            refusal,
+            GatedError::FeatureUnavailable {
+                feature: Feature::Elicitation,
+                negotiated: ProtocolVersion::V2024_11_05,
+            }
+        );
+        Ok(())
     }
 
     /// Dropping the principal keeps everything the session *is*.

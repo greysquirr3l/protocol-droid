@@ -12,9 +12,9 @@ use super::{DispatchError, Dispatcher};
 use crate::application::server::context::{
     CallbackExchange, ExchangeError, PeerSession, RequestContext,
 };
-use crate::application::server::{Server, ToolHandler};
+use crate::application::server::{GatedError, Server, ToolHandler};
 use crate::application::session::{FrameSink, SinkError};
-use crate::domain::feature::{Negotiation, resolve};
+use crate::domain::feature::{Feature, Negotiation, resolve};
 use crate::domain::ir::{JsonObject, JsonObjectError};
 use crate::domain::registry::{AuthContext, Primitive, Registered, Scope, ScopeSet, Tool};
 use crate::domain::session::{CancellationToken, SessionId};
@@ -1068,5 +1068,105 @@ async fn a_duplicate_while_the_first_is_running_is_refused() -> Result<(), TestE
             count.load(Ordering::SeqCst)
         )));
     }
+    Ok(())
+}
+
+/// The session is narrowed onto the revision the handshake settled on.
+///
+/// The peer the handshake returns is the session every later request is
+/// served on, and it is built at the transport's ceiling — the newest
+/// revision this build could speak. A handshake that narrows the profile but
+/// leaves the revision at the ceiling produces a session that refuses the
+/// features the older revision does not have and still answers in the newer
+/// revision's shape for everything else.
+///
+/// The peer that offers `2024-11-05` here is at `2025-11-25`, so the two
+/// answers are different versions and the test can tell them apart.
+#[test]
+fn the_handshake_narrows_the_session_onto_the_negotiated_revision() -> Result<(), TestError> {
+    let ceiling = ProtocolVersion::V2025_11_25;
+    let peer = peer(ceiling, ScopeSet::all(), CapabilitySet::all_for(ceiling));
+
+    let (_reply, negotiated) = dispatcher()?
+        .handshake(&ctx(&peer), &init_params("2024-11-05")?)
+        .map_err(|error| Failure::Message(format!("the handshake refused: {error}")))?;
+
+    assert_eq!(
+        negotiated.negotiated(),
+        ProtocolVersion::V2024_11_05,
+        "the session must carry the revision the peer asked for"
+    );
+    Ok(())
+}
+
+/// The gate's refusal names the revision the handshake settled on.
+///
+/// The whole chain in one test: the handshake narrows the session, and the
+/// gate that later refuses names what the session settled on rather than
+/// what the transport was built with.
+///
+/// "Elicitation is unavailable" is an answer nobody can act on without
+/// knowing what *was* negotiated, which is why the error carries the
+/// revision. A refusal that named the ceiling would send the reader
+/// looking for a capability gap on a revision the peer never agreed to.
+#[tokio::test]
+async fn the_gate_names_the_revision_the_handshake_settled_on() -> Result<(), TestError> {
+    let ceiling = ProtocolVersion::V2025_11_25;
+    let peer = peer(ceiling, ScopeSet::all(), CapabilitySet::all_for(ceiling));
+
+    let (_reply, negotiated) = dispatcher()?
+        .handshake(&ctx(&peer), &init_params("2024-11-05")?)
+        .map_err(|error| Failure::Message(format!("the handshake refused: {error}")))?;
+
+    // Elicitation did not exist until `2025-06-18`, so a `2024-11-05` session
+    // is refused it. The refusal is what carries the revision.
+    let request = RequestContext::for_request(
+        &negotiated,
+        RequestId::text("r1"),
+        CancellationToken::new(),
+        None,
+    );
+    let refusal = match request
+        .elicit(&JsonObject::new(r#"{"message":"name?"}"#)?)
+        .await
+    {
+        Ok(answer) => {
+            return Err(fail(format!("elicit unexpectedly returned {answer}")));
+        }
+        Err(refusal) => refusal,
+    };
+
+    assert_eq!(
+        refusal,
+        GatedError::FeatureUnavailable {
+            feature: Feature::Elicitation,
+            negotiated: ProtocolVersion::V2024_11_05,
+        },
+        "the refusal must name the revision the peer settled on"
+    );
+    Ok(())
+}
+
+/// The revision and the profile narrow together, because the profile is
+/// resolved *for* the revision.
+///
+/// A session that knows its profile but not its revision refuses the
+/// features the older revision does not have — the profile is right — and
+/// still spells its answers for the newer one, because the revision is
+/// wrong. Half of the narrowing is not narrowing.
+#[test]
+fn the_revision_and_the_profile_narrow_together() -> Result<(), TestError> {
+    let ceiling = ProtocolVersion::V2025_11_25;
+    let peer = peer(ceiling, ScopeSet::all(), CapabilitySet::all_for(ceiling));
+
+    let (_reply, negotiated) = dispatcher()?
+        .handshake(&ctx(&peer), &init_params("2024-11-05")?)
+        .map_err(|error| Failure::Message(format!("the handshake refused: {error}")))?;
+
+    assert_eq!(negotiated.negotiated(), ProtocolVersion::V2024_11_05);
+    assert!(
+        !negotiated.allows(Feature::Elicitation),
+        "2024-11-05 has no elicitation: the profile must be narrowed too"
+    );
     Ok(())
 }

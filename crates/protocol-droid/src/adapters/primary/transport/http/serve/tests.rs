@@ -400,6 +400,69 @@ async fn initialize_answers_and_mints_a_session() -> Result<(), Failure> {
     Ok(())
 }
 
+/// The `MCP-Protocol-Version` header is checked against the revision the
+/// session settled on.
+///
+/// The header is an assertion, not a fallback: a client that negotiated
+/// `2024-11-05` and then claims `2025-11-25` in the header is describing a
+/// session that does not exist, and the server says so rather than
+/// reconciling the two.
+///
+/// This is the check the bug made wrong in both directions. The session was
+/// built at the transport's ceiling, and the ceiling was what the header was
+/// compared against — so a client that correctly sent the revision it had
+/// just negotiated was *refused*, and a client that sent the ceiling was
+/// accepted. The header is read on the `initialize` request, which is the one
+/// that produces the negotiated revision, so that is where the comparison
+/// happens.
+#[tokio::test]
+async fn the_protocol_header_is_checked_against_the_negotiated_revision() -> Result<(), Failure> {
+    let handshake = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+
+    // The revision the client is about to negotiate. The header is the
+    // client's assertion about that revision, and it agrees.
+    let agreed = initialize_with_header(handshake, "2024-11-05").await?;
+    if agreed != StatusCode::OK {
+        return Err(Failure::Expectation(
+            "a 200 for a header naming the revision the client negotiated",
+        ));
+    }
+
+    // The ceiling — the revision the transport was built with, and not the
+    // one the client asked for. It describes a different session.
+    let refused = initialize_with_header(handshake, "2025-11-25").await?;
+    if refused != StatusCode::BAD_REQUEST {
+        return Err(Failure::Expectation(
+            "a 400 for a header naming a revision the client did not negotiate",
+        ));
+    }
+    Ok(())
+}
+
+/// An `initialize` carrying `header`, and the status it was answered with.
+async fn initialize_with_header(body: &[u8], header: &str) -> Result<StatusCode, Failure> {
+    let router = crate::adapters::primary::transport::http::serve::test_routes(
+        server(),
+        default_ceiling(),
+        None,
+        Some(test_ids()),
+    )?;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", header)
+        .body(Body::from(body.to_vec()))
+        .map_err(|_| Failure::Expectation("the request built"))?;
+    let response = router
+        .oneshot(request)
+        .await
+        .map_err(|_| Failure::NoResponse)?;
+    Ok(response.status())
+}
+
 /// A stateful call naming no session is refused with a `400`.
 ///
 /// The `400` is the router's, and it is the right one: the peer asked a
