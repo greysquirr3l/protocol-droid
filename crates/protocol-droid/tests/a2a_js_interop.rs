@@ -135,6 +135,41 @@ fn find_node() -> Option<String> {
     None
 }
 
+/// How long one reference server may take to start
+/// and report its port.
+///
+/// This is a *startup* budget, not a behavioural
+/// one. The server prints its `listening on <port>`
+/// line within about 150 ms on an idle machine,
+/// so the number looks far too generous — and it
+/// is, deliberately: it is sized for the worst
+/// case rather than the typical one, because the
+/// cost of being wrong is asymmetric. A startup
+/// that is merely slow costs the runner a few
+/// seconds; a startup that times out costs the
+/// whole run its green.
+///
+/// The five-second version of this budget was
+/// not enough on a loaded `ubuntu-latest` runner.
+/// The test passed on the pull request and then
+/// failed on `main` with "the reference server did
+/// not start within 5 seconds" — four of the five
+/// cases, every one of them a *startup* failure
+/// with no assertion run at all. Nothing about
+/// the code had changed between the two runs; what
+/// changed was how many other jobs were sharing
+/// the runner. A budget that only holds when the
+/// machine is quiet is a budget that measures the
+/// machine.
+///
+/// Thirty seconds is still fast enough that a
+/// genuinely broken fixture is reported as broken
+/// rather than hanging the job, and it is an
+/// order of magnitude above the observed worst
+/// case. The test suite's own `timeout-minutes:
+/// 30` in `ci.yml` is the backstop above this.
+const STARTUP_BUDGET: Duration = Duration::from_secs(30);
+
 /// Spawns the reference server and waits for
 /// the `listening on <port>` line on stderr.
 /// The line-based read is the cleanest way to
@@ -178,11 +213,14 @@ async fn spawn_reference_server(node: &str) -> Result<(String, ChildGuard), Stri
         .ok_or_else(|| "the child's stderr was not piped".to_owned())?;
     let mut reader = BufReader::new(stderr).lines();
     let expected_prefix = "listening on ";
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + STARTUP_BUDGET;
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return Err("the reference server did not start within 5 seconds".to_owned());
+            return Err(format!(
+                "the reference server did not start within {} seconds",
+                STARTUP_BUDGET.as_secs()
+            ));
         }
         let remaining = deadline - now;
         let line = match tokio::time::timeout(remaining, reader.next_line()).await {
@@ -191,7 +229,12 @@ async fn spawn_reference_server(node: &str) -> Result<(String, ChildGuard), Stri
                 return Err("the reference server closed stderr before listening".to_owned());
             }
             Ok(Err(error)) => return Err(format!("reading stderr: {error}")),
-            Err(_) => return Err("the reference server did not start within 5 seconds".to_owned()),
+            Err(_) => {
+                return Err(format!(
+                    "the reference server did not start within {} seconds",
+                    STARTUP_BUDGET.as_secs()
+                ));
+            }
         };
         if let Some(stripped) = line.strip_prefix(expected_prefix) {
             let bound_port: u16 = stripped
