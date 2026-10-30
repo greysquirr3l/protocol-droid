@@ -10,16 +10,20 @@
 [![Conformance](https://github.com/greysquirr3l/protocol-droid/actions/workflows/conformance.yml/badge.svg)](https://github.com/greysquirr3l/protocol-droid/actions/workflows/conformance.yml)
 [![MSRV](https://img.shields.io/badge/MSRV-1.98-blue.svg)](rust-toolchain.toml)
 
-A Rust toolkit for the [Model Context Protocol](https://modelcontextprotocol.io)
-that speaks **every** published spec revision — `2024-11-05`, `2025-03-26`,
-`2025-06-18`, `2025-11-25`, `2026-07-28`, and the floating `draft` — in a
-single binary, all at once. It does not ask you to pick a version at compile
-time. The A\* protocols ride the same internal model — A2A v1.0 and ACP
-v1.25.0 are vendored alongside the MCP schemas, the cross-protocol
-bridge (`protocol-droid bridge_a2a`) translates between MCP and A2A
-without a consumer having to re-implement their application, and a
-consumer that only wants MCP never pays for the A\* codecs (`a2a` and
-`acp-experimental` are opt-in Cargo features).
+**The MCP compatibility layer.** A Rust toolkit for the
+[Model Context Protocol](https://modelcontextprotocol.io) that speaks **every**
+published spec revision — `2024-11-05`, `2025-03-26`, `2025-06-18`,
+`2025-11-25`, `2026-07-28`, and the floating `draft` — in a single binary, all
+at once. It does not ask you to pick a version at compile time, and it does not
+ask you to pick a version at deploy time either: one build serves the oldest
+client and the newest one.
+
+Most SDKs track the latest revision and leave everything behind it behind. This
+one does the opposite. The `2026-07-28` specification now says that clients and
+servers **MAY** support multiple protocol versions simultaneously, and it
+defines Modern, Legacy and Dual-era peers whose compatibility matrix fails in
+both directions with no fall-forward. A modern client talking to a Legacy server
+is a supported deployment, not a bug — and somebody has to translate.
 
 **📖 [Read the guide](https://greysquirr3l.github.io/protocol-droid/)** —
 the live Astro + Starlight site at `greysquirr3l.github.io/protocol-droid/`
@@ -45,9 +49,88 @@ Three ideas set it apart:
 
 3. **Every transport the spec has ever defined.** stdio, legacy HTTP+SSE
    (`2024-11-05`), Streamable HTTP (stateful), and the `2026-07-28` stateless
-   lifecycle — each with both a server and a client half. The CLI on top is
-   being built to a Swiss-army knife; today it has `bridge`, `probe`,
-   `inspect`, `record`, `replay`, and `conformance`.
+   lifecycle — each with both a server and a client half.
+
+On top of that library sits a command-line compatibility toolkit: a
+version-translating `bridge`, a `probe` that fingerprints what a server
+actually speaks, a one-shot `inspect`, `record`/`replay` with per-frame
+diffing, and a `conformance` runner that drives the official suite.
+
+## rmcp, and when to use which
+
+[`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) is the official Rust
+SDK, and it is a good one. It is the right default when **you control both ends
+of the connection** — you are writing the client and the server, both are
+current, and nothing older is ever going to connect.
+
+This project is for the case where **you do not control both ends**:
+
+| | `rmcp` | `protocol-droid` |
+| --- | --- | --- |
+| Revisions it can negotiate | All five, `2024-11-05` through `2026-07-28` | All five, plus the floating `draft` as its own wire type set |
+| Wire types per revision | One shared model, shaped at runtime | One generated type set per revision, from the vendored `schema.json` |
+| Legacy HTTP+SSE transport (`2024-11-05`) | **Not provided** — a stated non-goal; its README says it will not add it back | Server and client, both halves |
+| Translating between two peers' revisions | No | `protocol-droid bridge` |
+| Probing what a server actually speaks | No | `protocol-droid probe` |
+| Cross-revision record/replay with per-frame verdicts | No | `protocol-droid record` / `replay` |
+| Command-line tooling | None | `bridge`, `probe`, `inspect`, `record`, `replay`, `conformance` |
+| MSRV | 1.88 | 1.98 |
+
+Those rows are not a scoreboard. `rmcp` is smaller because it does less, and
+"less" is the right answer for the case it targets. The row that matters is the
+one marked *not provided*: when a legacy `2024-11-05` server is the only thing
+on the other end of the socket, `rmcp` cannot reach it at all, and this crate
+can — as a client, as a server, or as a bridge between the two.
+
+The second row matters more than it looks. One shared model means a message
+that is legal in `2026-07-28` and illegal in `2024-11-05` has to be reshaped
+by hand at every boundary, which is exactly where "the peer sent a field this
+revision does not define" turns into a dropped field. Here each revision gets
+its own types generated from its own vendored schema, and the members a type
+does not name are preserved rather than discarded — which is what lets the
+bridge forward a message losslessly instead of approximately.
+
+If you want the sharpest version of that: **`rmcp` if you control both ends;
+`protocol-droid` if you don't.**
+
+Both are checked against each other in CI — a differential interop harness
+drives both libraries' servers with the same client and asserts the wire
+shapes agree. Details in
+[`tests/interop_rmcp/FINDINGS.md`](crates/protocol-droid/tests/interop_rmcp/FINDINGS.md).
+
+## Conformance
+
+The official [`@modelcontextprotocol/conformance`](https://www.npmjs.com/package/@modelcontextprotocol/conformance)
+suite runs against this crate in CI, against every revision it ships. Suite
+`0.2.0-alpha.12` is pinned.
+
+| Revision     | Passed | Failed | Total |
+| ------------ | -----: | -----: | ----: |
+| `2025-03-26` |      3 |      0 |     3 |
+| `2025-06-18` |     55 |      0 |    55 |
+| `2025-11-25` |     81 |      0 |    81 |
+| `2026-07-28` |    151 |      0 |   151 |
+
+The client side is covered too — `2025-06-18` 2/2, `2025-11-25` 18/18,
+`2026-07-28` 32/32, covering every `auth/*` scenario the suite defines for
+each revision. `2024-11-05` has no row because the pinned suite ships no
+scenario set for it; the exclusion is recorded rather than assumed away.
+
+Those numbers are measured, not projected, and the gap behind them was real
+library bugs rather than fixture work. The `2026-07-28` revision went from
+81/119 to 151/151 because every refusal was answering `200`, `list_changed`
+was never emitted on any revision, every stateless request shared session id
+`1` and leaked results between clients, and an absent description was written
+as `"description": null`, which no schema admits. The full list, with where
+each fix lives, is in
+[`docs/CONFORMANCE-GAPS.md`](docs/CONFORMANCE-GAPS.md).
+
+You can reproduce any of it:
+
+```bash
+cargo run -p protocol-droid-cli --all-features -- \
+    conformance self --spec-version 2026-07-28 --suite all --port 0
+```
 
 ## Installing
 
@@ -68,8 +151,8 @@ starts:
 | `http`          | Streamable HTTP plus the `2026-07-28` stateless lifecycle              |
 | `legacy-sse`    | The deprecated `2024-11-05` HTTP+SSE transport, client and server (`HttpBuilder::legacy_sse()`). Implies `http` |
 | `oauth`         | The OAuth 2.1 resource server and PKCE client. Implies `http`          |
-| `a2a`           | The A2A v1.0 server, client, and cross-protocol bridge                  |
-| `acp-experimental` | Zed's ACP v1.25.0. Pre-1.0, so it carries no semver guarantee         |
+| `a2a`           | The A2A v1.0 server, client, and cross-protocol bridge. Experimental — see [A2A and ACP](#a2a-and-acp-experimental) |
+| `acp-experimental` | Zed's ACP v1.25.0. Pre-1.0, so it carries no semver guarantee. Experimental and incomplete |
 | `random-ids`    | CSPRNG session ids instead of a counter                                |
 
 A `simd` envelope parser is described in the manifest but is not yet wired to a
@@ -268,6 +351,36 @@ checked in: `build.rs` verifies the vendored SHA-256 digests first and only then
 regenerates, so drift from the vendored bytes is a build failure rather than a
 diff someone has to notice.
 
+## A2A and ACP (experimental)
+
+The same internal model carries two more protocols. **Both are opt-in Cargo
+features, and both are experimental** — a consumer that only wants MCP never
+pays for them, and neither is covered by a semver guarantee.
+
+- **A2A v1.0** (`a2a`) — the server, the client, and the cross-protocol bridge
+  that translates between an MCP client and an A2A agent. The bridge is a flag
+  on the bridge you already have:
+
+  ```bash
+  protocol-droid bridge --listen stdio:. --peer http://agent:9000
+  ```
+
+  A2A has its own conformance runner and a differential interop test against
+  the reference implementation. The `a2a` feature belongs to the **CLI** crate
+  as well as the library, so `cargo install protocol-droid-cli --features a2a`
+  is what puts `--peer` on the binary.
+
+- **ACP v1.25.0** (`acp-experimental`) — Zed's Agent Client Protocol. The
+  feature is named `acp-experimental` rather than `acp` because the
+  specification is pre-1.0 and explicitly outside the semver guarantees this
+  project makes. The module is incomplete: the versioned types, the method
+  table, the feature profile and the stdio peer are in place, and the
+  remaining work is tracked in [`PROGRESS.md`](PROGRESS.md).
+
+These are the least stable part of the project by design. Each one is a
+specification that moves under us, and MCP — where the compatibility problem is
+sharpest — is what this crate is for.
+
 ## Toolchain
 
 Rust stable, pinned. The MSRV and the pinned toolchain are both `1.98.1` — see
@@ -283,6 +396,25 @@ cargo deny --all-features check
 `cargo l` is an alias for the strict lint profile. It is the one that gates
 commits; a bare `cargo build` is also warning-free because `.cargo/config.toml`
 sets `build.warnings = "deny"`.
+
+> **On the MSRV.** `1.98` is higher than the *code* needs: the workspace
+> compiles clean on `1.97.1` with every feature and every target enabled, and
+> no dependency in the graph declares a higher floor. The floor is `1.98`
+> because the *lint profile* is.
+>
+> `cargo l` denies warnings, and the lint set moves between those two
+> toolchains in both directions. `clippy::unused_async_trait_impl` does not
+> exist before `1.98`; `duration_suboptimal_units` fires on `1.97` and not on
+> `1.98`; `let_underscore_future` is denied by `clippy::suspicious` on `1.97`;
+> and `dead_code_pub_in_binary` — unknown on `1.96`, known from `1.97` — is
+> promoted to library crates in `1.98`, which is what the crate's own
+> `#![allow]` and `#[expect]` attributes are written against. Pinning the
+> floor at `1.98` means the strict profile that gates every commit runs
+> against the same toolchain the crate claims to support.
+>
+> Lowering it is possible and is on the list of things to revisit, but it is
+> not a one-line change to `rust-version` — it is reconciling a lint profile
+> across two toolchains, and it should be done deliberately.
 
 ## Layout
 
