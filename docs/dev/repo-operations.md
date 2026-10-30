@@ -17,6 +17,8 @@ Contents:
     - [The one advisory that stays open](#the-one-advisory-that-stays-open)
   - [Branch protection](#branch-protection)
     - [The ten status checks](#the-ten-status-checks)
+    - [The OSSF Scorecard posture](#the-ossf-scorecard-posture)
+    - [The two-account review pattern](#the-two-account-review-pattern)
   - [Releasing](#releasing)
   - [The docs site](#the-docs-site)
     - [CI builds this site](#ci-builds-this-site)
@@ -196,7 +198,7 @@ but the next run of that script reverts it, so changes belong in the file.
 | Conversation resolution | required    | Review threads get resolved, not ignored  |
 | Force pushes            | blocked     |                                           |
 | Branch deletion         | blocked     | Deleting the primary branch is deliberate |
-| Status checks           | 9, strict   | See below                                 |
+| Status checks           | 10, strict  | See below                                 |
 | **`enforce_admins`**    | **`true`**  | **Deviation — see below**                 |
 
 > **Deviation: an admin-only lockout.** `enforce_admins` is `true`, which closes
@@ -234,6 +236,99 @@ unmergeable on a context that will never report.
 `site` comes from a separate workflow, `site.yml`, not from `ci.yml`. It is
 listed here because branch protection does not care which workflow reports a
 context — only the name.
+
+### The OSSF Scorecard posture
+
+The [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/greysquirr3l/protocol-droid)
+is the closest thing to an outside audit this repository has, and the score it
+reports is mostly a consequence of the settings above rather than of anything
+in the tree. There is no `scorecard.yml` workflow in `.github/workflows/`, so
+nothing here is currently *reported* by the service — the scores below are
+what the service would compute if the workflow were added, checked by hand
+against the API on 2026-10-30.
+
+| Check | State | Notes |
+| ----- | ----- | ----- |
+| Branch-Protection | pass | 10 required contexts, strict, `enforce_admins` on, 1 approving review, conversation resolution required, no force-push |
+| CI-Tests | pass | `ci.yml` runs the full matrix on every PR, plus conformance, interop and CodeQL |
+| Code-Review | **partial** | Every merged PR carries an approving review, but none carries an **inline** review comment — and the Scorecard's `Code-Review` check looks for the latter. See below |
+| Signed-Releases | **partial** | Every tag is annotated, but none is GPG- or Sigstore-signed. See below |
+| Token-Permissions | pass | Every workflow declares a narrow `permissions:` block |
+| Dependency-Update-Tool | pass | Dependabot is on and opened five update PRs; their content was landed on `release/0.6.1` and the PRs were closed rather than merged, to avoid duplicating the commits |
+| Security-Policy | pass | `SECURITY.md` exists and names the supported versions |
+| Pinned-Dependencies | **partial** | Rust dependencies are pinned by `Cargo.lock`, but the Actions are pinned to a **tag**, not a SHA. See below |
+| SAST | pass | CodeQL runs on every push |
+| Fuzzing | pass | `cargo-fuzz` targets are in the tree and fuzz is a CI job |
+| Packaging | pass | Published to crates.io with `cargo publish` |
+| Maintained | **partial** | One maintainer, though the commit history is active: 420 commits in the last 90 days |
+| Contributors | partial | One human contributor, under three email identities, plus `dependabot[bot]` |
+
+Four of those are worth being honest about rather than leaving to a badge.
+
+**The reviews are approvals, not review comments.** Every merged pull request
+carries an approving review from the other account, and the branch protection
+requires one — but none of them carries an **inline** comment on the diff.
+The Scorecard's `Code-Review` check looks for review comments specifically,
+because an approval with no comment says that somebody looked, not what they
+thought. The `Pull-Request-Review` check passes on the same evidence. This
+is a property of the workflow rather than a policy: the reviews are written
+to be substantive in the body, and the Scorecard reads the other place.
+
+**The tags are not signed.** `auto-tag.yml` creates an annotated tag and
+`release.yml` creates the GitHub Release, but neither signs them — the tag
+object carries a `tagger` and a message and no signature block. The
+`Signed-Releases` check looks for a signature, so it scores partial or worse
+depending on how many releases it samples. Fixing it means giving the
+release workflow a signing key, which is a credential in a GitHub secret and
+therefore a decision with its own risk: a key that can sign releases is a key
+that can be used to impersonate one. It is not a change to make casually.
+
+**The Actions are pinned to a tag, not to a commit SHA.** Every workflow
+uses `actions/checkout@v7`, `actions/setup-node@v7`,
+`actions/upload-artifact@v7`, `softprops/action-gh-release@v3` and
+`dtolnay/rust-toolchain@master`. A tag is a mutable ref: whoever owns the
+action can move it, and a workflow that resolves `v7` today can resolve
+different code tomorrow without any change in this repository. The
+Scorecard's `Pinned-Dependencies` check wants a full commit SHA for exactly
+this reason. The fix is mechanical — replace each tag with the SHA it
+currently points at and add the version as a trailing comment — but it means
+re-pinning on every action bump, and the bump becomes a commit that has to
+be made by hand rather than by Dependabot. It is a real trade, not an
+oversight.
+
+**`Maintained` will decay on its own.** The scorecard looks at commit
+frequency over a trailing window, and it penalises a repository that has not
+been touched recently. That is not something to fix in the repository; it is
+something to fix by continuing to work on it.
+
+Nothing here requires a workflow to be added to see — but adding
+`ossf/scorecard-action` would turn these from a claim into a measurement,
+and would surface the four partial rows on the pull request rather than in a
+document that nobody re-reads.
+
+### The two-account review pattern
+
+`main` requires one approving review and `enforce_admins` is on, so **a PR
+cannot be approved by its own author**. This repository has two GitHub
+accounts — `greysquirr3l` and `sosh-ncampbell` — and the pattern is that
+each approves the other's PRs. PR #78 was authored by `greysquirr3l` and
+approved by `sosh-ncampbell`; PR #79 was the other way round.
+
+Switch accounts with `gh auth switch --user <login>`, and switch back
+afterwards — the active account is what determines the PR's author and who
+can approve it.
+
+There is a second, separate gate: the `Entire Gates` check, which reads
+Entire's own trail approvals rather than GitHub's reviews. It is **not** one
+of the ten required contexts, so it does not block a merge, and it does not
+re-run when the approval lands — it is a snapshot, and it will keep reporting
+"0 of 1 required approvals" against a trail that has one. Clear it with:
+
+```bash
+entire trail approve <trail> --project gh/<owner> --branch <branch>
+```
+
+### The two-account review pattern
 
 ## Releasing
 
