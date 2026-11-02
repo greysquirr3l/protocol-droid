@@ -26,8 +26,8 @@ use protocol_droid::adapters::primary::stdio::{StdioConfig, StdioSink, StdioSour
 use protocol_droid::adapters::secondary::a2a::A2aJsonRpcPeer;
 use protocol_droid::adapters::secondary::codec::result::WireToolResults;
 use protocol_droid::application::bridge::{
-    A2aMcpCodec, BridgeError, BridgePeer, CrossBridgePeer, CrossProtocolCodec, DownstreamConfig,
-    OpenedUpstream, ProtocolSide, run_client,
+    A2aMcpCodec, BridgePeer, CrossBridgePeer, CrossProtocolCodec, DownstreamConfig, OpenedUpstream,
+    run_client,
 };
 use protocol_droid::domain::feature::{Feature, FeatureProfile};
 use protocol_droid::domain::{
@@ -92,26 +92,17 @@ impl protocol_droid::application::bridge::Upstream for A2aUpstream {
     > + Send {
         let codec: Arc<dyn CrossProtocolCodec> = Arc::new(A2aMcpCodec::new());
         let inner = Arc::clone(&self.inner);
-        let result = (|| {
-            let wrapped = CrossBridgePeer::new(ProtocolSide::Mcp, codec, inner).map_err(
-                |err: BridgeError| {
-                    protocol_droid::application::bridge::UpstreamError::Unreachable(format!(
-                        "could not wrap the A2A peer: {err}"
-                    ))
-                },
-            )?;
-            // A2A has no JSON-RPC handshake the loop runs
-            // today; the `Leg` is the loop's view of the
-            // transport, with the latest revision the loop
-            // knows about and the profile the bridge
-            // advertises.
-            let leg = Leg::new(latest_version(), self.profile);
-            Ok(OpenedUpstream::new(
-                leg,
-                Arc::new(wrapped) as Arc<dyn BridgePeer>,
-            ))
-        })();
-        core::future::ready(result)
+        let wrapped = CrossBridgePeer::new(codec, inner);
+        // A2A has no JSON-RPC handshake the loop runs
+        // today; the `Leg` is the loop's view of the
+        // transport, with the latest revision the loop
+        // knows about and the profile the bridge
+        // advertises.
+        let leg = Leg::new(latest_version(), self.profile);
+        core::future::ready(Ok(OpenedUpstream::new(
+            leg,
+            Arc::new(wrapped) as Arc<dyn BridgePeer>,
+        )))
     }
 }
 
