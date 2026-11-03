@@ -39,6 +39,14 @@ a2a = [
   "protocol-droid/http",
   "bridge",
 ]
+# T31. The `utcp` subcommands: read a provider's manual, and call a tool it
+# describes. Gated on the library's own `utcp` feature, because the document
+# model and the call planner both live behind it.
+utcp = [
+  "protocol-droid/utcp",
+  "protocol-droid/http",
+  "protocol-droid/stdio",
+]
 
 [[bin]]
 name = "protocol-droid"

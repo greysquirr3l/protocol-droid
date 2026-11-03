@@ -15,3 +15,10 @@ pub mod transport;
 
 #[cfg(feature = "stdio")]
 pub mod stdio;
+
+// T31. The UTCP server side: publishing this server's tools as a manual at
+// `GET /utcp`. Its own router, because a manual is a document and not a
+// session, and a consumer mounts it beside the MCP endpoint with one
+// `merge`.
+#[cfg(feature = "utcp")]
+pub mod utcp;

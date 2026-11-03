@@ -17,6 +17,22 @@
 //! `main.rs` to dodge the lint — would trade a real lint conflict for a
 //! 500-line file the project's own file-structure rules disallow.
 
+// `dead_code_pub_in_binary` was promoted to library crates in rust 1.98. The
+// CLI's library target holds every subcommand's behaviour, and the binary
+// target dispatches into it; the library's own test build cannot see the
+// binary as a dependent, so it reports those `pub` items as unused. They
+// are not unused. The expectation is declared once at the crate root rather
+// than per module, where it would be true in one configuration and false in
+// another.
+#![cfg_attr(
+    test,
+    expect(
+        dead_code_pub_in_binary,
+        reason = "the subcommands' surface is consumed by the binary target, \
+                  which the library's test build cannot see"
+    )
+)]
+
 #[cfg(feature = "bridge")]
 pub mod auth;
 pub mod bridge;
@@ -42,6 +58,10 @@ pub mod probe_a2a;
 #[cfg(feature = "a2a")]
 pub mod a2a_conformance;
 pub mod record;
+// T31. The UTCP subcommands: read a provider's manual, and call a tool it
+// describes. Gated on the same feature as the library's UTCP module.
+#[cfg(feature = "utcp")]
+pub mod utcp;
 pub mod replay;
 // The serving path needs both transports the library speaks as a client. The
 // probe in `bridge` does not, and stays available without them.

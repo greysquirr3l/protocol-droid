@@ -34,3 +34,10 @@ pub mod oauth;
 pub mod registry;
 pub mod server;
 pub mod session;
+// T31. The UTCP (Universal Tool Calling Protocol) use cases: publish a
+// manual from this server's tools, and plan the call a manual's tool
+// describes. Gated on the same `utcp` feature as the domain module, because
+// the two are one thing split in half: the domain holds the document, the
+// application holds what to do with it.
+#[cfg(feature = "utcp")]
+pub mod utcp;

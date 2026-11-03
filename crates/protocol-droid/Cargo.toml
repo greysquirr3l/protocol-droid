@@ -91,6 +91,20 @@ random-ids = ["dep:getrandom"]
 # save nothing. The `url` dep is here (not in the unconditional list) because
 # only the SSRF filter needs it, and the SSRF filter is A2A-specific.
 a2a = ["http", "dep:url", "url/serde"]
+# T31. The UTCP (Universal Tool Calling Protocol) module. UTCP is not a
+# message protocol: it is a *manual* — a JSON document that lists a
+# provider's tools and says how to call each one in the tool's own
+# protocol — so this module is a document model and a call planner rather
+# than a codec.
+#
+# The feature pulls `http` because every direction the module supports is
+# an HTTP one: a manual is fetched over HTTP (`GET /utcp`), a manual is
+# published over HTTP, and an `http` call template is an HTTP request. A
+# consumer that never speaks UTCP should not pay for the HTTP stack.
+# `dep:url` is here because the call planner has to read a template's URL
+# to substitute its path parameters, and reading a URL by hand is how a
+# percent-encoding bug gets written.
+utcp = ["http", "dep:url", "dep:percent-encoding"]
 # T29. The ACP (Agent Client Protocol) module — Zed's editor↔agent
 # JSON-RPC binding. The feature is `acp-experimental` (not `acp`)
 # because the spec is pre-1.0 (`schema-v1.25.0` is the pin) and the
@@ -196,6 +210,11 @@ base64 = { version = "0.22.1", default-features = false, features = [
 # may already carry some is the case hand-rolled percent-encoding gets wrong:
 # the endpoint comes from a discovery document this crate does not control.
 url = { version = "2.5.8", optional = true }
+# T31. The UTCP call planner percent-encodes a substituted value down to
+# RFC 3986's unreserved set before it goes into a URL. `url` re-exports no
+# encoder for that, and hand-rolling one is how a `&` in a caller-supplied
+# value turns into a second query parameter.
+percent-encoding = { version = "2.3.2", optional = true }
 
 [dev-dependencies]
 # The envelope path is the project's one perf-critical path, so its decode,

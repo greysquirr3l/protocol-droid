@@ -1590,6 +1590,7 @@ dependencies = [
  "insta",
  "jsonschema",
  "jsonwebtoken",
+ "percent-encoding",
  "proptest",
  "protocol-droid-macros",
  "protocol-droid-schema",
