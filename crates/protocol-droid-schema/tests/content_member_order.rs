@@ -1,51 +1,43 @@
 //! Which arm of an untagged union a content block actually lands in.
 //!
+//! Which arm of a union a content block actually lands in.
+//!
 //! # The hazard
 //!
-//! The generated content unions are `#[serde(untagged)]`, which means serde
-//! tries each member **in declaration order** and keeps the first that
-//! round-trips. There is no discriminant in the JSON — a content block is
-//! identified only by having the right shape — so the member index is doing the
-//! work a `type` tag would normally do.
+//! The content unions used to be `#[serde(untagged)]`, which means serde tries
+//! each member **in declaration order** and keeps the first that round-trips.
+//! There is no discriminant in the JSON — a content block is identified only
+//! by having the right shape — so the member index was doing the work a `type`
+//! tag would normally do.
 //!
-//! That makes an ordering error invisible. `ImageContent` and `AudioContent`
+//! That made an ordering error invisible. `ImageContent` and `AudioContent`
 //! are both `{ data: String, mimeType: String }`: a base64 string and a media
 //! type. If image were tried first, an audio block would deserialize
 //! *successfully* as an image, with no error anywhere, and the only symptom
 //! would be a bridge serving a picture where a recording was sent.
 //!
-//! So this is worth testing on its own terms rather than assuming. The
-//! generator emits the schema's own order, and the order is data, not an
-//! implementation detail — but nothing else in the suite would notice if it
-//! changed.
-//!
 //! # What is asserted
 //!
-//! For every revision that can carry a given content kind, a representative
-//! block must deserialize into an arm that *re-serializes to the same JSON*.
-//! Re-serialization is the discriminator: the arms differ in their `type`
-//! value, so a block that landed in the wrong arm comes back with the wrong
-//! tag and the comparison fails. A plain "does it deserialize" assertion would
-//! pass for exactly the bug this is looking for.
+//! The content unions now dispatch on `type`, because the specification
+//! *requires* it of every alternative: the peer has promised to send it, so
+//! reading it cannot fail on a conforming value. A block therefore lands in
+//! the arm its `type` names, and an unknown or absent `type` is a decode error
+//! rather than a guess.
 //!
-//! # What that reasoning assumes, and why it does not hold
+//! Two assertions cover that. One re-serializes and compares, which catches a
+//! block that arrives as the wrong kind of thing. The other looks at the arm
+//! directly, which catches the case the first one cannot: the generated type
+//! carries `r#type: String` with only `#[serde(rename = "type")]`, so a block
+//! in the wrong arm re-serializes to byte-identical JSON and the comparison
+//! passes.
 //!
-//! The above is wrong, and the mistake was worth leaving visible for a moment
-//! before correcting it.
+//! # Why both are still here
 //!
-//! It assumes the `type` member *constrains* the arm, so that a block in the
-//! wrong arm necessarily re-serialises to a different tag. It does not. The
-//! generator emits `r#type: String` with only `#[serde(rename = "type")]` — the
-//! specification's `{"const": "image"}` is read into the schema model and then
-//! ignored by the emitter. So a block that lands in the image arm keeps
-//! whatever `type` it was sent with, and re-serialises to **byte-identical**
-//! JSON. `assert_arm_is_stable` therefore passes for precisely the case it
-//! exists to catch, and the suite has been green over a silent corruption.
-//!
-//! `arm_is_claimed_by_const` below is the assertion that actually holds. It
-//! looks at the arm rather than the bytes, so it does not depend on the emitter
-//! enforcing a `const` it currently ignores. It is `#[ignore]`d only because
-//! the bug is real today, not because the assertion is wrong.
+//! The arm-level assertion is the one that would have caught the original
+//! bug. The re-serialization assertion is kept because it is the one that
+//! fails first, and because it covers the unions that are dispatched on shape
+//! rather than on a tag: there, a block in the wrong arm *does* re-serialize
+//! differently.
 
 // These tests assert on fallible parsing and panic with the failing fixture, so
 // the expected lints are switched off for the file rather than every call site.
@@ -190,21 +182,21 @@ fn an_audio_block_is_not_accepted_as_an_image() {
 /// that dependency — the test asks the question it means to ask instead of
 /// asking one the emitter happens to let through.
 ///
-/// The failure is what the bug looks like, so it is spelled out rather than
-/// hidden behind a comparison: an audio block is an `ImageContent`, with
-/// nothing anywhere reporting a problem.
+/// The union dispatches on `type` because the specification *requires* it of
+/// every alternative, so the peer has promised to send it and the dispatcher
+/// can read it without risking a fall-through. An unknown or absent `type`
+/// is a decode error, not a guess.
 #[test]
-#[ignore = "codegen emits `type` as String, so an audio block lands in the image arm"]
 fn arm_is_claimed_by_const() {
     let audio: v2025_03_26::CallToolResultContentChoice =
         serde_json::from_value(block("audio")).expect("parses");
 
     assert!(
         matches!(audio, v2025_03_26::CallToolResultContentChoice::Member2(_)),
-        "an audio block landed in the image arm. The union is untagged and \
-         `r#type` is a plain `String`, so `ImageContent` accepts \
-         {{\"type\":\"audio\"}} and wins on member order. The audio is being \
-         served back as an image with no error at any layer."
+        "an audio block landed in the image arm. The union dispatches on \
+         `type`, which every alternative requires, so `ImageContent` cannot \
+         accept {{\"type\":\"audio\"}}. The audio is being served back as \
+         an image with no error at any layer."
     );
 }
 

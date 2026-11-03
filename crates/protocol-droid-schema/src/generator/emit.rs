@@ -29,7 +29,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::schema_model::{Schema, SchemaFile, TypeSet, Union};
+use super::schema_model::{JsonKind, Schema, SchemaFile, TypeSet, Union};
 
 /// The Rust type a schema node lowers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,25 +188,38 @@ pub fn emit(file: &SchemaFile) -> Generated {
     pending.sort_by(|a, b| a.0.cmp(&b.0));
     pending.dedup_by(|a, b| a.0 == b.0);
 
-    for (ident, union, doc_name) in &pending {
-        let members: Vec<RustType> = union
-            .members
-            .iter()
-            .enumerate()
-            // The path extension matches `collect_unions`, which walks a
-            // member as `path_m{i}`. Both must agree: a member reached through
-            // an array reuses the same segment, so the name it resolves to is
-            // the one the collector recorded.
-            .map(|(i, m)| lower(m, &file.defs, &member_path(ident, i)))
-            .collect();
+    // Each union's dispatch is decided before anything is emitted: a union
+    // that cannot be dispatched on a pinned member needs the dispatcher helper,
+    // and the helper has to be in the module before the union that uses it.
+    let plans: Vec<UnionPlan> = pending
+        .iter()
+        .map(|(ident, union, doc_name)| {
+            let members: Vec<RustType> = union
+                .members
+                .iter()
+                .enumerate()
+                // The path extension matches `collect_unions`, which walks a
+                // member as `path_m{i}`. Both must agree: a member reached through
+                // an array reuses the same segment, so the name it resolves to is
+                // the one the collector recorded.
+                .map(|(i, m)| lower(m, &file.defs, &member_path(ident, i)))
+                .collect();
+            UnionPlan {
+                ident: ident.clone(),
+                doc_name: doc_name.clone(),
+                members,
+                discriminator: dispatch_discriminator(&union.members, &file.defs),
+                shapes: ShapeTable::build(&union.members, &file.defs),
+            }
+        })
+        .collect();
 
-        emit_union(
-            &mut source,
-            ident,
-            doc_name,
-            &members,
-            dispatch_tags(&union.members, &file.defs).as_deref(),
-        );
+    if plans.iter().any(|plan| plan.discriminator.is_none()) {
+        emit_dispatcher(&mut source);
+    }
+
+    for plan in &plans {
+        emit_union(&mut source, plan);
     }
 
     let _ = writeln!(
@@ -244,91 +257,411 @@ pub fn emit(file: &SchemaFile) -> Generated {
     }
 }
 
-/// The `type` value a union member fixes for itself, if it fixes one.
+/// The property a union's members are told apart by, and the value each
+/// member pins it to.
 ///
-/// The specification discriminates its content blocks with
-/// `{"type": "image", "const": ...}`-shaped members, and the model already
-/// carries that `const` — [`Schema::constant`]. Reading it back here is what
-/// lets the union dispatch on the tag the peer actually sent.
-///
-/// A member that is not a reference, or whose target declares no `type`, or
-/// whose `type` carries no string `const`, yields `None`; the caller then
-/// falls back to matching on order, because a union with a member that fixes
-/// no tag cannot be dispatched at all.
-fn type_const<'a>(member: &'a Schema, defs: &'a BTreeMap<String, Schema>) -> Option<&'a str> {
-    let target = member.def_ref()?;
-    let property = defs.get(target)?.properties.get("type")?;
-    property.constant.as_ref()?.as_str()
+/// The specification discriminates its unions in more than one way. Content
+/// blocks carry `{"type": "image", "const": ...}`; requests and notifications
+/// carry `{"method": "tools/call", "const": ...}`. Both are the same shape of
+/// fact — a member pins one property to one value — so the generator looks for
+/// the fact rather than for the property's name.
+struct Discriminator {
+    /// The property's name.
+    property: String,
+    /// The value each member pins it to, in member order.
+    values: Vec<String>,
 }
 
-/// The `type` values a union's members fix for themselves, if the union can be
-/// dispatched on them.
+/// The properties the specification discriminates with, most specific first.
 ///
-/// `None` means "fall back to matching on member order", which is the only
-/// correct answer when a member fixes no tag — or when two of them fix the
-/// same one.
-fn dispatch_tags<'a>(
-    members: &'a [Box<Schema>],
+/// `type` comes first because it is the one the specification's own prose uses
+/// for content blocks, and the one the generated code's error messages name.
+/// `method` is next because it is how every request and notification is
+/// discriminated, and a union that discriminates on `method` is the common
+/// case rather than the exception.
+const DISCRIMINATORS: &[&str] = &["type", "method", "mode", "resultType"];
+
+/// The constants a union member's own properties fix.
+///
+/// A member that is not a reference, or whose target declares no pinned
+/// property, yields `None`; the caller then knows the member fixes nothing
+/// and cannot take part in a tag dispatch.
+fn member_constants<'a>(
+    member: &'a Schema,
     defs: &'a BTreeMap<String, Schema>,
-) -> Option<Vec<&'a str>> {
-    let tags: Vec<&str> = members
+) -> Option<BTreeMap<&'a str, &'a str>> {
+    let target = member.def_ref()?;
+    let definition = defs.get(target)?;
+    Some(
+        definition
+            .merged_properties(defs)
+            .into_iter()
+            .filter_map(|(name, property)| {
+                let value = property.constant.as_ref()?.as_str()?;
+                Some((name, value))
+            })
+            .collect(),
+    )
+}
+
+/// The property a union's members are told apart by, if one is.
+///
+/// `None` means the union cannot be dispatched on a single pinned property,
+/// which happens in two ways: a member pins nothing, or two of them pin the
+/// same property to the same value. The second case is not a gap in the
+/// specification but a fact about it — a union whose members nest their own
+/// unions can have three members all tagged `string`, and no `match` on that
+/// can tell them apart however it is written.
+///
+/// Dispatch also needs the discriminant to be *injective*: a tag that
+/// identifies exactly one alternative. And it needs the tag to be *required*,
+/// not merely pinned.
+///
+/// `ElicitRequestParams` is the case that makes the last rule matter. Its
+/// two alternatives pin `mode` to `form` and to `url`, and both pin it in
+/// their own definition — but only the URL one *requires* it. A client that
+/// sends a form elicitation without the tag sends a value the specification
+/// accepts, and a dispatcher that insists on reading the tag rejects it.
+///
+/// A tag the specification requires is a different matter: the peer has
+/// promised to send it, so reading it cannot fail on a conforming value.
+fn dispatch_discriminator(
+    members: &[Box<Schema>],
+    defs: &BTreeMap<String, Schema>,
+) -> Option<Discriminator> {
+    let constants: Vec<BTreeMap<&str, &str>> = members
         .iter()
-        .map(|m| type_const(m, defs))
+        .map(|member| member_constants(member, defs))
         .collect::<Option<Vec<_>>>()?;
 
-    // Dispatch needs the discriminant to be *injective* — a tag that identifies
-    // exactly one alternative. A union whose members nest their own unions can
-    // have three members all tagged `string`, and no `match` on that can tell
-    // them apart however it is written. Those keep the untagged fallback, which
-    // is right: the tag is not carrying the information the arms differ by.
-    let unique = tags.iter().collect::<BTreeSet<_>>();
-    (unique.len() == tags.len()).then_some(tags)
+    // The candidates are the properties every member pins. A property only one
+    // member pins cannot discriminate: the others would answer to any value
+    // of it.
+    let mut candidates: Vec<&str> = constants
+        .first()
+        .map(|first| first.keys().copied().collect())
+        .unwrap_or_default();
+    candidates.retain(|name| constants.iter().all(|member| member.contains_key(name)));
+
+    // The specification's own discriminators come first, then whatever else the
+    // members pin, in the order the first member declares them.
+    candidates.sort_by_key(|name| {
+        DISCRIMINATORS
+            .iter()
+            .position(|preferred| preferred == name)
+            .unwrap_or(usize::MAX)
+    });
+
+    // A candidate every member *requires* is a tag the peer has promised to
+    // send. One that is merely pinned is not: the schema allows the member
+    // without it.
+    let required: Vec<BTreeSet<String>> = members
+        .iter()
+        .map(|member| member.merged_required(defs).into_iter().collect())
+        .collect();
+
+    for property in candidates {
+        let values: Vec<&str> = constants
+            .iter()
+            .filter_map(|member| member.get(property).copied())
+            .collect();
+        if values.len() != members.len() {
+            continue;
+        }
+        if !required.iter().all(|names| names.contains(property)) {
+            continue;
+        }
+        let unique = values.iter().collect::<BTreeSet<_>>();
+        if unique.len() == values.len() {
+            return Some(Discriminator {
+                property: property.to_owned(),
+                values: values.into_iter().map(str::to_owned).collect(),
+            });
+        }
+    }
+    None
 }
 
-/// Emits one union, dispatched on `type` when the tags allow it and untagged
-/// when they do not.
-fn emit_union(
-    source: &mut String,
-    ident: &str,
-    doc_name: &str,
-    members: &[RustType],
-    tags: Option<&[&str]>,
-) {
-    if tags.is_some() {
-        let _ = writeln!(
-            source,
-            "/// One of the alternatives the specification allows for `{doc_name}`.\n\
-             ///\n\
-             /// Dispatched on the `type` member. Every alternative fixes\n\
-             /// its own `type`, so the JSON *does* say which one was sent\n\
-             /// even though it is not wrapped \u{2014} and matching on member order\n\
-             /// instead would be guessing. `ImageContent` and `AudioContent`\n\
-             /// are both `{{ data, mimeType }}`; tried in order, an audio\n\
-             /// block matches the image arm and is re-emitted with\n\
-             /// `\"type\": \"image\"`, silently and without an error.\n\
-             ///\n\
-             /// An unrecognised or absent `type` is a decode failure rather\n\
-             /// than a fall-through, so a malformed message cannot be quietly\n\
-             /// accepted as whichever alternative happens to parse."
-        );
-        // `Serialize` keeps `untagged`; only `Deserialize` is hand-written. The
-        // attribute has to stay even though the manual impl ignores it, or the
-        // enum encodes as `{"Member0": {...}}` rather than as the member.
-        let _ = writeln!(source, "#[derive(Debug, Clone, PartialEq, Serialize)]");
-    } else {
-        let _ = writeln!(
-            source,
-            "/// One of the alternatives the specification allows for `{doc_name}`.\n\
-             ///\n\
-             /// Emitted untagged: the alternatives are not told apart by a\n\
-             /// `type` member, so serde matches the first that round-trips and\n\
-             /// the ordering here is the schema's own."
-        );
-        let _ = writeln!(
-            source,
-            "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]"
-        );
+/// The shape of a value, as the dispatcher sees it.
+///
+/// A shape is what a value *can* be: the kind it has, the members it must
+/// carry, and — where the value stands for a union — the alternatives it may
+/// take. The dispatcher uses the shape to reject an arm whose member the
+/// value does not fit, which is what tells two structurally similar
+/// alternatives apart.
+#[derive(Debug, Clone)]
+struct Shape {
+    /// The kind the shape accepts.
+    kind: JsonKind,
+    /// The members an object of this shape must carry.
+    required: Vec<String>,
+    /// The shapes this shape accepts, when it stands for a union of them.
+    alternatives: Vec<usize>,
+}
+
+/// One arm of a union, as the dispatcher sees it.
+///
+/// The arms of a union are told apart by the properties they name, the
+/// members they require, and the shape of the members that carry the
+/// distinction — not by the order the specification lists them in. A value
+/// that satisfies more than one arm belongs to the arm that accounts for more
+/// of the value's members.
+struct Arm {
+    /// The JSON kind this arm accepts.
+    ///
+    /// The kind is part of the arm's identity: two alternatives can lower to
+    /// the same Rust type and still accept different JSON. `JSONObject` and
+    /// `MultiType` both lower to `serde_json::Value`, and only the kind tells
+    /// them apart.
+    kind: JsonKind,
+    /// The members this arm requires.
+    required: Vec<String>,
+    /// Every member this arm names.
+    named: Vec<String>,
+    /// The shape of the members whose shape tells this arm apart, and the
+    /// index of that shape in the union's table.
+    ///
+    /// Only members whose shape carries information are listed. A member
+    /// holding a scalar is the same in every arm that has it, so listing it
+    /// would cost bytes and decide nothing.
+    members: Vec<(String, usize)>,
+    /// The shape of this arm's elements, and the index of that shape in the
+    /// union's table, when the arm is an array.
+    elements: Option<usize>,
+    /// The properties this arm pins, and the values it allows for them.
+    ///
+    /// A property the specification pins to one value, or to a closed set of
+    /// values, is a discriminator: a value carrying a different one is not
+    /// this arm's.
+    constraints: Vec<(String, Vec<String>)>,
+}
+
+/// Everything one union needs in order to be emitted.
+struct UnionPlan {
+    /// The name of the generated enum.
+    ident: String,
+    /// The name the specification gives the union, for the doc comment.
+    doc_name: String,
+    /// The Rust type of each alternative.
+    members: Vec<RustType>,
+    /// The property the alternatives are told apart by, when one exists.
+    discriminator: Option<Discriminator>,
+    /// The shapes the alternatives' members have.
+    shapes: ShapeTable,
+}
+
+/// The shapes of a union's members, and the arms that use them.
+struct ShapeTable {
+    /// Every shape, indexed by the number the arms refer to.
+    shapes: Vec<Shape>,
+    /// The arms, in the specification's order.
+    arms: Vec<Arm>,
+}
+
+/// How deep a schema is followed while a shape is built.
+///
+/// A shape never descends into an object's own properties — only into a
+/// union's alternatives — so the vendored schemas do not reach this bound.
+/// It is here so that a future recursive union cannot hang the generator.
+const MAX_SHAPE_DEPTH: usize = 8;
+
+impl ShapeTable {
+    /// Builds the shapes and arms for one union.
+    fn build(members: &[Box<Schema>], defs: &BTreeMap<String, Schema>) -> Self {
+        let mut table = Self {
+            shapes: Vec::new(),
+            arms: Vec::new(),
+        };
+        for member in members {
+            let arm = table.arm_of(member, defs);
+            table.arms.push(arm);
+        }
+        table.drop_lonely_constraints();
+        table
     }
+
+    /// Builds the arm for one alternative of the union.
+    fn arm_of(&mut self, member: &Schema, defs: &BTreeMap<String, Schema>) -> Arm {
+        let properties = member.merged_properties(defs);
+        let mut named: Vec<String> = properties.keys().map(|name| (*name).to_owned()).collect();
+        named.sort();
+
+        let mut members = Vec::new();
+        for (name, property) in &properties {
+            let index = self.shape_of(property, defs, 0);
+            let Some(shape) = self.shapes.get(index) else {
+                continue;
+            };
+            if shape.informative() {
+                members.push(((*name).to_owned(), index));
+            }
+        }
+
+        let elements = self.elements_of(member, defs);
+
+        let mut constraints = Vec::new();
+        for (name, property) in &properties {
+            let allowed = pinned_values(property);
+            if let Some(allowed) = allowed {
+                constraints.push(((*name).to_owned(), allowed));
+            }
+        }
+
+        Arm {
+            kind: member.json_kind(defs),
+            required: member.merged_required(defs),
+            named,
+            members,
+            elements,
+            constraints,
+        }
+    }
+
+    /// The shape of an array member's elements.
+    ///
+    /// A batch is told apart from a single message by what its elements are,
+    /// so the element shape is the only thing that separates the two.
+    fn elements_of(&mut self, member: &Schema, defs: &BTreeMap<String, Schema>) -> Option<usize> {
+        if member.json_kind(defs) != JsonKind::Array {
+            return None;
+        }
+        let items = member.items.as_deref()?;
+        let index = self.shape_of(items, defs, 0);
+        self.shapes.get(index).map(|_| index)
+    }
+
+    /// Builds the shape of a schema node, and the index it lands at.
+    fn shape_of(&mut self, node: &Schema, defs: &BTreeMap<String, Schema>, depth: usize) -> usize {
+        if depth > MAX_SHAPE_DEPTH {
+            return self.push(JsonKind::Any, Vec::new(), Vec::new());
+        }
+        if let Some(union) = &node.union {
+            let alternatives = union
+                .members
+                .iter()
+                .map(|member| self.shape_of(member, defs, depth + 1))
+                .collect();
+            return self.push(JsonKind::Any, Vec::new(), alternatives);
+        }
+        if let Some(target) = node.def_ref() {
+            return match defs.get(target) {
+                Some(definition) => self.shape_of(definition, defs, depth + 1),
+                None => self.push(JsonKind::Any, Vec::new(), Vec::new()),
+            };
+        }
+        match node.json_kind(defs) {
+            JsonKind::Object => self.push(JsonKind::Object, node.merged_required(defs), Vec::new()),
+            JsonKind::Array => self.push(JsonKind::Array, Vec::new(), Vec::new()),
+            JsonKind::Scalar => self.push(JsonKind::Scalar, Vec::new(), Vec::new()),
+            JsonKind::Any => self.push(JsonKind::Any, Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Records a shape and returns the index it lands at.
+    fn push(&mut self, kind: JsonKind, required: Vec<String>, alternatives: Vec<usize>) -> usize {
+        self.shapes.push(Shape {
+            kind,
+            required,
+            alternatives,
+        });
+        self.shapes.len() - 1
+    }
+
+    /// Keeps only the constraints that more than one arm shares.
+    ///
+    /// A constraint applies only to a property that *several* arms constrain.
+    /// A property one arm alone constrains — a `format` only the string
+    /// schema names, say — is that arm's own business, and enforcing it here
+    /// would reject values the specification's own type accepts.
+    fn drop_lonely_constraints(&mut self) {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for arm in &self.arms {
+            for (name, _) in &arm.constraints {
+                *counts.entry(name.clone()).or_default() += 1;
+            }
+        }
+        let shared: BTreeSet<String> = counts
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(name, _)| name)
+            .collect();
+        for arm in &mut self.arms {
+            arm.constraints.retain(|(name, _)| shared.contains(name));
+        }
+    }
+}
+
+impl Shape {
+    /// True when this shape carries information worth putting in the table.
+    ///
+    /// A scalar shape is the same in every arm that has it, and a shape that
+    /// accepts anything carries nothing at all. Neither is worth a slot.
+    const fn informative(&self) -> bool {
+        matches!(self.kind, JsonKind::Object | JsonKind::Array) || !self.alternatives.is_empty()
+    }
+}
+
+/// Emits the doc comment and derive line of a union.
+fn emit_union_header(source: &mut String, doc_name: &str, discriminator: Option<&Discriminator>) {
+    match discriminator {
+        Some(discriminator) => {
+            let _ = writeln!(
+                source,
+                "/// One of the alternatives the specification allows for `{doc_name}`.\n\
+                 ///\n\
+                 /// Dispatched on the `{property}` member. Every alternative fixes\n\
+                 /// its own `{property}`, so the JSON *does* say which one was sent\n\
+                 /// even though it is not wrapped \u{2014} and matching on member order\n\
+                 /// instead would be guessing. Two alternatives that differ only in\n\
+                 /// a member the JSON does not carry are the same shape on the wire,\n\
+                 /// so tried in order the second is unreachable and the value is\n\
+                 /// re-emitted as the first, silently and without an error.\n\
+                 ///\n\
+                 /// An unrecognised or absent `{property}` is a decode failure rather\n\
+                 /// than a fall-through, so a malformed message cannot be quietly\n\
+                 /// accepted as whichever alternative happens to parse.",
+                property = discriminator.property
+            );
+        }
+        None => {
+            let _ = writeln!(
+                source,
+                "/// One of the alternatives the specification allows for `{doc_name}`.\n\
+                 ///\n\
+                 /// Dispatched on shape: the alternatives are not told apart by a\n\
+                 /// single pinned member, so the value is matched against each\n\
+                 /// alternative's own kind, required members and the shape of the\n\
+                 /// members that carry the distinction. The alternative that\n\
+                 /// accounts for more of the value wins, and the specification's\n\
+                 /// own order breaks a tie.\n\
+                 ///\n\
+                 /// Matching on member order alone would be guessing, and the\n\
+                 /// guess is silently wrong: the alternatives overlap, so a value\n\
+                 /// meant for one of them lands in whichever comes first and is\n\
+                 /// re-emitted with that alternative's shape."
+            );
+        }
+    }
+    // `Serialize` keeps `untagged`; only `Deserialize` is hand-written. The
+    // attribute has to stay even though the manual impl ignores it, or the
+    // enum encodes as `{"Member0": {...}}` rather than as the member.
+    let _ = writeln!(source, "#[derive(Debug, Clone, PartialEq, Serialize)]");
+}
+
+/// Emits one union, dispatched on a pinned member when the tags allow it and
+/// on shape when they do not.
+fn emit_union(source: &mut String, plan: &UnionPlan) {
+    let UnionPlan {
+        ident,
+        doc_name,
+        members,
+        discriminator,
+        shapes,
+    } = plan;
+    let ident = ident.as_str();
+    let doc_name = doc_name.as_str();
+
+    emit_union_header(source, doc_name, discriminator.as_ref());
 
     let _ = writeln!(source, "#[serde(untagged)]");
     let _ = writeln!(source, "pub enum {ident} {{");
@@ -338,9 +671,12 @@ fn emit_union(
     }
     let _ = writeln!(source, "}}\n");
 
-    let Some(tags) = tags else {
-        return;
-    };
+    // The tables live at module scope rather than inside the deserializer:
+    // a union with a dozen alternatives would otherwise push the function
+    // past the length a reader — and the linter — will tolerate.
+    if discriminator.is_none() {
+        emit_shape_tables(source, ident, shapes);
+    }
 
     let _ = writeln!(source, "impl<'de> serde::Deserialize<'de> for {ident} {{");
     // `Result` is fully qualified because the specification defines a type of
@@ -352,13 +688,92 @@ fn emit_union(
         "    fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>\n    \
          where\n        D: serde::Deserializer<'de>,\n    {{"
     );
+
+    match discriminator {
+        Some(discriminator) => {
+            emit_tag_dispatch(source, ident, doc_name, discriminator);
+        }
+        None => emit_shape_dispatch(source, ident, doc_name, members),
+    }
+
+    let _ = writeln!(source, "    }}");
+    let _ = writeln!(source, "}}\n");
+}
+
+/// The name a generated union's tables take, in the upper-case style Rust
+/// uses for constants and statics.
+///
+/// `ServerResultChoice` becomes `SERVER_RESULT_CHOICE`, so the tables read as
+/// the module-level constants they are.
+fn screaming_snake(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 8);
+    let mut previous_was_lower = false;
+    for character in name.chars() {
+        if character.is_uppercase() && previous_was_lower {
+            out.push('_');
+        }
+        previous_was_lower = character.is_lowercase() || character.is_ascii_digit();
+        out.extend(character.to_uppercase());
+    }
+    out
+}
+
+/// Emits the name of a JSON kind, as the generated dispatcher spells it.
+const fn emit_kind(kind: JsonKind) -> &'static str {
+    match kind {
+        JsonKind::Object => "Object",
+        JsonKind::Array => "Array",
+        JsonKind::Scalar => "Scalar",
+        JsonKind::Any => "Any",
+    }
+}
+
+/// The values a property is pinned to, if the specification fixes any.
+///
+/// A property pinned to a constant allows exactly that value; a property
+/// restricted to a closed set of constants allows those. A property that
+/// pins nothing allows everything, and pins nothing that a union's arms could
+/// be told apart by.
+fn pinned_values(property: &Schema) -> Option<Vec<String>> {
+    if let Some(value) = &property.constant {
+        return value.as_str().map(|text| vec![text.to_owned()]);
+    }
+    property.enum_values.as_ref().and_then(|values| {
+        values
+            .iter()
+            .map(|value| value.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+    })
+}
+
+/// Emits a list of names as a Rust slice literal.
+fn emit_str_slice(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Emits the deserializer of a union that is dispatched on a pinned member.
+///
+/// The member is one the specification *requires* of every alternative, so
+/// the peer has promised to send it and reading it cannot fail on a
+/// conforming value.
+fn emit_tag_dispatch(
+    source: &mut String,
+    ident: &str,
+    doc_name: &str,
+    discriminator: &Discriminator,
+) {
     let _ = writeln!(
         source,
         "        let value = serde_json::Value::deserialize(deserializer)?;\n\
-         \x20       let tag = value\n            .get(\"type\")\n            .and_then(serde_json::Value::as_str)\n            .ok_or_else(|| serde::de::Error::custom(\"a `{doc_name}` must carry a `type` string\"))?;\n\
-         \x20       match tag {{"
+         \x20       let tag = value\n            .get(\"{property}\")\n            .and_then(serde_json::Value::as_str)\n            .ok_or_else(|| serde::de::Error::custom(\"a `{doc_name}` must carry a `{property}` string\"))?;\n\
+         \x20       match tag {{",
+        property = discriminator.property
     );
-    for (i, tag) in tags.iter().enumerate() {
+    for (i, tag) in discriminator.values.iter().enumerate() {
         let _ = writeln!(
             source,
             "            \"{tag}\" => serde_json::from_value(value)\n                \
@@ -370,11 +785,323 @@ fn emit_union(
         source,
         "            other => Err(<D::Error as serde::de::Error>::custom(format!(\n                \
          \"`{{other}}` is not a {doc_name}; expected one of {listed}\"))),",
-        listed = tags.join(", ")
+        listed = discriminator.values.join(", ")
     );
     let _ = writeln!(source, "        }}");
-    let _ = writeln!(source, "    }}");
-    let _ = writeln!(source, "}}\n");
+}
+
+/// Emits the tables a shape-dispatched union dispatches on.
+///
+/// The tables live at module scope rather than inside the deserializer: a
+/// union with a dozen alternatives would otherwise push the function past
+/// the length a reader — and the linter — will tolerate.
+fn emit_shape_tables(source: &mut String, ident: &str, shapes: &ShapeTable) {
+    let _ = writeln!(
+        source,
+        "static {table}_SHAPES: &[UnionShape] = &[",
+        table = screaming_snake(ident)
+    );
+    for shape in &shapes.shapes {
+        let _ = writeln!(
+            source,
+            "    UnionShape {{ kind: UnionKind::{kind}, required: &[{required}], alternatives: &[{alternatives}] }},",
+            kind = emit_kind(shape.kind),
+            required = emit_str_slice(&shape.required),
+            alternatives = shape
+                .alternatives
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let _ = writeln!(source, "];\n");
+    let _ = writeln!(
+        source,
+        "static {table}_ARMS: &[UnionArm] = &[",
+        table = screaming_snake(ident)
+    );
+    for arm in &shapes.arms {
+        let _ = writeln!(
+            source,
+            "    UnionArm {{\n        \
+             kind: UnionKind::{kind},\n        \
+             required: &[{required}],\n        \
+             named: &[{named}],\n        \
+             members: &[{members}],\n        \
+             elements: {elements},\n        \
+             constraints: &[{constraints}],\n    }},",
+            kind = emit_kind(arm.kind),
+            required = emit_str_slice(&arm.required),
+            named = emit_str_slice(&arm.named),
+            members = arm
+                .members
+                .iter()
+                .map(|(name, index)| format!("(\"{name}\", {index})"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            elements = arm
+                .elements
+                .map_or_else(|| "None".to_owned(), |index| format!("Some({index})")),
+            constraints = arm
+                .constraints
+                .iter()
+                .map(|(name, allowed)| {
+                    let values = allowed
+                        .iter()
+                        .map(|value| format!("\"{value}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("(\"{name}\", &[{values}])")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let _ = writeln!(source, "];\n");
+}
+
+/// Emits the deserializer of a union that is dispatched on shape.
+///
+/// The alternatives are not told apart by a single pinned member, so the
+/// value is matched against each alternative's own kind, required members
+/// and the shape of the members that carry the distinction. The
+/// alternative that accounts for more of the value wins, and the
+/// specification's own order breaks a tie.
+fn emit_shape_dispatch(source: &mut String, ident: &str, doc_name: &str, members: &[RustType]) {
+    let table = screaming_snake(ident);
+    let _ = writeln!(
+        source,
+        "        let value = serde_json::Value::deserialize(deserializer)?;\n\
+         \x20       let mut order: Vec<usize> = (0..{table}_ARMS.len())\n            \
+         .filter(|index| {{\n            \
+         {table}_ARMS\n            \
+         .get(*index)\n            \
+         .is_some_and(|arm| arm.accepts({table}_SHAPES, &value))\n        \
+         }})\n            \
+         .collect();\n\
+         \x20       order.sort_by_key(|index| {{\n            \
+         let arm = {table}_ARMS.get(*index);\n            \
+         ::core::cmp::Reverse((\n            \
+         arm.map_or(0, |arm| arm.coverage(&value)),\n            \
+         arm.map_or(0, |arm| arm.required.len()),\n            \
+         ))\n        }});\n\
+         \x20       let mut failure = String::new();\n\
+         \x20       for index in order {{\n            \
+         let member = match index {{"
+    );
+    for (i, member) in members.iter().enumerate() {
+        let _ = writeln!(
+            source,
+            "                {i} => <{ty} as serde::Deserialize>::deserialize(&value)\n                    \
+             .map({ident}::Member{i}),",
+            ty = member.render()
+        );
+    }
+    let _ = writeln!(
+        source,
+        "                _ => continue,\n            }};\n            \
+         match member {{\n                \
+         Ok(member) => return Ok(member),\n                \
+         Err(error) => failure = error.to_string(),\n            }}\n        }}\n\
+         \x20       Err(<D::Error as serde::de::Error>::custom(format!(\n            \
+         \"a `{doc_name}` matches none of its alternatives: {{failure}}\")))"
+    );
+}
+
+/// Emits the helper a shape-dispatched union needs.
+///
+/// The dispatcher picks the arm a value belongs to; it does not validate the
+/// value. A property the specification pins is enforced here only when more
+/// than one arm pins it, because a constraint one arm alone carries is that
+/// arm's own business — and the generated type does not enforce it either, so
+/// enforcing it in the dispatcher would make the two disagree about the same
+/// value.
+fn emit_dispatcher(source: &mut String) {
+    emit_union_kind(source);
+    emit_union_shape(source);
+    emit_union_arm(source);
+    emit_union_impls(source);
+}
+
+/// Emits the `UnionKind` enum the generated dispatcher uses.
+fn emit_union_kind(source: &mut String) {
+    let _ = writeln!(
+        source,
+        "/// The JSON kind a value has.\n\
+         ///\n\
+         /// The kind is part of an arm's identity. Two alternatives can lower to\n\
+         /// the same Rust type and still accept different JSON, and only the kind\n\
+         /// tells them apart: a `JSONObject` and a `MultiType` are both\n\
+         /// `serde_json::Value` on the Rust side and an object and a scalar on\n\
+         /// the wire.\n\
+         #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+         enum UnionKind {{\n\
+         \x20   /// A JSON object.\n\
+         \x20   Object,\n\
+         \x20   /// A JSON array.\n\
+         \x20   Array,\n\
+         \x20   /// A JSON scalar: a string, a number, a boolean or null.\n\
+         \x20   Scalar,\n\
+         \x20   /// Any JSON value.\n\
+         \x20   Any,\n\
+         }}\n"
+    );
+}
+
+/// Emits the `UnionShape` struct the generated dispatcher uses.
+fn emit_union_shape(source: &mut String) {
+    let _ = writeln!(
+        source,
+        "/// The shape of a value, as the dispatcher sees it.\n\
+         ///\n\
+         /// A shape is what a value *can* be: the kind it has, the members it\n\
+         /// must carry, and — where the value stands for a union — the\n\
+         /// alternatives it may take.\n\
+         struct UnionShape {{\n\
+         \x20   /// The kind the shape accepts.\n\
+         \x20   kind: UnionKind,\n\
+         \x20   /// The members an object of this shape must carry.\n\
+         \x20   required: &'static [&'static str],\n\
+         \x20   /// The shapes this shape accepts, when it stands for a union of them.\n\
+         \x20   alternatives: &'static [usize],\n\
+         }}\n\
+         \n\
+         impl UnionShape {{\n\
+         \x20   /// True when the value could have this shape.\n\
+         \x20   fn accepts(&self, shapes: &[UnionShape], value: &serde_json::Value) -> bool {{\n\
+         \x20       if !self.alternatives.is_empty() {{\n\
+         \x20           return self.alternatives.iter().any(|index| {{\n\
+         \x20               shapes\n\
+         \x20                   .get(*index)\n\
+         \x20                   .is_some_and(|shape| shape.accepts(shapes, value))\n\
+         \x20           }});\n\
+         \x20       }}\n\
+         \x20       if self.kind != UnionKind::Any && self.kind != union_kind(value) {{\n\
+         \x20           return false;\n\
+         \x20       }}\n\
+         \x20       if self.kind == UnionKind::Object {{\n\
+         \x20           let Some(object) = value.as_object() else {{\n\
+         \x20               return false;\n\
+         \x20           }};\n\
+         \x20           return self.required.iter().all(|name| object.contains_key(*name));\n\
+         \x20       }}\n\
+         \x20       true\n\
+         \x20   }}\n\
+         }}\n"
+    );
+}
+
+/// Emits the `UnionArm` struct the generated dispatcher uses.
+fn emit_union_arm(source: &mut String) {
+    let _ = writeln!(
+        source,
+        "/// One arm of a union, as the dispatcher sees it.\n\
+         ///\n\
+         /// The arms of a union are told apart by the properties they name, the\n\
+         /// members they require, and the shape of the members that carry the\n\
+         /// distinction — not by the order the specification lists them in. A\n\
+         /// value that satisfies more than one arm belongs to the arm that\n\
+         /// accounts for more of the value's members.\n\
+         struct UnionArm {{\n\
+         \x20   /// The kind this arm accepts.\n\
+         \x20   kind: UnionKind,\n\
+         \x20   /// The members this arm requires.\n\
+         \x20   required: &'static [&'static str],\n\
+         \x20   /// Every member this arm names.\n\
+         \x20   named: &'static [&'static str],\n\
+         \x20   /// The shape of the members whose shape tells this arm apart, and\n\
+         \x20   /// the index of that shape in the union's table.\n\
+         \x20   members: &'static [(&'static str, usize)],\n\
+         \x20   /// The shape of this arm's elements, and the index of that shape\n\
+         \x20   /// in the union's table, when the arm is an array.\n\
+         \x20   elements: Option<usize>,\n\
+         \x20   /// The properties this arm pins, and the values it allows for them.\n\
+         \x20   ///\n\
+         \x20   /// A property the specification pins to one value, or to a closed set of\n\
+         \x20   /// values, is a discriminator: a value carrying a different one is not\n\
+         \x20   /// this arm's.\n\
+         \x20   constraints: &'static [(&'static str, &'static [&'static str])],\n\
+         }}\n"
+    );
+}
+
+/// Emits the behaviour of the generated dispatcher's helpers.
+fn emit_union_impls(source: &mut String) {
+    let _ = writeln!(
+        source,
+        "impl UnionArm {{\n\
+         \x20   /// True when the value could be this arm's.\n\
+         \x20   ///\n\
+         \x20   /// This is a dispatch test, not a validation: it decides which arm a\n\
+         \x20   /// value belongs to, and the value is then decoded into that arm.\n\
+         \x20   fn accepts(&self, shapes: &[UnionShape], value: &serde_json::Value) -> bool {{\n\
+         \x20       if self.kind != union_kind(value) {{\n\
+         \x20           return false;\n\
+         \x20       }}\n\
+         \x20       match self.kind {{\n\
+         \x20           UnionKind::Object => {{\n\
+         \x20               let Some(object) = value.as_object() else {{\n\
+         \x20                   return false;\n\
+         \x20               }};\n\
+         \x20               if !self.required.iter().all(|name| object.contains_key(*name)) {{\n\
+         \x20                   return false;\n\
+         \x20               }}\n\
+         \x20               for (name, allowed) in self.constraints {{\n\
+         \x20                   let Some(member) = object.get(*name) else {{\n\
+         \x20                       continue;\n\
+         \x20                   }};\n\
+         \x20                   if !member.as_str().is_some_and(|text| allowed.contains(&text)) {{\n\
+         \x20                       return false;\n\
+         \x20                   }}\n\
+         \x20               }}\n\
+         \x20               for (name, index) in self.members {{\n\
+         \x20                   let Some(member) = object.get(*name) else {{\n\
+         \x20                       continue;\n\
+         \x20                   }};\n\
+         \x20                   let Some(shape) = shapes.get(*index) else {{\n\
+         \x20                       continue;\n\
+         \x20                   }};\n\
+         \x20                   if !shape.accepts(shapes, member) {{\n\
+         \x20                       return false;\n\
+         \x20                   }}\n\
+         \x20               }}\n\
+         \x20               true\n\
+         \x20           }}\n\
+         \x20           UnionKind::Array => {{\n\
+         \x20               let Some(elements) = value.as_array() else {{\n\
+         \x20                   return false;\n\
+         \x20               }};\n\
+         \x20               let Some(index) = self.elements else {{\n\
+         \x20                   return true;\n\
+         \x20               }};\n\
+         \x20               let Some(shape) = shapes.get(index) else {{\n\
+         \x20                   return true;\n\
+         \x20               }};\n\
+         \x20               elements.iter().all(|element| shape.accepts(shapes, element))\n\
+         \x20           }}\n\
+         \x20           _ => true,\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \n\
+         \x20   /// How many of the value's members this arm accounts for.\n\
+         \x20   fn coverage(&self, value: &serde_json::Value) -> usize {{\n\
+         \x20       let Some(object) = value.as_object() else {{\n\
+         \x20           return 0;\n\
+         \x20       }};\n\
+         \x20       object.keys().filter(|name| self.named.contains(&name.as_str())).count()\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         /// The JSON kind a value has.\n\
+         const fn union_kind(value: &serde_json::Value) -> UnionKind {{\n\
+         \x20   match value {{\n\
+         \x20       serde_json::Value::Object(_) => UnionKind::Object,\n\
+         \x20       serde_json::Value::Array(_) => UnionKind::Array,\n\
+         \x20       _ => UnionKind::Scalar,\n\
+         \x20   }}\n\
+         }}\n"
+    );
 }
 
 fn emit_def(out: &mut String, name: &str, schema: &Schema, defs: &BTreeMap<String, Schema>) {

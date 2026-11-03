@@ -40,7 +40,7 @@
 //! reason passthrough is achievable at all. The model keeps the keyword so a
 //! future schema that does use it fails loudly instead of being ignored.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 use thiserror::Error;
@@ -165,6 +165,144 @@ impl Schema {
     pub fn def_ref(&self) -> Option<&str> {
         self.ref_.as_ref().map(|r| r.0.as_str())
     }
+
+    /// The JSON kind this schema accepts.
+    ///
+    /// A union accepts any kind — its members decide — and a schema that
+    /// constrains nothing accepts any kind too.
+    pub fn json_kind(&self, defs: &BTreeMap<String, Self>) -> JsonKind {
+        self.json_kind_at(defs, 0)
+    }
+
+    /// The properties this schema declares, with `$ref` and `allOf` resolved.
+    ///
+    /// The specification composes a base object with a payload using
+    /// `allOf`, and the payload's members are what tell two alternatives of a
+    /// union apart. Reading a definition's own `properties` alone therefore
+    /// loses exactly the members that carry the distinction.
+    pub fn merged_properties<'a>(
+        &'a self,
+        defs: &'a BTreeMap<String, Self>,
+    ) -> BTreeMap<&'a str, &'a Self> {
+        let mut properties = BTreeMap::new();
+        self.collect_properties(defs, 0, &mut properties);
+        properties
+    }
+
+    /// The members this schema requires, with `$ref` and `allOf` resolved.
+    pub fn merged_required(&self, defs: &BTreeMap<String, Self>) -> Vec<String> {
+        let mut required = Vec::new();
+        self.collect_required(defs, 0, &mut required);
+        required
+    }
+
+    /// How deep a `$ref` or `allOf` chain is followed before the walk gives up.
+    ///
+    /// The vendored schemas are not infinitely deep, but a recursive
+    /// definition reached through `allOf` would be, and a generator that
+    /// loops on one is a build failure rather than a diagnostic.
+    const MAX_RESOLVE_DEPTH: usize = 8;
+
+    fn json_kind_at(&self, defs: &BTreeMap<String, Self>, depth: usize) -> JsonKind {
+        if depth > Self::MAX_RESOLVE_DEPTH {
+            return JsonKind::Any;
+        }
+        if let Some(target) = self.def_ref() {
+            return defs.get(target).map_or(JsonKind::Any, |definition| {
+                definition.json_kind_at(defs, depth + 1)
+            });
+        }
+        if !self.intersect.is_empty() {
+            let mut kinds: BTreeSet<JsonKind> = BTreeSet::new();
+            for part in &self.intersect {
+                kinds.insert(part.json_kind_at(defs, depth + 1));
+            }
+            return if kinds.len() == 1 {
+                kinds.iter().next().copied().unwrap_or(JsonKind::Any)
+            } else {
+                JsonKind::Scalar
+            };
+        }
+        match &self.type_ {
+            Some(TypeSet::One(name)) => match name.as_str() {
+                "object" => JsonKind::Object,
+                "array" => JsonKind::Array,
+                _ => JsonKind::Scalar,
+            },
+            // A `"type": [..]` selector names several kinds at once. The
+            // vendored schemas use it for scalar kinds only, and a scalar is
+            // the one kind every one of them agrees on.
+            Some(TypeSet::Many(_)) => JsonKind::Scalar,
+            None => {
+                if self.items.is_some() {
+                    JsonKind::Array
+                } else if !self.properties.is_empty()
+                    || !self.required.is_empty()
+                    || self.union.is_some()
+                {
+                    JsonKind::Object
+                } else {
+                    JsonKind::Scalar
+                }
+            }
+        }
+    }
+
+    fn collect_properties<'a>(
+        &'a self,
+        defs: &'a BTreeMap<String, Self>,
+        depth: usize,
+        out: &mut BTreeMap<&'a str, &'a Self>,
+    ) {
+        if depth > Self::MAX_RESOLVE_DEPTH {
+            return;
+        }
+        if let Some(target) = self.def_ref() {
+            if let Some(definition) = defs.get(target) {
+                definition.collect_properties(defs, depth + 1, out);
+            }
+            return;
+        }
+        for part in &self.intersect {
+            part.collect_properties(defs, depth + 1, out);
+        }
+        for (name, property) in &self.properties {
+            out.insert(name.as_str(), property.as_ref());
+        }
+    }
+
+    fn collect_required(&self, defs: &BTreeMap<String, Self>, depth: usize, out: &mut Vec<String>) {
+        if depth > Self::MAX_RESOLVE_DEPTH {
+            return;
+        }
+        if let Some(target) = self.def_ref() {
+            if let Some(definition) = defs.get(target) {
+                definition.collect_required(defs, depth + 1, out);
+            }
+            return;
+        }
+        for part in &self.intersect {
+            part.collect_required(defs, depth + 1, out);
+        }
+        for name in &self.required {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+    }
+}
+
+/// The JSON kind a schema accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum JsonKind {
+    /// A JSON object.
+    Object,
+    /// A JSON array.
+    Array,
+    /// A JSON scalar — string, number, boolean or null.
+    Scalar,
+    /// Any JSON value at all.
+    Any,
 }
 
 /// Which keyword introduced a union, and its members.
