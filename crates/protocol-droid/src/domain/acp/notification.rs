@@ -50,8 +50,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::config::SessionConfigOption;
 use super::content::ContentBlock;
-use super::session::{SessionConfigOption, SessionId, SessionModeId};
+use super::session::{SessionId, SessionModeId};
 use super::tool_call::{ToolCall, ToolCallUpdate};
 
 /// Notification containing a session update from the

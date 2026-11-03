@@ -43,31 +43,32 @@
 //!
 //! # Why this does not cover all 13 agent methods
 //!
-//! The v1.25.0 schema has 13 agent methods.
-//! This module covers the 9 whose typed request
-//! and response shapes already exist in
-//! [`crate::domain::acp`]:
-//! `initialize`, `session/new`, `session/load`,
-//! `session/list`, `session/delete`,
-//! `session/resume`, `session/close`,
-//! `session/prompt`, and `logout`. The remaining
-//! 4 — `authenticate`, `session/set_mode`,
-//! `session/set_config_option` — are typed in a
-//! future commit (the request/response domain
-//! types are still on the wire-only list).
+//! The v1.25.0 schema has 13 agent methods. This
+//! module covers all 13: `initialize`, `authenticate`,
+//! `session/new`, `session/load`, `session/list`,
+//! `session/delete`, `session/resume`, `session/close`,
+//! `session/set_mode`, `session/set_config_option`,
+//! `session/prompt`, `session/cancel`, and `logout`.
+//! `session/cancel` is a *notification* rather than a
+//! request, so it has no typed wrapper here — it rides
+//! the notification stream instead.
 
 use core::pin::Pin;
 
 use futures_core::Future;
 
 use super::dispatch::{AcpError, AcpRequestContext, AcpRequestHandler};
-use crate::domain::acp::initialize::{InitializeRequest, InitializeResponse};
+use crate::domain::acp::config::{SetSessionConfigOptionRequest, SetSessionConfigOptionResponse};
+use crate::domain::acp::initialize::{
+    AuthenticateRequest, AuthenticateResponse, InitializeRequest, InitializeResponse,
+};
 use crate::domain::acp::method::AgentMethod;
 use crate::domain::acp::session::{
     CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse,
     ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
     LogoutRequest, LogoutResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, ResumeSessionRequest, ResumeSessionResponse,
+    PromptResponse, ResumeSessionRequest, ResumeSessionResponse, SetSessionModeRequest,
+    SetSessionModeResponse,
 };
 
 /// The per-method typed wrappers. A blanket impl
@@ -83,6 +84,17 @@ pub trait AcpRequestHandlerExt: AcpRequestHandler {
         request: InitializeRequest,
         context: &'a AcpRequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<InitializeResponse, AcpError>> + Send + 'a>>;
+
+    // --- authenticate --------------------------------------------
+
+    /// Proves the editor's identity with one of the auth
+    /// methods the agent advertised. Typed counterpart to
+    /// `dispatch(Authenticate, ...)`.
+    fn authenticate<'a>(
+        &'a self,
+        request: AuthenticateRequest,
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<AuthenticateResponse, AcpError>> + Send + 'a>>;
 
     // --- session/new ---------------------------------------------
 
@@ -154,6 +166,27 @@ pub trait AcpRequestHandlerExt: AcpRequestHandler {
         context: &'a AcpRequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<PromptResponse, AcpError>> + Send + 'a>>;
 
+    // --- session/set_mode ----------------------------------------
+
+    /// Switches the session's mode. Typed counterpart to
+    /// `dispatch(SessionSetMode, ...)`.
+    fn session_set_mode<'a>(
+        &'a self,
+        request: SetSessionModeRequest,
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<SetSessionModeResponse, AcpError>> + Send + 'a>>;
+
+    // --- session/set_config_option -------------------------------
+
+    /// Sets one session configuration option. Typed
+    /// counterpart to
+    /// `dispatch(SessionSetConfigOption, ...)`.
+    fn session_set_config_option<'a>(
+        &'a self,
+        request: SetSessionConfigOptionRequest,
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<SetSessionConfigOptionResponse, AcpError>> + Send + 'a>>;
+
     // --- logout --------------------------------------------------
 
     /// Terminates the auth session. Typed
@@ -180,6 +213,26 @@ impl<H: AcpRequestHandler + ?Sized> AcpRequestHandlerExt for H {
             let raw = self.dispatch(method, Some(value), context).await?;
             serde_json::from_value::<InitializeResponse>(raw).map_err(|e| AcpError::InternalError {
                 message: format!("failed to deserialise Initialize response: {e}"),
+            })
+        })
+    }
+
+    fn authenticate<'a>(
+        &'a self,
+        request: AuthenticateRequest,
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<AuthenticateResponse, AcpError>> + Send + 'a>> {
+        let method = AgentMethod::Authenticate;
+        let value = serde_json::to_value(&request).map_err(|e| AcpError::InternalError {
+            message: format!("failed to serialise authenticate request: {e}"),
+        });
+        Box::pin(async move {
+            let value = value?;
+            let raw = self.dispatch(method, Some(value), context).await?;
+            serde_json::from_value::<AuthenticateResponse>(raw).map_err(|e| {
+                AcpError::InternalError {
+                    message: format!("failed to deserialise authenticate response: {e}"),
+                }
             })
         })
     }
@@ -320,6 +373,49 @@ impl<H: AcpRequestHandler + ?Sized> AcpRequestHandlerExt for H {
         })
     }
 
+    fn session_set_mode<'a>(
+        &'a self,
+        request: SetSessionModeRequest,
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<SetSessionModeResponse, AcpError>> + Send + 'a>> {
+        let method = AgentMethod::SessionSetMode;
+        let value = serde_json::to_value(&request).map_err(|e| AcpError::InternalError {
+            message: format!("failed to serialise session/set_mode request: {e}"),
+        });
+        Box::pin(async move {
+            let value = value?;
+            let raw = self.dispatch(method, Some(value), context).await?;
+            serde_json::from_value::<SetSessionModeResponse>(raw).map_err(|e| {
+                AcpError::InternalError {
+                    message: format!("failed to deserialise session/set_mode response: {e}"),
+                }
+            })
+        })
+    }
+
+    fn session_set_config_option<'a>(
+        &'a self,
+        request: SetSessionConfigOptionRequest,
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<SetSessionConfigOptionResponse, AcpError>> + Send + 'a>>
+    {
+        let method = AgentMethod::SessionSetConfigOption;
+        let value = serde_json::to_value(&request).map_err(|e| AcpError::InternalError {
+            message: format!("failed to serialise session/set_config_option request: {e}"),
+        });
+        Box::pin(async move {
+            let value = value?;
+            let raw = self.dispatch(method, Some(value), context).await?;
+            serde_json::from_value::<SetSessionConfigOptionResponse>(raw).map_err(|e| {
+                AcpError::InternalError {
+                    message: format!(
+                        "failed to deserialise session/set_config_option response: {e}"
+                    ),
+                }
+            })
+        })
+    }
+
     fn logout<'a>(
         &'a self,
         request: LogoutRequest,
@@ -370,10 +466,13 @@ mod tests {
 
     use super::super::dispatch::{AcpError, AcpRequestContext, AcpRequestHandler};
     use super::AcpRequestHandlerExt;
+    use crate::domain::acp::config::SetSessionConfigOptionRequest;
     use crate::domain::acp::implementation::Implementation;
-    use crate::domain::acp::initialize::{ClientCapabilities, InitializeRequest};
+    use crate::domain::acp::initialize::{
+        AuthenticateRequest, ClientCapabilities, InitializeRequest,
+    };
     use crate::domain::acp::method::AgentMethod;
-    use crate::domain::acp::session::{PromptRequest, SessionId};
+    use crate::domain::acp::session::{PromptRequest, SessionId, SetSessionModeRequest};
 
     /// Test-failure shape. Every fallible call in
     /// the tests below propagates through `?`,
@@ -449,12 +548,9 @@ mod tests {
             _params: Value,
         ) -> Pin<
             Box<
-                dyn Future<
-                    Output = Result<
-                        Value,
-                        super::super::editor::AcpEditorError,
-                    >,
-                > + Send + '_,
+                dyn Future<Output = Result<Value, super::super::editor::AcpEditorError>>
+                    + Send
+                    + '_,
             >,
         > {
             Box::pin(async {
@@ -469,14 +565,7 @@ mod tests {
             _method: crate::domain::acp::method::ClientMethod,
             _params: Value,
         ) -> Pin<
-            Box<
-                dyn Future<
-                    Output = Result<
-                        (),
-                        super::super::editor::AcpEditorError,
-                    >,
-                > + Send + '_,
-            >,
+            Box<dyn Future<Output = Result<(), super::super::editor::AcpEditorError>> + Send + '_>,
         > {
             Box::pin(async {
                 Err(super::super::editor::AcpEditorError::Disconnected {
@@ -537,6 +626,81 @@ mod tests {
         }
     }
 
+    /// A handler that records the serialised params it
+    /// was handed and answers with a minimal valid
+    /// response. It exists so the tests below can
+    /// assert the *wire* form of a request — a typed
+    /// round-trip through `serde_json::Value` can pass
+    /// while the JSON object on the wire has the wrong
+    /// shape.
+    struct EchoParams {
+        recorded: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+    }
+
+    impl EchoParams {
+        fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Option<Value>>>) {
+            let recorded = std::sync::Arc::new(std::sync::Mutex::new(None));
+            (
+                Self {
+                    recorded: std::sync::Arc::clone(&recorded),
+                },
+                recorded,
+            )
+        }
+
+        /// Records the params the wrapper handed to
+        /// dispatch. The lock guard is released before
+        /// this returns — the recorded value outlives
+        /// it.
+        fn record(&self, params: Option<Value>) -> Result<(), AcpError> {
+            {
+                let mut guard = self.recorded.lock().map_err(|_| AcpError::InternalError {
+                    message: "the recorded-params lock was poisoned".to_owned(),
+                })?;
+                *guard = params;
+            }
+            Ok(())
+        }
+    }
+
+    impl AcpRequestHandler for EchoParams {
+        fn dispatch<'a>(
+            &'a self,
+            method: AgentMethod,
+            params: Option<Value>,
+            _context: &'a AcpRequestContext,
+        ) -> Pin<Box<dyn Future<Output = Result<Value, AcpError>> + Send + 'a>> {
+            Box::pin(async move {
+                match method {
+                    AgentMethod::Authenticate
+                    | AgentMethod::SessionSetMode
+                    | AgentMethod::SessionSetConfigOption => {
+                        self.record(params)?;
+                        // Each method needs a response its
+                        // typed wrapper can deserialise.
+                        Ok(match method {
+                            AgentMethod::SessionSetConfigOption => json!({"configOptions": []}),
+                            _ => json!({}),
+                        })
+                    }
+                    other => Err(AcpError::MethodNotImplemented { method: other }),
+                }
+            })
+        }
+    }
+
+    /// Reads back the params a handler recorded.
+    fn recorded_params(
+        recorded: &std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+    ) -> Result<Value, Failure> {
+        let guard = recorded
+            .lock()
+            .map_err(|_| Failure::WrongResult("the recorded-params lock was poisoned"))?;
+        guard
+            .clone()
+            .ok_or(Failure::WrongResult("the handler recorded no params"))
+    }
+
     fn context() -> AcpRequestContext {
         AcpRequestContext::new(
             crate::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
@@ -594,5 +758,99 @@ mod tests {
                 "session_prompt: handler unexpectedly succeeded",
             )),
         }
+    }
+
+    /// The `authenticate` wrapper puts `methodId` at
+    /// the top level of the params object — the shape
+    /// the schema's `AuthenticateRequest` describes.
+    #[tokio::test]
+    async fn authenticate_sends_method_id_at_the_top_level() -> Result<(), Failure> {
+        let request = AuthenticateRequest {
+            method_id: crate::domain::acp::initialize::AuthMethodId::new("dev-terminal"),
+            meta: BTreeMap::new(),
+        };
+        let (handler, recorded) = EchoParams::new();
+        handler.authenticate(request, &context()).await?;
+        if recorded_params(&recorded)? != json!({"methodId": "dev-terminal"}) {
+            return Err(Failure::WrongResult("authenticate: wrong wire shape"));
+        }
+        Ok(())
+    }
+
+    /// The `session/set_mode` wrapper puts `sessionId`
+    /// and `modeId` at the top level of the params
+    /// object.
+    #[tokio::test]
+    async fn session_set_mode_sends_the_session_and_mode() -> Result<(), Failure> {
+        let request = SetSessionModeRequest {
+            session_id: SessionId::new("s-1"),
+            mode_id: crate::domain::acp::session::SessionModeId::new("plan"),
+            meta: BTreeMap::new(),
+        };
+        let (handler, recorded) = EchoParams::new();
+        handler.session_set_mode(request, &context()).await?;
+        if recorded_params(&recorded)? != json!({"sessionId": "s-1", "modeId": "plan"}) {
+            return Err(Failure::WrongResult("session_set_mode: wrong wire shape"));
+        }
+        Ok(())
+    }
+
+    /// The `session/set_config_option` wrapper puts
+    /// `sessionId`, `configId` and the value at the top
+    /// level of the params object. The value-id form
+    /// carries no `type` discriminator — the schema's
+    /// "the simpler form is the default" rule.
+    #[tokio::test]
+    async fn session_set_config_option_sends_the_value_flat() -> Result<(), Failure> {
+        let request = SetSessionConfigOptionRequest {
+            session_id: SessionId::new("s-1"),
+            config_id: crate::domain::acp::config::SessionConfigId::new("model"),
+            value: crate::domain::acp::config::SessionConfigOptionValue::ValueId {
+                value: crate::domain::acp::config::SessionConfigValueId::new("opus"),
+            },
+            meta: BTreeMap::new(),
+        };
+        let (handler, recorded) = EchoParams::new();
+        handler
+            .session_set_config_option(request, &context())
+            .await?;
+        if recorded_params(&recorded)?
+            != json!({"sessionId": "s-1", "configId": "model", "value": "opus"})
+        {
+            return Err(Failure::WrongResult(
+                "session_set_config_option: wrong wire shape",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The boolean form of the config-option value
+    /// carries the `type` discriminator alongside the
+    /// value.
+    #[tokio::test]
+    async fn session_set_config_option_sends_a_boolean_with_its_type() -> Result<(), Failure> {
+        let request = SetSessionConfigOptionRequest {
+            session_id: SessionId::new("s-1"),
+            config_id: crate::domain::acp::config::SessionConfigId::new("brave"),
+            value: crate::domain::acp::config::SessionConfigOptionValue::Boolean { value: true },
+            meta: BTreeMap::new(),
+        };
+        let (handler, recorded) = EchoParams::new();
+        handler
+            .session_set_config_option(request, &context())
+            .await?;
+        if recorded_params(&recorded)?
+            != json!({
+                "sessionId": "s-1",
+                "configId": "brave",
+                "type": "boolean",
+                "value": true
+            })
+        {
+            return Err(Failure::WrongResult(
+                "session_set_config_option: wrong boolean wire shape",
+            ));
+        }
+        Ok(())
     }
 }
