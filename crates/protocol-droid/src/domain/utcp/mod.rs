@@ -46,9 +46,9 @@ pub mod error;
 pub mod manual;
 pub mod parse;
 pub mod policy;
-pub mod variables;
 #[cfg(test)]
 mod tests;
+pub mod variables;
 pub mod version;
 
 pub use auth::{ApiKeyLocation, Auth};

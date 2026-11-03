@@ -23,10 +23,11 @@ use crate::domain::utcp::error::ManualError;
 use crate::domain::utcp::version::UtcpVersion;
 
 /// The object half of a `Value`.
-pub fn object<'a>(value: &'a Value, what: &'static str) -> Result<&'a Map<String, Value>, ManualError> {
-    value
-        .as_object()
-        .ok_or(ManualError::NotAnObject { what })
+pub fn object<'a>(
+    value: &'a Value,
+    what: &'static str,
+) -> Result<&'a Map<String, Value>, ManualError> {
+    value.as_object().ok_or(ManualError::NotAnObject { what })
 }
 
 /// A required string field.
@@ -60,12 +61,13 @@ pub fn required_version(
     field: &'static str,
 ) -> Result<UtcpVersion, ManualError> {
     let raw = required_str(object, what, field)?;
-    raw.parse::<UtcpVersion>().map_err(|source| ManualError::InvalidVersion {
-        what,
-        field,
-        raw: raw.clone(),
-        source,
-    })
+    raw.parse::<UtcpVersion>()
+        .map_err(|source| ManualError::InvalidVersion {
+            what,
+            field,
+            raw: raw.clone(),
+            source,
+        })
 }
 
 /// An optional JSON object field.
@@ -87,7 +89,11 @@ pub fn optional_json_object(
 }
 
 /// A list of strings, empty when the field is absent.
-pub fn string_array(object: &Map<String, Value>, what: &'static str, field: &'static str) -> Result<Vec<String>, ManualError> {
+pub fn string_array(
+    object: &Map<String, Value>,
+    what: &'static str,
+    field: &'static str,
+) -> Result<Vec<String>, ManualError> {
     let Some(value) = object.get(field) else {
         return Ok(Vec::new());
     };
@@ -101,13 +107,13 @@ pub fn string_array(object: &Map<String, Value>, what: &'static str, field: &'st
     items
         .iter()
         .map(|item| {
-            item.as_str().map(str::to_owned).ok_or_else(|| {
-                ManualError::InvalidField {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| ManualError::InvalidField {
                     what,
                     field,
                     detail: "one of its entries is not a string".to_owned(),
-                }
-            })
+                })
         })
         .collect()
 }

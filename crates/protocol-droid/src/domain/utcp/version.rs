@@ -136,11 +136,12 @@ fn component(raw: &str, name: &'static str, part: Option<&str>) -> Result<u16, V
             raw: raw.to_owned(),
         });
     };
-    part.parse::<u16>().map_err(|error| VersionError::NotANumber {
-        raw: raw.to_owned(),
-        component: name,
-        detail: error.to_string(),
-    })
+    part.parse::<u16>()
+        .map_err(|error| VersionError::NotANumber {
+            raw: raw.to_owned(),
+            component: name,
+            detail: error.to_string(),
+        })
 }
 
 #[cfg(test)]

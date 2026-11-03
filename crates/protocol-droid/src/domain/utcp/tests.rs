@@ -442,7 +442,10 @@ fn the_allowed_protocols_field_is_read_when_it_is_there() -> Result<(), Failure>
 fn a_manual_with_no_allowed_protocols_field_keeps_it_absent() -> Result<(), Failure> {
     let manual = Manual::parse(PROVIDER_MANUAL)?;
     let tool = tool_of(&manual, "get_user")?;
-    assert_eq!(tool.tool_call_template.allowed_communication_protocols, None);
+    assert_eq!(
+        tool.tool_call_template.allowed_communication_protocols,
+        None
+    );
     Ok(())
 }
 

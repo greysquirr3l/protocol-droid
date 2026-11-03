@@ -76,5 +76,16 @@ tokio = { workspace = true, features = ["io-std", "rt", "macros", "process"] }
 reqwest = { workspace = true, features = ["json"], default-features = false }
 protocol-droid = { workspace = true }
 
+[dev-dependencies]
+# The UTCP tests need a provider to read, so they serve one: the library's
+# manual over loopback HTTP. `axum` is already in the graph through the
+# library's own `http` feature, and the test uses the same router the
+# library's UTCP server uses, so a manual served here is a manual served
+# the way a provider serves one.
+axum = { workspace = true }
+# `net` for the listener the test binds. `rt` and `macros` are already on
+# through the dependency above.
+tokio = { workspace = true, features = ["net"] }
+
 [lints]
 workspace = true

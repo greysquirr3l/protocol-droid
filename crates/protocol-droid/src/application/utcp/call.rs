@@ -45,7 +45,9 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Map, Value};
 
 use crate::domain::ir::JsonObject;
-use crate::domain::utcp::call_template::{HttpMethod, HttpTransport, McpServer, McpTransport, Transport};
+use crate::domain::utcp::call_template::{
+    HttpMethod, HttpTransport, McpServer, McpTransport, Transport,
+};
 use crate::domain::utcp::policy::ProtocolPolicy;
 use crate::domain::utcp::variables::{VariableError, substitute};
 use crate::domain::utcp::{ApiKeyLocation, Auth, Tool};
@@ -396,10 +398,7 @@ fn encode(text: &str) -> String {
 }
 
 /// Takes the body argument out of the arguments.
-fn take_body(
-    template: &HttpTransport,
-    supplied: &mut Map<String, Value>,
-) -> Option<String> {
+fn take_body(template: &HttpTransport, supplied: &mut Map<String, Value>) -> Option<String> {
     let Some(field) = &template.body_field else {
         return None;
     };
@@ -464,10 +463,7 @@ fn http_auth(
             location: *location,
             value: substitute(api_key, variables)?,
         }),
-        Some(Auth::Basic {
-            username,
-            password,
-        }) => Ok(HttpAuth::Basic {
+        Some(Auth::Basic { username, password }) => Ok(HttpAuth::Basic {
             username: substitute(username, variables)?,
             password: substitute(password, variables)?,
         }),
@@ -526,10 +522,7 @@ fn resolve_mcp_auth(
             var_name: substitute(var_name, variables)?,
             location: *location,
         })),
-        Some(Auth::Basic {
-            username,
-            password,
-        }) => Ok(Some(Auth::Basic {
+        Some(Auth::Basic { username, password }) => Ok(Some(Auth::Basic {
             username: substitute(username, variables)?,
             password: substitute(password, variables)?,
         })),
@@ -623,10 +616,7 @@ mod tests {
     impl std::error::Error for Failure {}
 
     /// The HTTP call a manual's tool plans.
-    fn http_call(
-        template: &str,
-        arguments: &str,
-    ) -> Result<HttpCall, Failure> {
+    fn http_call(template: &str, arguments: &str) -> Result<HttpCall, Failure> {
         http_call_with(template, arguments, &http_policy())
     }
 
@@ -826,9 +816,7 @@ mod tests {
                 }"#,
             ),
             r"{}",
-            &crate::domain::utcp::policy::ProtocolPolicy::allowing([
-                "file".to_owned(),
-            ]),
+            &crate::domain::utcp::policy::ProtocolPolicy::allowing(["file".to_owned()]),
         );
         assert_eq!(
             refused,
@@ -979,7 +967,8 @@ mod tests {
     }
 
     #[test]
-    fn an_mcp_template_with_several_servers_and_an_unnamed_tool_is_refused() -> Result<(), Failure> {
+    fn an_mcp_template_with_several_servers_and_an_unnamed_tool_is_refused() -> Result<(), Failure>
+    {
         let manual = Manual::parse(
             r#"{
               "manual_version": "1.0.0",

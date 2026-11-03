@@ -198,11 +198,8 @@ mod tests {
 
     /// A registration that permits only HTTP tools.
     fn http_registration() -> CallTemplate {
-        let mut template = CallTemplate::http(
-            "provider",
-            "https://api.example.com/utcp",
-            HttpMethod::Get,
-        );
+        let mut template =
+            CallTemplate::http("provider", "https://api.example.com/utcp", HttpMethod::Get);
         template.allowed_communication_protocols = None;
         template
     }
@@ -246,28 +243,34 @@ mod tests {
         let manual = mixed_manual()?;
         let registration = register(&http_registration(), &manual);
         assert_eq!(registration.tools.len(), 1);
-        assert_eq!(registration.tools.first().map(|tool| tool.name.as_str()), Some("get_user"));
+        assert_eq!(
+            registration.tools.first().map(|tool| tool.name.as_str()),
+            Some("get_user")
+        );
         Ok(())
     }
 
     /// A tool the registration does not permit is refused, and the refusal
     /// names what was permitted.
     #[test]
-    fn a_tool_the_registration_does_not_permit_is_refused(
-    ) -> Result<(), crate::domain::utcp::ManualError> {
+    fn a_tool_the_registration_does_not_permit_is_refused()
+    -> Result<(), crate::domain::utcp::ManualError> {
         let manual = mixed_manual()?;
         let registration = register(&http_registration(), &manual);
         assert_eq!(registration.refused.len(), 1);
         let refused = registration.refused.first();
         assert_eq!(refused.map(|refused| refused.name.as_str()), Some("run"));
-        assert_eq!(refused.map(|refused| refused.protocol.as_str()), Some("cli"));
+        assert_eq!(
+            refused.map(|refused| refused.protocol.as_str()),
+            Some("cli")
+        );
         Ok(())
     }
 
     /// The manual's versions travel with the registration.
     #[test]
-    fn the_manuals_versions_travel_with_the_registration(
-    ) -> Result<(), crate::domain::utcp::ManualError> {
+    fn the_manuals_versions_travel_with_the_registration()
+    -> Result<(), crate::domain::utcp::ManualError> {
         let manual = mixed_manual()?;
         let registration = register(&http_registration(), &manual);
         assert_eq!(registration.manual_version, "1.0.0");

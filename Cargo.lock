@@ -1611,6 +1611,7 @@ name = "protocol-droid-cli"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "protocol-droid",
  "reqwest",

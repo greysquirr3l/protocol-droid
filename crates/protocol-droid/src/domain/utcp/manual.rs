@@ -87,10 +87,9 @@ impl Manual {
     /// # Ok::<(), protocol_droid::domain::utcp::ManualError>(())
     /// ```
     pub fn parse(text: &str) -> Result<Self, ManualError> {
-        let value =
-            serde_json::from_str(text).map_err(|error| ManualError::InvalidJson {
-                detail: error.to_string(),
-            })?;
+        let value = serde_json::from_str(text).map_err(|error| ManualError::InvalidJson {
+            detail: error.to_string(),
+        })?;
         Self::from_value(&value)
     }
 

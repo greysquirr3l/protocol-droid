@@ -100,9 +100,7 @@ fn serve_body(manual: &Arc<Manual>) -> Response {
             )
                 .into_response()
         },
-        |body| {
-            (StatusCode::OK, [(CONTENT_TYPE, "application/json")], body).into_response()
-        },
+        |body| (StatusCode::OK, [(CONTENT_TYPE, "application/json")], body).into_response(),
     );
     // The same three the MCP router sets. A manual is a document the server
     // publishes about itself, and a browser that is told nothing will happily

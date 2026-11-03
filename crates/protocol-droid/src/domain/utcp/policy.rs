@@ -162,10 +162,10 @@ mod tests {
 
     /// An HTTP template that names the protocols it permits.
     fn template_with(permitted: Option<&[&str]>) -> CallTemplate {
-        let mut template = CallTemplate::http("provider", "https://api.example.com/utcp", HttpMethod::Get);
-        template.allowed_communication_protocols = permitted.map(|list| {
-            list.iter().map(|name| (*name).to_owned()).collect()
-        });
+        let mut template =
+            CallTemplate::http("provider", "https://api.example.com/utcp", HttpMethod::Get);
+        template.allowed_communication_protocols =
+            permitted.map(|list| list.iter().map(|name| (*name).to_owned()).collect());
         template
     }
 
@@ -207,7 +207,11 @@ mod tests {
     /// The permitted list comes back in a stable order.
     #[test]
     fn the_permitted_list_is_ordered() {
-        let policy = ProtocolPolicy::allowing(["mcp".to_owned(), "cli".to_owned(), "http".to_owned()]);
-        assert_eq!(policy.allowed(), ["cli".to_owned(), "http".to_owned(), "mcp".to_owned()]);
+        let policy =
+            ProtocolPolicy::allowing(["mcp".to_owned(), "cli".to_owned(), "http".to_owned()]);
+        assert_eq!(
+            policy.allowed(),
+            ["cli".to_owned(), "http".to_owned(), "mcp".to_owned()]
+        );
     }
 }

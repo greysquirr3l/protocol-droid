@@ -33,6 +33,9 @@ use protocol_droid::domain::ir::JsonObject;
 use serde::Serialize;
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 /// The `utcp` subcommands.
 #[derive(Debug, Args)]
 pub struct UtcpArgs {
@@ -320,9 +323,7 @@ pub async fn call_tool(
         ToolCall::Http(_) => "http",
         ToolCall::Mcp(_) => "mcp",
     };
-    let outcome = make_call(&plan)
-        .await
-        .context("the call failed")?;
+    let outcome = make_call(&plan).await.context("the call failed")?;
     let summary = CallSummary {
         tool: tool.to_owned(),
         transport: transport.to_owned(),

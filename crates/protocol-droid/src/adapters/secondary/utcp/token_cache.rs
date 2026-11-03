@@ -89,12 +89,7 @@ impl TokenKey {
     /// assert_eq!(key.client_id, "client");
     /// ```
     #[must_use]
-    pub fn of(
-        token_url: &str,
-        client_id: &str,
-        client_secret: &str,
-        scope: Option<&str>,
-    ) -> Self {
+    pub fn of(token_url: &str, client_id: &str, client_secret: &str, scope: Option<&str>) -> Self {
         Self {
             token_url: token_url.to_owned(),
             client_id: client_id.to_owned(),
@@ -195,7 +190,10 @@ impl TokenCache {
     pub async fn get(&self, key: &TokenKey) -> Option<String> {
         let slot = self.slot(key).await;
         let guard = slot.lock().await;
-        guard.as_ref().filter(|token| !token.is_stale(Instant::now())).map(|t| t.token.clone())
+        guard
+            .as_ref()
+            .filter(|token| !token.is_stale(Instant::now()))
+            .map(|t| t.token.clone())
     }
 
     /// Records a fetched token.
@@ -335,8 +333,18 @@ mod tests {
     #[tokio::test]
     async fn a_different_scope_is_a_different_token() {
         let cache = TokenCache::new();
-        let first = TokenCache::key("https://auth.example.com/token", "id", "secret", Some("read"));
-        let second = TokenCache::key("https://auth.example.com/token", "id", "secret", Some("write"));
+        let first = TokenCache::key(
+            "https://auth.example.com/token",
+            "id",
+            "secret",
+            Some("read"),
+        );
+        let second = TokenCache::key(
+            "https://auth.example.com/token",
+            "id",
+            "secret",
+            Some("write"),
+        );
         cache.put(&first, "read-token").await;
         assert!(cache.get(&second).await.is_none());
     }
@@ -345,8 +353,18 @@ mod tests {
     #[tokio::test]
     async fn the_same_credentials_share_a_token() {
         let cache = TokenCache::new();
-        let first = TokenCache::key("https://auth.example.com/token", "id", "secret", Some("read"));
-        let second = TokenCache::key("https://auth.example.com/token", "id", "secret", Some("read"));
+        let first = TokenCache::key(
+            "https://auth.example.com/token",
+            "id",
+            "secret",
+            Some("read"),
+        );
+        let second = TokenCache::key(
+            "https://auth.example.com/token",
+            "id",
+            "secret",
+            Some("read"),
+        );
         cache.put(&first, "shared-token").await;
         assert_eq!(cache.get(&second).await.as_deref(), Some("shared-token"));
     }

@@ -78,9 +78,11 @@ impl Auth {
             "api_key" => Ok(Self::ApiKey {
                 api_key: parse::required_str(object, "authentication block", "api_key")?,
                 var_name: parse::required_str(object, "authentication block", "var_name")?,
-                location: ApiKeyLocation::from_str(
-                    &parse::required_str(object, "authentication block", "location")?,
-                )?,
+                location: ApiKeyLocation::from_str(&parse::required_str(
+                    object,
+                    "authentication block",
+                    "location",
+                )?)?,
             }),
             "basic" => Ok(Self::Basic {
                 username: parse::required_str(object, "authentication block", "username")?,
@@ -89,7 +91,11 @@ impl Auth {
             "oauth2" => Ok(Self::OAuth2 {
                 token_url: parse::required_str(object, "authentication block", "token_url")?,
                 client_id: parse::required_str(object, "authentication block", "client_id")?,
-                client_secret: parse::required_str(object, "authentication block", "client_secret")?,
+                client_secret: parse::required_str(
+                    object,
+                    "authentication block",
+                    "client_secret",
+                )?,
                 scope: parse::optional_str(object, "scope"),
             }),
             _ => Ok(Self::Other {
@@ -160,9 +166,7 @@ impl ApiKeyLocation {
 }
 
 /// The `auth` block of a call template, as the document carries it.
-pub fn auth_from_map(
-    object: &Map<String, Value>,
-) -> Result<Option<Auth>, ManualError> {
+pub fn auth_from_map(object: &Map<String, Value>) -> Result<Option<Auth>, ManualError> {
     match object.get("auth") {
         None | Some(Value::Null) => Ok(None),
         Some(value) => Auth::from_value(value).map(Some),
@@ -187,10 +191,7 @@ pub fn auth_to_value(auth: &Option<Auth>) -> Option<Value> {
                 Value::String(location.as_str().to_owned()),
             );
         }
-        Auth::Basic {
-            username,
-            password,
-        } => {
+        Auth::Basic { username, password } => {
             object.insert("auth_type".to_owned(), Value::String("basic".to_owned()));
             object.insert("username".to_owned(), Value::String(username.clone()));
             object.insert("password".to_owned(), Value::String(password.clone()));

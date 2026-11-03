@@ -153,7 +153,9 @@ pub enum EndpointError {
         host: String,
     },
     /// A remote manual declares a tool at a loopback URL.
-    #[error("the manual was discovered at `{origin}`, so it may not declare a tool at the loopback address `{host}`")]
+    #[error(
+        "the manual was discovered at `{origin}`, so it may not declare a tool at the loopback address `{host}`"
+    )]
     RemoteDeclaresLoopback {
         /// Where the manual was discovered.
         origin: String,

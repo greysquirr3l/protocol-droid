@@ -30,7 +30,9 @@
 use std::collections::BTreeMap;
 
 use crate::domain::registry::Tool as RegistryTool;
-use crate::domain::utcp::call_template::{CallTemplate, McpConfig, McpServer, McpTransport, Transport};
+use crate::domain::utcp::call_template::{
+    CallTemplate, McpConfig, McpServer, McpTransport, Transport,
+};
 use crate::domain::utcp::{Manual, Tool, UtcpVersion};
 
 /// The revision of the manual format this build publishes.

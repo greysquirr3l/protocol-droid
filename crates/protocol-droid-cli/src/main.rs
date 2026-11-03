@@ -8,9 +8,9 @@
 use clap::{Parser, Subcommand};
 #[cfg(feature = "a2a")]
 use protocol_droid_cli::a2a_conformance;
-use protocol_droid_cli::{bridge, conformance, inspect, probe, record, replay};
 #[cfg(feature = "utcp")]
 use protocol_droid_cli::utcp;
+use protocol_droid_cli::{bridge, conformance, inspect, probe, record, replay};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
 ///

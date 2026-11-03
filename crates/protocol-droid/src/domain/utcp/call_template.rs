@@ -142,7 +142,8 @@ impl CallTemplate {
     /// present but is not the right shape.
     pub fn from_value(value: &Value) -> Result<Self, ManualError> {
         let object = parse::object(value, "call template")?;
-        let call_template_type = parse::required_str(object, "call template", "call_template_type")?;
+        let call_template_type =
+            parse::required_str(object, "call template", "call_template_type")?;
         let transport = match call_template_type.as_str() {
             "http" => Transport::Http(HttpTransport::from_object(object)?),
             "cli" => Transport::Cli(CliTransport::from_object(object)?),
@@ -390,12 +391,10 @@ impl McpTransport {
     /// [`ManualError::MissingField`] when the `config` block is absent, and
     /// [`ManualError::InvalidField`] when it is not the right shape.
     fn from_object(object: &Map<String, Value>) -> Result<Self, ManualError> {
-        let config = object
-            .get("config")
-            .ok_or(ManualError::MissingField {
-                what: "call template",
-                field: "config",
-            })?;
+        let config = object.get("config").ok_or(ManualError::MissingField {
+            what: "call template",
+            field: "config",
+        })?;
         Ok(Self {
             config: McpConfig::from_value(config)?,
         })
@@ -531,10 +530,7 @@ pub struct OtherTransport {
 /// Writes a call template back out in the shape the document carried it.
 pub fn template_to_value(template: &CallTemplate) -> Value {
     let mut object = Map::new();
-    object.insert(
-        "name".to_owned(),
-        Value::String(template.name.clone()),
-    );
+    object.insert("name".to_owned(), Value::String(template.name.clone()));
     object.insert(
         "call_template_type".to_owned(),
         Value::String(template.call_template_type().to_owned()),
@@ -613,10 +609,7 @@ fn write_http(object: &mut Map<String, Value>, http: &HttpTransport) {
         );
     }
     if let Some(body_field) = &http.body_field {
-        object.insert(
-            "body_field".to_owned(),
-            Value::String(body_field.clone()),
-        );
+        object.insert("body_field".to_owned(), Value::String(body_field.clone()));
     }
     if !http.header_fields.is_empty() {
         object.insert(
@@ -640,10 +633,7 @@ fn write_cli(object: &mut Map<String, Value>, cli: &CliTransport) {
                 .iter()
                 .map(|command| {
                     let mut step = Map::new();
-                    step.insert(
-                        "command".to_owned(),
-                        Value::String(command.command.clone()),
-                    );
+                    step.insert("command".to_owned(), Value::String(command.command.clone()));
                     step.insert(
                         "append_to_final_output".to_owned(),
                         Value::Bool(command.append_to_final_output),
@@ -669,10 +659,7 @@ fn write_cli(object: &mut Map<String, Value>, cli: &CliTransport) {
         Value::Bool(cli.inherit_env_vars),
     );
     if let Some(working_dir) = &cli.working_dir {
-        object.insert(
-            "working_dir".to_owned(),
-            Value::String(working_dir.clone()),
-        );
+        object.insert("working_dir".to_owned(), Value::String(working_dir.clone()));
     }
 }
 
@@ -692,11 +679,7 @@ fn write_mcp(object: &mut Map<String, Value>, mcp: &McpTransport) {
                 if !args.is_empty() {
                     entry.insert(
                         "args".to_owned(),
-                        Value::Array(
-                            args.iter()
-                                .map(|arg| Value::String(arg.clone()))
-                                .collect(),
-                        ),
+                        Value::Array(args.iter().map(|arg| Value::String(arg.clone())).collect()),
                     );
                 }
                 if !env.is_empty() {

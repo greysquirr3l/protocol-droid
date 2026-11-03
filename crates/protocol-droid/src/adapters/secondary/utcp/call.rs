@@ -61,7 +61,9 @@ impl CallOutcome {
     #[must_use]
     pub fn as_json(&self) -> Value {
         match self {
-            Self::Http { body, .. } => serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.clone())),
+            Self::Http { body, .. } => {
+                serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.clone()))
+            }
             Self::Mcp { result } => serde_json::from_str(result.as_str())
                 .unwrap_or_else(|_| Value::String(result.as_str().to_owned())),
         }
@@ -121,10 +123,7 @@ pub async fn call_with_cache(
 /// # Errors
 ///
 /// As [`call`].
-pub async fn call_http(
-    http: &HttpCall,
-    cache: &TokenCache,
-) -> Result<CallOutcome, UtcpError> {
+pub async fn call_http(http: &HttpCall, cache: &TokenCache) -> Result<CallOutcome, UtcpError> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -146,9 +145,12 @@ pub async fn call_http(
         detail: error.to_string(),
     })?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| UtcpError::Transport {
-        detail: error.to_string(),
-    })?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| UtcpError::Transport {
+            detail: error.to_string(),
+        })?;
     if !status.is_success() {
         return Err(UtcpError::Status {
             status: status.as_u16(),
@@ -168,8 +170,9 @@ fn method_of(method: &HttpMethod) -> reqwest::Method {
         HttpMethod::Put => reqwest::Method::PUT,
         HttpMethod::Patch => reqwest::Method::PATCH,
         HttpMethod::Delete => reqwest::Method::DELETE,
-        HttpMethod::Other(name) => reqwest::Method::from_bytes(name.as_bytes())
-            .unwrap_or(reqwest::Method::GET),
+        HttpMethod::Other(name) => {
+            reqwest::Method::from_bytes(name.as_bytes()).unwrap_or(reqwest::Method::GET)
+        }
     }
 }
 
@@ -188,21 +191,14 @@ async fn apply_auth(
         } => Ok(match location {
             ApiKeyLocation::Header => request.header(var_name, value),
             ApiKeyLocation::Query => request.query(&[(var_name.as_str(), value.as_str())]),
-            ApiKeyLocation::Cookie => request.header(
-                reqwest::header::COOKIE,
-                format!("{var_name}={value}"),
-            ),
+            ApiKeyLocation::Cookie => {
+                request.header(reqwest::header::COOKIE, format!("{var_name}={value}"))
+            }
         }),
-        HttpAuth::Basic {
-            username,
-            password,
-        } => {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(format!("{username}:{password}"));
-            Ok(request.header(
-                reqwest::header::AUTHORIZATION,
-                format!("Basic {encoded}"),
-            ))
+        HttpAuth::Basic { username, password } => {
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+            Ok(request.header(reqwest::header::AUTHORIZATION, format!("Basic {encoded}")))
         }
         HttpAuth::OAuth2 {
             token_url,
@@ -210,8 +206,8 @@ async fn apply_auth(
             client_secret,
             scope,
         } => {
-            let token = cached_token(cache, token_url, client_id, client_secret, scope.as_deref())
-                .await?;
+            let token =
+                cached_token(cache, token_url, client_id, client_secret, scope.as_deref()).await?;
             Ok(request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}")))
         }
     }
@@ -284,9 +280,12 @@ async fn fetch_token(
             detail: error.to_string(),
         })?;
     let status = response.status();
-    let text = response.text().await.map_err(|error| UtcpError::Transport {
-        detail: error.to_string(),
-    })?;
+    let text = response
+        .text()
+        .await
+        .map_err(|error| UtcpError::Transport {
+            detail: error.to_string(),
+        })?;
     if !status.is_success() {
         return Err(UtcpError::Token { detail: text });
     }
@@ -296,7 +295,9 @@ async fn fetch_token(
     let token = value
         .get("access_token")
         .and_then(Value::as_str)
-        .filter(|token| !token.is_empty() && token.chars().all(|character| character.is_ascii_graphic()))
+        .filter(|token| {
+            !token.is_empty() && token.chars().all(|character| character.is_ascii_graphic())
+        })
         .ok_or_else(|| UtcpError::Token {
             detail: "the answer carried no usable `access_token`".to_owned(),
         })?;
@@ -346,8 +347,8 @@ async fn open_client(
     auth: Option<&Auth>,
     cache: &TokenCache,
 ) -> Result<crate::application::client::Client, UtcpError> {
-    use crate::application::client::Client;
     use crate::adapters::secondary::stdio::ChildSpec;
+    use crate::application::client::Client;
 
     match server {
         McpServer::Http { url, headers, .. } => {
@@ -400,11 +401,11 @@ async fn open_client(
             if let Some(cwd) = cwd {
                 spec = spec.with_current_dir(cwd.clone());
             }
-            Ok(Client::connect_stdio(&spec).await.map_err(|error| {
-                UtcpError::Spawn {
+            Ok(Client::connect_stdio(&spec)
+                .await
+                .map_err(|error| UtcpError::Spawn {
                     detail: error.to_string(),
-                }
-            })?)
+                })?)
         }
         McpServer::Other(_) => Err(UtcpError::Connect(
             crate::application::client::ConnectError::Unsupported {
@@ -504,8 +505,8 @@ async fn manual_bearer(
             Ok(Some(api_key.clone()))
         }
         Some(Auth::Basic { username, password }) => {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(format!("{username}:{password}"));
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
             Ok(Some(format!("Basic {encoded}")))
         }
         Some(Auth::OAuth2 {
@@ -514,8 +515,8 @@ async fn manual_bearer(
             client_secret,
             scope,
         }) => {
-            let token = cached_token(cache, token_url, client_id, client_secret, scope.as_deref())
-                .await?;
+            let token =
+                cached_token(cache, token_url, client_id, client_secret, scope.as_deref()).await?;
             Ok(Some(format!("Bearer {token}")))
         }
         Some(Auth::Other { auth_type, .. }) => {
@@ -556,7 +557,12 @@ impl crate::application::client::bearer::BearerAuth for StaticBearer {
         _status: u16,
         _www_authenticate: Option<&'a str>,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), crate::application::client::bearer::BearerError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(), crate::application::client::bearer::BearerError>,
+                > + Send
+                + 'a,
+        >,
     > {
         Box::pin(async {
             Err(crate::application::client::bearer::BearerError(

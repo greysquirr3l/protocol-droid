@@ -213,11 +213,16 @@ impl ManualClient {
             && !content_type.starts_with("text/json")
             && !content_type.contains("+json")
         {
-            return Err(UtcpError::MediaType { found: content_type });
+            return Err(UtcpError::MediaType {
+                found: content_type,
+            });
         }
-        let text = response.text().await.map_err(|error| UtcpError::Transport {
-            detail: error.to_string(),
-        })?;
+        let text = response
+            .text()
+            .await
+            .map_err(|error| UtcpError::Transport {
+                detail: error.to_string(),
+            })?;
         Ok(Manual::parse(&text)?)
     }
 
@@ -345,9 +350,8 @@ mod tests {
     #[test]
     fn the_registration_permits_only_http_by_default() -> Result<(), UtcpError> {
         let client = ManualClient::new("https://api.example.com")?;
-        let policy = crate::domain::utcp::policy::ProtocolPolicy::for_registration(
-            client.registration(),
-        );
+        let policy =
+            crate::domain::utcp::policy::ProtocolPolicy::for_registration(client.registration());
         assert!(policy.permits("http"));
         assert!(!policy.permits("mcp"));
         assert!(!policy.permits("cli"));
@@ -360,11 +364,10 @@ mod tests {
     /// `mcp` is asking for `mcp` as well, not instead.
     #[test]
     fn the_caller_may_name_the_permitted_protocols() -> Result<(), UtcpError> {
-        let client = ManualClient::new("https://api.example.com")?
-            .allowing_protocols(["mcp".to_owned()]);
-        let policy = crate::domain::utcp::policy::ProtocolPolicy::for_registration(
-            client.registration(),
-        );
+        let client =
+            ManualClient::new("https://api.example.com")?.allowing_protocols(["mcp".to_owned()]);
+        let policy =
+            crate::domain::utcp::policy::ProtocolPolicy::for_registration(client.registration());
         assert!(policy.permits("http"));
         assert!(policy.permits("mcp"));
         assert!(!policy.permits("cli"));
