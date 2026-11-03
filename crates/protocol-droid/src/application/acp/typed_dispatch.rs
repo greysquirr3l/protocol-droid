@@ -433,6 +433,59 @@ mod tests {
         }
     }
 
+    /// A stub editor. The typed wrappers never call
+    /// the editor — the agent-to-editor direction is
+    /// the serving adapter's job — so the stub
+    /// refuses every call. It exists because the
+    /// context carries the editor port, and the
+    /// context is what the wrappers hand the
+    /// handler.
+    struct StubEditor;
+
+    impl super::super::editor::AcpEditorCaller for StubEditor {
+        fn request(
+            &self,
+            _method: crate::domain::acp::method::ClientMethod,
+            _params: Value,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                    Output = Result<
+                        Value,
+                        super::super::editor::AcpEditorError,
+                    >,
+                > + Send + '_,
+            >,
+        > {
+            Box::pin(async {
+                Err(super::super::editor::AcpEditorError::Disconnected {
+                    reason: "the stub editor has no connection".to_owned(),
+                })
+            })
+        }
+
+        fn notify(
+            &self,
+            _method: crate::domain::acp::method::ClientMethod,
+            _params: Value,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                    Output = Result<
+                        (),
+                        super::super::editor::AcpEditorError,
+                    >,
+                > + Send + '_,
+            >,
+        > {
+            Box::pin(async {
+                Err(super::super::editor::AcpEditorError::Disconnected {
+                    reason: "the stub editor has no connection".to_owned(),
+                })
+            })
+        }
+    }
+
     /// A handler that answers `initialize` with a
     /// hand-built response and `MethodNotImplemented`
     /// for everything else. Used to exercise the
@@ -441,12 +494,12 @@ mod tests {
     struct InitializeOnly;
 
     impl AcpRequestHandler for InitializeOnly {
-        fn dispatch(
-            &self,
+        fn dispatch<'a>(
+            &'a self,
             method: AgentMethod,
             params: Option<Value>,
-            _context: &AcpRequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Value, AcpError>> + Send + '_>> {
+            _context: &'a AcpRequestContext,
+        ) -> Pin<Box<dyn Future<Output = Result<Value, AcpError>> + Send + 'a>> {
             Box::pin(async move {
                 match method {
                     AgentMethod::Initialize => {
@@ -485,9 +538,10 @@ mod tests {
     }
 
     fn context() -> AcpRequestContext {
-        AcpRequestContext {
-            protocol_version: crate::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
-        }
+        AcpRequestContext::new(
+            crate::domain::acp::protocol_version::AcpProtocolVersion::CURRENT,
+            std::sync::Arc::new(StubEditor),
+        )
     }
 
     #[tokio::test]

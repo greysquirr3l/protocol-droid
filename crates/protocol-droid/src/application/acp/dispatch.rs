@@ -199,12 +199,94 @@ impl std::error::Error for AcpError {}
 /// id extracted from the params (where it is
 /// always present), the cancellation handle for
 /// the in-flight prompt.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AcpRequestContext {
     /// The negotiated ACP protocol version. The
     /// handler is responsible for decoding params
     /// against this version's wire shape.
     pub protocol_version: crate::domain::acp::protocol_version::AcpProtocolVersion,
+    /// The editor-facing port. The handler calls the
+    /// editor back through it — to ask the user for
+    /// permission, to read a file, to open a terminal.
+    ///
+    /// The serving adapter supplies it; a handler
+    /// reads it with [`editor`](Self::editor).
+    editor: std::sync::Arc<dyn super::editor::AcpEditorCaller>,
+}
+
+impl AcpRequestContext {
+    /// Build a context for a handler.
+    ///
+    /// The serving adapter calls this. A consumer
+    /// writing a handler's own test calls it too, with
+    /// a stub editor.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    ///
+    /// use protocol_droid::application::acp::{
+    ///     AcpEditorCaller, AcpEditorError, AcpRequestContext,
+    /// };
+    /// use protocol_droid::domain::acp::method::ClientMethod;
+    /// use protocol_droid::domain::acp::protocol_version::AcpProtocolVersion;
+    /// # use std::pin::Pin;
+    /// # use futures_core::Future;
+    /// # use serde_json::Value;
+    ///
+    /// struct StubEditor;
+    ///
+    /// impl AcpEditorCaller for StubEditor {
+    ///     fn request(
+    ///         &self,
+    ///         _method: ClientMethod,
+    ///         _params: Value,
+    ///     ) -> Pin<Box<dyn Future<Output = Result<Value, AcpEditorError>> + Send + '_>> {
+    ///         Box::pin(async { Err(AcpEditorError::Disconnected { reason: "stub".into() }) })
+    ///     }
+    ///
+    ///     fn notify(
+    ///         &self,
+    ///         _method: ClientMethod,
+    ///         _params: Value,
+    ///     ) -> Pin<Box<dyn Future<Output = Result<(), AcpEditorError>> + Send + '_>> {
+    ///         Box::pin(async { Err(AcpEditorError::Disconnected { reason: "stub".into() }) })
+    ///     }
+    /// }
+    ///
+    /// let context = AcpRequestContext::new(
+    ///     AcpProtocolVersion::CURRENT,
+    ///     Arc::new(StubEditor),
+    /// );
+    /// ```
+    pub fn new(
+        protocol_version: crate::domain::acp::protocol_version::AcpProtocolVersion,
+        editor: std::sync::Arc<dyn super::editor::AcpEditorCaller>,
+    ) -> Self {
+        Self {
+            protocol_version,
+            editor,
+        }
+    }
+
+    /// The editor-facing port.
+    ///
+    /// The handler calls the editor back through it.
+    pub fn editor(&self) -> &dyn super::editor::AcpEditorCaller {
+        self.editor.as_ref()
+    }
+}
+
+impl std::fmt::Debug for AcpRequestContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The editor port is a trait object; the
+        // context's identity is its protocol version.
+        formatter
+            .debug_struct("AcpRequestContext")
+            .field("protocol_version", &self.protocol_version)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The consumer's extension point for ACP
@@ -258,13 +340,13 @@ pub struct AcpRequestContext {
 /// struct InitializeOnlyAgent;
 ///
 /// impl AcpRequestHandler for InitializeOnlyAgent {
-///     fn dispatch(
-///         &self,
+///     fn dispatch<'a>(
+///         &'a self,
 ///         method: AgentMethod,
 ///         _params: Option<Value>,
-///         _context: &AcpRequestContext,
+///         _context: &'a AcpRequestContext,
 ///     ) -> Pin<
-///         Box<dyn Future<Output = Result<Value, AcpError>> + Send + '_>,
+///         Box<dyn Future<Output = Result<Value, AcpError>> + Send + 'a>,
 ///     > {
 ///         Box::pin(async move {
 ///             match method {
@@ -309,12 +391,25 @@ pub trait AcpRequestHandler: Send + Sync + 'static {
     /// Any [`AcpError`]. The serving adapter
     /// answers with the right JSON-RPC code;
     /// the handler never has to know the code.
-    fn dispatch(
-        &self,
+    ///
+    /// # The lifetime
+    ///
+    /// `&'a self` and `context: &'a AcpRequestContext`
+    /// share one lifetime, and the returned future
+    /// carries it. The handler needs the context
+    /// *inside* the future — that is the whole point
+    /// of the editor port, which the handler calls
+    /// while its `session/prompt` turn is in
+    /// flight. A signature that tied the future to
+    /// `&self` alone would forbid the handler from
+    /// borrowing the context, and the editor port
+    /// would be unreachable from inside the turn.
+    fn dispatch<'a>(
+        &'a self,
         method: AgentMethod,
         params: Option<Value>,
-        context: &AcpRequestContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, AcpError>> + Send + '_>>;
+        context: &'a AcpRequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, AcpError>> + Send + 'a>>;
 }
 
 #[cfg(test)]

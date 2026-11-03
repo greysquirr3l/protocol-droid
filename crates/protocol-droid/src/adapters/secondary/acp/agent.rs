@@ -98,6 +98,51 @@ use crate::domain::acp::method::AcpMethod;
 /// `send_request` future is awaiting.
 type PendingReplies = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<AcpReply, AcpPeerError>>>>>;
 
+/// The agent's outbound half: the ability to write
+/// envelopes to the editor.
+///
+/// Split out of [`AcpAgentPeer`] because the two
+/// halves want opposite ownership. The peer owns the
+/// *inbound* side and is consumed by the receive
+/// loop; the outbound side has to be callable from
+/// inside a handler, which runs while the receive
+/// loop is parked awaiting the next request. Cloning
+/// the handle is what lets a handler call the editor
+/// back without borrowing the peer the loop is
+/// holding.
+///
+/// Every method takes `&self`, so the handle can be
+/// shared across tasks without a lock.
+#[derive(Clone)]
+pub struct AcpAgentSender {
+    /// The writer task's input. The
+    /// application hands a fully-serialised
+    /// envelope to the channel; the writer
+    /// writes the bytes.
+    write_tx: mpsc::Sender<Vec<u8>>,
+    /// The pending-reply table for the agent's
+    /// own outbound requests. Shared with the
+    /// reader task, which routes replies back
+    /// through it.
+    pending: PendingReplies,
+    /// The next request id the peer allocates
+    /// for its own outbound requests.
+    ///
+    /// The agent's ids and the editor's ids are
+    /// independent counters, so they can collide:
+    /// the editor may send a request with id `1`
+    /// while the agent's own outbound request
+    /// also carries id `1`.
+    ///
+    /// The reader task tells the two apart by the
+    /// envelope's shape, not by the id: a reply
+    /// carries no `method`, a request always does.
+    /// The id space therefore does not have to be
+    /// shared or partitioned, and a collision is
+    /// harmless.
+    next_id: Arc<AtomicU64>,
+}
+
 /// A JSON-RPC 2.0 request the agent receives
 /// from the client.
 ///
@@ -145,38 +190,13 @@ pub struct AcpAgentPeer {
     /// [`AgentRequest`] with
     /// [`recv_request`][Self::recv_request].
     request_rx: mpsc::Receiver<AgentRequest>,
-    /// The writer task's input. The
-    /// application hands a fully-serialised
-    /// envelope to the channel; the writer
-    /// writes the bytes.
-    write_tx: mpsc::Sender<Vec<u8>>,
-    /// The pending-reply table for the agent's
-    /// own outbound requests. The reader task
-    /// holds a clone of the `Arc`; the
-    /// application holds this one.
-    ///
-    /// Keyed by the request id the peer
-    /// allocated. A reply arrives on the reader
-    /// task and is routed here by id, so the
-    /// caller's `send_request` future
-    /// completes.
-    pending: PendingReplies,
-    /// The next request id the peer allocates
-    /// for its own outbound requests.
-    ///
-    /// The agent's ids and the editor's ids are
-    /// independent counters, so they can collide:
-    /// the editor may send a request with id `1`
-    /// while the agent's own outbound request
-    /// also carries id `1`.
-    ///
-    /// The reader task tells the two apart by
-    /// the envelope's shape, not by the id: a
-    /// reply carries no `method`, a request
-    /// always does. The id space therefore does
-    /// not have to be shared or partitioned, and
-    /// a collision is harmless.
-    next_id: AtomicU64,
+    /// The agent's outbound half. The peer
+    /// keeps a copy so the application can
+    /// reply to the editor without going
+    /// through the sender handle, and the
+    /// handler can take a clone of it to call
+    /// the editor back.
+    sender: AcpAgentSender,
 }
 
 impl std::fmt::Debug for AcpAgentPeer {
@@ -187,88 +207,177 @@ impl std::fmt::Debug for AcpAgentPeer {
         // channels.
         formatter
             .debug_struct("AcpAgentPeer")
+            .field("next_id", &self.sender.next_id)
+            .finish_non_exhaustive()
+    }
+}
+
+
+async fn spawn_reader<R>(
+    mut reader: BufReader<R>,
+    request_tx: mpsc::Sender<AgentRequest>,
+    pending: PendingReplies,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let trimmed = line.trim_end_matches('\n');
+        if trimmed.is_empty() {
+            continue;
+        }
+        // A request carries an `id`; a
+        // notification does not. The agent
+        // peer hands the application only
+        // requests (the application is the
+        // one that wants the correlation);
+        // notifications from the client
+        // (e.g. `session/cancel`) are
+        // silently dropped today. A future
+        // increment exposes them through a
+        // second channel.
+        let value: Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value.get("id").is_none() {
+            // Notification. Not yet
+            // surfaced to the
+            // application.
+            continue;
+        }
+        // An envelope with an `id` is either a
+        // reply to one of the agent's own
+        // outbound requests or a request the
+        // editor sent.
+        //
+        // The two are told apart by the
+        // envelope's shape: a reply carries a
+        // `result` or an `error` and no
+        // `method`, a request always carries a
+        // `method`. The id is not part of the
+        // test — the agent's ids and the
+        // editor's ids are independent counters,
+        // so they can collide, and the shape
+        // rule holds either way.
+        let id = value.get("id").cloned().unwrap_or(Value::Null);
+        let is_reply = value.get("method").is_none();
+        if is_reply {
+            // A reply to the agent's own request.
+            // `id` is the agent's own counter, so
+            // it is a number; anything else is not
+            // a reply to anything the agent sent.
+            let Some(reply_id) = id.as_u64() else {
+                continue;
+            };
+            let Some(entry) = pending.lock().await.remove(&reply_id) else {
+                // A reply to an id the agent never
+                // sent, or a duplicate reply to one
+                // already answered. Nothing to
+                // complete.
+                continue;
+            };
+            let result = decode_reply(&value);
+            let _ = entry.send(result);
+            continue;
+        }
+        let method = value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let params = value.get("params").cloned().unwrap_or(Value::Null);
+        let request = AgentRequest { id, method, params };
+        if request_tx.send(request).await.is_err() {
+            // The application dropped
+            // the receiver; the agent
+            // is shutting down.
+            return;
+        }
+    }
+}
+
+/// Decode a JSON-RPC 2.0 reply envelope into the
+/// `Result` the pending sender expects.
+///
+/// A reply carries exactly one of `result` or
+/// `error`. A JSON-RPC error is a
+/// `Err(AcpPeerError::JsonRpc)`; a success is
+/// `Ok(AcpReply)`. An envelope with neither is
+/// ill-shaped.
+fn decode_reply(value: &Value) -> Result<AcpReply, AcpPeerError> {
+    if let Some(error) = value.get("error") {
+        let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return Err(AcpPeerError::JsonRpc { code, message });
+    }
+    let Some(result) = value.get("result") else {
+        return Err(AcpPeerError::IllShapedReply(
+            "the reply carried neither a `result` nor an `error`".to_owned(),
+        ));
+    };
+    Ok(AcpReply {
+        jsonrpc: value
+            .get("jsonrpc")
+            .and_then(Value::as_str)
+            .unwrap_or("2.0")
+            .to_owned(),
+        id: value.get("id").cloned().unwrap_or(Value::Null),
+        result: result.clone(),
+    })
+}
+
+async fn spawn_writer<W>(mut stdout: W, mut write_rx: mpsc::Receiver<Vec<u8>>)
+where
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    while let Some(bytes) = write_rx.recv().await {
+        if stdout.write_all(&bytes).await.is_err() {
+            return;
+        }
+        if stdout.flush().await.is_err() {
+            return;
+        }
+    }
+}
+
+fn io_other(message: &str) -> std::io::Error {
+    std::io::Error::other(message)
+}
+
+
+impl std::fmt::Debug for AcpAgentSender {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The `mpsc::Sender` does not implement
+        // `Debug`; format the sender by hand,
+        // omitting the channel.
+        formatter
+            .debug_struct("AcpAgentSender")
             .field("next_id", &self.next_id)
             .finish_non_exhaustive()
     }
 }
 
-impl AcpAgentPeer {
-    /// Construct an agent peer from a stdin
-    /// reader and a stdout writer. The
-    /// generic parameters let the test suite
-    /// pass `tokio::io::DuplexStream` halves
-    /// instead of a real `ChildStdin` /
-    /// `ChildStdout`.
-    ///
-    /// The peer spawns a reader task and a
-    /// writer task; the application
-    /// communicates with the peer through
-    /// the mpsc channels the reader and
-    /// writer tasks own. The half moves
-    /// happen at construction time; the
-    /// returned peer is `Send + 'static`.
-    pub fn from_stdio<R, W>(stdin: R, stdout: W) -> Self
-    where
-        R: tokio::io::AsyncRead + Unpin + Send + 'static,
-        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
-    {
-        let (request_tx, request_rx) = mpsc::channel::<AgentRequest>(32);
-        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(32);
-        let pending: PendingReplies = Arc::new(Mutex::new(HashMap::new()));
-
-        // The reader task. Owns the
-        // agent's stdin. Reads one line
-        // at a time, parses, and pushes
-        // the request to the application
-        // channel. The line is silently
-        // dropped on parse error (a
-        // misbehaving client cannot
-        // crash the agent's main loop).
-        tokio::spawn(spawn_reader(
-            BufReader::new(stdin),
-            request_tx,
-            Arc::clone(&pending),
-        ));
-
-        // The writer task. Owns the
-        // agent's stdout. Receives
-        // pre-serialised bytes and
-        // writes them with a trailing
-        // `\n`.
-        tokio::spawn(spawn_writer(stdout, write_rx));
-
-        Self {
-            request_rx,
-            write_tx,
-            pending,
-            next_id: AtomicU64::new(1),
-        }
-    }
-
-    /// Await the next [`AgentRequest`] the
-    /// client sent.
-    ///
-    /// Returns `None` when the reader task
-    /// is gone (the client closed its end
-    /// of the wire, or the pipe broke).
-    /// The application is expected to
-    /// shut down its handler loop on
-    /// `None`.
-    pub async fn recv_request(&mut self) -> Option<AgentRequest> {
-        self.request_rx.recv().await
-    }
-
+impl AcpAgentSender {
     /// Send a request to the editor and await its
     /// reply.
     ///
     /// This is the agent calling the editor — the
-    /// reverse of [`recv_request`](Self::recv_request).
-    /// The eleven `clientMethods` are all issued
-    /// this way: `session/request_permission` asks
-    /// the user's editor whether a tool call may
-    /// proceed, `fs/read_text_file` asks for a file's
-    /// contents, `terminal/create` asks for a
-    /// terminal.
+    /// reverse of the peer's receive path. The eleven
+    /// `clientMethods` are all issued this way:
+    /// `session/request_permission` asks the user's
+    /// editor whether a tool call may proceed,
+    /// `fs/read_text_file` asks for a file's contents,
+    /// `terminal/create` asks for a terminal.
     ///
     /// The wire form is
     /// `{ "jsonrpc": "2.0", "id": <id>,
@@ -302,17 +411,18 @@ impl AcpAgentPeer {
     ///
     /// ```no_run
     /// use protocol_droid::adapters::secondary::acp::AcpAgentPeer;
-    /// use protocol_droid::domain::acp::method::{AcpMethod, ClientMethod};
-    /// use serde_json::json;
+    /// use protocol_droid::domain::acp::method::{
+    ///     AcpMethod, ClientMethod,
+    /// };
     ///
     /// # async fn ask(peer: &AcpAgentPeer) -> Result<(), Box<dyn std::error::Error>> {
     /// let reply = peer
     ///     .send_request(
     ///         AcpMethod::Client(ClientMethod::FsReadTextFile),
-    ///         json!({ "path": "/tmp/notes.txt" }),
+    ///         serde_json::json!({"path": "/tmp/x"}),
     ///     )
     ///     .await?;
-    /// println!("contents: {}", reply.result);
+    /// # let _ = reply;
     /// # Ok(())
     /// # }
     /// ```
@@ -473,145 +583,224 @@ impl AcpAgentPeer {
     }
 }
 
-async fn spawn_reader<R>(
-    mut reader: BufReader<R>,
-    request_tx: mpsc::Sender<AgentRequest>,
-    pending: PendingReplies,
-) where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-        let trimmed = line.trim_end_matches('\n');
-        if trimmed.is_empty() {
-            continue;
-        }
-        // A request carries an `id`; a
-        // notification does not. The agent
-        // peer hands the application only
-        // requests (the application is the
-        // one that wants the correlation);
-        // notifications from the client
-        // (e.g. `session/cancel`) are
-        // silently dropped today. A future
-        // increment exposes them through a
-        // second channel.
-        let value: Value = match serde_json::from_str(trimmed) {
-            Ok(value) => value,
-            Err(_) => continue,
+impl AcpAgentPeer {
+    /// Construct an agent peer from a stdin
+    /// reader and a stdout writer. The
+    /// generic parameters let the test suite
+    /// pass `tokio::io::DuplexStream` halves
+    /// instead of a real `ChildStdin` /
+    /// `ChildStdout`.
+    ///
+    /// The peer spawns a reader task and a
+    /// writer task; the application
+    /// communicates with the peer through
+    /// the mpsc channels the reader and
+    /// writer tasks own. The half moves
+    /// happen at construction time; the
+    /// returned peer is `Send + 'static`.
+    pub fn from_stdio<R, W>(stdin: R, stdout: W) -> Self
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (request_tx, request_rx) = mpsc::channel::<AgentRequest>(32);
+        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(32);
+        let pending: PendingReplies = Arc::new(Mutex::new(HashMap::new()));
+        let sender = AcpAgentSender {
+            write_tx,
+            pending: Arc::clone(&pending),
+            next_id: Arc::new(AtomicU64::new(1)),
         };
-        if value.get("id").is_none() {
-            // Notification. Not yet
-            // surfaced to the
-            // application.
-            continue;
-        }
-        // An envelope with an `id` is either a
-        // reply to one of the agent's own
-        // outbound requests or a request the
-        // editor sent.
-        //
-        // The two are told apart by the
-        // envelope's shape: a reply carries a
-        // `result` or an `error` and no
-        // `method`, a request always carries a
-        // `method`. The id is not part of the
-        // test — the agent's ids and the
-        // editor's ids are independent counters,
-        // so they can collide, and the shape
-        // rule holds either way.
-        let id = value.get("id").cloned().unwrap_or(Value::Null);
-        let is_reply = value.get("method").is_none();
-        if is_reply {
-            // A reply to the agent's own request.
-            // `id` is the agent's own counter, so
-            // it is a number; anything else is not
-            // a reply to anything the agent sent.
-            let Some(reply_id) = id.as_u64() else {
-                continue;
-            };
-            let Some(entry) = pending.lock().await.remove(&reply_id) else {
-                // A reply to an id the agent never
-                // sent, or a duplicate reply to one
-                // already answered. Nothing to
-                // complete.
-                continue;
-            };
-            let result = decode_reply(&value);
-            let _ = entry.send(result);
-            continue;
-        }
-        let method = value
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        let params = value.get("params").cloned().unwrap_or(Value::Null);
-        let request = AgentRequest { id, method, params };
-        if request_tx.send(request).await.is_err() {
-            // The application dropped
-            // the receiver; the agent
-            // is shutting down.
-            return;
-        }
-    }
-}
 
-/// Decode a JSON-RPC 2.0 reply envelope into the
-/// `Result` the pending sender expects.
-///
-/// A reply carries exactly one of `result` or
-/// `error`. A JSON-RPC error is a
-/// `Err(AcpPeerError::JsonRpc)`; a success is
-/// `Ok(AcpReply)`. An envelope with neither is
-/// ill-shaped.
-fn decode_reply(value: &Value) -> Result<AcpReply, AcpPeerError> {
-    if let Some(error) = value.get("error") {
-        let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
-        let message = error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        return Err(AcpPeerError::JsonRpc { code, message });
-    }
-    let Some(result) = value.get("result") else {
-        return Err(AcpPeerError::IllShapedReply(
-            "the reply carried neither a `result` nor an `error`".to_owned(),
+        // The reader task. Owns the
+        // agent's stdin. Reads one line
+        // at a time, parses, and pushes
+        // the request to the application
+        // channel. The line is silently
+        // dropped on parse error (a
+        // misbehaving client cannot
+        // crash the agent's main loop).
+        tokio::spawn(spawn_reader(
+            BufReader::new(stdin),
+            request_tx,
+            Arc::clone(&pending),
         ));
-    };
-    Ok(AcpReply {
-        jsonrpc: value
-            .get("jsonrpc")
-            .and_then(Value::as_str)
-            .unwrap_or("2.0")
-            .to_owned(),
-        id: value.get("id").cloned().unwrap_or(Value::Null),
-        result: result.clone(),
-    })
-}
 
-async fn spawn_writer<W>(mut stdout: W, mut write_rx: mpsc::Receiver<Vec<u8>>)
-where
-    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    while let Some(bytes) = write_rx.recv().await {
-        if stdout.write_all(&bytes).await.is_err() {
-            return;
-        }
-        if stdout.flush().await.is_err() {
-            return;
-        }
+        // The writer task. Owns the
+        // agent's stdout. Receives
+        // pre-serialised bytes and
+        // writes them with a trailing
+        // `\n`.
+        tokio::spawn(spawn_writer(stdout, write_rx));
+
+        Self { request_rx, sender }
     }
-}
 
-fn io_other(message: &str) -> std::io::Error {
-    std::io::Error::other(message)
+    /// Await the next [`AgentRequest`] the
+    /// client sent.
+    ///
+    /// Returns `None` when the reader task
+    /// is gone (the client closed its end
+    /// of the wire, or the pipe broke).
+    /// The application is expected to
+    /// shut down its handler loop on
+    /// `None`.
+    pub async fn recv_request(&mut self) -> Option<AgentRequest> {
+        self.request_rx.recv().await
+    }
+
+    /// Send a request to the editor and await its
+    /// reply.
+    ///
+    /// This is the agent calling the editor — the
+    /// reverse of [`recv_request`](Self::recv_request).
+    /// The eleven `clientMethods` are all issued
+    /// this way: `session/request_permission` asks
+    /// the user's editor whether a tool call may
+    /// proceed, `fs/read_text_file` asks for a file's
+    /// contents, `terminal/create` asks for a
+    /// terminal.
+    ///
+    /// The wire form is
+    /// `{ "jsonrpc": "2.0", "id": <id>,
+    /// "method": ..., "params": ... }`. The peer
+    /// allocates the id, registers it in the
+    /// pending-reply table, and waits for the
+    /// editor's reply to arrive on the reader task.
+    ///
+    /// A reply carrying a JSON-RPC `error` is
+    /// returned as [`AcpPeerError::JsonRpc`]; a
+    /// successful reply is returned as an
+    /// [`AcpReply`]. The reply's `result` is the
+    /// raw JSON the editor sent — the caller
+    /// decodes it into the method's response type.
+    ///
+    /// # Errors
+    ///
+    /// - [`AcpPeerError::Decode`] — the params did
+    ///   not serialise, or the reply's `result` did
+    ///   not decode into the expected shape.
+    /// - [`AcpPeerError::Write`] — the writer task
+    ///   is gone, so the request never left the
+    ///   agent.
+    /// - [`AcpPeerError::JsonRpc`] — the editor
+    ///   answered with a JSON-RPC error.
+    /// - [`AcpPeerError::IllShapedReply`] — the
+    ///   editor's reply carried neither a `result`
+    ///   nor an `error`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use protocol_droid::adapters::secondary::acp::AcpAgentPeer;
+    /// use protocol_droid::domain::acp::method::{AcpMethod, ClientMethod};
+    /// use serde_json::json;
+    ///
+    /// # async fn ask(peer: &AcpAgentPeer) -> Result<(), Box<dyn std::error::Error>> {
+    /// let reply = peer
+    ///     .send_request(
+    ///         AcpMethod::Client(ClientMethod::FsReadTextFile),
+    ///         json!({ "path": "/tmp/notes.txt" }),
+    ///     )
+    ///     .await?;
+    /// println!("contents: {}", reply.result);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// The agent's outbound half.
+    ///
+    /// The handle is what lets a handler call the
+    /// editor back. A consumer's handler runs
+    /// while the serving loop is parked awaiting
+    /// the next request, so the handler cannot
+    /// borrow the peer the loop holds — but it
+    /// can hold a clone of this handle, and every
+    /// method on it takes `&self`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use protocol_droid::adapters::secondary::acp::AcpAgentPeer;
+    ///
+    /// # fn split(peer: &AcpAgentPeer) {
+    /// let sender = peer.sender();
+    /// # }
+    /// ```
+    pub fn sender(&self) -> AcpAgentSender {
+        self.sender.clone()
+    }
+
+    /// Send a success reply for a previously
+    /// received request.
+    ///
+    /// A convenience wrapper over
+    /// [`AcpAgentSender::send_reply`].
+    pub async fn send_reply(&self, id: Value, result: Value) -> Result<(), AcpPeerError> {
+        self.sender.send_reply(id, result).await
+    }
+
+    /// Send a JSON-RPC 2.0 error reply for a
+    /// previously received request.
+    ///
+    /// A convenience wrapper over
+    /// [`AcpAgentSender::send_error`].
+    pub async fn send_error(
+        &self,
+        id: Value,
+        code: i64,
+        message: impl Into<String>,
+    ) -> Result<(), AcpPeerError> {
+        self.sender.send_error(id, code, message).await
+    }
+
+    /// Send a notification to the editor.
+    ///
+    /// A convenience wrapper over
+    /// [`AcpAgentSender::send_notification`].
+    pub async fn send_notification<Params>(
+        &self,
+        method: &str,
+        params: Params,
+    ) -> Result<(), AcpPeerError>
+    where
+        Params: Serialize,
+    {
+        self.sender.send_notification(method, params).await
+    }
+
+    /// Send a request to the editor and await its
+    /// reply.
+    ///
+    /// A convenience wrapper over
+    /// [`AcpAgentSender::send_request`].
+    pub async fn send_request<P>(
+        &self,
+        method: AcpMethod,
+        params: P,
+    ) -> Result<AcpReply, AcpPeerError>
+    where
+        P: Serialize,
+    {
+        self.sender.send_request(method, params).await
+    }
+
+    /// Send a typed request to the editor and
+    /// await its typed reply.
+    ///
+    /// A convenience wrapper over
+    /// [`AcpAgentSender::send_typed_request`].
+    pub async fn send_typed_request<Req, Resp>(
+        &self,
+        method: AcpMethod,
+        params: Req,
+    ) -> Result<Resp, AcpPeerError>
+    where
+        Req: Serialize,
+        Resp: serde::de::DeserializeOwned,
+    {
+        self.sender.send_typed_request(method, params).await
+    }
 }
 
 #[cfg(test)]
@@ -968,6 +1157,86 @@ mod tests {
             .map_err(|_| AcpPeerError::Write(io_other("the editor task panicked")))??;
 
         drop(peer);
+        Ok(())
+    }
+
+    /// A cloned sender allocates its own request ids.
+    ///
+    /// The serving adapter hands the handler a clone
+    /// of the sender, so the handler's outbound
+    /// requests and the adapter's own must not share
+    /// an id — the pending-reply table is keyed by
+    /// id, and two requests with the same id would
+    /// mean one silently overwrites the other.
+    #[tokio::test]
+    async fn a_cloned_sender_allocates_its_own_request_ids() -> Result<(), AcpPeerError> {
+        let (client_end, agent_end) = duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client_end);
+        let (agent_read, agent_write) = tokio::io::split(agent_end);
+        let peer = AcpAgentPeer::from_stdio(agent_read, agent_write);
+
+        let first = peer.sender();
+        let second = peer.sender();
+
+        // The peer sends a request, so its id and the
+        // clone's id have to differ.
+        let client_write = client_write;
+        let peer_request = tokio::spawn(async move {
+            let mut reader = BufReader::new(client_read);
+            let first_line = read_line_from_mut(&mut reader).await?;
+            let second_line = read_line_from_mut(&mut reader).await?;
+            Ok::<(String, String), AcpPeerError>((first_line, second_line))
+        });
+
+        // The two senders each ask the editor for a
+        // file. The sends are spawned because
+        // `send_request` waits for a reply and no
+        // reply ever arrives — the test is about the
+        // ids on the wire, not about the replies.
+        let first_send = tokio::spawn(async move {
+            let _ = first
+                .send_request(
+                    AcpMethod::Client(ClientMethod::FsReadTextFile),
+                    serde_json::json!({"path": "/tmp/one"}),
+                )
+                .await;
+        });
+        let second_send = tokio::spawn(async move {
+            let _ = second
+                .send_request(
+                    AcpMethod::Client(ClientMethod::FsReadTextFile),
+                    serde_json::json!({"path": "/tmp/two"}),
+                )
+                .await;
+        });
+
+        let (first_line, second_line) = peer_request.await.map_err(|error| {
+            AcpPeerError::Write(std::io::Error::other(error.to_string()))
+        })??;
+
+        let first_id = serde_json::from_str::<Value>(&first_line)
+            .map_err(AcpPeerError::Decode)?
+            .get("id")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let second_id = serde_json::from_str::<Value>(&second_line)
+            .map_err(AcpPeerError::Decode)?
+            .get("id")
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        assert!(
+            first_id != second_id,
+            "two senders must not allocate the same id: {first_id} and {second_id}"
+        );
+
+        // The two sends are still waiting for a reply
+        // that will never come. Abort them so the
+        // test does not leave tasks running.
+        first_send.abort();
+        second_send.abort();
+
+        drop(client_write);
         Ok(())
     }
 
