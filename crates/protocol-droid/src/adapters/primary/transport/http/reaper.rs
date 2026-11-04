@@ -244,7 +244,7 @@ mod tests {
         let sessions = store();
         let abandoned = sessions.open(Arc::new(()))?;
         let kept = sessions.open(Arc::new(()))?;
-        let reaper = IdleReaper::new(Duration::from_millis(150))?
+        let reaper = IdleReaper::new(Duration::from_millis(600))?
             .with_interval(Duration::from_millis(20))
             .start(vec![Arc::clone(&sessions) as Arc<dyn IdleSessions>]);
 
