@@ -22,7 +22,9 @@
 //! and an `acp_agent` example.
 
 pub(crate) mod dispatch;
+pub(crate) mod editor;
 pub(crate) mod typed_dispatch;
 
 pub use dispatch::{AcpError, AcpRequestContext, AcpRequestHandler};
+pub use editor::{AcpEditorCaller, AcpEditorError};
 pub use typed_dispatch::AcpRequestHandlerExt;

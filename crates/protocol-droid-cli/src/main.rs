@@ -8,6 +8,8 @@
 use clap::{Parser, Subcommand};
 #[cfg(feature = "a2a")]
 use protocol_droid_cli::a2a_conformance;
+#[cfg(feature = "utcp")]
+use protocol_droid_cli::utcp;
 use protocol_droid_cli::{bridge, conformance, inspect, probe, record, replay};
 
 /// Top-level command-line contract for the `protocol-droid` binary.
@@ -100,6 +102,17 @@ enum Command {
     /// writes a per-frame `forwarded` / `downgraded` / `refused` verdict
     /// to stdout. A human summary lands on stderr.
     Replay(replay::ReplayArgs),
+    /// Read a provider's manual, and call a tool it describes.
+    ///
+    /// `utcp manual` reads the manual at `GET /utcp` on the provider's
+    /// origin and lists the tools in it. `utcp call` finds one of those
+    /// tools and makes the call it describes.
+    ///
+    /// The specification's `allowed_communication_protocols` is the
+    /// `--allow-protocol` flag. Without it, a manual read over HTTP may
+    /// only have HTTP tools.
+    #[cfg(feature = "utcp")]
+    Utcp(utcp::UtcpArgs),
     /// Record bridged traffic as a redacted JSONL session log.
     ///
     /// Wraps a bridge's input and output so every frame that crosses is
@@ -149,6 +162,8 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
         Command::Probe(args) => probe::run(&args).await,
         Command::Replay(args) => replay::run(&args).await,
         Command::Record(args) => record::run(&args).await,
+        #[cfg(feature = "utcp")]
+        Command::Utcp(args) => utcp::run(&args).await,
     }
 }
 

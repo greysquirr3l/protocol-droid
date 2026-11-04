@@ -492,6 +492,47 @@ A request arriving before the client's `initialize` is answered with a typed
 error, not forwarded. There is no revision to lower it to yet, and guessing one
 would be exactly the silent corruption the IR exists to prevent.
 
+### The cross-protocol bridge — two adapters, one composition
+
+A bridge between two *different* protocols (an MCP client in front of an A2A
+agent) has the same job and one extra step: the two sides do not share a
+vocabulary. The seam is `application/bridge/protocol_adapter.rs`:
+
+```rust
+pub trait ProtocolAdapter: Send + Sync + Debug {
+    fn side(&self) -> ProtocolSide;
+    fn ir_method(&self, wire_method: &str) -> Option<IrMethod>;
+    fn wire_method(&self, ir_method: &IrMethod) -> Option<&'static str>;
+    fn request_shape(&self) -> &'static str;
+    fn reply_shape(&self) -> &'static str;
+    fn lift_request(&self, …) -> Result<IrCall, CrossProtocolError>;
+    fn lower_request(&self, …) -> Result<WireRequest, CrossProtocolError>;
+    fn lift_reply(&self, …) -> Result<IrOutcome, CrossProtocolError>;
+    fn lower_reply(&self, …) -> Result<Value, CrossProtocolError>;
+}
+```
+
+An adapter knows one protocol and nothing about the other. `McpAdapter` knows
+that `tools/call` carries a `name` and an `arguments` object; `A2aAdapter`
+knows that `SendMessage` carries a message whose parts hold the payload and a
+`metadata.bridge_skill` entry naming the skill. Neither mentions the other.
+
+`ComposedCodec` puts two of them together — a downstream adapter and an
+upstream adapter — and does the one thing both directions need: lift on the way
+out, lower on the way back. The IR sits between them, so the translation is
+`lift ∘ lower` over data rather than a per-pair function.
+
+This is the difference between one translator and N. The first version of this
+bridge was a pair of functions, `A2A → MCP` and `MCP → A2A`, written out in
+full. A third protocol would have needed four more. Now it needs one adapter,
+and the pair it does not know about works the same way.
+
+The direction is fixed at construction: `ComposedCodec::new(downstream,
+upstream)` names which side is which, and `CrossBridgePeer` reads the
+downstream side from the codec rather than being told — so a caller cannot
+hand the bridge a side that disagrees with the codec about which side was
+which.
+
 ---
 
 ## Transports

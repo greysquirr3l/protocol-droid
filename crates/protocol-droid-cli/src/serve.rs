@@ -168,21 +168,31 @@ impl Upstream for ConfiguredUpstream {
 ///
 /// Propagates what the session store, the router, or the socket reported. A
 /// client that cannot be reached upstream is reported on that client's own
-/// stream and does not stop the server.
+/// stream, on stderr for the operator, and does not stop the server.
+///
+/// `idle_timeout` is how long a session may go unused before it is dropped;
+/// zero keeps sessions until the client closes them.
 pub async fn listen(
     upstream: &TransportSpec,
     addr: SocketAddr,
     versions: &SupportedVersions,
     policy: DegradePolicy,
+    idle_timeout: std::time::Duration,
 ) -> anyhow::Result<()> {
+    use protocol_droid::adapters::primary::transport::http::reaper::IdleReaper;
     use protocol_droid::adapters::primary::transport::http::{
-        BridgeSession, HttpBridge, SecurityHeaders, ServerConfig, SessionStore,
+        BridgeSession, HttpBridge, SecurityHeaders, ServerConfig, SessionReport, SessionStore,
     };
+    use protocol_droid::adapters::secondary::clock::MonotonicClock;
     use protocol_droid::adapters::secondary::id_source::RandomIds;
 
     let config = ServerConfig::new()?.with_security(SecurityHeaders::default());
-    let sessions: Arc<SessionStore<BridgeSession>> =
-        Arc::new(SessionStore::new(Arc::new(RandomIds::new()?)));
+    let ids = Arc::new(RandomIds::new()?);
+    let sessions: Arc<SessionStore<BridgeSession>> = Arc::new(if idle_timeout.is_zero() {
+        SessionStore::new(ids)
+    } else {
+        SessionStore::with_idle_reaper(ids, Arc::new(MonotonicClock::new()))
+    });
 
     let bridge = HttpBridge::new(
         config,
@@ -197,7 +207,18 @@ pub async fn listen(
         ),
         policy,
         WireToolResults,
-    )?;
+    )?
+    .with_session_report(SessionReport::new(|error| {
+        eprintln!("bridge session ended: {error:#}");
+    }));
+    let bridge = if idle_timeout.is_zero() {
+        bridge
+    } else {
+        bridge.with_idle_reaper(
+            IdleReaper::new(idle_timeout)
+                .map_err(|error| anyhow::anyhow!("--idle-timeout: {error}"))?,
+        )?
+    };
 
     // Bound before anything is announced, because port `0` is legal and the
     // address printed has to be the one a client can actually reach.

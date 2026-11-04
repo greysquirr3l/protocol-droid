@@ -105,7 +105,7 @@ paths = [
 # the standard statement of atomicity with respect to a key. Neither is filler.
 #
 # **"underscores" — 1 finding, and it is the subject of the sentence.**
-# crates/protocol-droid-schema/src/generator/naming.rs is about the conversion
+# crates/protocol-droid-schema/src/generator/emit.rs is about the conversion
 # of JSON names containing `.` and `/` into Rust identifiers, which "become
 # underscores". The word names the character.
 #

@@ -87,6 +87,7 @@ pub mod limits;
 mod listen;
 pub mod precondition;
 pub mod protected_resource;
+pub mod reaper;
 mod refusal;
 mod resume;
 pub mod router;
@@ -109,7 +110,7 @@ pub const JSON_MEDIA_TYPE: &str = "application/json";
 pub use auth::{
     Anonymous, AuthPolicy, Authenticator, Credentials, OAuthAuthenticator, SystemClock, WallClock,
 };
-pub use bridge::{Bound, BridgeServeError, BridgeSession, HttpBridge};
+pub use bridge::{Bound, BridgeServeError, BridgeSession, HttpBridge, SessionReport};
 pub use config::{Endpoint, EndpointError, SecurityHeaders, ServerConfig, Streaming};
 pub use exchange::{Answer, ExchangeTable, HttpExchange};
 pub use frame_payload::FramePayload;

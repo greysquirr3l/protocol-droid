@@ -49,13 +49,13 @@
 //! client is still driving, and a server that evicts it produces a `404` on
 //! the *next* request — which is exactly what an evicted-after-DELETE
 //! session already produces. The two are not distinguishable from the
-//! client and were never going to be. A deployment that wants a bound
-//! constructs the store with
-//! [`with_idle_reaper`](SessionStore::with_idle_reaper) and calls
-//! [`reap_idle`](SessionStore::reap_idle) from a background task with the
-//! operator-chosen `max_age`; the store itself does not start a task,
-//! because a background task started inside a constructor is one a
-//! deployment cannot stop.
+//! client and were never going to be. The store itself does not start a
+//! task, because a background task started inside a constructor is one a
+//! deployment cannot stop. [`HttpBuilder`](super::HttpBuilder) builds its
+//! stores with [`with_idle_reaper`](SessionStore::with_idle_reaper) and starts
+//! an [`IdleReaper`](super::reaper::IdleReaper) for the length of the serve
+//! call; a deployment that assembles its own router constructs the store the
+//! same way and runs [`reap_idle`](SessionStore::reap_idle) itself.
 //!
 //! Note what that leaves out: unlike
 //! [`InMemoryIdempotencyStore`](crate::adapters::secondary::InMemoryIdempotencyStore),
@@ -426,6 +426,14 @@ impl<S> SessionStore<S> {
             }
         }
         Ok(reaped)
+    }
+
+    /// Whether this store records when each session was last used, which is
+    /// what [`reap_idle`](Self::reap_idle) needs. A store built through
+    /// [`new`](Self::new) does not, and reaping it does nothing.
+    #[must_use]
+    pub const fn reaps_idle(&self) -> bool {
+        self.clock.is_some()
     }
 
     /// How many sessions are open.

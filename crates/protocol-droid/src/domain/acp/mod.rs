@@ -22,7 +22,22 @@
 //!   [`initialize::InitializeResponse`] — the
 //!   `initialize` round-trip, plus the
 //!   `ClientCapabilities` / `AgentCapabilities`
-//!   shapes the request/response carry.
+//!   shapes the request/response carry, the
+//!   [`initialize::AuthMethod`] union, and the
+//!   [`initialize::AuthenticateRequest`] /
+//!   [`initialize::AuthenticateResponse`] pair.
+//! - [`session`] — the session lifecycle types
+//!   (`session/new`, `session/load`, `session/prompt`,
+//!   `session/list`, `session/delete`, `session/resume`,
+//!   `session/close`, `logout`, `session/set_mode`).
+//! - [`config`] — the session configuration family:
+//!   the [`config::SessionConfigOption`] the agent
+//!   advertises and the
+//!   [`config::SetSessionConfigOptionRequest`] /
+//!   [`config::SetSessionConfigOptionResponse`] pair.
+//! - [`notification`] and [`tool_call`] — the
+//!   notification and tool-call streaming types.
+//! - [`content`] — the content blocks a prompt carries.
 //! - [`method::AcpMethod`] — the 25 methods the v1.25.0
 //!   `meta.json` lists (13 agent, 11 client, 1 protocol).
 //! - [`feature::AcpFeature`] and [`feature::AcpFeatureProfile`]
@@ -30,18 +45,15 @@
 //!
 //! What is not yet here:
 //!
-//! - The session lifecycle types (`session/new`,
-//!   `session/load`, `session/prompt`, `session/cancel`,
-//!   `session/list`, `session/delete`, `session/resume`,
-//!   `session/close`, `logout`).
-//! - The slash-separated method params and the streaming
-//!   update model.
 //! - The `SessionCapabilities`, `ClientSessionCapabilities`,
 //!   `ElicitationCapabilities`, and the rest of the
 //!   capability sub-types the schema names.
-//! - The application-layer dispatch and the per-revision
-//!   wire codec.
-//! - The stdio transport adapter.
+//! - The per-revision wire codec. The value objects here
+//!   carry the v1.25.0 shapes directly.
+//! - The client-to-agent half of the protocol — the
+//!   editor side of `session/request_permission`,
+//!   `session/update` and the rest of the 11 client
+//!   methods.
 //!
 //! This module is feature-gated behind `acp-experimental` at
 //! the crate level. The ACP module is post-MVP and
@@ -50,6 +62,7 @@
 
 #![cfg(feature = "acp-experimental")]
 
+pub mod config;
 pub mod content;
 pub mod feature;
 pub mod implementation;

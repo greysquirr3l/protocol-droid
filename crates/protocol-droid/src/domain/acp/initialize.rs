@@ -35,6 +35,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
+
 use super::implementation::Implementation;
 use super::protocol_version::AcpProtocolVersion;
 
@@ -215,23 +217,85 @@ pub struct McpCapabilities {
     pub sse: bool,
 }
 
-/// The auth method the agent advertises. The schema
-/// is a discriminated union (`AuthMethodAgent` /
-/// `AuthMethodTerminal`); the typed form is the
-/// same `enum` shape.
+/// A unique identifier for an authentication method.
 ///
-/// The schema's `$defs.AuthMethod` definition is
-/// exhaustive over the two variants; a `null`
-/// payload is not a valid `AuthMethod`.
+/// The schema's `AuthMethodId` is `type: "string"` —
+/// opaque to the protocol. The newtype makes the API
+/// self-documenting and ties an `authenticate` request to
+/// the method the agent advertised.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AuthMethodId(pub String);
+
+impl AuthMethodId {
+    /// An `AuthMethodId` from any string the schema
+    /// accepts.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// The inner string, borrowed.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for AuthMethodId {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+/// The auth method the agent advertises.
+///
+/// The schema models this as a two-variant union: a
+/// `terminal` method, and an *agent* method that is the
+/// default when the `type` discriminator is absent. The
+/// typed form keeps both, but the agent arm is the
+/// fallback rather than a tagged variant — so
+/// `{"id": "...", "name": "..."}` with no `type` reads
+/// as an agent method, exactly as the schema says.
+///
+/// The terminal arm is tried first, so a payload that
+/// *claims* to be a terminal method but does not match
+/// the terminal shape is an error rather than a silent
+/// downgrade to an agent method. The
+/// `deserialize_agent_auth_method_fallback` guard
+/// enforces that: an unknown `type` is an agent method,
+/// but a known `type` that fails its own schema is not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthMethod {
-    /// An agent-to-agent auth method.
-    #[serde(rename = "agent")]
-    Agent(AuthMethodAgent),
     /// A terminal-based auth method.
-    #[serde(rename = "terminal")]
     Terminal(AuthMethodTerminal),
+    /// An agent-to-agent auth method. The default when
+    /// the payload carries no `type`.
+    #[serde(untagged, deserialize_with = "deserialize_agent_auth_method_fallback")]
+    Agent(AuthMethodAgent),
+}
+
+/// Decodes the agent arm of [`AuthMethod`].
+///
+/// The arm is the fallback, so it has to reject one
+/// thing by hand: a payload that says `type:
+/// "terminal"` but does not match the terminal schema.
+/// Without the guard such a payload would fall through
+/// to the agent arm and be reported as an agent method —
+/// the peer asked for a terminal login and got an
+/// agent login instead.
+fn deserialize_agent_auth_method_fallback<'de, D>(
+    deserializer: D,
+) -> Result<AuthMethodAgent, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("terminal") {
+        return Err(serde::de::Error::custom(
+            "known authentication method `terminal` did not match its schema",
+        ));
+    }
+    AuthMethodAgent::deserialize(value).map_err(serde::de::Error::custom)
 }
 
 /// The `agent` variant of [`AuthMethod`].
@@ -241,11 +305,15 @@ pub struct AuthMethodAgent {
     /// The auth method id. A string the agent and
     /// editor both recognise (e.g. an OAuth client
     /// id).
-    pub id: String,
+    pub id: AuthMethodId,
     /// A human-readable display name.
     pub name: String,
     /// A human-readable description.
-    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Per-implementation metadata.
+    #[serde(default, rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
 }
 
 /// The `terminal` variant of [`AuthMethod`].
@@ -257,11 +325,53 @@ pub struct AuthMethodTerminal {
     /// carries an `id`; the value is opaque to
     /// the wire and meaningful only to the
     /// agent and editor that negotiated it.
-    pub id: String,
+    pub id: AuthMethodId,
     /// A human-readable display name.
     pub name: String,
     /// A human-readable description.
-    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Additional arguments to append to the agent
+    /// invocation for terminal auth.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Additional environment variables for the agent
+    /// invocation. These override same-named variables
+    /// in the base launch configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Per-implementation metadata.
+    #[serde(default, rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
+}
+
+/// The `authenticate` request body.
+///
+/// Names the auth method to use — one of the ids the
+/// agent advertised in its `initialize` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticateRequest {
+    /// The id of the authentication method to use.
+    /// Must be one of the methods advertised in the
+    /// initialize response.
+    pub method_id: AuthMethodId,
+    /// Per-implementation metadata.
+    #[serde(default, rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
+}
+
+/// The `authenticate` response body.
+///
+/// The schema carries no fields beyond the metadata
+/// block — the outcome of the authentication is the
+/// absence of an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticateResponse {
+    /// Per-implementation metadata.
+    #[serde(default, rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -344,21 +454,25 @@ mod tests {
     }
 
     /// The `AuthMethod` discriminator is `type`
-    /// on the wire, with the two variants
-    /// `agent` and `terminal`. A `null` is not
-    /// a valid `AuthMethod`; the round-trip is
-    /// exhaustive over the two variants.
+    /// on the wire. The schema says an auth method
+    /// with no `type` is an *agent* method, so the
+    /// agent arm is the fallback and serialises
+    /// without a discriminator.
     #[test]
     fn auth_method_discriminator_is_the_type_field() -> Result<(), Failure> {
         let agent = AuthMethod::Agent(AuthMethodAgent {
-            id: "test".to_owned(),
+            id: AuthMethodId::new("test"),
             name: "Test".to_owned(),
-            description: "An auth method".to_owned(),
+            description: Some("An auth method".to_owned()),
+            meta: BTreeMap::new(),
         });
         let terminal = AuthMethod::Terminal(AuthMethodTerminal {
-            id: "dev-terminal".to_owned(),
+            id: AuthMethodId::new("dev-terminal"),
             name: "Terminal".to_owned(),
-            description: "A terminal auth method".to_owned(),
+            description: Some("A terminal auth method".to_owned()),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            meta: BTreeMap::new(),
         });
         let agent_value = serde_json::to_value(&agent)?;
         let terminal_value = serde_json::to_value(&terminal)?;
@@ -366,8 +480,84 @@ mod tests {
         let terminal_type = terminal_value
             .get("type")
             .and_then(serde_json::Value::as_str);
-        assert_eq!(agent_type, Some("agent"));
+        assert_eq!(agent_type, None);
         assert_eq!(terminal_type, Some("terminal"));
+        Ok(())
+    }
+
+    /// A payload with no `type` reads as the agent
+    /// method — the schema's "agent is the default"
+    /// rule. A payload that *names* a type the schema
+    /// does not know also reads as an agent method,
+    /// because the agent arm is the fallback.
+    #[test]
+    fn auth_method_without_a_type_is_an_agent_method() -> Result<(), Failure> {
+        let value = serde_json::json!({"id": "oauth", "name": "OAuth"});
+        let method: AuthMethod = serde_json::from_value(value)?;
+        let AuthMethod::Agent(agent) = method else {
+            return Err(Failure::Other("expected the agent arm".to_owned()));
+        };
+        assert_eq!(agent.id, AuthMethodId::new("oauth"));
+        assert_eq!(agent.name, "OAuth");
+        assert_eq!(agent.description, None);
+
+        let value = serde_json::json!({"type": "unknown", "id": "oauth", "name": "OAuth"});
+        let method: AuthMethod = serde_json::from_value(value)?;
+        assert!(matches!(method, AuthMethod::Agent(_)));
+        Ok(())
+    }
+
+    /// A payload that says `type: "terminal"` but
+    /// does not match the terminal schema is an
+    /// error, not a silent downgrade to an agent
+    /// method. The peer asked for a terminal login
+    /// and must not be handed an agent login.
+    #[test]
+    fn a_malformed_terminal_method_does_not_become_an_agent_method() {
+        let value = serde_json::json!({
+            "type": "terminal",
+            "id": "t",
+            "name": "T",
+            "args": "not-an-array",
+        });
+        let result: Result<AuthMethod, _> = serde_json::from_value(value);
+        assert!(result.is_err());
+    }
+
+    /// The terminal arm keeps the `args` and `env`
+    /// the schema names, and round-trips with them.
+    #[test]
+    fn a_terminal_method_carries_its_args_and_env() -> Result<(), Failure> {
+        let value = serde_json::json!({
+            "type": "terminal",
+            "id": "t",
+            "name": "T",
+            "args": ["--flag"],
+            "env": {"KEY": "value"},
+        });
+        let method: AuthMethod = serde_json::from_value(value.clone())?;
+        let AuthMethod::Terminal(ref terminal) = method else {
+            return Err(Failure::Other("expected the terminal arm".to_owned()));
+        };
+        assert_eq!(terminal.args, vec!["--flag".to_owned()]);
+        assert_eq!(terminal.env.get("KEY").map(String::as_str), Some("value"));
+        let back = serde_json::to_value(&method)?;
+        assert_eq!(back, value);
+        Ok(())
+    }
+
+    /// The `authenticate` request carries the id of
+    /// one of the methods the agent advertised, and
+    /// round-trips.
+    #[test]
+    fn authenticate_request_round_trips() -> Result<(), Failure> {
+        let request = AuthenticateRequest {
+            method_id: AuthMethodId::new("dev-terminal"),
+            meta: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&request)?;
+        let round_tripped: AuthenticateRequest = serde_json::from_str(&json)?;
+        assert_eq!(round_tripped, request);
         Ok(())
     }
 
@@ -413,9 +603,12 @@ mod tests {
             protocol_version: AcpProtocolVersion::CURRENT,
             agent_capabilities: AgentCapabilities::default(),
             auth_methods: Some(vec![AuthMethod::Terminal(AuthMethodTerminal {
-                id: "dev-terminal".to_owned(),
+                id: AuthMethodId::new("dev-terminal"),
                 name: "Terminal".to_owned(),
-                description: "Sign in via the terminal".to_owned(),
+                description: Some("Sign in via the terminal".to_owned()),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                meta: BTreeMap::new(),
             })]),
             agent_info: None,
         };

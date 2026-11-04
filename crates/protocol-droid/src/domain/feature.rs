@@ -25,11 +25,31 @@
 //!
 //! # Every row cites its changelog
 //!
-//! The doc comment on each variant names the revision and changelog entry that
-//! introduced or removed it. A row without a citation is a failing task, and
-//! `every_row_is_cited_and_ordered` enforces the ordering half of that
-//! mechanically: a removal must be attributed to a revision strictly after the
-//! one that added it.
+//! Each row of [`FEATURES`] carries a [`citation`](FeatureSpec::citation): the
+//! URL of the changelog of the revision that introduced the feature, or — for
+//! the two features whose introducing changelog names no entry for them — the
+//! specification page that documents them at that revision. `2024-11-05`
+//! published no changelog at all, so its rows cite the specification page
+//! directly.
+//!
+//! The same URL appears in the doc comment on the matching [`Feature`]
+//! variant, which is where a citation is meant to be read. Three tests hold
+//! the matrix to that:
+//!
+//! - `every_row_cites_its_changelog` checks that every row's citation is a
+//!   well-formed URL naming the revision the row is attributed to.
+//! - `every_variant_doc_comment_carries_its_citation` reads this file back and
+//!   checks that each variant's doc comment really carries its row's URL.
+//! - `every_row_names_known_revisions_in_order` checks the ordering half: a removal must
+//!   be attributed to a revision strictly after the one that added it.
+//! - `the_table_covers_every_feature_exactly_once` checks that the table and
+//!   the enum agree on which features exist.
+//!
+//! A removal is cited like an addition. The doc comment names the revision
+//! that removed the feature and the changelog entry that removed it, and the
+//! row's `citation` still points at the changelog of the revision that
+//! introduced it — the row's `first`, which is the revision the feature
+//! belongs to for as long as it exists.
 //!
 //! # Removals are features of the matrix
 //!
@@ -68,112 +88,263 @@ fn str_eq(left: &str, right: &str) -> bool {
 pub enum Feature {
     // ── Server: tools ──────────────────────────────────────────────────────
     /// `tools/list` and `tools/call`. Every revision, every transport.
+    /// Introduced `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/tools`
     Tools,
-    /// `tools.list_changed`, gated on the server advertising it.
+    /// `tools.list_changed`, gated on the server advertising it. Introduced
+    /// `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/tools`
     ToolsListChanged,
-    /// Tool annotations — read-only, destructive, and so on. `2025-03-26`.
+    /// Tool annotations — read-only, destructive, and so on. Introduced
+    /// `2025-03-26`, changelog major change 4.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-03-26/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/185`
     ToolAnnotations,
-    /// `structuredContent` on a tool result. `2025-06-18`.
+    /// `structuredContent` on a tool result. Introduced `2025-06-18`, changelog
+    /// major change 2.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-06-18/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/371`
     ToolStructuredOutput,
-    /// Resource links in a tool call result. `2025-06-18`.
+    /// Resource links in a tool call result. Introduced `2025-06-18`, changelog
+    /// major change 7.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-06-18/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/603`
     ToolResourceLinks,
-    /// `annotations.lastModified` on a content block. `2025-06-18`.
+    /// `annotations.lastModified` on a content block. Introduced `2025-06-18`.
     ///
     /// Separate from `ToolAnnotations` because the two gate different
     /// revisions: annotations as a field exist in `2024-11-05`, untyped, while
     /// `lastModified` first appears in the typed form at `2025-06-18`. A value
     /// carrying only `audience` or `priority` needs the older feature alone.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-06-18/server/resources`
     ToolAnnotationsLastModified,
-    /// `icons` on a resource link. `2025-11-25`, SEP-973.
+    /// `icons` on a resource link. Introduced `2025-11-25`, changelog major
+    /// change 2 (SEP-973).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-11-25/changelog`
     ///
     /// `https://github.com/modelcontextprotocol/modelcontextprotocol/issues/973`
     ToolResourceLinkIcons,
-    /// Audio content blocks. `2025-03-26`.
+    /// Audio content blocks. Introduced `2025-03-26`, changelog other schema
+    /// changes.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-03-26/changelog`
     ToolAudioContent,
-    /// `resultType` on tool results. `2026-07-28`, required rather than
-    /// optional there.
+    /// `resultType` on tool results. Introduced `2026-07-28`, changelog major
+    /// change 8, where it is required rather than optional.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322`
     ToolResultType,
 
     // ── Server: resources and prompts ──────────────────────────────────────
     /// `resources/list`, `resources/read`, `resources/templates/list`. Every
-    /// revision.
+    /// revision. Introduced `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/resources`
     Resources,
-    /// `resources.list_changed`.
+    /// `resources.list_changed`. Introduced `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/resources`
     ResourcesListChanged,
-    /// Server-to-client resource change notifications. The capability survives
-    /// `2026-07-28` even though the methods behind it are replaced.
+    /// Server-to-client resource change notifications. Introduced
+    /// `2024-11-05`. The capability survives `2026-07-28` even though the
+    /// methods behind it are replaced.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/resources`
     ResourcesSubscribe,
-    /// `prompts/list` and `prompts/get`. Every revision.
+    /// `prompts/list` and `prompts/get`. Every revision. Introduced
+    /// `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/prompts`
     Prompts,
-    /// `prompts.list_changed`.
+    /// `prompts.list_changed`. Introduced `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/prompts`
     PromptsListChanged,
 
     // ── Server: completions ────────────────────────────────────────────────
-    /// `completion/complete`. `2025-03-26`.
+    /// `completion/complete`. Introduced `2025-03-26`, changelog other schema
+    /// changes.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-03-26/changelog`
     Completions,
 
     // ── Client features the server may use ─────────────────────────────────
-    /// `roots/list`. Deprecated `2026-07-28` but still defined.
+    /// `roots/list`. Introduced `2024-11-05`. Deprecated `2026-07-28` but still
+    /// defined.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/client/roots`
     Roots,
-    /// `notifications/roots/list_changed`. **Removed** in `2026-07-28`.
+    /// `notifications/roots/list_changed`. Introduced `2024-11-05`; **removed**
+    /// in `2026-07-28`, changelog major change 5.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/client/roots`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575`
     RootsListChanged,
-    /// `sampling/createMessage`. Deprecated `2026-07-28` but still defined.
+    /// `sampling/createMessage`. Introduced `2024-11-05`. Deprecated
+    /// `2026-07-28` but still defined.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/client/sampling`
     Sampling,
-    /// Sampling with `includeContext`. `2025-11-25`.
+    /// Sampling with `includeContext`. Introduced `2025-11-25`; the
+    /// `sampling.context` client capability that gates it arrives with it.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-11-25/client/sampling`
     SamplingContext,
-    /// Sampling with `tools` and `toolChoice`. `2025-11-25`, SEP-1577.
+    /// Sampling with `tools` and `toolChoice`. Introduced `2025-11-25`, changelog
+    /// major change 7 (SEP-1577).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-11-25/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1577`
     SamplingTools,
-    /// `elicitation/create`. `2025-06-18`.
+    /// `elicitation/create`. Introduced `2025-06-18`, changelog major change 6.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-06-18/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/382`
     Elicitation,
-    /// Form-mode elicitation with the SEP-1330 schema shapes. `2025-11-25`.
+    /// Form-mode elicitation with the SEP-1330 schema shapes. Introduced
+    /// `2025-11-25`, changelog major change 5.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-11-25/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1330`
     ElicitationForm,
-    /// URL-mode elicitation. `2025-11-25`, SEP-1036. The completion
-    /// notification behind it is removed in `2026-07-28`; the capability is
-    /// not.
+    /// URL-mode elicitation. Introduced `2025-11-25`, changelog major change 6
+    /// (SEP-1036). The completion notification behind it is removed in
+    /// `2026-07-28`; the capability is not.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-11-25/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/887`
     ElicitationUrl,
-    /// `logging/setLevel` and `notifications/message`. Deprecated `2026-07-28`,
-    /// which also removes the method and moves log level into `_meta`.
+    /// `logging/setLevel` and `notifications/message`. Introduced
+    /// `2024-11-05`. Deprecated `2026-07-28`, which also removes the method and
+    /// moves log level into `_meta`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/server/utilities/logging`
     Logging,
 
     // ── Protocol level ─────────────────────────────────────────────────────
-    /// JSON-RPC batching. Added `2025-03-26`, **removed** `2025-06-18`.
+    /// JSON-RPC batching. Introduced `2025-03-26`, changelog major change 3;
+    /// **removed** `2025-06-18`, changelog major change 1.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-03-26/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/228`
     JsonRpcBatching,
-    /// The Streamable HTTP transport. `2025-03-26`.
+    /// The Streamable HTTP transport. Introduced `2025-03-26`, changelog major
+    /// change 2.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-03-26/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/206`
     StreamableHttp,
-    /// The legacy HTTP+SSE transport. `2024-11-05` only; replaced in
+    /// The legacy HTTP+SSE transport. Introduced `2024-11-05` only; replaced in
     /// `2025-03-26`, reclassified as Deprecated in `2026-07-28`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/basic/transports`
     LegacySse,
     /// The `MCP-Protocol-Version` header on subsequent HTTP requests.
-    /// `2025-06-18`.
+    /// Introduced `2025-06-18`, changelog major change 8.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-06-18/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/548`
     McpProtocolVersionHeader,
-    /// `_meta` on interface types. `2025-06-18`.
+    /// `_meta` on interface types. Introduced `2025-06-18`, changelog other
+    /// schema changes 1.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-06-18/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/710`
     MetaExtensions,
     /// The stateless lifecycle: no `initialize` handshake, version and
-    /// capabilities in `_meta` on every request. `2026-07-28`, SEP-2575.
+    /// capabilities in `_meta` on every request. Introduced `2026-07-28`,
+    /// changelog major change 2 (SEP-2575).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575`
     StatelessLifecycle,
-    /// `server/discover`. `2026-07-28`, SEP-2575.
+    /// `server/discover`. Introduced `2026-07-28`, changelog major change 3
+    /// (SEP-2575).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575`
     ServerDiscover,
     /// `subscriptions/listen`, replacing the HTTP GET endpoint and
-    /// `resources/subscribe`. `2026-07-28`, SEP-2575.
+    /// `resources/subscribe`. Introduced `2026-07-28`, changelog major change 4
+    /// (SEP-2575).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575`
     SubscriptionsListen,
-    /// `Mcp-Method` and `Mcp-Name` routing headers. `2026-07-28`, SEP-2243.
+    /// `Mcp-Method` and `Mcp-Name` routing headers. Introduced `2026-07-28`,
+    /// changelog minor change 4 (SEP-2243).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2243`
     StandardRoutingHeaders,
-    /// `ttlMs` and `cacheScope` on cacheable results. `2026-07-28`, SEP-2549.
+    /// `ttlMs` and `cacheScope` on cacheable results. Introduced `2026-07-28`,
+    /// changelog minor change 5 (SEP-2549).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2549`
     ResponseCaching,
     /// The multi-round-trip request pattern, which is what the removal of
-    /// `notifications/elicitation/complete` is predicated on. `2026-07-28`.
+    /// `notifications/elicitation/complete` is predicated on. Introduced
+    /// `2026-07-28`, changelog major change 7 (SEP-2322).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322`
     MultiRoundTripRequests,
-    /// `ping`. **Removed** in `2026-07-28`, SEP-2575.
+    /// `ping`. Introduced `2024-11-05`; **removed** in `2026-07-28`, changelog
+    /// major change 5 (SEP-2575).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/basic/utilities/ping`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575`
     Ping,
 
     // ── Extensions ─────────────────────────────────────────────────────────
     /// The `tasks` capability, core-protocol only. Added `2025-11-25` (SEP-1686),
     /// **removed** from the core in `2026-07-28` when it moves to the
     /// `io.modelcontextprotocol/tasks` extension (SEP-2663).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2025-11-25/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1686`
     Tasks,
-    /// The `extensions` capability bag. `2026-07-28`, SEP-2575.
+    /// The `extensions` capability bag. Introduced `2026-07-28`, changelog
+    /// minor change 1 (SEP-2575).
+    ///
+    /// `https://modelcontextprotocol.io/specification/2026-07-28/changelog`
+    ///
+    /// `https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575`
     Extensions,
-    /// The `experimental` capability bag. Every revision.
+    /// The `experimental` capability bag. Every revision. Introduced
+    /// `2024-11-05`.
+    ///
+    /// `https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle`
     Experimental,
 }
 
@@ -291,6 +462,19 @@ pub struct FeatureSpec {
     pub first: ProtocolVersion,
     /// The revision that removed it, if it was removed.
     pub last: Option<ProtocolVersion>,
+    /// The URL that documents where this row came from.
+    ///
+    /// For a feature introduced after `2024-11-05` this is the changelog of
+    /// the revision that introduced it; where that changelog names no entry
+    /// for the feature it is the specification page that documents it at that
+    /// revision. `2024-11-05` published no changelog, so its rows cite the
+    /// specification page directly.
+    ///
+    /// Every form carries the introducing revision in the URL, so a row
+    /// cannot point at the wrong revision — and the same URL appears in the
+    /// doc comment on the [`Feature`] variant, which
+    /// `every_variant_doc_comment_carries_its_citation` checks.
+    pub citation: &'static str,
 }
 
 impl FeatureSpec {
@@ -337,9 +521,11 @@ use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25, V2026_
 
 /// The feature matrix.
 ///
-/// Every row is cited in the doc comment on its [`Feature`] variant. The
-/// ordering within a row is the same as the four questions in the module docs,
-/// so the table can be read as a column of answers.
+/// Every row carries the URL that documents where it came from — see
+/// [`citation`](FeatureSpec::citation) — and the same URL appears in the doc
+/// comment on its [`Feature`] variant. The ordering within a row is the same as
+/// the four questions in the module docs, so the table can be read as a column
+/// of answers.
 pub const FEATURES: &[FeatureSpec] = &[
     // ── Server: tools ──────────────────────────────────────────────────────
     FeatureSpec {
@@ -350,6 +536,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/tools",
     },
     FeatureSpec {
         feature: Feature::ToolsListChanged,
@@ -359,6 +546,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/tools",
     },
     // PR #185, `2025-03-26`: "Added comprehensive tool annotations".
     FeatureSpec {
@@ -369,6 +557,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_03_26,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-03-26/changelog",
     },
     // `2025-06-18`: `lastModified` is the first annotation field that the
     // typed `Annotations` object carries and `2025-03-26` does not. The
@@ -382,6 +571,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_06_18,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-06-18/server/resources",
     },
     // SEP-973, `2025-11-25` major change 2: "Allow servers to expose icons as
     // additional metadata for tools, resources, resource templates, and
@@ -394,6 +584,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_11_25,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-11-25/changelog",
     },
     // PR #371, `2025-06-18` major change 2.
     FeatureSpec {
@@ -404,6 +595,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_06_18,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-06-18/changelog",
     },
     // PR #603, `2025-06-18` major change 7.
     FeatureSpec {
@@ -414,6 +606,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_06_18,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-06-18/changelog",
     },
     // `2025-03-26`: "Added support for audio data".
     FeatureSpec {
@@ -424,6 +617,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_03_26,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-03-26/changelog",
     },
     // `2026-07-28` major change 10 loosens the schemas; `resultType` is
     // required there.
@@ -435,6 +629,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // ── Server: resources and prompts ──────────────────────────────────────
     FeatureSpec {
@@ -445,6 +640,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/resources",
     },
     FeatureSpec {
         feature: Feature::ResourcesListChanged,
@@ -454,6 +650,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/resources",
     },
     // The capability outlives the methods: `2026-07-28` replaces
     // `resources/subscribe` with `subscriptions/listen` but keeps the flag.
@@ -465,6 +662,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/resources",
     },
     FeatureSpec {
         feature: Feature::Prompts,
@@ -474,6 +672,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/prompts",
     },
     FeatureSpec {
         feature: Feature::PromptsListChanged,
@@ -483,6 +682,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/prompts",
     },
     // `2025-03-26`: "Added `completions` capability". The capability is the
     // only way a server signals support, so the row requires it.
@@ -494,6 +694,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_03_26,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-03-26/changelog",
     },
     // ── Client features the server may use ─────────────────────────────────
     // Roots: deprecated by SEP-2577 in `2026-07-28`, still defined.
@@ -505,6 +706,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/client/roots",
     },
     // Removed with `notifications/roots/list_changed`, SEP-2575.
     FeatureSpec {
@@ -515,6 +717,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: Some(V2026_07_28),
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/client/roots",
     },
     // Sampling: deprecated by SEP-2577 in `2026-07-28`, still defined.
     FeatureSpec {
@@ -525,6 +728,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/client/sampling",
     },
     FeatureSpec {
         feature: Feature::SamplingContext,
@@ -534,6 +738,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_11_25,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-11-25/client/sampling",
     },
     // SEP-1577, `2025-11-25`.
     FeatureSpec {
@@ -544,6 +749,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_11_25,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-11-25/changelog",
     },
     // PR #382, `2025-06-18` major change 6.
     FeatureSpec {
@@ -554,6 +760,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_06_18,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-06-18/changelog",
     },
     // SEP-1330, `2025-11-25` minor change 5.
     FeatureSpec {
@@ -564,6 +771,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_11_25,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-11-25/changelog",
     },
     // SEP-1036, `2025-11-25` major change 6.
     FeatureSpec {
@@ -574,6 +782,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_11_25,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-11-25/changelog",
     },
     // SEP-2577, `2026-07-28`, deprecates it and removes `logging/setLevel`.
     FeatureSpec {
@@ -584,6 +793,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/server/utilities/logging",
     },
     // ── Protocol level ─────────────────────────────────────────────────────
     // PR #228 adds it in `2025-03-26`; PR #416 removes it in `2025-06-18`.
@@ -595,6 +805,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_03_26,
         last: Some(V2025_06_18),
+        citation: "https://modelcontextprotocol.io/specification/2025-03-26/changelog",
     },
     // PR #206, `2025-03-26`.
     FeatureSpec {
@@ -605,6 +816,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: Some(TransportKind::StreamableHttp),
         first: V2025_03_26,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-03-26/changelog",
     },
     // `2024-11-05` only. Reclassified Deprecated by SEP-2596 in `2026-07-28`,
     // but that is a recommendation, not a removal — it was already gone in
@@ -617,6 +829,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: Some(TransportKind::LegacySse),
         first: V2024_11_05,
         last: Some(V2025_03_26),
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/basic/transports",
     },
     // PR #548, `2025-06-18` major change 8.
     FeatureSpec {
@@ -627,6 +840,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_06_18,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-06-18/changelog",
     },
     // PR #710, `2025-06-18`: `_meta` on additional interface types.
     FeatureSpec {
@@ -637,6 +851,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_06_18,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2025-06-18/changelog",
     },
     // SEP-2575, `2026-07-28` major change 2.
     FeatureSpec {
@@ -647,6 +862,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // SEP-2575, `2026-07-28` major change 3.
     FeatureSpec {
@@ -657,6 +873,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // SEP-2575, `2026-07-28` major change 4.
     FeatureSpec {
@@ -667,6 +884,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // SEP-2243, `2026-07-28` major change 4.
     FeatureSpec {
@@ -677,6 +895,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // SEP-2549, `2026-07-28` major change 5.
     FeatureSpec {
@@ -687,6 +906,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // `2026-07-28` major change 11, the pattern that replaces the elicitation
     // completion notification.
@@ -698,6 +918,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     // SEP-2575, `2026-07-28` major change 5: `ping` is removed outright.
     FeatureSpec {
@@ -708,6 +929,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: Some(V2026_07_28),
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/basic/utilities/ping",
     },
     // ── Extensions ─────────────────────────────────────────────────────────
     // SEP-1686 adds it in `2025-11-25`; SEP-2663 moves it to
@@ -720,6 +942,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2025_11_25,
         last: Some(V2026_07_28),
+        citation: "https://modelcontextprotocol.io/specification/2025-11-25/changelog",
     },
     // SEP-2575, `2026-07-28`.
     FeatureSpec {
@@ -730,6 +953,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2026_07_28,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2026-07-28/changelog",
     },
     FeatureSpec {
         feature: Feature::Experimental,
@@ -739,6 +963,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         transport: None,
         first: V2024_11_05,
         last: None,
+        citation: "https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle",
     },
 ];
 
@@ -1177,11 +1402,124 @@ mod tests {
         assert_eq!(FEATURES.len(), Feature::ALL.len());
     }
 
+    /// Every row cites where it came from, and the citation names the revision
+    /// the row is attributed to.
+    ///
+    /// The citation is a URL, so it has to be one, and it has to carry the
+    /// revision in its path — that is what stops a row from pointing at the
+    /// wrong revision's changelog. A row whose feature was removed still cites
+    /// the revision that introduced it: the removal is attributed in the doc
+    /// comment, not by moving the citation.
+    #[test]
+    fn every_row_cites_its_changelog() {
+        for spec in FEATURES {
+            assert!(
+                spec.citation.starts_with("https://"),
+                "{} cites {}, which is not an https URL",
+                spec.feature,
+                spec.citation
+            );
+            assert!(
+                spec.citation.contains(&spec.first.to_string()),
+                "{} cites {}, which does not name {}",
+                spec.feature,
+                spec.citation,
+                spec.first
+            );
+        }
+    }
+
+    /// The citation on a row is the same URL the variant's doc comment
+    /// carries.
+    ///
+    /// A citation that lives only in the table is a citation nobody reads when
+    /// they are looking at the feature, so the two are held in step by reading
+    /// this file back and comparing them.
+    #[test]
+    fn every_variant_doc_comment_carries_its_citation() -> Result<(), String> {
+        let source = include_str!("feature.rs");
+        let docs = doc_comments_by_variant(source);
+
+        if docs.len() != Feature::ALL.len() {
+            return Err(format!(
+                "the parser found {} variants, but the enum has {}",
+                docs.len(),
+                Feature::ALL.len()
+            ));
+        }
+
+        for spec in FEATURES {
+            let variant = format!("{:?}", spec.feature);
+            let doc = docs
+                .get(&variant)
+                .ok_or_else(|| format!("{variant} has no doc comment"))?;
+            if !doc.contains(spec.citation) {
+                return Err(format!(
+                    "{} cites {}, but its doc comment does not carry that URL",
+                    spec.feature, spec.citation
+                ));
+            }
+            if !doc.contains(&spec.first.to_string()) {
+                return Err(format!(
+                    "{} names {} in its table row, but its doc comment does not",
+                    spec.feature, spec.first
+                ));
+            }
+            if let Some(last) = spec.last
+                && !doc.contains(&last.to_string())
+            {
+                return Err(format!(
+                    "{} was removed in {}, but its doc comment does not say so",
+                    spec.feature, last
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The doc comment on each variant of [`Feature`], keyed by variant name.
+    ///
+    /// The source is read back rather than derived, because the claim under
+    /// test is about what a reader sees in the source. The parser is
+    /// deliberately simple: it walks the `Feature` enum, collecting the `///`
+    /// lines that precede each variant.
+    fn doc_comments_by_variant(source: &str) -> std::collections::BTreeMap<String, String> {
+        let mut docs = std::collections::BTreeMap::new();
+        let mut doc = String::new();
+        let mut in_enum = false;
+
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if !in_enum {
+                in_enum = trimmed.starts_with("pub enum Feature {");
+                continue;
+            }
+            if trimmed == "}" {
+                break;
+            }
+            if let Some(rest) = trimmed.strip_prefix("///") {
+                doc.push_str(rest);
+                doc.push('\n');
+                continue;
+            }
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let name = trimmed.trim_end_matches(',');
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            docs.insert(name.to_owned(), std::mem::take(&mut doc));
+        }
+
+        docs
+    }
+
     /// A removal must be attributed to a revision strictly after the one that
     /// added it, and must name known revisions. This is the half of "every row
     /// cites the spec" that can be checked mechanically.
     #[test]
-    fn every_row_is_cited_and_ordered() {
+    fn every_row_names_known_revisions_in_order() {
         for spec in FEATURES {
             assert!(
                 spec.first.is_known(),

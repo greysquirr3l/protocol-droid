@@ -1590,6 +1590,7 @@ dependencies = [
  "insta",
  "jsonschema",
  "jsonwebtoken",
+ "percent-encoding",
  "proptest",
  "protocol-droid-macros",
  "protocol-droid-schema",
@@ -1610,6 +1611,7 @@ name = "protocol-droid-cli"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "protocol-droid",
  "reqwest",

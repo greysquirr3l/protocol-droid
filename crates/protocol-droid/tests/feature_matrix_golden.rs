@@ -2,8 +2,8 @@
 //!
 //! # Why a snapshot and not an assertion per cell
 //!
-//! The matrix is 37 features × 5 revisions × 4 transports. Asserting each cell
-//! individually would be 740 assertions that all say the same thing, and a
+//! The matrix is 39 features × 5 revisions × 4 transports. Asserting each cell
+//! individually would be 780 assertions that all say the same thing, and a
 //! change to one row would rewrite one line of test source instead of one line
 //! of a reviewable file. A snapshot makes the whole matrix legible: the diff a
 //! reviewer reads *is* the change to the matrix.

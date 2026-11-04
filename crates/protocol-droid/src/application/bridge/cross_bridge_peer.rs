@@ -47,6 +47,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+use crate::domain::ir::IrMethod;
+
 use super::cross_protocol::{
     CrossProtocolCodec, CrossProtocolError, ProtocolSide, RequestCodecReport,
 };
@@ -74,24 +76,18 @@ pub struct CrossBridgePeer<U: BridgePeer + ?Sized> {
 impl<U: BridgePeer + ?Sized> CrossBridgePeer<U> {
     /// A wrapper around `inner` that translates through `codec`.
     ///
-    /// `downstream_side` is the protocol the *downstream* leg speaks;
-    /// the wrapper passes it to every call so the codec knows which
-    /// direction to drive. A symmetric codec that handles both
-    /// directions declares one of them in
-    /// [`downstream_protocol`](CrossProtocolCodec::downstream_protocol)
-    /// and lets the bridge pick the other; the bridge's
-    /// `downstream_side` is the source of truth, not the codec's
-    /// declaration.
-    pub fn new(
-        downstream_side: ProtocolSide,
-        codec: Arc<dyn CrossProtocolCodec>,
-        inner: Arc<U>,
-    ) -> Result<Self, BridgeError> {
-        Ok(Self {
-            downstream_side,
+    /// The codec knows which protocol the downstream leg speaks — it is
+    /// built from a downstream adapter and an upstream adapter — so the
+    /// wrapper reads it from there rather than being told. A caller that
+    /// passed the side separately could disagree with the codec about
+    /// which side was which, and the disagreement would show up as a
+    /// method the bridge refuses for no visible reason.
+    pub fn new(codec: Arc<dyn CrossProtocolCodec>, inner: Arc<U>) -> Self {
+        Self {
+            downstream_side: codec.downstream_protocol(),
             codec,
             inner,
-        })
+        }
     }
 
     /// The protocol this peer reports for the downstream leg.
@@ -112,17 +108,35 @@ impl<U: BridgePeer + ?Sized> CrossBridgePeer<U> {
         &self.inner
     }
 
-    /// Whether the codec bridges the given IR method.
+    /// Whether the codec bridges the given wire method.
     ///
     /// The bridge loop asks this once at feature-check time, so a
     /// method that is not bridged is refused with `-32601` *before*
     /// the codec is invoked and the inner peer is contacted. The
-    /// check is the codec's `wire_method` table — the same table the
+    /// check is the codec's own method table — the same table the
     /// codec uses to translate — so the answer cannot disagree with
     /// the codec.
     #[must_use]
-    pub fn bridges(&self, ir_method: &str) -> bool {
-        self.downstream_side.wire_method(ir_method).is_some()
+    pub fn bridges(&self, wire_method: &str) -> bool {
+        self.codec.ir_method(wire_method).is_some()
+    }
+
+    /// The IR method an envelope's wire method stands for.
+    ///
+    /// The envelope's `method` member names a method in the
+    /// *downstream's* vocabulary; the codec is the thing that knows
+    /// which IR method that is. A method the codec does not bridge is
+    /// refused here rather than handed to the inner peer, which is what
+    /// turns "the peer would have said `-32601`" into "the bridge says
+    /// `-32601`".
+    fn ir_method_of(&self, envelope: &Map<String, Value>) -> Result<IrMethod, BridgeError> {
+        let method = envelope.get("method").and_then(Value::as_str).unwrap_or("");
+        self.codec
+            .ir_method(method)
+            .ok_or_else(|| BridgeError::MethodNotBridged {
+                method: method.to_owned(),
+                downstream: self.downstream_side,
+            })
     }
 }
 
@@ -132,26 +146,26 @@ impl<U: BridgePeer + ?Sized> BridgePeer for CrossBridgePeer<U> {
         envelope: Map<String, Value>,
     ) -> SendFuture<'_, Result<Map<String, Value>, BridgeError>> {
         Box::pin(async move {
-            let ir_method = ir_method_of(&envelope);
+            let ir_method = self.ir_method_of(&envelope)?;
             let mut report = RequestCodecReport::empty();
             let outbound = self
                 .codec
-                .encode_request(self.downstream_side, ir_method, &envelope, &mut report)
+                .encode_request(&ir_method, &envelope, &mut report)
                 .map_err(|e| bridge_error_from(e, self.downstream_side))?;
             let reply = self.inner.send(outbound).await?;
             self.codec
-                .decode_reply(self.downstream_side, ir_method, &reply, &mut report)
+                .decode_reply(&ir_method, &reply, &mut report)
                 .map_err(|e| bridge_error_from(e, self.downstream_side))
         })
     }
 
     fn notify(&self, envelope: Map<String, Value>) -> SendFuture<'_, Result<(), BridgeError>> {
         Box::pin(async move {
-            let ir_method = ir_method_of(&envelope);
+            let ir_method = self.ir_method_of(&envelope)?;
             let mut report = RequestCodecReport::empty();
             let outbound = self
                 .codec
-                .encode_request(self.downstream_side, ir_method, &envelope, &mut report)
+                .encode_request(&ir_method, &envelope, &mut report)
                 .map_err(|e| bridge_error_from(e, self.downstream_side))?;
             self.inner.notify(outbound).await
         })
@@ -166,22 +180,6 @@ impl<U: BridgePeer + ?Sized> BridgePeer for CrossBridgePeer<U> {
     }
 }
 
-/// The IR method name the codec needs.
-///
-/// Equal to the envelope's `method` member, because the bridge lifts
-/// the wire method verbatim into the IR — the IR has no per-protocol
-/// names yet, and a method the bridge cannot lift is one the codec
-/// should never see.
-///
-/// Returns the empty string when the envelope has no `method`, which
-/// is the case for replies (an inbound reply has no `method`, only
-/// `id` + `result` / `error`). A reply that reaches this function
-/// already passed through the inner peer; the codec will see it on
-/// `decode_reply`, not here.
-fn ir_method_of(envelope: &Map<String, Value>) -> &str {
-    envelope.get("method").and_then(Value::as_str).unwrap_or("")
-}
-
 /// Map a codec error into a bridge error the loop can answer.
 fn bridge_error_from(err: CrossProtocolError, downstream: ProtocolSide) -> BridgeError {
     match err {
@@ -192,6 +190,9 @@ fn bridge_error_from(err: CrossProtocolError, downstream: ProtocolSide) -> Bridg
             method: format!("<codec for {side:?}>"),
             downstream,
         },
+        CrossProtocolError::MalformedPayload { side, detail } => {
+            BridgeError::Malformed { side, detail }
+        }
     }
 }
 
@@ -209,6 +210,7 @@ mod tests {
         super::forward::{BridgeError, BridgePeer, SendFuture},
         CrossBridgePeer,
     };
+    use crate::domain::ir::IrMethod;
 
     /// A codec that renames the method but does nothing else.
     ///
@@ -227,16 +229,26 @@ mod tests {
             self.downstream
         }
 
+        fn upstream_protocol(&self) -> ProtocolSide {
+            match self.downstream {
+                ProtocolSide::A2a => ProtocolSide::Mcp,
+                ProtocolSide::Mcp => ProtocolSide::A2a,
+            }
+        }
+
+        fn ir_method(&self, downstream_method: &str) -> Option<IrMethod> {
+            (downstream_method == self.from).then_some(IrMethod::Call)
+        }
+
         fn encode_request(
             &self,
-            _downstream_side: ProtocolSide,
-            ir_method: &str,
+            ir_method: &IrMethod,
             envelope: &Map<String, Value>,
             report: &mut RequestCodecReport,
         ) -> Result<Map<String, Value>, CrossProtocolError> {
-            if ir_method != self.from {
+            if *ir_method != IrMethod::Call {
                 return Err(CrossProtocolError::MethodNotBridged(
-                    ir_method.to_owned(),
+                    ir_method.name().to_owned(),
                     self.downstream,
                 ));
             }
@@ -251,8 +263,7 @@ mod tests {
 
         fn decode_reply(
             &self,
-            _downstream_side: ProtocolSide,
-            _ir_method: &str,
+            _ir_method: &IrMethod,
             reply: &Map<String, Value>,
             _report: &mut RequestCodecReport,
         ) -> Result<Map<String, Value>, CrossProtocolError> {
@@ -406,7 +417,7 @@ mod tests {
     async fn a_send_envelope_is_translated_then_forwarded_then_reversed() -> Result<(), TestError> {
         let peer = Arc::new(RecorderPeer::answering_with(reply_with("ok")));
         let codec = codec_renaming_send_message_to_tools_call();
-        let wrapper = CrossBridgePeer::new(ProtocolSide::A2a, codec, peer.clone())?;
+        let wrapper = CrossBridgePeer::new(codec, peer.clone());
 
         let sent = make_envelope("SendMessage");
         let reply = wrapper.send(sent).await?;
@@ -436,7 +447,7 @@ mod tests {
     -> Result<(), TestError> {
         let peer = Arc::new(RecorderPeer::default());
         let codec = codec_renaming_send_message_to_tools_call();
-        let wrapper = CrossBridgePeer::new(ProtocolSide::A2a, codec, peer.clone())?;
+        let wrapper = CrossBridgePeer::new(codec, peer.clone());
 
         let sent = make_envelope("GetTask");
         let Err(err) = wrapper.send(sent).await else {
@@ -468,7 +479,7 @@ mod tests {
     async fn a_notify_envelope_is_translated_then_forwarded() -> Result<(), TestError> {
         let peer = Arc::new(RecorderPeer::default());
         let codec = codec_renaming_send_message_to_tools_call();
-        let wrapper = CrossBridgePeer::new(ProtocolSide::A2a, codec, peer.clone())?;
+        let wrapper = CrossBridgePeer::new(codec, peer.clone());
 
         let mut envelope = Map::new();
         envelope.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
@@ -488,59 +499,39 @@ mod tests {
     }
 
     #[test]
-    fn a_symmetric_codec_can_be_wrapped_for_either_downstream() -> Result<(), TestError> {
-        // The codec declares `Mcp` as its downstream, but the
-        // constructor accepts it for an A2a downstream too — the
-        // bridge's `downstream_side` is the source of truth, not the
-        // codec's declaration, and a symmetric codec handles both.
+    fn the_wrapper_takes_the_downstream_side_from_the_codec() {
+        // The codec knows which side it is the downstream of, so the
+        // wrapper reads it from there. A caller cannot hand the bridge a
+        // side that disagrees with the codec, because there is nowhere
+        // to hand one.
         let peer: Arc<RecorderPeer> = Arc::new(RecorderPeer::default());
         let codec: Arc<dyn CrossProtocolCodec> = Arc::new(RenameOnlyCodec {
             downstream: ProtocolSide::Mcp,
             from: "tools/call",
             to: "SendMessage",
         });
-        let wrapper = match CrossBridgePeer::new(ProtocolSide::A2a, codec, peer) {
-            Ok(wrapper) => wrapper,
-            Err(err) => {
-                return Err(Failure::BridgeError(format!(
-                    "construction should succeed: {err:?}"
-                )));
-            }
-        };
-        assert_eq!(wrapper.downstream_side(), ProtocolSide::A2a);
-        Ok(())
+        let wrapper = CrossBridgePeer::new(codec, peer);
+        assert_eq!(wrapper.downstream_side(), ProtocolSide::Mcp);
     }
 
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
 
     #[test]
-    fn the_wrapper_is_send_and_sync_via_arc() -> Result<(), TestError> {
+    fn the_wrapper_is_send_and_sync_via_arc() {
         let peer: Arc<RecorderPeer> = Arc::new(RecorderPeer::default());
         let codec = codec_renaming_send_message_to_tools_call();
-        let wrapper = match CrossBridgePeer::new(ProtocolSide::A2a, codec, peer) {
-            Ok(wrapper) => wrapper,
-            Err(err) => {
-                return Err(Failure::BridgeError(format!("construction: {err:?}")));
-            }
-        };
+        let wrapper = CrossBridgePeer::new(codec, peer);
         assert_send_sync(&wrapper);
-        Ok(())
     }
 
     #[test]
-    fn bridges_reports_true_only_for_methods_in_the_codec_table() -> Result<(), TestError> {
+    fn bridges_reports_true_only_for_methods_in_the_codec_table() {
         let peer: Arc<RecorderPeer> = Arc::new(RecorderPeer::default());
         let codec = codec_renaming_send_message_to_tools_call();
-        let wrapper = match CrossBridgePeer::new(ProtocolSide::A2a, codec, peer) {
-            Ok(wrapper) => wrapper,
-            Err(err) => {
-                return Err(Failure::BridgeError(format!("construction: {err:?}")));
-            }
-        };
+        let wrapper = CrossBridgePeer::new(codec, peer);
         assert!(wrapper.bridges("SendMessage"));
         assert!(!wrapper.bridges("GetTask"));
         assert!(!wrapper.bridges("tools/call"));
-        Ok(())
     }
 
     /// The wire-level end-to-end: an A2A `SendMessage` request goes
@@ -566,9 +557,8 @@ mod tests {
         .map_err(|err| Failure::BridgeError(format!("fixture parse: {err}")))?;
         let peer = Arc::new(RecorderPeer::answering_with(mcp_reply));
 
-        let codec: Arc<dyn CrossProtocolCodec> = Arc::new(A2aMcpCodec::new());
-        let wrapper = CrossBridgePeer::new(ProtocolSide::A2a, codec, peer.clone())
-            .map_err(|err| Failure::BridgeError(format!("construction: {err:?}")))?;
+        let codec: Arc<dyn CrossProtocolCodec> = Arc::new(A2aMcpCodec::a2a_downstream());
+        let wrapper = CrossBridgePeer::new(codec, peer.clone());
 
         // The A2A client sent: a `SendMessage` whose `message.metadata`
         // names the skill "echo" and whose `message.parts` carry a

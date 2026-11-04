@@ -154,6 +154,7 @@ starts:
 | `a2a`           | The A2A v1.0 server, client, and cross-protocol bridge. Experimental — see [A2A and ACP](#a2a-and-acp-experimental) |
 | `acp-experimental` | Zed's ACP v1.25.0. Pre-1.0, so it carries no semver guarantee. Experimental and incomplete |
 | `random-ids`    | CSPRNG session ids instead of a counter                                |
+| `utcp`          | The UTCP v1.1 client: read a provider's manual, register its tools, and call them over HTTP or MCP. Implies `http` |
 
 A `simd` envelope parser is described in the manifest but is not yet wired to a
 feature — it exists so the two decoders can be benchmarked rather than argued

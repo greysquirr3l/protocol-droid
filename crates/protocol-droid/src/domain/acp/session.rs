@@ -42,6 +42,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
+
+use super::config::SessionConfigOption;
 use super::content::ContentBlock;
 
 /// A unique identifier for a conversation session.
@@ -501,27 +504,35 @@ impl core::fmt::Display for SessionModeId {
     }
 }
 
-/// A session configuration option. The agent
-/// advertises the set of options the consumer can
-/// set via `SetSessionConfigOptionRequest`.
+/// The `session/set_mode` request body.
+///
+/// Switches one session to one of the modes the agent
+/// advertised in the session's
+/// [`SessionModeState::available_modes`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionConfigOption {
-    /// The unique id of the option. The consumer
-    /// references this id in
-    /// `SetSessionConfigOptionRequest`.
-    pub id: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Human-readable description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// The option's current value.
-    pub current_value: String,
-    /// The set of values the consumer can choose
-    /// from. Absent for free-form input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<String>>,
+pub struct SetSessionModeRequest {
+    /// The session to change.
+    pub session_id: SessionId,
+    /// The mode to switch to.
+    pub mode_id: SessionModeId,
+    /// Per-implementation metadata.
+    #[serde(default, rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
+}
+
+/// The `session/set_mode` response body.
+///
+/// The schema carries no fields beyond the metadata
+/// block, so the agent reports the new mode through a
+/// `session/current_mode_update` notification rather
+/// than in the response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSessionModeResponse {
+    /// Per-implementation metadata.
+    #[serde(default, rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -953,26 +964,35 @@ mod tests {
         Ok(())
     }
 
-    /// A `SessionConfigOption` with options
-    /// carries the list of values the consumer
-    /// can choose from.
+    /// The `session/set_mode` request carries the
+    /// session and the mode, and round-trips.
     #[test]
-    fn a_session_config_option_round_trips() -> Result<(), serde_json::Error> {
-        let option = SessionConfigOption {
-            id: "model".to_owned(),
-            name: "Model".to_owned(),
-            description: Some("The LLM to use".to_owned()),
-            current_value: "claude-sonnet-4-5".to_owned(),
-            options: Some(vec![
-                "claude-sonnet-4-5".to_owned(),
-                "claude-opus-4-7".to_owned(),
-            ]),
+    fn a_set_session_mode_request_round_trips() -> Result<(), serde_json::Error> {
+        let request = SetSessionModeRequest {
+            session_id: SessionId::new("s-1"),
+            mode_id: SessionModeId::new("plan"),
+            meta: BTreeMap::new(),
         };
-        let value = serde_json::to_value(&option)?;
-        assert_eq!(value.get("id"), Some(&json!("model")));
-        assert_eq!(value.get("currentValue"), Some(&json!("claude-sonnet-4-5")));
-        let back: SessionConfigOption = serde_json::from_value(value)?;
-        assert_eq!(back, option);
+        let value = serde_json::to_value(&request)?;
+        assert_eq!(value.get("sessionId"), Some(&json!("s-1")));
+        assert_eq!(value.get("modeId"), Some(&json!("plan")));
+        let back: SetSessionModeRequest = serde_json::from_value(value)?;
+        assert_eq!(back, request);
+        Ok(())
+    }
+
+    /// The `session/set_mode` response carries no
+    /// fields beyond the metadata block, so an empty
+    /// response round-trips to an empty object.
+    #[test]
+    fn a_set_session_mode_response_round_trips() -> Result<(), serde_json::Error> {
+        let response = SetSessionModeResponse {
+            meta: BTreeMap::new(),
+        };
+        let value = serde_json::to_value(&response)?;
+        assert_eq!(value, json!({}));
+        let back: SetSessionModeResponse = serde_json::from_value(value)?;
+        assert_eq!(back, response);
         Ok(())
     }
 }

@@ -17,10 +17,12 @@ use std::sync::Arc;
 use super::{HttpHandler, HttpSession, Ids};
 use crate::adapters::primary::transport::http::config::ServerConfig;
 use crate::adapters::primary::transport::http::limits::RateLimiter;
+use crate::adapters::primary::transport::http::reaper::{IdleReaper, IdleSessions, ReaperHandle};
 use crate::adapters::primary::transport::http::router::McpRouter;
 use crate::adapters::primary::transport::http::session_store::SessionStore;
 use crate::adapters::primary::transport::http::{AuthPolicy, Authenticator};
 use crate::adapters::primary::transport::origin::OriginPolicy;
+use crate::adapters::secondary::clock::MonotonicClock;
 use crate::application::server::Server;
 use crate::application::server::dispatch::Dispatcher;
 use crate::domain::{ProtocolVersion, SupportedVersions};
@@ -60,6 +62,8 @@ pub struct HttpBuilder {
     origin_policy: Option<OriginPolicy>,
     /// The per-subject request allowance.
     rate_limiter: Option<RateLimiter>,
+    /// When idle sessions are evicted; `None` keeps them until a `DELETE`.
+    idle_reaper: Option<IdleReaper>,
     /// Where the `2024-11-05` HTTP+SSE routes are mounted, when they are.
     #[cfg(feature = "legacy-sse")]
     legacy_sse: Option<LegacySsePaths>,
@@ -110,9 +114,30 @@ impl HttpBuilder {
             policy: None,
             origin_policy: None,
             rate_limiter: None,
+            idle_reaper: Some(IdleReaper::DEFAULT),
             #[cfg(feature = "legacy-sse")]
             legacy_sse: None,
         }
+    }
+
+    /// Replaces the idle window after which a session is evicted.
+    ///
+    /// Defaults to [`IdleReaper::DEFAULT`]. Without some window a client that
+    /// opens sessions and never closes them grows the server without limit.
+    #[must_use]
+    pub const fn with_idle_reaper(mut self, reaper: IdleReaper) -> Self {
+        self.idle_reaper = Some(reaper);
+        self
+    }
+
+    /// Keeps sessions until the client closes them.
+    ///
+    /// For a deployment that bounds sessions some other way, or in front of
+    /// clients it trusts to close what they open.
+    #[must_use]
+    pub const fn without_idle_reaper(mut self) -> Self {
+        self.idle_reaper = None;
+        self
     }
 
     /// Also serves the `2024-11-05` HTTP+SSE transport, beside Streamable HTTP.
@@ -265,6 +290,7 @@ impl HttpBuilder {
     pub async fn serve(self) -> Result<ServeReport, ServeError> {
         let parts = routes(self)?;
         let (listener, bound) = bind(parts.addr).await?;
+        let _reaper = parts.reaper.start();
         axum::serve(listener, parts.router)
             .await
             .map_err(ServeError::Accept)?;
@@ -295,6 +321,7 @@ impl HttpBuilder {
             addr: parts.addr,
             source,
         })?;
+        let _reaper = parts.reaper.start();
         axum::serve(listener, parts.router)
             .await
             .map_err(ServeError::Accept)?;
@@ -302,6 +329,18 @@ impl HttpBuilder {
             addr: bound,
             ceiling: parts.ceiling,
         })
+    }
+}
+
+/// A session store that keeps the bookkeeping a reaper reads, or does not.
+///
+/// A store built without it makes `reap_idle` a silent no-op, so the choice is
+/// made once here from the same flag that decides whether a reaper runs.
+fn new_store<S>(ids: Ids, reaping: bool) -> SessionStore<S> {
+    if reaping {
+        SessionStore::with_idle_reaper(ids, Arc::new(MonotonicClock::new()))
+    } else {
+        SessionStore::new(ids)
     }
 }
 
@@ -316,6 +355,34 @@ pub(super) struct BuilderOutput {
     pub(super) addr: SocketAddr,
     /// The pre-handshake revision. Preserved for `ServeReport`.
     pub(super) ceiling: ProtocolVersion,
+    /// The stores to sweep once a runtime is serving.
+    pub(super) reaper: PendingReaper,
+}
+
+/// A reaper waiting for the serve call to start it.
+///
+/// `routes` is synchronous and tests call it outside a runtime, so the task is
+/// started by the async caller that will also be holding the handle.
+#[derive(Default)]
+pub(super) struct PendingReaper {
+    plan: Option<(IdleReaper, Vec<Arc<dyn IdleSessions>>)>,
+}
+
+impl core::fmt::Debug for PendingReaper {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("PendingReaper")
+            .field("enabled", &self.plan.is_some())
+            .finish()
+    }
+}
+
+impl PendingReaper {
+    /// Starts sweeping, if the builder asked for it. Hold the handle for as
+    /// long as the server runs.
+    pub(super) fn start(self) -> Option<ReaperHandle> {
+        self.plan.map(|(reaper, stores)| reaper.start(stores))
+    }
 }
 
 /// The route table this builder describes, and nothing that binds a socket.
@@ -335,6 +402,7 @@ pub(super) fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> 
         policy,
         origin_policy,
         rate_limiter,
+        idle_reaper,
         #[cfg(feature = "legacy-sse")]
         legacy_sse,
     } = builder;
@@ -353,14 +421,19 @@ pub(super) fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> 
         None => ServerConfig::new()?,
     };
     let dispatcher = Arc::new(Dispatcher::new(Arc::new(server)));
-    let sessions = Arc::new(SessionStore::<HttpSession>::new(Arc::clone(&ids)));
+    let reaping = idle_reaper.is_some();
+    let mut sweepable: Vec<Arc<dyn IdleSessions>> = Vec::new();
+    let sessions = Arc::new(new_store::<HttpSession>(Arc::clone(&ids), reaping));
+    sweepable.push(Arc::clone(&sessions) as Arc<dyn IdleSessions>);
     let handler = HttpHandler::new(Arc::clone(&dispatcher), Arc::clone(&sessions), ceiling);
     #[cfg(feature = "legacy-sse")]
     let legacy = legacy_sse
         .map(|paths| {
+            let legacy_sessions = Arc::new(new_store(ids, reaping));
+            sweepable.push(Arc::clone(&legacy_sessions) as Arc<dyn IdleSessions>);
             let mut router = crate::adapters::primary::transport::legacy_sse::LegacyRouter::new(
                 config.clone(),
-                Arc::new(SessionStore::new(ids)),
+                legacy_sessions,
                 // The transport belongs to `2024-11-05`; a client offering a
                 // later revision is answered with this one and decides for
                 // itself whether to continue.
@@ -406,6 +479,9 @@ pub(super) fn routes(builder: HttpBuilder) -> Result<BuilderOutput, ServeError> 
         router,
         addr,
         ceiling,
+        reaper: PendingReaper {
+            plan: idle_reaper.map(|reaper| (reaper, sweepable)),
+        },
     })
 }
 
@@ -438,6 +514,7 @@ pub(crate) fn test_routes(
         policy: None,
         origin_policy: None,
         rate_limiter: None,
+        idle_reaper: None,
         #[cfg(feature = "legacy-sse")]
         legacy_sse: None,
     })

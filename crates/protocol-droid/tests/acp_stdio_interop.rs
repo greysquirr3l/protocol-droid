@@ -168,7 +168,7 @@ async fn initialize_round_trip_against_a_vanilla_node_agent() -> Result<(), Stri
         .ok_or_else(|| "the auth methods list is empty".to_owned())?;
     match method {
         AuthMethod::Terminal(terminal) => {
-            assert_eq!(terminal.id, "dev-terminal");
+            assert_eq!(terminal.id.as_str(), "dev-terminal");
             assert_eq!(terminal.name, "In-process dev terminal");
         }
         AuthMethod::Agent(_) => {

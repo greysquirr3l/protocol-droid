@@ -33,6 +33,7 @@
 //! mod json;        // JsonObject — arbitrary JSON, validated once
 //! mod extensions;  // Extensions  — the passthrough bag
 //! mod content;     // Content     — content blocks
+//! mod call;        // IrCall      — the protocol-neutral unit of work
 //! mod message;     // IrMessage   — the envelope
 //! mod tool;        // ToolResult  — and the downgrade fallback
 //! ```
@@ -56,8 +57,10 @@ mod prompt;
 mod resource;
 mod tool;
 
+mod call;
 mod envelope;
 
+pub use call::{IrCall, IrMethod, IrOutcome};
 pub use codec::Codec;
 pub use content::{
     Annotations, AudioContent, Content, EmbeddedResource, ImageContent, ResourceIcon,

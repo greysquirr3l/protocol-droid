@@ -198,6 +198,8 @@ fn generate_wire_types(manifest: &Manifest, spec_root: &Path, out_dir: &Path) {
     let () = index.push_str("// layer can instantiate one implementation per revision against a\n");
     let () = index.push_str("// uniform set of names.\n\n");
 
+    let mut cases = PropertyCases::new();
+
     for revision in manifest.revision_names() {
         let path = spec_root.join(revision).join("schema.json");
         let text = match fs::read_to_string(&path) {
@@ -224,12 +226,127 @@ fn generate_wire_types(manifest: &Manifest, spec_root: &Path, out_dir: &Path) {
             fail(&format!("could not write {}: {err}", target.display()));
         }
         let _ = writeln!(index, "pub mod {module};");
+        cases.add(revision, &module, &generated.type_names);
     }
 
     let index_path = out_dir.join("wire.rs");
     if let Err(err) = fs::write(&index_path, index) {
         fail(&format!("could not write {}: {err}", index_path.display()));
     }
+
+    cases.write(out_dir);
+}
+
+/// The exhaustive round-trip table the property suite consumes.
+///
+/// One entry per `(revision, definition)` pair the vendored schemas define.
+/// The table is generated rather than written out because the alternative is a
+/// hand-maintained list that goes stale the moment a revision gains a
+/// definition — and a stale list is a hole in the coverage that nothing
+/// reports, which is the failure this table exists to prevent.
+///
+/// The type path is the generator's own mapping, so the table cannot name a
+/// type that does not exist: the test target fails to compile. What the
+/// generated table does *not* assert is the mapping itself — that the
+/// definition `CallToolResult` really is the type `CallToolResult` — and the
+/// hand-written table in `tests/property.rs` is what asserts that.
+struct PropertyCases {
+    /// The macro invocation being built.
+    body: String,
+    /// How many entries have been added, so a collision can be numbered.
+    count: usize,
+}
+
+impl PropertyCases {
+    /// An empty table.
+    const fn new() -> Self {
+        Self {
+            body: String::new(),
+            count: 0,
+        }
+    }
+
+    /// Add every definition of one revision.
+    ///
+    /// `module` is the revision's generated module and `definitions` its
+    /// definition names, in the order the schema lists them.
+    fn add(&mut self, revision: &str, module: &str, definitions: &[String]) {
+        let mut used: Vec<String> = Vec::with_capacity(definitions.len());
+        for definition in definitions {
+            let mut ident = format!("case_{}_{}", module, snake(definition));
+            // Two definitions can snake to the same identifier — `Foo-Bar` and
+            // `Foo_Bar` both become `foo_bar`. Numbering the second one keeps
+            // the names unique without making the first one uglier than it has
+            // to be.
+            let mut suffix = 1;
+            while used.contains(&ident) {
+                suffix += 1;
+                ident = format!("case_{}_{}_{suffix}", module, snake(definition));
+            }
+            used.push(ident.clone());
+
+            let _ = writeln!(
+                self.body,
+                "    {revision:?} / {definition:?} as {ident}\n        : protocol_droid_schema::wire::{module}::{},",
+                emit::type_ident(definition)
+            );
+            self.count += 1;
+        }
+    }
+
+    /// Write the table into `out_dir`.
+    fn write(&self, out_dir: &Path) {
+        let mut source = String::with_capacity(self.body.len() + 1024);
+        let () = source.push_str("// GENERATED — do not edit. Produced by `build.rs`.\n");
+        let () = source.push_str("//\n");
+        let () = source.push_str("// One entry per `(revision, definition)` pair the vendored\n");
+        let () =
+            source.push_str("// schemas define, naming the Rust type the generator emits for\n");
+        let () =
+            source.push_str("// that definition. The property suite round-trips a value through\n");
+        let _ = writeln!(source, "// every one of them: {} pairs.", self.count);
+        let () = source.push_str("//\n");
+        let () =
+            source.push_str("// The type path is the generator's own mapping, so a definition\n");
+        let () = source.push_str("// that did not produce a type would fail the test target's\n");
+        let () = source.push_str("// compilation rather than quietly skip the round trip.\n\n");
+        let () = source.push_str("exhaustive_round_trips! {\n");
+        let () = source.push_str(&self.body);
+        let () = source.push_str("}\n");
+
+        let path = out_dir.join("property_cases.rs");
+        if let Err(err) = fs::write(&path, source) {
+            fail(&format!("could not write {}: {err}", path.display()));
+        }
+    }
+}
+
+/// A name in snake case, for a test identifier.
+///
+/// This is the *test* naming rule and not the wire naming rule: the wire names
+/// come from the schema and are reproduced exactly, while a test identifier
+/// only has to be unique and readable. Runs of capitals stay together, so
+/// `JSONRPCRequest` becomes `jsonrpc_request` rather than
+/// `j_s_o_n_r_p_c_request`.
+fn snake(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    let chars: Vec<char> = name.chars().collect();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if ch.is_ascii_uppercase() {
+            let previous_is_lower =
+                index > 0 && chars.get(index - 1).is_some_and(char::is_ascii_lowercase);
+            let next_is_lower = chars.get(index + 1).is_some_and(char::is_ascii_lowercase);
+            if index > 0 && (previous_is_lower || next_is_lower) {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
 }
 
 /// Abort the build with a diagnostic.

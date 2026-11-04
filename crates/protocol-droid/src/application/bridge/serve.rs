@@ -689,6 +689,14 @@ const fn refusal(error: &BridgeError) -> (i64, &'static str) {
             METHOD_NOT_FOUND,
             "the bridge has no rule for this method on the cross-protocol codec",
         ),
+        // A payload the bridge could not read is the caller's mistake, and
+        // `-32602` is the code that says so: the message was understood
+        // well enough to be rejected on its shape.
+        #[cfg(feature = "a2a")]
+        BridgeError::Malformed { .. } => (
+            INVALID_REQUEST,
+            "the message did not fit the shape its protocol requires",
+        ),
     }
 }
 

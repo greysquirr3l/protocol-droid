@@ -9,6 +9,60 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+### Changed
+
+- **The cross-protocol bridge is two protocol adapters and one composition,
+  not a hand-written translator for every pair of protocols.** (`2289b30c`,
+  `crates/protocol-droid/src/application/bridge/protocol_adapter.rs`,
+  `crates/protocol-droid/src/application/bridge/mcp_adapter.rs`,
+  `crates/protocol-droid/src/application/bridge/a2a_adapter.rs`,
+  `crates/protocol-droid/src/application/bridge/composed.rs`) The MCP ↔ A2A
+  translation was a pair of functions that knew both vocabularies — one that
+  turned `SendMessage` into `tools/call`, one that turned it back. A third
+  protocol would have needed two more, and the pair nobody wrote about would
+  have been the pair nobody tested.
+
+  The translation now lives in per-protocol adapters behind a
+  `ProtocolAdapter` seam, and `ComposedCodec` puts two of them together:
+  lift on the way out, lower on the way back, with the IR in between. An
+  adapter knows one protocol and does not mention the other, so a bridge
+  between two protocols nobody wrote a translator for works the same way as
+  the one that was.
+
+  The IR gained the types the adapters meet at — `IrCall`, `IrMethod` and
+  `IrOutcome` at `crates/protocol-droid/src/domain/ir/call.rs` — and a loss
+  that has no counterpart on the other side is now recorded in the
+  translation report rather than dropped in silence: an A2A part with no MCP
+  counterpart, a task's artifacts, and structured content with no A2A
+  counterpart are all reported.
+
+  `CrossBridgePeer::new` lost its `downstream_side` parameter. The codec is
+  built from a downstream adapter and an upstream adapter, so it knows which
+  side it is; a caller that passed the side separately could disagree with
+  the codec, and the disagreement would have shown up as a method the bridge
+  refused for no visible reason.
+
+### Fixed
+
+- **The A2A leg of the bridge sent the agent arguments it could not read.**
+  (`2289b30c`,
+  `crates/protocol-droid/src/application/bridge/a2a_adapter.rs`) An MCP
+  `tools/call` carried `arguments` as an object, and the bridge put it on the
+  A2A wire inside a data part as `{"data": {"data": {…}}}`. The agent read
+  the call's arguments out of the nested object rather than the object
+  itself, so a tool that expected `{"query": "weather"}` was handed
+  `{"data": {"query": "weather"}}`.
+
+- **The A2A leg of the bridge wrote a `kind` key the spec does not name.**
+  (`2289b30c`,
+  `crates/protocol-droid/src/application/bridge/a2a_adapter.rs`) A part was
+  written as `{"kind": "data", "data": {…}}`. The spec's part shape is the
+  proto's `oneof content`: the object has exactly one of `text`, `file` or
+  `data` as a top-level field, with no discriminator. That is what the
+  crate's own A2A server sends, what the A2A conformance fixtures expect,
+  and what the vendored `a2a.proto` describes — so the bridge was speaking
+  a dialect of A2A that the rest of the crate does not speak.
+
 ## [0.7.0] — 2026-10-27
 
 A minor, and the reason is that the answer to "which revision is this

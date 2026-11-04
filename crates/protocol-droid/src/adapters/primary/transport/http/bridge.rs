@@ -34,12 +34,13 @@
 //! tail like any other answer — one path, whatever the reason.
 
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::adapters::primary::transport::http::reaper::{IdleReaper, IdleSessions, ReaperHandle};
 use crate::adapters::primary::transport::http::router::{
     EventSource, Inbound, RequestHandler, Unsessioned,
 };
@@ -64,6 +65,52 @@ const TAIL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(64) {
     None => NonZeroUsize::MIN,
 };
 
+/// Messages a session may have queued for its loop before `POST`s are refused.
+///
+/// A loop answers one message at a time and waits on the upstream for each, so
+/// a client posting faster than the upstream replies would otherwise grow the
+/// queue without limit. Past this, the client is told to slow down.
+const INBOX_CAPACITY: usize = 256;
+
+/// Told to the operator when a client's loop ends in an error.
+///
+/// A clean hang-up is not reported. What is: an upstream the bridge could not
+/// reach, and a client channel that failed. The error's text names neither the
+/// session id nor any credential.
+#[derive(Clone)]
+pub struct SessionReport(Arc<dyn Fn(&BridgeClientError) + Send + Sync>);
+
+impl SessionReport {
+    /// Calls `report` with each error a client's loop ends in.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protocol_droid::adapters::primary::transport::http::SessionReport;
+    ///
+    /// let report = SessionReport::new(|error| eprintln!("bridge session ended: {error}"));
+    /// # let _ = report;
+    /// ```
+    pub fn new(report: impl Fn(&BridgeClientError) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(report))
+    }
+}
+
+impl core::fmt::Debug for SessionReport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SessionReport(..)")
+    }
+}
+
+/// Why a message could not be queued for its session's loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushError {
+    /// The loop is behind by [`INBOX_CAPACITY`] messages.
+    Full,
+    /// The loop has ended.
+    Closed,
+}
+
 /// One client's conversation with the bridge.
 ///
 /// The tail and the inbox are one type because the router needs the tail to
@@ -77,7 +124,7 @@ pub struct BridgeSession {
     /// Held exactly as long as the session. The loop owns the other end, and
     /// dropping this is what ends its `next_frame` with `None` — a task
     /// parked forever on a channel nobody will write to is the alternative.
-    inbox: mpsc::UnboundedSender<String>,
+    inbox: mpsc::Sender<String>,
 }
 
 impl EventSource for BridgeSession {
@@ -94,7 +141,7 @@ impl BridgeSession {
     /// frame on the floor, and the type system is the one place that can say
     /// so once rather than at every call site.
     fn new() -> (Self, HttpFrameSource) {
-        let (inbox, frames) = mpsc::unbounded_channel();
+        let (inbox, frames) = mpsc::channel(INBOX_CAPACITY);
         let session = Self {
             tail: EventTail::new(TAIL_CAPACITY),
             inbox,
@@ -110,8 +157,11 @@ impl BridgeSession {
     /// A closed channel means the loop has ended, and that is this `POST`
     /// arriving after its conversation finished — which a client does when it
     /// retries a message whose reply it never saw.
-    fn push(&self, frame: String) -> Result<(), ()> {
-        self.inbox.send(frame).map_err(|_| ())
+    fn push(&self, frame: String) -> Result<(), PushError> {
+        self.inbox.try_send(frame).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => PushError::Full,
+            mpsc::error::TrySendError::Closed(_) => PushError::Closed,
+        })
     }
 
     /// The sink this session's replies go out on.
@@ -124,7 +174,7 @@ impl BridgeSession {
 
 /// Pulls one session's messages, one `POST` at a time.
 struct HttpFrameSource {
-    frames: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>>,
+    frames: Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
 }
 
 impl core::fmt::Debug for HttpFrameSource {
@@ -147,7 +197,7 @@ impl FrameSource for HttpFrameSource {
             // `next_frame` would be a bug rather than a case to serve.
             let mut receiver = frames.lock().await;
             // The channel's own close is the end of the conversation — every
-            // sender gone means the session was terminated. An unbounded
+            // sender gone means the session was terminated. A
             // channel reports that as `None` rather than an error, which is
             // right: a client hanging up is not a fault, and `None` is the
             // loop's cue to finish.
@@ -187,6 +237,7 @@ struct BridgeHandler<U, C> {
     config: DownstreamConfig,
     policy: DegradePolicy,
     codec: C,
+    report: Option<SessionReport>,
 }
 
 impl<U, C> BridgeHandler<U, C> {
@@ -204,6 +255,7 @@ impl<U, C> BridgeHandler<U, C> {
             config,
             policy,
             codec,
+            report: None,
         }
     }
 }
@@ -279,17 +331,23 @@ where
         let config = self.config.clone();
         let policy = self.policy;
         let codec = self.codec.clone();
+        let report = self.report.clone();
 
         async move {
             let frame = frame?;
             match session? {
                 Some(session) => {
-                    session
-                        .push(frame)
-                        .map_err(|()| Refusal::Handler("this session has ended".to_owned()))?;
+                    session.push(frame).map_err(|error| match error {
+                        // A `429` and not a `503`: the session is fine, its
+                        // client is ahead of it, and `Retry-After` tells it so.
+                        PushError::Full => Refusal::RateLimited {
+                            retry_after: NonZeroU64::MIN,
+                        },
+                        PushError::Closed => Refusal::Handler("this session has ended".to_owned()),
+                    })?;
                     Ok(accepted())
                 }
-                None => Self::open(&sessions, upstream, config, policy, codec, frame),
+                None => Self::open(&sessions, upstream, config, policy, codec, report, frame),
             }
         }
     }
@@ -313,6 +371,7 @@ where
         config: DownstreamConfig,
         policy: DegradePolicy,
         codec: C,
+        report: Option<SessionReport>,
         frame: String,
     ) -> Result<axum::response::Response, Refusal> {
         let (session, source) = BridgeSession::new();
@@ -326,19 +385,19 @@ where
             .map_err(|error| Refusal::Handler(format!("no session for the client: {error}")))?;
 
         tokio::spawn(async move {
-            // A client hanging up ends the loop, and that is not a fault worth
-            // reporting. Anything else is dropped here, and that is a real gap
-            // rather than a design choice: this crate has no logger, so there
-            // is nowhere to put it, and the client learns the same thing by
-            // watching its stream close. The operator does not. Closing that
-            // wants a `LoopReport` the `GET` route can answer on, not a
-            // print.
-            let _ = run_client(upstream.as_ref(), policy, config, codec, source, sink).await;
+            // A client hanging up ends the loop cleanly and is not a fault.
+            // Anything else goes to the operator's report, when there is one.
+            if let Err(error) =
+                run_client(upstream.as_ref(), policy, config, codec, source, sink).await
+                && let Some(report) = report
+            {
+                (report.0)(&error);
+            }
         });
 
         session
             .push(frame)
-            .map_err(|()| Refusal::Handler("the new session has ended".to_owned()))?;
+            .map_err(|_| Refusal::Handler("the new session has ended".to_owned()))?;
         accepted_with(id)
     }
 }
@@ -359,6 +418,11 @@ pub enum BridgeServeError {
     /// A client's loop ended.
     #[error(transparent)]
     Client(#[from] BridgeClientError),
+    /// The session store keeps no idle bookkeeping, so it cannot be reaped.
+    #[error(
+        "the session store was built without an idle reaper; use SessionStore::with_idle_reaper"
+    )]
+    StoreCannotReap,
     /// The address could not be bound, or the accept loop failed.
     #[error("could not serve on {addr}: {source}")]
     Bind {
@@ -375,6 +439,7 @@ pub struct HttpBridge<U, C> {
     config: ServerConfig,
     sessions: Arc<SessionStore<BridgeSession>>,
     handler: BridgeHandler<U, C>,
+    idle_reaper: Option<IdleReaper>,
 }
 
 impl<U, C> HttpBridge<U, C>
@@ -415,7 +480,35 @@ where
                 policy,
                 codec,
             ),
+            idle_reaper: None,
         })
+    }
+
+    /// Evicts sessions idle for longer than `reaper`'s window.
+    ///
+    /// Each session holds a task and an upstream connection, so a client that
+    /// opens one and walks away costs the bridge both until this runs. Off
+    /// unless asked for, because the bridge was handed its store and cannot
+    /// know what else shares it.
+    ///
+    /// # Errors
+    ///
+    /// [`BridgeServeError::StoreCannotReap`] when the store was built without
+    /// [`SessionStore::with_idle_reaper`]: it would keep no record of when a
+    /// session was last used, and reaping it would silently do nothing.
+    pub fn with_idle_reaper(mut self, reaper: IdleReaper) -> Result<Self, BridgeServeError> {
+        if !self.sessions.reaps_idle() {
+            return Err(BridgeServeError::StoreCannotReap);
+        }
+        self.idle_reaper = Some(reaper);
+        Ok(self)
+    }
+
+    /// Reports each client loop that ends in an error.
+    #[must_use]
+    pub fn with_session_report(mut self, report: SessionReport) -> Self {
+        self.handler.report = Some(report);
+        self
     }
 
     /// The router, for a caller that wants to serve it itself.
@@ -446,6 +539,9 @@ where
     /// [`BridgeServeError::Bind`] when the address is taken or unusable, and
     /// `BridgeServeError::Router` for an illegal configured header.
     pub async fn bind(self, addr: SocketAddr) -> Result<(Bound, SocketAddr), BridgeServeError> {
+        let reaper = self
+            .idle_reaper
+            .map(|reaper| (reaper, Arc::clone(&self.sessions)));
         let router = self.into_router()?;
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -458,6 +554,7 @@ where
                 router,
                 listener,
                 addr: bound,
+                reaper,
             },
             bound,
         ))
@@ -489,6 +586,7 @@ pub struct Bound {
     router: axum::Router,
     listener: tokio::net::TcpListener,
     addr: SocketAddr,
+    reaper: Option<(IdleReaper, Arc<SessionStore<BridgeSession>>)>,
 }
 
 impl Bound {
@@ -505,6 +603,11 @@ impl Bound {
     ///
     /// [`BridgeServeError::Bind`] if the socket fails while serving.
     pub async fn serve(self) -> Result<(), BridgeServeError> {
+        // Held until the accept loop returns, which is when the sweeping
+        // should stop too.
+        let _reaper: Option<ReaperHandle> = self
+            .reaper
+            .map(|(reaper, store)| reaper.start(vec![store as Arc<dyn IdleSessions>]));
         axum::serve(self.listener, self.router)
             .await
             .map_err(|source| BridgeServeError::Bind {
@@ -641,10 +744,10 @@ mod tests {
         let (session, source) = session();
         session
             .push("first".to_owned())
-            .map_err(|()| "the loop had ended")?;
+            .map_err(|_| "the loop had ended")?;
         session
             .push("second".to_owned())
-            .map_err(|()| "the loop had ended")?;
+            .map_err(|_| "the loop had ended")?;
 
         // Two clients' frames cannot be told apart here, because the source
         // only ever belongs to one session. That is the point: there is no
@@ -655,6 +758,37 @@ mod tests {
             return Err(format!("the source yielded {first:?} then {second:?}").into());
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_client_ahead_of_its_loop_is_refused_instead_of_queued_without_end()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (session, source) = session();
+        for _ in 0..super::INBOX_CAPACITY {
+            session
+                .push("queued".to_owned())
+                .map_err(|_| "the inbox filled early")?;
+        }
+        assert_eq!(
+            session.push("one too many".to_owned()),
+            Err(super::PushError::Full)
+        );
+
+        // Draining one makes room again: the refusal is about being behind,
+        // not about the session being finished.
+        source.next_frame().await?;
+        assert_eq!(session.push("fits".to_owned()), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_push_after_the_loop_ended_says_closed_and_not_full() {
+        let (session, source) = session();
+        drop(source);
+        assert_eq!(
+            session.push("late".to_owned()),
+            Err(super::PushError::Closed)
+        );
     }
 
     #[tokio::test]

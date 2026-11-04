@@ -331,6 +331,21 @@ pub enum BridgeError {
         /// The protocol side the call came in on.
         downstream: crate::application::bridge::ProtocolSide,
     },
+
+    /// A message on one leg did not fit the shape that leg's protocol
+    /// requires.
+    ///
+    /// The bridge refuses a payload it cannot read rather than handing
+    /// the upstream something that will fail there with a less useful
+    /// error, and rather than guessing at a shape the peer did not send.
+    #[cfg(feature = "a2a")]
+    #[error("the {side:?} payload did not fit its shape: {detail}")]
+    Malformed {
+        /// The protocol whose shape was not met.
+        side: crate::application::bridge::ProtocolSide,
+        /// What was wrong, in the adapter's words.
+        detail: String,
+    },
 }
 
 /// What one forward produced.

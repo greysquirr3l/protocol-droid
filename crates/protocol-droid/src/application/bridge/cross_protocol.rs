@@ -38,6 +38,8 @@
 
 use serde_json::{Map, Value};
 
+use crate::domain::ir::IrMethod;
+
 /// The two sides of a cross-protocol translation, recorded for the operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProtocolSide {
@@ -49,43 +51,12 @@ pub enum ProtocolSide {
 }
 
 impl ProtocolSide {
-    /// The wire method name the bridge will hand to the peer on this side.
-    ///
-    /// Returns `None` when the bridge cannot express the method on this
-    /// side at all — the caller refuses the call rather than sending a
-    /// method name the peer will reject as `-32601`.
-    ///
-    /// The first arm is the row an A2A client hits: it called
-    /// `SendMessage`, the bridge lifts that to the IR name `SendMessage`,
-    /// and the codec now needs the wire name the *upstream* peer
-    /// (the MCP agent) reads, which is `tools/call`. The second arm
-    /// is the mirror case: an MCP client called `tools/call`, the
-    /// bridge lifted to the IR name `tools/call`, and the upstream
-    /// (an A2A agent) reads `SendMessage`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use protocol_droid::application::bridge::ProtocolSide;
-    ///
-    /// assert_eq!(
-    ///     ProtocolSide::A2a.wire_method("SendMessage"),
-    ///     Some("tools/call")
-    /// );
-    /// assert_eq!(
-    ///     ProtocolSide::Mcp.wire_method("tools/call"),
-    ///     Some("SendMessage")
-    /// );
-    /// ```
+    /// The side's name, for a report or an error message.
     #[must_use]
-    pub fn wire_method(self, ir_method: &str) -> Option<&'static str> {
-        match (self, ir_method) {
-            (Self::A2a, "SendMessage") => Some("tools/call"),
-            (Self::Mcp, "tools/call") => Some("SendMessage"),
-            // The two protocols' other methods have no IR counterpart yet.
-            // The bridge refuses them with `MethodNotBridged` rather than
-            // forwarding a name the peer will reject.
-            _ => None,
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::A2a => "a2a",
+            Self::Mcp => "mcp",
         }
     }
 }
@@ -153,6 +124,18 @@ pub enum RequestCodecStep {
         /// What the IR reply shape is, in human terms.
         to: &'static str,
     },
+    /// Something in the payload had no counterpart on the other side and
+    /// was left behind.
+    ///
+    /// A loss is recorded rather than passed over in silence: the bridge
+    /// cannot always carry every part of a message across, and an operator
+    /// reading the report has to be able to see that it did not.
+    Dropped {
+        /// What was left behind, in human terms.
+        what: &'static str,
+        /// How many.
+        count: usize,
+    },
 }
 
 impl core::fmt::Display for RequestCodecStep {
@@ -166,6 +149,9 @@ impl core::fmt::Display for RequestCodecStep {
             }
             Self::ReplyTranslated { from, to } => {
                 write!(formatter, "reply {from} → {to}")
+            }
+            Self::Dropped { what, count } => {
+                write!(formatter, "dropped {count} × {what}")
             }
         }
     }
@@ -196,6 +182,20 @@ pub enum CrossProtocolError {
     /// hit the gap.
     #[error("method {0:?} is not bridged between {1:?} and the upstream")]
     MethodNotBridged(String, ProtocolSide),
+    /// The wire shape did not fit the protocol it arrived on.
+    ///
+    /// A peer sent something the adapter cannot read — a `tools/call`
+    /// whose `arguments` is not an object, an A2A message whose `parts`
+    /// is not an array. The bridge reports it as a bad request rather
+    /// than forwarding a shape the upstream would reject with an error
+    /// of its own.
+    #[error("the {side:?} payload did not fit its shape: {detail}")]
+    MalformedPayload {
+        /// The protocol whose shape was not met.
+        side: ProtocolSide,
+        /// What was wrong, in the adapter's words.
+        detail: String,
+    },
 }
 
 /// A codec that translates request and reply envelopes between the
@@ -207,47 +207,60 @@ pub enum CrossProtocolError {
 /// the other), and a `BridgePeer` for the upstream is a real connection
 /// to that agent.
 ///
-/// # Why the trait takes `Leg` not `ProtocolVersion`
+/// # Why the codec is a pair of adapters rather than a translator
 ///
-/// The downstream leg's `ProtocolVersion` says which MCP revision the
-/// client negotiated. The cross-protocol decision is bigger than that —
-/// it is "is this MCP at all, or is it A2A?" — and `Leg` already carries
-/// the protocol shape. A bridge that only sees one leg's protocol can
-/// answer "MCP" or "A2A" and skip the per-revision question entirely,
-/// which is what the per-revision `ToolResultCodec` is for on the way
-/// back.
+/// The obvious shape for this trait is "a translator that knows how to
+/// turn protocol A's request into protocol B's". That shape does not
+/// scale past two protocols: A-to-B, B-to-A, A-to-C, C-to-A, B-to-C, C-to-B
+/// is six translators for three protocols, and each one is hand-written
+/// from the same two vocabularies.
 ///
-/// # Why the codec takes the raw downstream envelope, not just the IR
+/// This trait is instead a *composition*. A codec is built from two
+/// [`ProtocolAdapter`](super::ProtocolAdapter)s — one per side — and the translation is
+/// `lift` on the downstream side, `lower` on the upstream side, with the
+/// IR's [`IrCall`](crate::domain::ir::IrCall) in between. The per-protocol knowledge lives in the
+/// adapter, so the number of pieces of translation code is the number of
+/// protocols, not the number of pairs. The composition itself is a struct
+/// of two references and no logic.
 ///
-/// The IR is protocol-agnostic at the method-name level (it carries the
-/// canonical name the bridge has assigned), but the *parameters* are
-/// opaque: a `tools/call` `arguments` value is just an entry in
-/// `IrParams`, indistinguishable from a `SendMessage` `message` field.
-/// The codec needs the raw wire shape to know which entry is which, so
-/// it re-reads `raw_envelope` rather than trying to re-derive the shape
-/// from the IR. The bridge already has both — the IR for routing, the
-/// raw envelope for translation.
+/// # Why the method is an `IrMethod` and not a string
+///
+/// The bridge routes on a protocol-neutral method. `IrMethod::Call` is
+/// what an MCP `tools/call` and an A2A `SendMessage` both are; the wire
+/// names are the adapters' business. A string parameter would put the
+/// protocol's vocabulary back into the seam, which is the thing this
+/// trait exists to remove.
 pub trait CrossProtocolCodec: Send + Sync + core::fmt::Debug {
-    /// The protocol this codec expects the downstream leg to speak.
+    /// The protocol the downstream leg speaks.
     fn downstream_protocol(&self) -> ProtocolSide;
+
+    /// The protocol the upstream leg speaks.
+    fn upstream_protocol(&self) -> ProtocolSide;
+
+    /// The canonical IR method a downstream wire method lifts into.
+    ///
+    /// Returns `None` when this codec cannot bridge the method — the
+    /// bridge refuses the call with `-32601 Method not found` rather than
+    /// forwarding a name the upstream would reject with an error of its
+    /// own.
+    fn ir_method(&self, downstream_method: &str) -> Option<IrMethod>;
 
     /// Translates a downstream request envelope into the upstream's wire form.
     ///
-    /// `downstream_side` is the protocol the downstream leg speaks
-    /// (A2A or MCP). `ir_method` is the canonical method name the
-    /// bridge has assigned (e.g. `SendMessage` for an A2A call,
-    /// `tools/call` for an MCP call). `raw_envelope` is the
-    /// downstream's original wire shape, so the codec can read the
-    /// parameters in their native form.
+    /// `ir_method` is the canonical method the bridge assigned, which
+    /// `ir_method` resolved from the downstream's wire name.
+    /// `raw_envelope` is the downstream's original wire shape, so the
+    /// codec can read the parameters in their native form.
     ///
     /// # Errors
     ///
     /// [`CrossProtocolError::MethodNotBridged`] if the method is one
-    /// this codec has no rule for.
+    /// this codec has no rule for, and
+    /// [`CrossProtocolError::MalformedPayload`] if the downstream's
+    /// payload does not fit the shape its protocol requires.
     fn encode_request(
         &self,
-        downstream_side: ProtocolSide,
-        ir_method: &str,
+        ir_method: &IrMethod,
         raw_envelope: &Map<String, Value>,
         report: &mut RequestCodecReport,
     ) -> Result<Map<String, Value>, CrossProtocolError>;
@@ -255,8 +268,7 @@ pub trait CrossProtocolCodec: Send + Sync + core::fmt::Debug {
     /// Translates an upstream reply envelope back into the downstream's
     /// wire form.
     ///
-    /// `downstream_side` is the protocol the downstream leg speaks.
-    /// `ir_method` is the canonical method name the request carried; the
+    /// `ir_method` is the canonical method the request carried; the
     /// codec uses it to know which reply shape to expect (an A2A `Task`
     /// reply for a `SendMessage` request, a `Content` list for a
     /// `tools/call` request).
@@ -266,8 +278,7 @@ pub trait CrossProtocolCodec: Send + Sync + core::fmt::Debug {
     /// The same set of errors as [`encode_request`](Self::encode_request).
     fn decode_reply(
         &self,
-        downstream_side: ProtocolSide,
-        ir_method: &str,
+        ir_method: &IrMethod,
         reply: &Map<String, Value>,
         report: &mut RequestCodecReport,
     ) -> Result<Map<String, Value>, CrossProtocolError>;
@@ -278,25 +289,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_a2a_downstream_calling_send_message_lets_the_codec_route_to_tools_call() {
-        assert_eq!(
-            ProtocolSide::A2a.wire_method("SendMessage"),
-            Some("tools/call")
-        );
-    }
-
-    #[test]
-    fn an_mcp_downstream_calling_tools_call_lets_the_codec_route_to_send_message() {
-        assert_eq!(
-            ProtocolSide::Mcp.wire_method("tools/call"),
-            Some("SendMessage")
-        );
-    }
-
-    #[test]
-    fn an_unknown_method_returns_none_on_both_sides() {
-        assert_eq!(ProtocolSide::Mcp.wire_method("GetTask"), None);
-        assert_eq!(ProtocolSide::A2a.wire_method("resources/list"), None);
+    fn a_side_names_itself_for_a_report() {
+        assert_eq!(ProtocolSide::A2a.name(), "a2a");
+        assert_eq!(ProtocolSide::Mcp.name(), "mcp");
     }
 
     #[test]

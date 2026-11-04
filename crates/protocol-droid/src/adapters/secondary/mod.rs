@@ -4,6 +4,7 @@
 //! (client-side HTTP transports) and T10 (the `Clock` and `IdSource` ports the
 //! domain depends on but must never call globally).
 
+pub mod clock;
 pub mod codec;
 pub mod idempotency;
 // T29. The ACP stdio peer — the driven adapter that
@@ -49,3 +50,8 @@ pub mod stdio;
 // of MCP and a consumer that never speaks A2A should not pay it.
 #[cfg(feature = "a2a")]
 pub mod a2a;
+// T31. The UTCP client side: fetching a provider's manual and making the
+// call it describes. Gated on the `utcp` feature, which is also what pulls
+// the HTTP stack these two need.
+#[cfg(feature = "utcp")]
+pub mod utcp;

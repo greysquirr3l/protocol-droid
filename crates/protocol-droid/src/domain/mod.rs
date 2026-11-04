@@ -49,6 +49,14 @@ pub mod session;
 mod stream;
 mod supported_versions;
 mod transport;
+// T31. The UTCP (Universal Tool Calling Protocol) domain value objects:
+// the manual, the tool, the call template, the authentication block, and
+// the version. UTCP has no envelope and no session, so this module holds a
+// document and the call it describes rather than the wire types the codecs
+// lift. Gated on the `utcp` feature, which is what the HTTP adapters that
+// read and write manuals are gated on too.
+#[cfg(feature = "utcp")]
+pub mod utcp;
 
 pub use bridge::{Agreement, Leg, RefusedBy, Withheld, agree};
 pub use capability::{

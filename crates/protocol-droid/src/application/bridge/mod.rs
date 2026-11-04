@@ -15,11 +15,19 @@ mod unsolicited;
 mod upstream;
 
 #[cfg(feature = "a2a")]
+mod a2a_adapter;
+#[cfg(feature = "a2a")]
 mod a2a_mcp_codec;
+#[cfg(feature = "a2a")]
+mod composed;
 #[cfg(feature = "a2a")]
 mod cross_bridge_peer;
 #[cfg(feature = "a2a")]
 mod cross_protocol;
+#[cfg(feature = "a2a")]
+mod mcp_adapter;
+#[cfg(feature = "a2a")]
+mod protocol_adapter;
 
 pub use content::{ToolResultCodec, Translated, Translator};
 pub use downstream::{Downstream, DownstreamConfig, DownstreamError, Identity};
@@ -30,13 +38,21 @@ pub use unsolicited::Unsolicited;
 pub use upstream::{BridgeClientError, OpenedUpstream, Upstream, UpstreamError, run_client};
 
 #[cfg(feature = "a2a")]
+pub use a2a_adapter::A2aAdapter;
+#[cfg(feature = "a2a")]
 pub use a2a_mcp_codec::A2aMcpCodec;
+#[cfg(feature = "a2a")]
+pub use composed::ComposedCodec;
 #[cfg(feature = "a2a")]
 pub use cross_bridge_peer::CrossBridgePeer;
 #[cfg(feature = "a2a")]
 pub use cross_protocol::{
     CrossProtocolCodec, CrossProtocolError, ProtocolSide, RequestCodecReport, RequestCodecStep,
 };
+#[cfg(feature = "a2a")]
+pub use mcp_adapter::McpAdapter;
+#[cfg(feature = "a2a")]
+pub use protocol_adapter::{ProtocolAdapter, WireRequest};
 
 /// Settles the downstream leg of a handshake.
 ///

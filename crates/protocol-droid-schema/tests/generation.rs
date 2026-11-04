@@ -260,3 +260,88 @@ fn generated_source_is_syntactically_plausible() {
         );
     }
 }
+
+/// Words rustc will not take as a bare field name in edition 2024.
+const KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
+    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
+    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
+    "return", "self", "Self", "static", "struct", "super", "trait", "true", "try", "type",
+    "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+];
+
+/// The four words rustc rejects even as raw identifiers.
+const NOT_RAW: &[&str] = &["self", "Self", "super", "crate"];
+
+/// Every object schema in `schema`, itself included, with inline ones nested
+/// under a property reached too.
+fn object_schemas<'a>(schema: &'a schema_model::Schema, out: &mut Vec<&'a schema_model::Schema>) {
+    out.push(schema);
+    for property in schema.properties.values() {
+        object_schemas(property, out);
+    }
+}
+
+/// A field identifier is legal when the compiler takes it as written and
+/// `clippy::pub_underscore_fields` has nothing to say about it.
+fn is_legal_field(ident: &str) -> bool {
+    let (raw, name) = ident
+        .strip_prefix("r#")
+        .map_or((false, ident), |rest| (true, rest));
+    let mut chars = name.chars();
+    let starts_well = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || (c == '_' && !raw && name.len() > 1));
+    let body_ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let keyword = KEYWORDS.contains(&name);
+    starts_well
+        && body_ok
+        && !name.starts_with('_')
+        && if raw {
+            keyword && !NOT_RAW.contains(&name)
+        } else {
+            !keyword
+        }
+}
+
+#[test]
+fn no_two_members_of_one_object_share_a_field_identifier() {
+    for (revision, _) in REVISIONS {
+        let (file, _) = generated(revision);
+        for (def, schema) in &file.defs {
+            let mut objects = Vec::new();
+            object_schemas(schema, &mut objects);
+            for object in objects {
+                let mut seen = BTreeSet::new();
+                for name in object.merged_properties(&file.defs).keys() {
+                    let ident = emit::field_ident(name);
+                    assert!(
+                        seen.insert(ident.clone()),
+                        "{revision}: {def}: member {name:?} collapses to {ident:?}, \
+                         which another member already took"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_member_of_every_revision_gets_a_legal_field_identifier() {
+    for (revision, _) in REVISIONS {
+        let (file, _) = generated(revision);
+        for (def, schema) in &file.defs {
+            let mut objects = Vec::new();
+            object_schemas(schema, &mut objects);
+            for object in objects {
+                for name in object.merged_properties(&file.defs).keys() {
+                    let ident = emit::field_ident(name);
+                    assert!(
+                        is_legal_field(&ident),
+                        "{revision}: {def}: member {name:?} became {ident:?}"
+                    );
+                }
+            }
+        }
+    }
+}
