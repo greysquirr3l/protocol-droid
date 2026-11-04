@@ -769,16 +769,17 @@ fn emit_tag_dispatch(
     let _ = writeln!(
         source,
         "        let value = serde_json::Value::deserialize(deserializer)?;\n\
-         \x20       let tag = value\n            .get(\"{property}\")\n            .and_then(serde_json::Value::as_str)\n            .ok_or_else(|| serde::de::Error::custom(\"a `{doc_name}` must carry a `{property}` string\"))?;\n\
+         \x20       let tag = value\n            .get(\"{property}\")\n            .and_then(serde_json::Value::as_str)\n            .ok_or_else(|| serde::de::Error::custom(\"a `{union}` must carry a `{property}` string\"))?;\n\
          \x20       match tag {{",
-        property = discriminator.property
+        property = discriminator.property,
+        union = doc_name
     );
     for (i, tag) in discriminator.values.iter().enumerate() {
         let _ = writeln!(
             source,
             "            \"{tag}\" => serde_json::from_value(value)\n                \
              .map({ident}::Member{i})\n                \
-             .map_err(<D::Error as serde::de::Error>::custom),"
+             .map_err(<D::Error as serde::de::Error>::custom),",
         );
     }
     let _ = writeln!(
@@ -893,8 +894,9 @@ fn emit_shape_dispatch(source: &mut String, ident: &str, doc_name: &str, members
     for (i, member) in members.iter().enumerate() {
         let _ = writeln!(
             source,
-            "                {i} => <{ty} as serde::Deserialize>::deserialize(&value)\n                    \
-             .map({ident}::Member{i}),",
+            "                {index} => <{ty} as serde::Deserialize>::deserialize(&value)\n                    \
+             .map({ident}::Member{index}),",
+            index = i,
             ty = member.render()
         );
     }
