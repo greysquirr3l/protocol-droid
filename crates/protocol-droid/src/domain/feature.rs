@@ -40,7 +40,7 @@
 //!   well-formed URL naming the revision the row is attributed to.
 //! - `every_variant_doc_comment_carries_its_citation` reads this file back and
 //!   checks that each variant's doc comment really carries its row's URL.
-//! - `every_row_is_cited_and_ordered` checks the ordering half: a removal must
+//! - `every_row_names_known_revisions_in_order` checks the ordering half: a removal must
 //!   be attributed to a revision strictly after the one that added it.
 //! - `the_table_covers_every_feature_exactly_once` checks that the table and
 //!   the enum agree on which features exist.
@@ -1519,7 +1519,7 @@ mod tests {
     /// added it, and must name known revisions. This is the half of "every row
     /// cites the spec" that can be checked mechanically.
     #[test]
-    fn every_row_is_cited_and_ordered() {
+    fn every_row_names_known_revisions_in_order() {
         for spec in FEATURES {
             assert!(
                 spec.first.is_known(),

@@ -1496,7 +1496,7 @@ pub fn field_ident(name: &str) -> String {
     let snake = to_snake(name);
     if NOT_RAW_IDENTIFIABLE.contains(&snake.as_str()) {
         format!("{snake}_")
-    } else if RESERVED.iter().any(|r| *r == snake) {
+    } else if is_keyword(&snake) {
         format!("r#{snake}")
     } else if snake.starts_with(|c: char| c.is_ascii_digit()) {
         // Checked before the underscore trim below, which would strip the very
