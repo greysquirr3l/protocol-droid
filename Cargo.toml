@@ -158,7 +158,15 @@ exclude = [
 # crates.io goes 0.6.0 -> 0.7.0 with nothing at 0.6.1. Its contents are
 # folded in below rather than lost. The version was skipped, not backfilled,
 # and the CHANGELOG says so in as many words.
-version = "0.7.0"
+#
+# 0.8.0 is a minor because an HTTP server now behaves differently without
+# being asked to: `HttpBuilder` evicts a session that has been idle for 30
+# minutes. A client that held a session open and sent nothing used to keep it
+# indefinitely, and now gets `404` and starts a new one, which is what the
+# specification tells it to do. `without_idle_reaper()` restores the old
+# behaviour. The same release adds UTCP, ACP and the protocol-adapter bridge,
+# none of which changes an existing signature except `CrossBridgePeer::new`.
+version = "0.8.0"
 edition = "2024"
 # Published MSRV floor. The `channel` in rust-toolchain.toml is the toolchain we
 # develop and test on; this is the oldest compiler a consumer may build against.
@@ -189,9 +197,9 @@ keywords = ["mcp", "jsonrpc", "model-context", "protocol"]
 # macros entry exists rather than the library naming `../protocol-droid-macros`
 # directly — one list to bump, and `cargo` cannot resolve a workspace
 # dependency for a crate the workspace forgot to declare.
-protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.7.0" }
-protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.7.0" }
-protocol-droid = { path = "crates/protocol-droid", version = "0.7.0" }
+protocol-droid-schema = { path = "crates/protocol-droid-schema", version = "0.8.0" }
+protocol-droid-macros = { path = "crates/protocol-droid-macros", version = "0.8.0" }
+protocol-droid = { path = "crates/protocol-droid", version = "0.8.0" }
 
 # MSRVs verified with `cargo info` against the 1.98 floor, not inferred from the
 # version the API stabilised in. See PROGRESS.md Accumulated Learnings.
