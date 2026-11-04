@@ -1,0 +1,441 @@
+Please review this codebase
+
+---
+
+Continue any remaining development tasks.  Read .vscode/orchestrator.prompt.md, PROGRESS.md and ```# Primer — protocol-droid schema generator cleanup
+
+Session: `00ecf7f2-acba-4582-a148-8d4c26efc71b`
+Repo: `/Users/ncampbell/Projects/rust/protocol-droid` (branch unknown — check `git status`)
+Written: end of segment, work paused mid-flight at the user's request.
+
+---
+
+## 1. Where the work came from
+
+An earlier review of the schema generator raised three gaps:
+
+1. **Union discrimination is hard-coded.** The generator dispatches union arms on a
+   fixed `type` property. The reviewer's point: the discriminator should be
+   *discovered* — look for a property common to every member whose value is a
+   distinct `const`. Where no member pins a const (2026-07-28's `resultType` is
+   free-form), the untagged fallback is unsafe unless the generic `Result` member
+   sorts most-specific-first, or the build fails rather than emitting a union
+   that silently mis-assigns.
+2. **Feature-matrix citations.** 39 variants: 32 cite a revision, 12 an SEP number,
+   **1 a URL**. `AGENTS.md` requires "a doc comment with the URL".
+   `every_row_is_cited_and_ordered` (`domain/mcp/feature.rs:1184`) only checks the
+   revision is known and ordered — the name over-promises.
+3. **Verification coverage was 9%.** The property suite covered 62 of 708
+   (revision, definition) pairs; the arm-level test covered 5 of 65 tagged unions.
+
+**Gaps 2 and 3 are DONE** (see the commit list in §2). Gap 1 was partially addressed
+by `c22bfd84` (tag dispatch), and the *residual* bug class it documents turned out
+to be the naming layer, which is what this segment is about.
+
+## 2. Commits already landed (relevant, recent)
+
+```
+fc097e9f test(schema): round-trip every definition of every revision   <- closes gap 3
+22cd58bf feat(feature): cite every matrix row with the URL that documents it  <- closes gap 2
+c22bfd84 fix(schema): dispatch union arms on the member that tells them apart  <- gap 1, partial
+9b437d9b style: apply rustfmt to the ACP modules
+```
+
+So the *naming* work below is a cleanup that fell out of gap 1's aftermath, not a
+gap-1 deliverable.
+
+## 3. What this segment actually did
+
+### 3.1 Deleted dead code
+
+`crates/protocol-droid-schema/src/generator/naming.rs` (305 lines) — **deleted, staged**.
+
+It was a *parallel* naming implementation: its own `RUST_KEYWORDS` list, its own
+`words()` / `push_camel_words()` / `field_ident()`, and its own `#[cfg(test)] mod tests`.
+It had **zero callers** — `generator/mod.rs` declares only `pub mod emit;` and
+`pub mod schema_model;`. It survived in the tree because `build.rs` `#[path]`-includes
+`emit.rs` and `schema_model.rs`, so the file compiled without ever being wired to
+anything.
+
+Its naming rules had *drifted* from the live ones in `emit.rs` (it used the
+trailing-underscore convention universally; the live code uses `r#` for keywords).
+Two live bugs were hiding behind the dead file:
+
+### 3.2 Bug #1 — `r#self` / `r#super` / `r#crate` are compile errors
+
+**The dead branch.** The original `field_ident` was:
+
+```rust
+if RESERVED.iter().any(|r| *r == snake) {
+    format!("r#{snake}")          // <-- fires for "self"/"super"/"crate"
+} else if is_keyword(&snake) {
+    format!("{snake}_")           // <-- UNREACHABLE
+}
+```
+
+`is_keyword(name)` is `RESERVED.contains(&name)` — the *same predicate* as the first
+branch. The `else if` could never run, so the trailing-underscore fallback existed in
+source but never executed. Every keyword therefore became `r#word`, and four of those
+are not legal Rust:
+
+> rustc rejects raw-identifier syntax for exactly four words: `self`, `Self`, `super`,
+> `crate`. `r#self` is not an identifier. Neither is bare `self` as a field name.
+
+**The fix** (`emit.rs`, `field_ident`): check a new `NOT_RAW_IDENTIFIABLE` list
+*first* → `{snake}_`; then `RESERVED` → `r#{snake}`; then the pre-existing
+leading-underscore trim; else bare `snake`.
+
+```rust
+const NOT_RAW_IDENTIFIABLE: &[&str] = &["self", "super", "crate"];
+```
+
+The list is matched against the *lowercased snake* form, so a member named `Self`
+arrives as `self` and is covered by that one entry — no separate `"Self"` needed.
+
+### 3.2b Bug #3 (found late, during primer verification) — digit-leading member names
+
+**Not yet fixed.** Found while verifying the primer's claims; recording it here because
+it is the same bug class and it is *not* covered by the two fixes above.
+
+`field_ident` output is used directly as the Rust field name (`emit.rs:1184-1199`
+writes `pub {field}: {ty}`), and `to_snake` does **not** guard a leading digit:
+
+```
+to_snake("2fa")    -> "2fa"
+field_ident("2fa") -> "2fa"      // ILLEGAL — `pub 2fa: u8` does not compile
+```
+
+Verified with rustc, edition 2024:
+
+```
+error: expected identifier, found `2fa`
+help: identifiers cannot start with a number
+```
+
+`pub _2fa: u8` compiles fine. Note the asymmetry: `type_ident` *does* guard this
+(`if i == 0 && ch.is_ascii_digit() { out.push('_') }`, `emit.rs:1467-1470`) — only the
+*field* path is unguarded.
+
+**Why the dead file mattered here.** `naming.rs`'s `field_ident` produced `_2fa`
+(trailing-underscore convention with a leading-underscore guard). The live
+implementation regressed to bare `2fa`. So deleting the dead file did not cause this,
+but the dead file was the only place the case was handled — and it had a test for it
+(`field_ident("2fa") == "_2fa"`).
+
+**Current blast radius: zero.** Scanned all six vendored revisions for property names
+beginning with a digit: **NONE**. So this cannot bite today. It would bite the first
+time upstream ships a member like `"2fa"` — and the failure is a *build* failure in
+the generated crate, not a runtime one, so it would be caught immediately rather than
+silently. Still worth fixing, because the whole point of this segment was to make the
+identifier rules provably correct rather than accidentally correct.
+
+**Suggested fix** (mirrors `type_ident`, and keeps `#[serde(rename)]` doing the wire
+work — the emitter already writes `#[serde(rename = "{prop_name}")]` whenever
+`field != *prop_name`):
+
+```rust
+} else if snake.starts_with(|c: char| c.is_ascii_digit()) {
+    // A member name may start with a digit — upstream's `"2fa"` does. Rust
+    // identifiers may not, so the field gains a leading underscore and keeps
+    // the serde rename back to the wire name.
+    format!("_{snake}")
+}
+```
+
+Order matters: this check must come **before** the leading-underscore-trim branch
+(which would otherwise strip the very underscore that makes it legal), and after the
+`RESERVED` / `NOT_RAW_IDENTIFIABLE` branches.
+
+### 3.3 Bug #2 — `gen` was missing from `RESERVED`
+
+Rust 2024 (this crate's edition) reserves `gen`. It is *not* a strict keyword, but it
+cannot be used as an identifier at all: `type gen = u8;` and `struct gen;` both fail to
+compile in edition 2024, while `type gen_ = u8;` compiles. The old `RESERVED` list had
+no `gen`, so a schema member named `gen` would have emitted a bare `gen` field.
+
+**The fix:** added `"gen"` to `RESERVED`. It now maps to `r#gen` (which *is* legal —
+verified).
+
+Note: `union` was already in `RESERVED` and is not actually reserved in 2024. It was
+left in place deliberately — a plausible MCP member name, and reserving it costs
+nothing. The doc comment on `RESERVED` now says so explicitly.
+
+### 3.4 Verification sweep (all rustc/clippy-verified, not eyeballed)
+
+- rustc keyword matrix: exactly 4 words (`crate`, `self`, `Self`, `super`) are neither
+  bare-legal nor raw-legal; every other reserved word works as `r#word`.
+- `r#union`, `r#typeof`, `r#become`, `r#gen`, `r#try`, `r#box` all compile.
+- Real clippy run on candidate identifiers: `pub _meta: u8` trips
+  `clippy::pub_underscore_fields` — this confirms the existing leading-underscore
+  trim in `field_ident` is load-bearing, not decoration. `pub self_`, `pub super_`,
+  `pub crate_`, `pub n2fa`, `pub field`, `pub r#union` are all clean.
+- serde round-trip: `#[serde(rename = "")]` and `#[serde(rename = "2fa")]` both
+  serialize/deserialize correctly — so the emitter's rename mechanism makes any
+  identifier transform wire-safe.
+- **All property names across all six vendored revisions**: 136 distinct at
+  definition level, 157 counting nested inline objects. Only 6 are problematic:
+  `$schema` (leading-underscore), `_meta` (leading-underscore), and
+  `const`/`enum`/`ref`/`type` (keywords). All handled by the existing rules.
+- **All 192 definition names** against the keyword set: **zero** collisions.
+- **Per-definition field-identifier collisions** across every definition of every
+  revision: **zero** collisions.
+
+### 3.5 Current working-tree state
+
+```
+M crates/protocol-droid-schema/src/generator/emit.rs      (unstaged)
+D crates/protocol-droid-schema/src/generator/naming.rs     (staged)
+```
+
+`emit.rs` diff is +26/−6. The build passes:
+
+```
+$ RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --workspace --all-features
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.62s
+```
+
+## 4. What is NOT done
+
+1. **Regression tests** — the main remaining deliverable. Details in §6.
+2. **Bug #3 (digit-leading member names)** — described in §3.2b above. Not fixed.
+   Decide whether to fix it in this segment or file it separately.
+3. **`.papertowel.toml` stale reference** — line 108 still points at the deleted file:
+   ```
+   # crates/protocol-droid-schema/src/generator/naming.rs is about the conversion
+   ```
+   That comment is a lint-rationale note explaining why the word "underscores" survives
+   the project's own word ban. The file it cites no longer exists; the note should be
+   repointed at `crates/protocol-droid-schema/src/generator/emit.rs` (which is where
+   the JSON-name → Rust-identifier conversion actually lives now).
+3. **Full preflight** — not yet run.
+4. **Commit** — nothing committed yet; the deletion is staged but uncommitted.
+5. **`PROGRESS.md`** — not updated. This work does not map to a numbered task in
+   `tasks/` (T12–T31 are all unrelated protocol work); it is a review-driven cleanup.
+   A line in the "Accumulated Learnings" section would be appropriate.
+
+## 5. Key file map
+
+| Path | Why it matters |
+|---|---|
+| `crates/protocol-droid-schema/src/generator/emit.rs` | The live naming implementation. **Modified.** 1566 lines. Key symbols: `module_ident` (1449), `type_ident` (1463), `field_ident` (1491), `to_snake` (1510), `variant_ident` (1527), `RESERVED` (1546), `NOT_RAW_IDENTIFIABLE` (1562), `is_keyword` (1564). |
+| `crates/protocol-droid-schema/src/generator/naming.rs` | **DELETED.** The dead file. Its test module held cases worth porting: casing splits, `field_ident("2fa") == "_2fa"`, `module_ident("draft") == "draft"`, and an MCP property-set collision check. |
+| `crates/protocol-droid-schema/src/generator/mod.rs` | 29 lines; declares only `emit` and `schema_model` as `pub mod`. |
+| `crates/protocol-droid-schema/build.rs` | `#[path]`-includes `emit.rs` + `schema_model.rs`; calls `emit::module_ident` (line ~223) and `emit::type_ident` (~291). **Consequence:** `emit.rs` must stay free of `crate::` references and may only use crates in `[build-dependencies]`. |
+| `crates/protocol-droid-schema/tests/generation.rs` | The generator integration test, 262 lines. `REVISIONS` const at line 24: `("2024-11-05", 79)`, `("2025-03-26", 83)`, `("2025-06-18", 91)`, `("2025-11-25", 145)`, `("2026-07-28", 155)`, `("draft", 155)`. Has `fail(message) -> !` helper (line 82) using `std::process::exit(1)` because `panic!` is denied. |
+| `crates/protocol-droid-schema/src/domain/manifest.rs` | Precedent for a `#[cfg(test)] mod tests` block *inside* a `#[path]`-included file (line ~735+). Its module carries a pre-existing `#![expect(clippy::expect_used, reason = "...")]` at line 742. |
+| `crates/protocol-droid-schema/src/generator/schema_model.rs` | Parsed schema model: `SchemaFile`, `Schema` with `properties: BTreeMap<String, Box<Self>>`, `required`, `union`, `intersect`. |
+| `crates/protocol-droid-schema/Cargo.toml` | `default = ["codegen"]`, `codegen = []`. Dev-deps: `proptest`, `jsonschema`, `assert_matches`. |
+
+## 6. The remaining work, in detail
+
+### 6.1 Regression tests — placement decision
+
+Two options:
+
+- **`tests/generation.rs`** (integration). Lower risk. `emit::field_ident` is `pub`, and
+  the file already imports `protocol_droid_schema::generator::emit`. But: the file
+  loads real vendored schemas; testing `field_ident("self")` needs no schema at all.
+- **`#[cfg(test)] mod tests` inside `emit.rs`**. Precedented by `manifest.rs`. Tests
+  the function where it lives, which is where a future edit will look. Caveat: the
+  library's `generator` module is behind `#[cfg(feature = "codegen")]`, so these tests
+  only run with `--all-features` — which `cargo l` and CI both use, and `cargo test
+  --workspace --all-features` (the project preflight) uses.
+
+**Recommendation: a `#[cfg(test)] mod tests` in `emit.rs`.** `field_ident` is a pure
+function with no schema dependency, and the tests belong next to the rules they pin.
+Gate it with `#[cfg(all(test, feature = "codegen"))]` if the library-side compile
+needs it — verify by running both `cargo test -p protocol-droid-schema` (default
+features, codegen on) and `cargo test -p protocol-droid-schema --no-default-features`.
+
+Note the `#[path]`-include interaction: `emit.rs` is compiled into `build.rs` too, but
+`build.rs` is never compiled in test mode, so `#[cfg(test)]` content is excluded there.
+`manifest.rs` establishes the precedent — follow it exactly.
+
+### 6.2 Regression tests — what to assert
+
+Minimum set:
+
+```rust
+// The four raw-rejected words take a trailing underscore, never r#.
+assert_eq!(field_ident("self"),  "self_");
+assert_eq!(field_ident("super"), "super_");
+assert_eq!(field_ident("crate"), "crate_");
+assert_eq!(field_ident("Self"),  "self_");   // snake-cased to "self"
+
+// The 2024 reserved word.
+assert_eq!(field_ident("gen"), "r#gen");     // never bare "gen"
+
+// The pre-existing raw-identifier path still works — PIN IT.
+assert_eq!(field_ident("type"), "r#type");
+
+// Digit-leading member names (see §3.2b). If bug #3 is fixed, expect "_2fa";
+// if not fixed, this test documents the bug — decide which.
+assert_eq!(field_ident("2fa"), "...");   // <-- fill in
+```
+
+Plus two property-style tests over the real vendored data:
+
+- **Collision test:** for every definition of every revision, collect
+  `field_ident(name)` over its properties; assert no two members of one definition
+  collapse to the same Rust identifier. (Already verified manually: zero collisions
+  under the new rules — the test pins it.)
+- **Legality test:** assert every emitted identifier is a legal Rust identifier
+  (bare or raw), and that no `RESERVED` word maps to a bare identifier and no
+  `NOT_RAW_IDENTIFIABLE` word maps to a raw identifier.
+
+`assert_matches!` / `debug_assert_matches!` are available (dev-dep `assert_matches` is
+present, and both are stabilized) and print `Debug` on failure — prefer them over
+`assert!(matches!(..))`.
+
+### 6.3 Hard constraints on the test code
+
+From `AGENTS.md` (non-negotiable, and `cargo l` enforces them across `--all-targets`):
+
+- **No `.unwrap()`, `.expect()`, `.expect_err()`, `panic!()`.** Return
+  `Result<(), E>` from the test and use `?`. When fallible calls answer unrelated
+  error types, collect them in a small `enum Failure` with a `From` impl each (see
+  `engine.rs` and `registry.rs` for the pattern).
+- **No index slicing** — `&vec[i]`, `&s[0..n]`, `arr[0]`, `s[..n]`. Use `.get(i)` with
+  explicit handling, or `slice.first()`, or `let [first, ..] = slice else { .. }`.
+  `clippy::indexing_slicing` does **not** fire on a constant index into a fixed-size
+  array (`cases[0]` on `[(..); N]` passes clean) — that is exactly the case a test
+  reaches for, so the lint will not catch it for you. **Iterate instead.**
+- **Do NOT add `#[expect(clippy::unwrap_used, ...)]` to a new test module.** The
+  attribute only grandfathered code that predates the rule; adding one to a new test
+  is how the rule gets skipped wholesale rather than obeyed.
+- `#[allow(clippy::...)]` is forbidden outright. `#[expect(..., reason = "...")]` is
+  allowed with a reason.
+- Prefer `.is_multiple_of(n)` over `% n == 0`.
+- Doc comments on public items need `# Examples` / `# Errors` / `# Panics` sections
+  where the function can fail in those ways.
+
+## 7. Preflight (must pass before commit)
+
+Run from the **repo root** (the toolchain pin lives there — a bare `cargo clippy` run
+in `/tmp` used a different, 1.99.0 toolchain):
+
+```bash
+cargo fmt --all --check && cargo build --workspace --all-features && \
+  cargo test --workspace --all-features && cargo l && cargo deny --all-features check
+```
+
+`cargo l` is the alias from `.cargo/config.toml`:
+`-W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo -W clippy::perf`,
+with `module_name_repetitions`, `must_use_candidate`, `missing_errors_doc`,
+`missing_panics_doc`, `struct_excessive_bools`, `multiple_crate_versions` allowed;
+`unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `cast_ptr_alignment`,
+`suspicious` denied; `-D warnings` last.
+
+`cargo deny` reads a **cached** advisory DB locally. A green local pass can still be
+missing an advisory CI will fail on. Do not narrow an `ignore` in `deny.toml` without
+re-running `cargo deny --all-features check` **with network access**.
+
+Toolchain: pinned to **1.98.1** (`rust-toolchain.toml`), verified
+`rustc 1.98.1 (48a229cea 2026-09-01)` / `clippy 0.1.98`. Never pin 1.97.0 (LLVM
+miscompilation, rust-lang/rust#159035). `rust-version = "1.98"` in
+`[workspace.package]`.
+
+## 8. Commit
+
+Conventional commits, e.g.:
+
+```
+fix(schema): escape the four keywords rustc refuses as raw identifiers
+```
+
+with the trailer:
+
+```
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+```
+
+Do not force-add files ignored by `.gitignore`. Never do in-place shell rewrites like
+`printf '%s' "$(cat f)" > f` — use edit tools and verify with `git diff --stat`.
+
+## 9. Facts worth not re-deriving
+
+- **Raw identifiers work for every reserved word except `self`, `Self`, `super`,
+  `crate`.** Verified with rustc, edition 2024. Everything else → `r#word`.
+- **`gen` is reserved in Rust 2024** but is not a strict keyword. Cannot be an
+  identifier in any form; `gen_` and `r#gen` are both legal.
+- **`is_keyword(name)` is `RESERVED.contains(&name)`** — the identical predicate to
+  `RESERVED.iter().any(|r| *r == name)`. That redundancy is what made the
+  trailing-underscore branch in `field_ident` unreachable. Watch for it when editing.
+- **`to_snake` does not strip a leading underscore** — hence `field_ident`'s separate
+  leading-underscore branch.
+- **`field_ident`'s output is always wire-safe** because the emitter writes
+  `#[serde(rename = "{prop_name}")]` whenever the field name differs from the
+  property name (`emit.rs` ~line 1185). Serde handles empty-string and numeric
+  renames correctly (round-trip verified).
+- **`clippy::pub_underscore_fields` (pedantic) fires on `pub _meta`.** Any fallback
+  identifier must not start with `_`.
+- **`type_ident` uses the trailing-underscore convention** (via `is_keyword` → push
+  `'_'`), because `Self_` / `crate_` are legal *type* names. `field_ident` needs the
+  `r#`/underscore *split* because it handles *field* names. Do not unify them.
+- **`module_ident("draft") == "draft"`**; other revisions → `v2025_11_25` style.
+- **`build.rs` `#[path]`-includes shared sources**, so those files may not reference
+  `crate::` and may only use `[build-dependencies]` crates.
+- The deleted `naming.rs` used `field_ident("2fa") == "_2fa"` (leading underscore kept,
+  unlike the live code which trims it). The live code returns `"2fa"` for that input,
+  which is **not a legal Rust identifier** — see §3.2b. If you port a case from the
+  dead file, port the *expected value* (`"_2fa"`), not the live behaviour.
+- `to_snake` behaviour, verified with rustc 1.98.1 edition 2024:
+
+  | input | `to_snake` | `field_ident` | legal Rust? |
+  |---|---|---|---|
+  | `"2fa"` | `"2fa"` | `"2fa"` | **NO** — see §3.2b |
+  | `"$schema"` | `"_schema"` | `"schema"` | yes |
+  | `"_meta"` | `"_meta"` | `"meta"` | yes |
+  | `"self"` | `"self"` | `"self_"` | yes |
+  | `"Self"` | `"self"` | `"self_"` | yes |
+  | `"super"` | `"super"` | `"super_"` | yes |
+  | `"crate"` | `"crate"` | `"crate_"` | yes |
+  | `"gen"` | `"gen"` | `"r#gen"` | yes |
+  | `"type"` | `"type"` | `"r#type"` | yes |
+```
+
+---
+
+Are there any other findings to address?
+
+---
+
+yes, do it all
+
+---
+
+yes, go ahead
+
+---
+
+How do we want to release the utcp-protocol branch?  Should we merge it then create a release branch, or update this branch to be a release branch?
+
+---
+
+proceed with the best path forward.  I have sosh-ncampbell also authenticated in `gh`
+
+---
+
+There are CodeQL comments on #81
+
+---
+
+Going forward I am going to need the Entire.com link as well as the github link when I need to approve PRs
+
+---
+
+CI failed on macos
+
+---
+
+I believe i merged it through entire.com
+
+---
+
+<task-notification>
+<task-id>b8emfhi8p</task-id>
+<tool-use-id>toolu_014sg1YmLC6SgRzNgbQGXML6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-ncampbell-Projects-rust-protocol-droid/b3ac0ea2-bcb8-4741-8a54-90b54021b3d4/tasks/b8emfhi8p.output</output-file>
+<status>completed</status>
+<summary>Background command "cd /Users/ncampbell/Projects/rust/protocol-droid; rtk git checkout -q main &amp;&amp; rtk git pull -q --ff-only &amp;&amp; rtk git show --stat --format=%s c87b59d6 | head -20; rtk grep -n "^## \[" CHANGELOG.md | head -4; grep -rn "0\.7\.0" --include=Cargo.toml . | grep -v target | head" completed (exit code 0)</summary>
+</task-notification>
