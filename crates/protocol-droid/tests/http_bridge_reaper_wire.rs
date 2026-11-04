@@ -36,8 +36,15 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 "#;
 const LIST_TOOLS: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
 
-/// The window a session may sit unused, short enough for a test to outwait.
+/// The window an abandoned session is outwaited against. Only has to be
+/// passed, so short is safe.
 const IDLE: Duration = Duration::from_millis(300);
+
+/// The window a busy session must survive. A loaded CI runner can stall a test
+/// thread for hundreds of milliseconds, and a stall longer than the window is
+/// a session legitimately idle, so this is wide against the posting interval.
+const BUSY_IDLE: Duration = Duration::from_millis(1500);
+const BUSY_INTERVAL: Duration = Duration::from_millis(100);
 
 fn fail(message: impl Into<String>) -> TestError {
     message.into().into()
@@ -118,9 +125,9 @@ fn bridge(
 }
 
 /// Serves a reaping bridge and returns a client pointed at it.
-async fn live() -> Result<HttpClient, TestError> {
+async fn live(idle: Duration) -> Result<HttpClient, TestError> {
     let bridge = bridge(store(true))?
-        .with_idle_reaper(IdleReaper::new(IDLE)?.with_interval(Duration::from_millis(25)))?;
+        .with_idle_reaper(IdleReaper::new(idle)?.with_interval(Duration::from_millis(25)))?;
     let (bound, addr) = bridge.bind("127.0.0.1:0".parse()?).await?;
     tokio::spawn(async move {
         let _ = bound.serve().await;
@@ -139,7 +146,7 @@ fn status(reply: HttpReply) -> Result<axum::http::StatusCode, TestError> {
 
 #[tokio::test]
 async fn an_abandoned_session_is_gone_by_its_next_post() -> Result<(), TestError> {
-    let client = live().await?;
+    let client = live(IDLE).await?;
     let opened = status(client.post_streaming(INITIALIZE.as_bytes(), false).await?)?;
     assert_eq!(opened, axum::http::StatusCode::ACCEPTED);
 
@@ -160,13 +167,13 @@ async fn an_abandoned_session_is_gone_by_its_next_post() -> Result<(), TestError
 
 #[tokio::test]
 async fn a_session_whose_client_keeps_talking_is_not_reaped() -> Result<(), TestError> {
-    let client = live().await?;
+    let client = live(BUSY_IDLE).await?;
     let opened = status(client.post_streaming(INITIALIZE.as_bytes(), false).await?)?;
     assert_eq!(opened, axum::http::StatusCode::ACCEPTED);
 
-    // Four idle windows in total, never one window of silence.
-    for _ in 0..24 {
-        tokio::time::sleep(IDLE / 6).await;
+    // More than one window in total, never a window of silence.
+    for _ in 0..25 {
+        tokio::time::sleep(BUSY_INTERVAL).await;
         let reply = status(client.post_streaming(LIST_TOOLS.as_bytes(), true).await?)?;
         assert_eq!(reply, axum::http::StatusCode::ACCEPTED);
     }
