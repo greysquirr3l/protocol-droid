@@ -82,9 +82,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::adapters::secondary::acp::{
-    AcpAgentPeer, AcpAgentSender, AcpPeerError,
-};
+use crate::adapters::secondary::acp::{AcpAgentPeer, AcpAgentSender, AcpPeerError};
 use crate::application::acp::dispatch::{AcpError, AcpRequestContext, AcpRequestHandler};
 use crate::application::acp::editor::{AcpEditorCaller, AcpEditorError};
 use crate::domain::acp::method::{AcpMethod, ClientMethod};
@@ -132,10 +130,7 @@ pub enum AcpServeError {
 ///
 /// See the module docs for a complete runnable
 /// shape.
-pub async fn serve_acp_agent<H>(
-    peer: AcpAgentPeer,
-    handler: Arc<H>,
-) -> Result<(), AcpServeError>
+pub async fn serve_acp_agent<H>(peer: AcpAgentPeer, handler: Arc<H>) -> Result<(), AcpServeError>
 where
     H: AcpRequestHandler + ?Sized + 'static,
 {
@@ -223,13 +218,9 @@ where
                     .map_err(AcpServeError::Write)?;
             }
             Err(error) => {
-                peer.send_error(
-                    request.id,
-                    i64::from(error.code()),
-                    error.message(),
-                )
-                .await
-                .map_err(AcpServeError::Write)?;
+                peer.send_error(request.id, i64::from(error.code()), error.message())
+                    .await
+                    .map_err(AcpServeError::Write)?;
             }
         }
     }
@@ -271,9 +262,8 @@ impl AcpEditorCaller for PeerEditorCaller {
         &self,
         method: ClientMethod,
         params: Value,
-    ) -> std::pin::Pin<
-        Box<dyn futures_core::Future<Output = Result<(), AcpEditorError>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn futures_core::Future<Output = Result<(), AcpEditorError>> + Send + '_>>
+    {
         Box::pin(async move {
             self.sender
                 .send_notification(method.as_wire_name(), params)

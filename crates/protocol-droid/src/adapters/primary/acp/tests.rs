@@ -19,13 +19,10 @@ use std::sync::Arc;
 
 use futures_core::Future;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::io::duplex;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use super::serve::{
-    map_peer_error, serve_acp_agent, serve_acp_agent_with_context,
-    AcpServeError,
-};
+use super::serve::{AcpServeError, map_peer_error, serve_acp_agent, serve_acp_agent_with_context};
 use crate::adapters::secondary::acp::{AcpAgentPeer, AcpPeerError};
 use crate::application::acp::dispatch::{AcpError, AcpRequestContext, AcpRequestHandler};
 use crate::application::acp::editor::{AcpEditorCaller, AcpEditorError};
@@ -105,9 +102,7 @@ impl AcpRequestHandler for InitializeOnly {
     ) -> Pin<Box<dyn Future<Output = Result<Value, AcpError>> + Send + 'a>> {
         Box::pin(async move {
             match method {
-                AgentMethod::Initialize => {
-                    Ok(serde_json::json!({"protocolVersion": 1}))
-                }
+                AgentMethod::Initialize => Ok(serde_json::json!({"protocolVersion": 1})),
                 other => Err(AcpError::MethodNotImplemented { method: other }),
             }
         })
@@ -166,9 +161,7 @@ async fn the_reply_reaches_the_editor() -> Result<(), Failure> {
     let serving = tokio::spawn(serve_acp_agent(peer, Arc::new(InitializeOnly)));
 
     editor_write
-        .write_all(
-            b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n",
-        )
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n")
         .await?;
 
     let envelope = read_envelope(&mut editor_read)
@@ -242,7 +235,9 @@ async fn an_unknown_method_is_rejected_without_dispatch() -> Result<(), Failure>
     let serving = tokio::spawn(serve_acp_agent(peer, Arc::new(InitializeOnly)));
 
     editor_write
-        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"session/teleport\",\"params\":{}}\n")
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"session/teleport\",\"params\":{}}\n",
+        )
         .await?;
 
     let envelope = read_envelope(&mut editor_read)
@@ -385,10 +380,7 @@ async fn a_caller_supplied_context_is_used() -> Result<(), Failure> {
     let mut editor_read: EditorRead = BufReader::new(editor_read);
 
     let peer = AcpAgentPeer::from_stdio(agent_read, agent_write);
-    let context = AcpRequestContext::new(
-        AcpProtocolVersion::CURRENT,
-        Arc::new(RefusingEditor),
-    );
+    let context = AcpRequestContext::new(AcpProtocolVersion::CURRENT, Arc::new(RefusingEditor));
     let serving = tokio::spawn(serve_acp_agent_with_context(
         peer,
         Arc::new(InitializeOnly),

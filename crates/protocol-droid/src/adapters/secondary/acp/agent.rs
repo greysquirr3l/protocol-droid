@@ -212,7 +212,6 @@ impl std::fmt::Debug for AcpAgentPeer {
     }
 }
 
-
 async fn spawn_reader<R>(
     mut reader: BufReader<R>,
     request_tx: mpsc::Sender<AgentRequest>,
@@ -353,7 +352,6 @@ where
 fn io_other(message: &str) -> std::io::Error {
     std::io::Error::other(message)
 }
-
 
 impl std::fmt::Debug for AcpAgentSender {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1210,9 +1208,9 @@ mod tests {
                 .await;
         });
 
-        let (first_line, second_line) = peer_request.await.map_err(|error| {
-            AcpPeerError::Write(std::io::Error::other(error.to_string()))
-        })??;
+        let (first_line, second_line) = peer_request
+            .await
+            .map_err(|error| AcpPeerError::Write(std::io::Error::other(error.to_string())))??;
 
         let first_id = serde_json::from_str::<Value>(&first_line)
             .map_err(AcpPeerError::Decode)?

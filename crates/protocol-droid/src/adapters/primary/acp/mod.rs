@@ -23,6 +23,5 @@ pub mod serve;
 mod tests;
 
 pub use serve::{
-    serve_acp_agent, serve_acp_agent_with_context, serve_acp_agent_with_version,
-    AcpServeError,
+    AcpServeError, serve_acp_agent, serve_acp_agent_with_context, serve_acp_agent_with_version,
 };

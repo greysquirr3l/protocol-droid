@@ -155,9 +155,7 @@ pub trait AcpEditorCaller: Send + Sync + 'static {
         &self,
         method: ClientMethod,
         params: Value,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<Value, AcpEditorError>> + Send + '_>,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, AcpEditorError>> + Send + '_>>;
 
     /// Send the editor a notification.
     ///
