@@ -9,7 +9,7 @@
 //!
 //! That is why this module has no envelope, no session, and no revision
 //! negotiation, and why the cross-protocol
-//! [`ProtocolAdapter`](crate::application::bridge::protocol_adapter::ProtocolAdapter)
+//! [`ProtocolAdapter`](crate::application::bridge::ProtocolAdapter)
 //! seam does not apply to it: that seam translates between two JSON-RPC
 //! dialects, and UTCP has no dialect of its own to translate from.
 //!

@@ -3,7 +3,7 @@
 //! # What lives here
 //!
 //! - [`manual`] fetches a provider's manual over HTTP.
-//! - [`call`] makes the call a manual's tool describes, over HTTP or over an
+//! - [`call()`] makes the call a manual's tool describes, over HTTP or over an
 //!   MCP session.
 //!
 //! Both are *driven* adapters: they talk to a provider this build does not

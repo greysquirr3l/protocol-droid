@@ -216,9 +216,9 @@ pub enum CrossProtocolError {
 /// from the same two vocabularies.
 ///
 /// This trait is instead a *composition*. A codec is built from two
-/// [`ProtocolAdapter`]s — one per side — and the translation is
+/// [`ProtocolAdapter`](super::ProtocolAdapter)s — one per side — and the translation is
 /// `lift` on the downstream side, `lower` on the upstream side, with the
-/// IR's [`IrCall`] in between. The per-protocol knowledge lives in the
+/// IR's [`IrCall`](crate::domain::ir::IrCall) in between. The per-protocol knowledge lives in the
 /// adapter, so the number of pieces of translation code is the number of
 /// protocols, not the number of pairs. The composition itself is a struct
 /// of two references and no logic.

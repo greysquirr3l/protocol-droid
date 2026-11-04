@@ -45,7 +45,7 @@ pub struct WireRequest {
 /// Implementors lift their protocol's wire form into the IR and lower the
 /// IR back out. Nothing here mentions another protocol, and nothing here
 /// knows which side of a bridge the adapter is on: the composition in
-/// [`super::composed`] decides that.
+/// [`ComposedCodec`](super::ComposedCodec) decides that.
 ///
 /// # Examples
 ///

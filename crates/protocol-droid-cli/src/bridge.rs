@@ -44,9 +44,11 @@ use serde::Serialize;
 
 use crate::check;
 
-/// The idle window an `http` bridge uses unless told otherwise: the library's.
-const DEFAULT_IDLE_SECONDS: u64 =
-    protocol_droid::adapters::primary::transport::http::reaper::DEFAULT_IDLE_TIMEOUT.as_secs();
+/// The idle window an `http` bridge uses unless told otherwise, in seconds.
+///
+/// A literal rather than the library's constant, which only exists when the
+/// library is built with `http`; a test below holds the two together.
+const DEFAULT_IDLE_SECONDS: u64 = 30 * 60;
 
 /// What a bridge command was asked to do.
 #[derive(Debug, Args)]
@@ -451,6 +453,13 @@ impl std::fmt::Display for Plan {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
+    #[cfg(feature = "bridge")]
+    #[test]
+    fn the_default_idle_window_is_the_librarys() {
+        use protocol_droid::adapters::primary::transport::http::reaper::DEFAULT_IDLE_TIMEOUT;
+        assert_eq!(super::DEFAULT_IDLE_SECONDS, DEFAULT_IDLE_TIMEOUT.as_secs());
+    }
 
     use protocol_droid::domain::TransportSpec;
 

@@ -260,7 +260,7 @@ impl core::fmt::Display for AuthMethodId {
 /// *claims* to be a terminal method but does not match
 /// the terminal shape is an error rather than a silent
 /// downgrade to an agent method. The
-/// [`deserialize_agent_auth_method_fallback`] guard
+/// `deserialize_agent_auth_method_fallback` guard
 /// enforces that: an unknown `type` is an agent method,
 /// but a known `type` that fails its own schema is not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

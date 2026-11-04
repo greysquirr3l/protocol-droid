@@ -11,9 +11,9 @@
 //!
 //! So the two use cases here are not "handle a UTCP message". They are:
 //!
-//! - [`publish`] — turn this server's tools into a manual a UTCP client can
+//! - [`publish()`] — turn this server's tools into a manual a UTCP client can
 //!   read.
-//! - [`call`] — turn a manual's tool and a set of arguments into a concrete
+//! - [`call`](mod@call) — turn a manual's tool and a set of arguments into a concrete
 //!   call, in the tool's own protocol.
 //!
 //! # Why the planning is here and the doing is in an adapter
@@ -31,8 +31,8 @@
 //! | Direction | What it is | Where it lives |
 //! |---|---|---|
 //! | Read a manual | fetch a provider's document | `adapters/secondary/utcp` |
-//! | Publish a manual | serve this server's tools | [`publish`], `adapters/primary/utcp` |
-//! | Call a tool | make the call a template describes | [`call`], `adapters/secondary/utcp` |
+//! | Publish a manual | serve this server's tools | [`publish()`], `adapters/primary/utcp` |
+//! | Call a tool | make the call a template describes | [`call`](mod@call), `adapters/secondary/utcp` |
 
 pub mod call;
 pub mod publish;
