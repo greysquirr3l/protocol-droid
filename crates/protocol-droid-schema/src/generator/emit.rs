@@ -1483,12 +1483,26 @@ pub fn type_ident(name: &str) -> String {
 /// The original name is preserved in a serde rename so the wire format is
 /// unaffected; a `field_ident` that differed from the member name would
 /// otherwise be a silent wire change.
+///
+/// A member name that is a Rust keyword becomes a raw identifier (`type` →
+/// `r#type`), except for the four keywords rustc refuses to spell that way —
+/// `self`, `Self`, `super` and `crate` — which take a trailing underscore
+/// instead, because `r#self` is a compile error rather than an identifier.
+/// `Self` is covered by the `self` entry: the name is lowercased first.
+///
+/// A name that starts with a digit gains a leading underscore (`2fa` →
+/// `_2fa`), since a Rust identifier cannot begin with one.
 pub fn field_ident(name: &str) -> String {
     let snake = to_snake(name);
-    if RESERVED.iter().any(|r| *r == snake) {
-        format!("r#{snake}")
-    } else if is_keyword(&snake) {
+    if NOT_RAW_IDENTIFIABLE.contains(&snake.as_str()) {
         format!("{snake}_")
+    } else if RESERVED.iter().any(|r| *r == snake) {
+        format!("r#{snake}")
+    } else if snake.starts_with(|c: char| c.is_ascii_digit()) {
+        // Checked before the underscore trim below, which would strip the very
+        // underscore that makes the name legal. The serde rename the caller
+        // emits keeps the wire name exact.
+        format!("_{snake}")
     } else if snake.starts_with('_') {
         // JSON-RPC reserves members whose name begins with an underscore, and
         // upstream's schemas do carry one. `pub _meta` would trip
@@ -1533,14 +1547,82 @@ fn variant_ident(value: &str, index: usize) -> String {
 }
 
 /// Rust keywords that would collide with a raw identifier.
+///
+/// `gen` is here because Rust 2024 reserves it, and this crate is edition
+/// 2024 — a member named `gen` would emit a bare `gen` field, which does not
+/// compile. `union` is not reserved in 2024, but it is a plausible MCP member
+/// name and reserving it costs nothing.
 const RESERVED: &[&str] = &[
     "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
-    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in",
-    "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
+    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
+    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
     "return", "self", "Self", "static", "struct", "super", "trait", "true", "try", "type",
     "typeof", "union", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
 ];
 
+/// The reserved words that rustc will not accept as a raw identifier.
+///
+/// `r#self`, `r#Self`, `r#super` and `r#crate` are all rejected — the raw
+/// identifier syntax is not available for these four. `Self` is not listed
+/// because it never gets here: `to_snake` lowercases it to `self`. Every other word in
+/// [`RESERVED`] may be spelled `r#word`.
+///
+/// The list is matched against the lowercased snake form of a member name, so
+/// a member named `Self` arrives here as `self` and is covered by that entry.
+const NOT_RAW_IDENTIFIABLE: &[&str] = &["self", "super", "crate"];
+
 fn is_keyword(name: &str) -> bool {
     RESERVED.contains(&name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NOT_RAW_IDENTIFIABLE, RESERVED, field_ident};
+
+    #[test]
+    fn words_rustc_rejects_as_raw_identifiers_take_a_trailing_underscore() {
+        for (name, want) in [
+            ("self", "self_"),
+            ("Self", "self_"),
+            ("super", "super_"),
+            ("crate", "crate_"),
+        ] {
+            assert_eq!(field_ident(name), want, "member {name:?}");
+        }
+    }
+
+    #[test]
+    fn other_reserved_words_become_raw_identifiers() {
+        for (name, want) in [
+            ("type", "r#type"),
+            ("enum", "r#enum"),
+            ("gen", "r#gen"),
+            ("union", "r#union"),
+        ] {
+            assert_eq!(field_ident(name), want, "member {name:?}");
+        }
+    }
+
+    #[test]
+    fn leading_digits_and_underscores_are_made_legal() {
+        for (name, want) in [
+            ("2fa", "_2fa"),
+            ("_meta", "meta"),
+            ("$schema", "schema"),
+            ("inputSchema", "input_schema"),
+        ] {
+            assert_eq!(field_ident(name), want, "member {name:?}");
+        }
+    }
+
+    #[test]
+    fn no_reserved_word_is_ever_emitted_bare_or_raw_when_rustc_forbids_it() {
+        for word in RESERVED {
+            let ident = field_ident(word);
+            assert_ne!(ident, *word, "{word:?} must not be emitted bare");
+            if NOT_RAW_IDENTIFIABLE.contains(&word.to_ascii_lowercase().as_str()) {
+                assert!(!ident.starts_with("r#"), "{word:?} became {ident:?}");
+            }
+        }
+    }
 }
