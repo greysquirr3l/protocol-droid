@@ -9,6 +9,67 @@ checked against the code rather than taken on the changelog's word.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-04
+
+### Added
+
+- **A UTCP v1.1 client.** (`6cecc9ec`, `f2bf39b6`,
+  `crates/protocol-droid/src/adapters/secondary/utcp/`,
+  `crates/protocol-droid/src/application/utcp/`) Point it at a provider's URL,
+  read the manual it publishes, and call one of the tools in it. The URL is
+  the only thing the caller supplies, so everything else comes out of the
+  document that URL served — and the document is not trusted to widen its own
+  permissions: `allowed_communication_protocols` is taken from the caller's
+  registration, defaults to the manual's own protocol type and nothing else,
+  and is applied at registration and again before every call. Behind the
+  `utcp` feature.
+
+- **An ACP agent can be served over stdio, and can call the editor back.**
+  (`964c6a28`, `6b6801f1`, `7ade7487`,
+  `crates/protocol-droid/src/adapters/secondary/acp/`,
+  `crates/protocol-droid/src/domain/acp/`) `serve_acp_agent` reads the
+  editor's requests, routes them to a handler, and writes the replies, with a
+  handler error becoming a JSON-RPC error of the matching code.
+  `send_request` and `send_typed_request` carry the other direction —
+  `session/request_permission`, `fs/read_text_file`, `terminal/create` — and
+  `authenticate`, `session/set_mode` and `session/set_config_option` are now
+  typed, which leaves all twelve agent request methods typed. Behind
+  `acp-experimental`, because the ACP specification is pre-1.0.
+
+- **`IdleReaper`, `MonotonicClock` and `SessionReport`.** (`2da5507d`,
+  `crates/protocol-droid/src/adapters/primary/transport/http/reaper.rs`,
+  `crates/protocol-droid/src/adapters/secondary/clock.rs`) The first sweeps
+  idle sessions out of a `SessionStore`, the second is the production
+  `Clock` the port never had, and the third tells an operator why a bridge
+  session ended. `bridge --idle-timeout <SECONDS>` sets the window.
+
+### Changed
+
+- **An HTTP server evicts a session that has been idle for 30 minutes.**
+  (`2da5507d`,
+  `crates/protocol-droid/src/adapters/primary/transport/http/serve/builder.rs`)
+  A session used to live until the client sent `DELETE`. A client that opened
+  sessions and left cost the server a map entry each time, and a bridge a
+  task and an upstream connection each time, with no limit. `HttpBuilder`
+  now sweeps by default; `with_idle_reaper` changes the window and
+  `without_idle_reaper` restores the old behaviour. A client whose session
+  was evicted gets `404` on its next request, which the specification tells
+  it to answer by starting a new session — including one that held only a
+  standing `GET` stream and sent nothing.
+
+  `HttpBridge::with_idle_reaper` is opt-in, because the bridge is handed its
+  store and cannot know what else shares it. It refuses a store built without
+  `SessionStore::with_idle_reaper` rather than reaping nothing. The `bridge`
+  command turns it on with a 30 minute default and `--idle-timeout 0` turns
+  it off. `tokio/time` is now part of the `http` feature.
+
+- **Every feature-matrix row cites the URL that documents it.** (`22cd58bf`,
+  `crates/protocol-droid/src/domain/feature.rs`) 32 rows named a revision,
+  12 an SEP number and one a URL, so a reader could follow almost none of
+  them. Each row now carries a `citation`, and the same URL is in the doc
+  comment on its `Feature` variant, with a test reading the file back to
+  hold the two together.
+
 ### Changed
 
 - **The cross-protocol bridge is two protocol adapters and one composition,
@@ -62,6 +123,51 @@ checked against the code rather than taken on the changelog's word.
   crate's own A2A server sends, what the A2A conformance fixtures expect,
   and what the vendored `a2a.proto` describes — so the bridge was speaking
   a dialect of A2A that the rest of the crate does not speak.
+
+- **A generated union picked its arm by member order.** (`c22bfd84`,
+  `crates/protocol-droid-schema/src/generator/emit.rs`) A `tools/call`
+  request decoded as an `InitializeRequest`, and a `2026-07-28` result landed
+  in the generic `Result` arm. Nothing showed it: every generated type
+  carries a flattened catch-all, so a value in the wrong arm re-serialises to
+  byte-identical JSON. A union now reads the member the specification
+  requires of every alternative — `type`, `method` — and an absent or
+  unknown value is a decode error. Where no such member exists the arm is
+  chosen by the value's shape, and the specification's order breaks a tie.
+
+- **A schema member named `self`, `super` or `crate` generated a field that
+  did not compile.** (`09732f65`,
+  `crates/protocol-droid-schema/src/generator/emit.rs`) `field_ident` tried
+  the raw-identifier branch first and the trailing-underscore branch second,
+  on the same predicate, so the second could never run and `self` came out as
+  `r#self`, which rustc rejects. The three now take a trailing underscore,
+  `gen` is reserved for edition 2024, and a member that starts with a digit
+  gains a leading underscore. No vendored schema has such a member today; the
+  next upstream one would have broken the build. An unreferenced 305-line
+  `naming.rs` carrying a second, drifted copy of these rules is gone.
+
+- **A bridge session's inbound queue grew without limit, and its errors went
+  nowhere.** (`2da5507d`,
+  `crates/protocol-droid/src/adapters/primary/transport/http/bridge.rs`) A
+  client could `POST` faster than the upstream answered and the queue took
+  all of it. It now holds 256 messages and answers `429` with `Retry-After`
+  past that. A session whose loop ended in an error — an upstream that could
+  not be reached, a client channel that failed — was dropped by `let _ =`;
+  `with_session_report` hands it to the operator, and the `bridge` command
+  prints it to stderr.
+
+- **Eight rustdoc links named private or ambiguous items.** (`b7d73634`)
+  `cargo doc` failed on the branch, and the lean `--no-default-features`
+  build failed because the CLI read a library constant that only exists with
+  `http`.
+
+### Tests
+
+- **Every definition of every revision round-trips.** (`fc097e9f`,
+  `1828c10f`) The property suite covered 62 of 708 `(revision, definition)`
+  pairs; `build.rs` now writes the table from the schemas themselves, so a
+  revision that gains a definition gains a case. Field identifiers are
+  pinned across all six revisions — no two members of an object collapse to
+  one field, and every identifier is legal.
 
 ## [0.7.0] — 2026-10-27
 
