@@ -4,6 +4,7 @@
 //! (client-side HTTP transports) and T10 (the `Clock` and `IdSource` ports the
 //! domain depends on but must never call globally).
 
+pub mod clock;
 pub mod codec;
 pub mod idempotency;
 // T29. The ACP stdio peer — the driven adapter that

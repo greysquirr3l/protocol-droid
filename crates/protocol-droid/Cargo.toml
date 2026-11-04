@@ -57,7 +57,7 @@ stdio = ["dep:tokio"]
 # the idempotency port, the routing headers, negotiation — is already compiled
 # without it, so a consumer that only wants the IR and the codecs pays for none
 # of this.
-http = ["dep:axum", "dep:base64", "dep:futures-core", "dep:futures-util", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros"]
+http = ["dep:axum", "dep:base64", "dep:futures-core", "dep:futures-util", "dep:reqwest", "dep:tower", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/macros", "tokio/time"]
 # T15. The deprecated 2024-11-05 HTTP+SSE transport, which `2025-03-26`
 # replaced and which is the only transport that revision speaks. It needs the
 # HTTP stack, so it implies it rather than listing it again — and it is a

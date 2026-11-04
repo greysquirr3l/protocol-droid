@@ -44,6 +44,10 @@ use serde::Serialize;
 
 use crate::check;
 
+/// The idle window an `http` bridge uses unless told otherwise: the library's.
+const DEFAULT_IDLE_SECONDS: u64 =
+    protocol_droid::adapters::primary::transport::http::reaper::DEFAULT_IDLE_TIMEOUT.as_secs();
+
 /// What a bridge command was asked to do.
 #[derive(Debug, Args)]
 pub struct BridgeArgs {
@@ -105,6 +109,14 @@ pub struct BridgeArgs {
     /// fallback the specification does not define.
     #[arg(long)]
     pub allow_downgrade: bool,
+
+    /// Seconds a client's session may sit unused before the bridge drops it.
+    ///
+    /// Each session holds an upstream connection, so one a client abandoned
+    /// costs the bridge until this runs out. `0` keeps sessions until the
+    /// client closes them. Only an `http` listen has sessions to expire.
+    #[arg(long, value_name = "SECONDS", default_value_t = DEFAULT_IDLE_SECONDS)]
+    pub idle_timeout: u64,
 
     /// Machine-readable JSON on stdout, with the human summary on stderr.
     #[arg(long)]
@@ -232,7 +244,14 @@ async fn serve(
     // opens an upstream per session rather than one for the process.
     if listen.kind() == TransportKind::StreamableHttp {
         let addr = crate::serve::bind_addr(listen.target())?;
-        crate::serve::listen(upstream, addr, &SupportedVersions::all()?, policy).await
+        crate::serve::listen(
+            upstream,
+            addr,
+            &SupportedVersions::all()?,
+            policy,
+            std::time::Duration::from_secs(args.idle_timeout),
+        )
+        .await
     } else {
         serve_one_client(upstream, args, policy).await
     }
@@ -449,6 +468,7 @@ mod tests {
             client_version: None,
             server_version: None,
             allow_downgrade: false,
+            idle_timeout: super::DEFAULT_IDLE_SECONDS,
             json: false,
         }
     }
