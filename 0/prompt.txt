@@ -1,0 +1,13 @@
+oh, we forgot to update the CHANGELOG and probably SECURITY
+
+---
+
+open a PR
+
+---
+
+Ok, commit, create a PR for the branch and give me both the github PR link and the entire link
+
+---
+
+its just a docs change
