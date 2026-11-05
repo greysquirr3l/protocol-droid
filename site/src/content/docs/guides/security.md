@@ -22,6 +22,15 @@ authorization predicates are pure domain functions.
 - **Fail-secure on auth.** A `?` operator on a failed auth
   check is the default; an `?`-skipped check is not in the
   library.
+- **Idle sessions are evicted.** An HTTP server sweeps a session
+  that has been idle for 30 minutes, so a client that opens
+  sessions and leaves cannot cost the server a map entry each
+  time. A client whose session was evicted gets `404` on its next
+  request and starts a new one.
+- **A bridge session's inbox is bounded.** It holds 256 messages
+  and answers `429` with `Retry-After` past that, so a client
+  that `POST`s faster than the upstream answers cannot make the
+  queue grow without limit.
 
 ## Protecting a server, and signing in to one
 
