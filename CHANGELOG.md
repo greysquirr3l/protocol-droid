@@ -70,8 +70,6 @@ checked against the code rather than taken on the changelog's word.
   comment on its `Feature` variant, with a test reading the file back to
   hold the two together.
 
-### Changed
-
 - **The cross-protocol bridge is two protocol adapters and one composition,
   not a hand-written translator for every pair of protocols.** (`2289b30c`,
   `crates/protocol-droid/src/application/bridge/protocol_adapter.rs`,
@@ -104,6 +102,33 @@ checked against the code rather than taken on the changelog's word.
   refused for no visible reason.
 
 ### Fixed
+
+- **The `a2a_js_interop` test could fail for a reason that had nothing to
+  do with what it measures.** (`c4fc1826`,
+  `crates/protocol-droid/tests/a2a_js_interop.rs`) The test gave the Node
+  reference server five seconds to print its `listening on <port>` line. On
+  an idle machine that takes about 150 ms, so five seconds looked like a
+  hundred-and-thirty-fold margin. It was not a margin; it was a bet that
+  the runner would be quiet.
+
+  The test passed on the pull request and then failed on `main` with "the
+  reference server did not start within 5 seconds" — four of the five
+  cases, every one of them a *startup* failure with no assertion run at
+  all. Nothing about the code had changed between the two runs. What had
+  changed was how many other jobs were sharing the runner: a merge to
+  `main` starts the CI matrix, the conformance suite, the interop suite
+  and CodeQL at once, and `ubuntu-latest` runners are not free.
+
+  The budget is now 30 seconds, as a named constant with the reasoning
+  attached, because a bare number invites the next person to tighten it
+  back to five. The asymmetry sets it: a startup that is merely slow
+  costs the runner a few seconds, and a startup that times out costs the
+  whole run its green.
+
+  This is the second flake in this file from the same root cause. The
+  first was the port reservation, fixed in `c69b77ac` and recorded in
+  0.7.0. A test whose failure mode is "the machine was busy" rather than
+  "the code is wrong" is not measuring what it claims to measure.
 
 - **The A2A leg of the bridge sent the agent arguments it could not read.**
   (`2289b30c`,
@@ -162,12 +187,42 @@ checked against the code rather than taken on the changelog's word.
 
 ### Tests
 
+- **The reaper tests could fail for a reason that had nothing to do with
+  what they measure.** (`9c68414a`,
+  `crates/protocol-droid/tests/http_bridge_reaper_wire.rs`,
+  `crates/protocol-droid/src/adapters/primary/transport/http/reaper.rs`) A
+  busy session was kept alive by a post every 50 ms against a 300 ms
+  window, so one scheduler stall on a loaded macOS runner made it
+  genuinely idle: the test failed for the right reason at the wrong
+  margin. The busy windows are now 1500 ms against 100 ms and 600 ms
+  against 20 ms.
+
 - **Every definition of every revision round-trips.** (`fc097e9f`,
   `1828c10f`) The property suite covered 62 of 708 `(revision, definition)`
   pairs; `build.rs` now writes the table from the schemas themselves, so a
   revision that gains a definition gains a case. Field identifiers are
   pinned across all six revisions — no two members of an object collapse to
   one field, and every identifier is legal.
+
+### Documentation
+
+- **The README led with the spec revisions and called the CLI a
+  "Swiss-army knife".** (`b4fea4b8`, `README.md`,
+  `site/src/content/docs/guides/introduction.md`) It read as a feature
+  dump and undersold the thing that is actually different: one build
+  serves the oldest client and the newest one. The `2026-07-28` spec now
+  says peers MAY speak multiple versions simultaneously and defines
+  Modern/Legacy/Dual-era compatibility, so a modern client against a
+  Legacy server is a supported deployment somebody has to translate.
+
+  The README now says when to use rmcp instead, because the honest answer
+  is "rmcp if you control both ends, this if you don't". rmcp is good and
+  it is the right default for the case it targets; it also knows all five
+  revisions, so the durable differences are the per-revision generated type
+  sets, the missing legacy HTTP+SSE transport, and the tooling. The
+  conformance table moved out of `docs/` and into the README, where a
+  reader deciding on a dependency will actually see it, and A2A and ACP
+  are marked experimental in the places that list them.
 
 ## [0.7.0] — 2026-10-27
 

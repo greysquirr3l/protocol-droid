@@ -86,6 +86,13 @@ boundary, the wire surface, or a peer of the library:
   DNS-rebinding via `Host`-header mismatch, request-deadline
   or concurrency-ceiling bypass, missing or wrong rate-limit
   knob.
+- **Resource exhaustion** — a session, queue or buffer that
+  grows without bound because a peer opened it and left, or
+  because the peer answers more slowly than it asks. A client
+  that opens sessions and never closes them, or that `POST`s
+  faster than the upstream answers, is the shape of this
+  report; the bounded bridge inbox and the idle-session reaper
+  are what keep the library on the right side of it.
 - **Filesystem-backed resources** — path canonicalisation
   failures, a `..` traversal that escapes the allowed root,
   symlink handling that lets a resource read outside its
@@ -100,7 +107,7 @@ boundary, the wire surface, or a peer of the library:
 
 ## How a vulnerability gets found
 
-A report is the best route and not the only one. Three things run without
+A report is the best route and not the only one. Five things run without
 anyone looking:
 
 | Where | What it checks | Coverage |
@@ -108,6 +115,7 @@ anyone looking:
 | `supply chain` CI job | `cargo deny` against a freshly fetched advisory database | all four committed lockfiles |
 | Dependabot alerts | advisory database against every manifest | root, `site/`, and the interop fixture |
 | Secret scanning | credential patterns across the history and every push | whole repository |
+| CodeQL | `security-and-quality` queries over the Rust source | every push to `main`, every pull request, and weekly |
 | `pre-push` hook | `cargo audit` over every committed lockfile | all four, including the three outside the workspace |
 
 Two gaps are worth stating plainly rather than leaving to be discovered:
